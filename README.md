@@ -210,6 +210,17 @@ curl -i http://localhost:48080/
 
 MFL lands on hand-written C because it *is* C by the time the optimizer runs.
 
+Reproduce this table on your own hardware (machine-dependent absolutes, but the
+ratios hold). Rust is skipped with a note if `rustc` isn't installed:
+
+```bash
+make bench-report          # MFL vs hand-written C vs Rust, best of 5 runs
+REPS=10 make bench-report  # more runs, less noise
+```
+
+Sources live in [`examples/bench/`](examples/bench/) — `fib.mfl`, `fib.c`,
+`fib.rs`, all built at the same `-O2`/`-O` the table claims.
+
 | Metric | Value |
 |--------|-------|
 | Compiled binary size (fib) | ~16 KB |

@@ -4,7 +4,7 @@ BIN     := bin/machin
 PREFIX  ?= /usr/local
 GOFLAGS ?= -trimpath
 
-.PHONY: all build test examples bench install uninstall clean
+.PHONY: all build test examples bench bench-report install uninstall clean
 
 all: build
 
@@ -27,6 +27,11 @@ bench: build
 	$(BIN) build examples/bench/fib.mfl -o bin/fib
 	@echo "running fib(40):"
 	@time bin/fib
+
+# Reproducible comparison report: MFL vs hand-written C vs Rust (best-of-N).
+# Regenerates the README "Performance" table on your hardware.
+bench-report: build
+	@MACHIN=$(BIN) ./examples/bench/bench.sh
 
 # Install the toolchain (requires a C compiler on PATH at runtime).
 install: build
