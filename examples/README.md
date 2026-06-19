@@ -3,16 +3,15 @@
 Every program here is a **`.mfl`** file: the actual MFL language — **base64, one
 function per line, blank line between functions**. There is no human-readable
 source file; the `.mfl` *is* the source. That's the machine-first point: the
-human states intent, the machine reads and writes the code.
+human states intent, the machine reads and writes the code. Each program is
+compiled to native code (through C) and executed.
 
 ```sh
-machin run examples/complex/primes.mfl      # execute the program
-machin decode examples/complex/primes.mfl   # inspection escape-hatch only
-./examples/run.sh                            # run all programs
+machin run examples/complex/primes.mfl          # compile to native + run
+machin build examples/complex/primes.mfl -o p   # produce a native binary
+machin build examples/complex/primes.mfl --emit-c   # see the generated C
+./examples/run.sh                                # run all programs
 ```
-
-`decode` exists so a human *can* peek when they want to — but reading MFL is the
-machine's job, not a required step in the workflow.
 
 ## basic/
 
@@ -39,3 +38,9 @@ machine's job, not a required step in the workflow.
 | `to_binary`       | recursive base conversion via string building |
 | `pi_leibniz`      | float arithmetic, Leibniz series for π |
 | `perfect_numbers` | proper-divisor sums |
+
+## bench/
+
+| program | shows |
+|---------|-------|
+| `fib`   | `fib(40)` — native MFL runs neck-and-neck with hand-written C |

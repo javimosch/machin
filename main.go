@@ -1,16 +1,19 @@
-// machin — the MFL (Machine-First Language) toolchain.
+// machin — the MFL (Machine-First Language) compiler.
 //
-// MFL is a backend language based on Go but machine-first: a program is stored
-// as base64. Each function lives on exactly one line, base64-encoded, with a
-// blank line between functions. Humans author readable .mfs sources; the
-// toolchain encodes them into the canonical machine-first .mfl form, decodes
-// them back, and runs them directly.
+// MFL is a backend language based on Go but machine-first: a program IS base64,
+// one function per line, a blank line between functions. The human states
+// intent; the machine reads and writes the code. There is no readable source of
+// truth and no "decode" — the .mfl is the program. MFL is statically typed (by
+// inference) and compiles to native code through C, so it runs at C/Rust/Zig
+// speed for scalar work.
 package main
 
 import (
 	"encoding/base64"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -19,19 +22,18 @@ func main() {
 		usage()
 		os.Exit(2)
 	}
-	cmd := os.Args[1]
 	var err error
-	switch cmd {
+	switch os.Args[1] {
 	case "run":
 		err = cmdRun(os.Args[2:])
+	case "build":
+		err = cmdBuild(os.Args[2:])
 	case "encode":
 		err = cmdEncode(os.Args[2:])
-	case "decode":
-		err = cmdDecode(os.Args[2:])
 	case "help", "-h", "--help":
 		usage()
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command %q\n\n", cmd)
+		fmt.Fprintf(os.Stderr, "unknown command %q\n\n", os.Args[1])
 		usage()
 		os.Exit(2)
 	}
@@ -42,27 +44,169 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `machin — Machine-First Language toolchain
+	fmt.Fprint(os.Stderr, `machin — Machine-First Language compiler
 
 usage:
-  machin run    <file.mfl>     decode + execute a machine-first program
-  machin encode <file.mfs>     compile readable source -> machine-first .mfl (stdout)
-  machin decode <file.mfl>     expand machine-first .mfl -> readable source (stdout)
+  machin run   <file.mfl>            compile to native + execute
+  machin build <file.mfl> [-o out]   compile to a native binary
+  machin build <file.mfl> --emit-c   print the generated C and stop
+  machin encode <src>                mint MFL from loose Go-like text (machine tool)
 
 A .mfl program is base64, one function per line, blank line between functions.
-A .mfs source is the human-readable Go-like form of the same program.
 `)
 }
 
-// splitFunctions splits readable source into per-function source blocks.
-// Functions are delimited by top-level `func` keywords; brace-aware.
+// loadMFL reads a .mfl file, base64-decodes each non-blank line, and parses
+// each into a FuncDecl.
+func loadMFL(path string) ([]*FuncDecl, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var fns []*FuncDecl
+	for n, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		raw, err := base64.StdEncoding.DecodeString(line)
+		if err != nil {
+			return nil, fmt.Errorf("line %d: base64 decode: %w", n+1, err)
+		}
+		fn, err := ParseFunc(string(raw))
+		if err != nil {
+			return nil, fmt.Errorf("line %d: parse: %w", n+1, err)
+		}
+		fns = append(fns, fn)
+	}
+	if len(fns) == 0 {
+		return nil, fmt.Errorf("%s: no functions", path)
+	}
+	return fns, nil
+}
+
+func cmdRun(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("run: need exactly one .mfl file")
+	}
+	fns, err := loadMFL(args[0])
+	if err != nil {
+		return err
+	}
+	bin, err := os.CreateTemp("", "mfl-run-*")
+	if err != nil {
+		return err
+	}
+	bin.Close()
+	defer os.Remove(bin.Name())
+	if err := BuildBinary(fns, bin.Name()); err != nil {
+		return err
+	}
+	cmd := exec.Command(bin.Name())
+	cmd.Stdout, cmd.Stderr, cmd.Stdin = os.Stdout, os.Stderr, os.Stdin
+	if err := cmd.Run(); err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			os.Exit(ee.ExitCode())
+		}
+		return err
+	}
+	return nil
+}
+
+func cmdBuild(args []string) error {
+	var src, out string
+	emitC := false
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-o":
+			if i+1 >= len(args) {
+				return fmt.Errorf("build: -o needs a path")
+			}
+			i++
+			out = args[i]
+		case "--emit-c":
+			emitC = true
+		default:
+			src = args[i]
+		}
+	}
+	if src == "" {
+		return fmt.Errorf("build: need a .mfl file")
+	}
+	fns, err := loadMFL(src)
+	if err != nil {
+		return err
+	}
+	if emitC {
+		c, err := CompileToC(fns)
+		if err != nil {
+			return err
+		}
+		fmt.Print(c)
+		return nil
+	}
+	if out == "" {
+		out = strings.TrimSuffix(filepath.Base(src), filepath.Ext(src))
+	}
+	if err := BuildBinary(fns, out); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "built %s\n", out)
+	return nil
+}
+
+// cmdEncode lifts loose Go-like text into canonical MFL. This is a machine
+// convenience for minting programs, not a human authoring path.
+func cmdEncode(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("encode: need exactly one source file")
+	}
+	data, err := os.ReadFile(args[0])
+	if err != nil {
+		return err
+	}
+	funcs, err := splitFunctions(string(data))
+	if err != nil {
+		return err
+	}
+	var fns []*FuncDecl
+	var out strings.Builder
+	for i, f := range funcs {
+		fn, perr := ParseFunc(normalize(f))
+		if perr != nil {
+			return fmt.Errorf("function %d: %w", i+1, perr)
+		}
+		fns = append(fns, fn)
+		out.WriteString(base64.StdEncoding.EncodeToString([]byte(normalize(f))))
+		out.WriteString("\n\n")
+	}
+	if _, err := Check(fns); err != nil {
+		return fmt.Errorf("typecheck: %w", err)
+	}
+	fmt.Print(out.String())
+	return nil
+}
+
+// normalize flattens a function to one canonical line (comments stripped).
+func normalize(src string) string {
+	var b strings.Builder
+	for _, line := range strings.Split(src, "\n") {
+		if idx := strings.Index(line, "//"); idx >= 0 {
+			line = line[:idx]
+		}
+		b.WriteString(strings.TrimSpace(line))
+		b.WriteByte(' ')
+	}
+	return strings.Join(strings.Fields(b.String()), " ")
+}
+
+// splitFunctions splits readable source into per-function blocks (brace-aware).
 func splitFunctions(src string) ([]string, error) {
 	var funcs []string
 	var cur strings.Builder
 	depth := 0
 	started := false
-	lines := strings.Split(src, "\n")
-	for _, line := range lines {
+	for _, line := range strings.Split(src, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if !started {
 			if trimmed == "" || strings.HasPrefix(trimmed, "//") {
@@ -90,104 +234,4 @@ func splitFunctions(src string) ([]string, error) {
 		return nil, fmt.Errorf("unbalanced braces near: %s", strings.TrimSpace(cur.String()))
 	}
 	return funcs, nil
-}
-
-func cmdEncode(args []string) error {
-	if len(args) != 1 {
-		return fmt.Errorf("encode: need exactly one source file")
-	}
-	data, err := os.ReadFile(args[0])
-	if err != nil {
-		return err
-	}
-	funcs, err := splitFunctions(string(data))
-	if err != nil {
-		return err
-	}
-	var out strings.Builder
-	for i, f := range funcs {
-		// Validate it parses before emitting.
-		if _, perr := ParseFunc(normalize(f)); perr != nil {
-			return fmt.Errorf("function %d: %w", i+1, perr)
-		}
-		out.WriteString(base64.StdEncoding.EncodeToString([]byte(normalize(f))))
-		out.WriteString("\n\n")
-	}
-	fmt.Print(out.String())
-	return nil
-}
-
-// normalize collapses a multi-line function body to the canonical single-line
-// machine form (whitespace-separated tokens are preserved by the lexer).
-func normalize(src string) string {
-	// Strip line comments and join lines with spaces.
-	var b strings.Builder
-	for _, line := range strings.Split(src, "\n") {
-		if idx := strings.Index(line, "//"); idx >= 0 {
-			line = line[:idx]
-		}
-		b.WriteString(strings.TrimSpace(line))
-		b.WriteByte(' ')
-	}
-	return strings.Join(strings.Fields(b.String()), " ")
-}
-
-func cmdDecode(args []string) error {
-	if len(args) != 1 {
-		return fmt.Errorf("decode: need exactly one .mfl file")
-	}
-	fns, err := loadMFL(args[0])
-	if err != nil {
-		return err
-	}
-	for _, f := range fns {
-		fmt.Println(prettyFunc(f))
-		fmt.Println()
-	}
-	return nil
-}
-
-func cmdRun(args []string) error {
-	if len(args) != 1 {
-		return fmt.Errorf("run: need exactly one .mfl file")
-	}
-	fns, err := loadMFL(args[0])
-	if err != nil {
-		return err
-	}
-	in := NewInterp()
-	for _, f := range fns {
-		if err := in.Register(f); err != nil {
-			return err
-		}
-	}
-	out, err := in.Run()
-	fmt.Print(out)
-	return err
-}
-
-// loadMFL reads a .mfl file, base64-decodes each non-blank line, and parses
-// each into a FuncDecl.
-func loadMFL(path string) ([]*FuncDecl, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	var fns []*FuncDecl
-	for n, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		raw, err := base64.StdEncoding.DecodeString(line)
-		if err != nil {
-			return nil, fmt.Errorf("line %d: base64 decode: %w", n+1, err)
-		}
-		fn, err := ParseFunc(string(raw))
-		if err != nil {
-			return nil, fmt.Errorf("line %d: parse: %w", n+1, err)
-		}
-		fns = append(fns, fn)
-	}
-	return fns, nil
 }

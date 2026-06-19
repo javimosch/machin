@@ -2,16 +2,16 @@ package main
 
 import (
 	"encoding/base64"
-	"strings"
 	"testing"
 )
 
-// runMFL encodes readable function sources to the machine-first form and runs them.
-func runMFL(t *testing.T, funcs ...string) string {
+// runNative parses readable function sources, round-trips them through base64
+// (the real machine-first path), compiles to native via cc, runs, and returns
+// stdout.
+func runNative(t *testing.T, funcs ...string) string {
 	t.Helper()
-	in := NewInterp()
+	var fns []*FuncDecl
 	for _, f := range funcs {
-		// round-trip through base64 to exercise the real machine-first path
 		enc := base64.StdEncoding.EncodeToString([]byte(normalize(f)))
 		raw, err := base64.StdEncoding.DecodeString(enc)
 		if err != nil {
@@ -21,11 +21,9 @@ func runMFL(t *testing.T, funcs ...string) string {
 		if err != nil {
 			t.Fatalf("parse %q: %v", f, err)
 		}
-		if err := in.Register(fn); err != nil {
-			t.Fatalf("register: %v", err)
-		}
+		fns = append(fns, fn)
 	}
-	out, err := in.Run()
+	out, err := RunCaptured(fns)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -33,14 +31,13 @@ func runMFL(t *testing.T, funcs ...string) string {
 }
 
 func TestArithmetic(t *testing.T) {
-	got := runMFL(t, `func main() { println(2 + 3 * 4) }`)
-	if got != "14\n" {
+	if got := runNative(t, `func main() { println(2 + 3 * 4) }`); got != "14\n" {
 		t.Fatalf("got %q", got)
 	}
 }
 
 func TestRecursionAndLoop(t *testing.T) {
-	got := runMFL(t,
+	got := runNative(t,
 		`func fib(n) { if n < 2 { return n } return fib(n-1) + fib(n-2) }`,
 		`func main() { println(fib(10)) }`)
 	if got != "55\n" {
@@ -49,34 +46,40 @@ func TestRecursionAndLoop(t *testing.T) {
 }
 
 func TestStringsAndBools(t *testing.T) {
-	got := runMFL(t, `func main() { println("a" + "b", 1 == 1, !false) }`)
-	if got != "ab true true\n" {
+	if got := runNative(t, `func main() { println("a" + "b", 1 == 1, !false) }`); got != "ab true true\n" {
 		t.Fatalf("got %q", got)
 	}
 }
 
-func TestFloatPromotion(t *testing.T) {
-	got := runMFL(t, `func main() { println(7 / 2, 7.0 / 2) }`)
+func TestFloatInference(t *testing.T) {
+	// k starts int but unifies to float via 2.0 * k; division is float.
+	got := runNative(t, `func main() { k := 0 println(7 / 2, 2.0 * k + 7.0 / 2.0) }`)
 	if got != "3 3.5\n" {
 		t.Fatalf("got %q", got)
 	}
 }
 
-func TestEncodeDecodeRoundTrip(t *testing.T) {
-	src := "func add(a, b) {\n    return a + b\n}"
-	fn, err := ParseFunc(normalize(src))
+func TestStringBuilding(t *testing.T) {
+	got := runNative(t,
+		`func bin(n) { if n < 2 { return str(n) } return bin(n/2) + str(n%2) }`,
+		`func main() { println(bin(10)) }`)
+	if got != "1010\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestTypeMismatch(t *testing.T) {
+	fn, err := ParseFunc(normalize(`func main() { x := 1 x = "s" }`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	pretty := prettyFunc(fn)
-	if !strings.Contains(pretty, "func add(a, b)") || !strings.Contains(pretty, "return (a + b)") {
-		t.Fatalf("pretty mismatch: %s", pretty)
+	if _, err := Check([]*FuncDecl{fn}); err == nil {
+		t.Fatal("expected type mismatch error")
 	}
 }
 
 func TestSplitFunctions(t *testing.T) {
-	src := "func a() { return 1 }\n\nfunc b() { return 2 }\n"
-	fns, err := splitFunctions(src)
+	fns, err := splitFunctions("func a() { return 1 }\n\nfunc b() { return 2 }\n")
 	if err != nil {
 		t.Fatal(err)
 	}
