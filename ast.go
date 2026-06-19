@@ -29,6 +29,18 @@ type Call struct {
 	Args   []Expr
 }
 
+// SliceLit is a typed slice literal: []int{1, 2, 3} or []string{}.
+type SliceLit struct {
+	Elem  string // element type name: int, float, string, bool
+	Elems []Expr
+}
+
+// Index is slice indexing: x[i].
+type Index struct {
+	X   Expr
+	Idx Expr
+}
+
 func (IntLit) node()    {}
 func (FloatLit) node()  {}
 func (StringLit) node() {}
@@ -38,6 +50,8 @@ func (Ident) node()     {}
 func (Unary) node()     {}
 func (Binary) node()    {}
 func (Call) node()      {}
+func (SliceLit) node()  {}
+func (Index) node()     {}
 
 // ---- Statements ----
 
@@ -64,11 +78,22 @@ type WhileStmt struct {
 	Body []Stmt
 }
 
-func (ExprStmt) node()   {}
-func (AssignStmt) node() {}
-func (ReturnStmt) node() {}
-func (IfStmt) node()     {}
-func (WhileStmt) node()  {}
+// IndexAssign is assignment to a slice element: x[i] = v.
+type IndexAssign struct {
+	Target *Index
+	Val    Expr
+}
+
+// GoStmt spawns a goroutine: go f(args).
+type GoStmt struct{ Call *Call }
+
+func (ExprStmt) node()    {}
+func (AssignStmt) node()  {}
+func (ReturnStmt) node()  {}
+func (IfStmt) node()      {}
+func (WhileStmt) node()   {}
+func (IndexAssign) node() {}
+func (GoStmt) node()      {}
 
 // ---- Top level ----
 

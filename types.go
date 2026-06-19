@@ -20,6 +20,7 @@ const (
 	KBool
 	KString
 	KVoid
+	KSlice // []elem; element kind stored in the slot's elem slot
 )
 
 func (k Kind) String() string {
@@ -38,8 +39,24 @@ func (k Kind) String() string {
 		return "string"
 	case KVoid:
 		return "void"
+	case KSlice:
+		return "slice"
 	}
 	return "?"
+}
+
+func kindFromName(name string) (Kind, error) {
+	switch name {
+	case "int":
+		return KInt, nil
+	case "float":
+		return KFloat, nil
+	case "string":
+		return KString, nil
+	case "bool":
+		return KBool, nil
+	}
+	return KVar, fmt.Errorf("unknown type %q", name)
 }
 
 func isNumeric(k Kind) bool { return k == KInt || k == KFloat || k == KNum }
@@ -47,6 +64,7 @@ func isNumeric(k Kind) bool { return k == KInt || k == KFloat || k == KNum }
 type Checker struct {
 	parent []int
 	kind   []Kind
+	elem   []int // for KSlice slots: the element slot; -1 otherwise
 
 	funcs      map[string]*FuncDecl
 	funcParam  map[string][]int
@@ -69,7 +87,29 @@ type plusCons struct{ l, r, res int }
 func newSlot(c *Checker, k Kind) int {
 	c.parent = append(c.parent, len(c.parent))
 	c.kind = append(c.kind, k)
+	c.elem = append(c.elem, -1)
 	return len(c.parent) - 1
+}
+
+// newSliceSlot makes a KSlice slot whose element is the given slot.
+func newSliceSlot(c *Checker, elemSlot int) int {
+	s := newSlot(c, KSlice)
+	c.elem[s] = elemSlot
+	return s
+}
+
+// sliceElem forces slot to be a slice and returns its element slot.
+func (c *Checker) sliceElem(slot int) (int, error) {
+	r := c.find(slot)
+	if c.kind[r] == KSlice && c.elem[r] >= 0 {
+		return c.elem[r], nil
+	}
+	e := newSlot(c, KVar)
+	s := newSliceSlot(c, e)
+	if _, err := c.union(slot, s); err != nil {
+		return 0, err
+	}
+	return c.elem[c.find(slot)], nil
 }
 
 func (c *Checker) find(i int) int {
@@ -98,6 +138,9 @@ func reconcile(a, b Kind) (Kind, error) {
 	if b == KNum && isNumeric(a) {
 		return a, nil
 	}
+	if a == KSlice && b == KSlice {
+		return KSlice, nil // element slots reconciled by union
+	}
 	return KVar, fmt.Errorf("type mismatch: %s vs %s", a, b)
 }
 
@@ -110,10 +153,26 @@ func (c *Checker) union(a, b int) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	// merge element slots when joining slices
+	var ea, eb int = -1, -1
+	if merged == KSlice {
+		ea, eb = c.elem[ra], c.elem[rb]
+	}
 	c.parent[rb] = ra
-	changed := c.kind[ra] != merged
 	c.kind[ra] = merged
-	return changed || true, nil
+	if merged == KSlice {
+		keep := ea
+		if keep < 0 {
+			keep = eb
+		}
+		c.elem[ra] = keep
+		if ea >= 0 && eb >= 0 && ea != eb {
+			if _, err := c.union(ea, eb); err != nil {
+				return false, err
+			}
+		}
+	}
+	return true, nil
 }
 
 func (c *Checker) kindOf(slot int) Kind { return c.kind[c.find(slot)] }
@@ -275,6 +334,32 @@ func (c *Checker) genStmt(fn *FuncDecl, s Stmt) error {
 			}
 		}
 		return nil
+	case *IndexAssign:
+		xs, err := c.genExpr(fn, st.Target.X)
+		if err != nil {
+			return err
+		}
+		eslot, err := c.sliceElem(xs)
+		if err != nil {
+			return err
+		}
+		is, err := c.genExpr(fn, st.Target.Idx)
+		if err != nil {
+			return err
+		}
+		c.addPair(is, c.cInt)
+		vs, err := c.genExpr(fn, st.Val)
+		if err != nil {
+			return err
+		}
+		c.addPair(vs, eslot)
+		return nil
+	case *GoStmt:
+		if _, ok := c.funcs[st.Call.Callee]; !ok {
+			return fmt.Errorf("go: %q is not a user function", st.Call.Callee)
+		}
+		_, err := c.genExpr(fn, st.Call)
+		return err
 	}
 	return fmt.Errorf("typecheck: unknown statement %T", s)
 }
@@ -323,6 +408,36 @@ func (c *Checker) genExprInner(fn *FuncDecl, e Expr) (int, error) {
 		return c.genBinary(fn, ex)
 	case *Call:
 		return c.genCall(fn, ex)
+	case *SliceLit:
+		ek, err := kindFromName(ex.Elem)
+		if err != nil {
+			return 0, err
+		}
+		eslot := newSlot(c, ek)
+		s := newSliceSlot(c, eslot)
+		for _, el := range ex.Elems {
+			es, err := c.genExpr(fn, el)
+			if err != nil {
+				return 0, err
+			}
+			c.addPair(es, eslot)
+		}
+		return s, nil
+	case *Index:
+		xs, err := c.genExpr(fn, ex.X)
+		if err != nil {
+			return 0, err
+		}
+		eslot, err := c.sliceElem(xs)
+		if err != nil {
+			return 0, err
+		}
+		is, err := c.genExpr(fn, ex.Idx)
+		if err != nil {
+			return 0, err
+		}
+		c.addPair(is, c.cInt)
+		return eslot, nil
 	}
 	return 0, fmt.Errorf("typecheck: unknown expression %T", e)
 }
@@ -372,8 +487,24 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		if len(argSlots) != 1 {
 			return 0, fmt.Errorf("len: 1 arg")
 		}
-		c.addPair(argSlots[0], c.cString)
+		// len works on strings or slices; codegen reads the resolved kind.
 		return c.cInt, nil
+	case "append":
+		if len(argSlots) != 2 {
+			return 0, fmt.Errorf("append: 2 args")
+		}
+		eslot, err := c.sliceElem(argSlots[0])
+		if err != nil {
+			return 0, err
+		}
+		c.addPair(argSlots[1], eslot)
+		return argSlots[0], nil
+	case "sleep":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("sleep: 1 arg")
+		}
+		c.addPair(argSlots[0], c.cInt)
+		return c.cVoid, nil
 	case "str":
 		if len(argSlots) != 1 {
 			return 0, fmt.Errorf("str: 1 arg")
@@ -434,3 +565,12 @@ func (c *Checker) ParamKind(fn string, i int) Kind {
 func (c *Checker) VarKind(fn, name string) Kind { return c.kindOf(c.vars[fn][name]) }
 func (c *Checker) NodeKind(n Node) Kind         { return c.kindOf(c.nodeSlot[n]) }
 func (c *Checker) Locals(fn string) []string    { return c.localOrder[fn] }
+
+// ElemKindOf returns the element kind of a slice-typed expression node.
+func (c *Checker) ElemKindOf(n Node) Kind {
+	r := c.find(c.nodeSlot[n])
+	if c.kind[r] == KSlice && c.elem[r] >= 0 {
+		return c.kindOf(c.elem[r])
+	}
+	return KInt
+}

@@ -68,6 +68,32 @@ func TestStringBuilding(t *testing.T) {
 	}
 }
 
+func TestSlices(t *testing.T) {
+	got := runNative(t,
+		`func main() { xs := []int{1, 2, 3} xs = append(xs, 4) xs[0] = 10 s := 0 i := 0 for i < len(xs) { s = s + xs[i] i = i + 1 } println(s, len(xs)) }`)
+	if got != "19 4\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestSliceParamInference(t *testing.T) {
+	got := runNative(t,
+		`func first(xs) { return xs[0] }`,
+		`func main() { println(first([]string{"a", "b"})) }`)
+	if got != "a\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestGoroutine(t *testing.T) {
+	got := runNative(t,
+		`func w() { println("hi") }`,
+		`func main() { go w() sleep(50) println("done") }`)
+	if got != "hi\ndone\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
 func TestTypeMismatch(t *testing.T) {
 	fn, err := ParseFunc(normalize(`func main() { x := 1 x = "s" }`))
 	if err != nil {

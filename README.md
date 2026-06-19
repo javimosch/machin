@@ -56,21 +56,29 @@ There is no `decode`. Reading MFL is the machine's job, not a step in the flow.
 Go-flavored, deliberately minimal. The decoded form of each base64 line obeys:
 
 - **Functions:** `func name(a, b) { ... }`. Types are inferred from use.
-- **Types:** `int` (int64), `float` (double), `bool`, `string`. An integer
-  literal is `int` unless it meets a float, then the value is `float`. `/` of two
-  ints is integer division.
+- **Types:** `int` (int64), `float` (double), `bool`, `string`, and slices
+  `[]T`. An integer literal is `int` unless it meets a float, then the value is
+  `float`. `/` of two ints is integer division.
+- **Slices:** literals `[]int{1, 2, 3}` / `[]string{}`, indexing `s[i]` (read and
+  assign), `len(s)`, and `append(s, x)` (returns the grown slice, Go-style).
+  A slice is a header `{data, len, cap}` over an unboxed backing array.
 - **Variables:** `x := expr` (declare), `x = expr` (assign), `var x = expr`.
 - **Control flow:** `if / else if / else`; Go-style loops `for cond { ... }` and
   bare `for { ... }` (infinite). `while cond { ... }` is also accepted.
   Conditions must be `bool`.
+- **Concurrency:** `go f(args)` spawns a goroutine (backed by a pthread).
+  `sleep(ms)` pauses.
 - **Operators:** `+ - * / %`, `== != < <= > >=`, `&& || !`. `+` concatenates
   when its operands are strings.
-- **Builtins:** `print`, `println`, `len(s)`, `str(n)`, `int(x)`.
+- **Builtins:** `print`, `println`, `len(x)`, `str(n)`, `int(x)`, `append(s, x)`,
+  `sleep(ms)`.
 - **Networking** (the low-level shape of Go's `net` package):
   `listen(port) → fd`, `accept(fd) → conn`, `read(conn) → string`,
   `write(conn, s) → n`, `close(conn)`.
 
 A type clash (e.g. assigning a string to an int variable) is a compile error.
+Types are inferred even through slices: `func first(xs) { return xs[0] }` works
+on `[]string` or `[]int` depending on the call site.
 
 ```sh
 machin run examples/complex/http_server.mfl   # then open the printed URL

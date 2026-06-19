@@ -19,17 +19,57 @@ func CompileToC(funcs []*FuncDecl) (string, error) {
 }
 
 type cgen struct {
-	c   *Checker
-	buf strings.Builder
+	c     *Checker
+	buf   strings.Builder // function bodies
+	tramp strings.Builder // goroutine trampolines
+	goID  int
 }
 
 const cRuntime = `#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdarg.h>
 #include <unistd.h>
+#include <time.h>
+#include <pthread.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+
+/* slices: a Go-style header over an unboxed backing array */
+typedef struct { void* data; int64_t len; int64_t cap; } mfl_slice;
+
+static mfl_slice mfl_append(mfl_slice s, const void* elem, int64_t es) {
+    if (s.len >= s.cap) {
+        int64_t nc = s.cap ? s.cap * 2 : 4;
+        s.data = realloc(s.data, nc * es); s.cap = nc;
+    }
+    memcpy((char*)s.data + s.len * es, elem, es);
+    s.len++;
+    return s;
+}
+static mfl_slice mfl_lit_i64(int64_t n, ...) {
+    mfl_slice s = { n ? malloc(n * 8) : NULL, n, n };
+    va_list ap; va_start(ap, n);
+    for (int64_t i = 0; i < n; i++) ((int64_t*)s.data)[i] = va_arg(ap, int64_t);
+    va_end(ap); return s;
+}
+static mfl_slice mfl_lit_f64(int64_t n, ...) {
+    mfl_slice s = { n ? malloc(n * 8) : NULL, n, n };
+    va_list ap; va_start(ap, n);
+    for (int64_t i = 0; i < n; i++) ((double*)s.data)[i] = va_arg(ap, double);
+    va_end(ap); return s;
+}
+static mfl_slice mfl_lit_str(int64_t n, ...) {
+    mfl_slice s = { n ? malloc(n * sizeof(char*)) : NULL, n, n };
+    va_list ap; va_start(ap, n);
+    for (int64_t i = 0; i < n; i++) ((char**)s.data)[i] = va_arg(ap, char*);
+    va_end(ap); return s;
+}
+static void mfl_sleep(int64_t ms) {
+    struct timespec ts = { ms / 1000, (ms % 1000) * 1000000L };
+    nanosleep(&ts, NULL);
+}
 
 static char* mfl_cat(const char* a, const char* b) {
     size_t la = strlen(a), lb = strlen(b);
@@ -74,6 +114,8 @@ func cType(k Kind) string {
 		return "char*"
 	case KVoid:
 		return "void"
+	case KSlice:
+		return "mfl_slice"
 	}
 	return "int64_t"
 }
@@ -84,27 +126,31 @@ func cZero(k Kind) string {
 		return "0.0"
 	case KString:
 		return "NULL"
+	case KSlice:
+		return "(mfl_slice){0}"
 	default:
 		return "0"
 	}
 }
 
 func (g *cgen) program(funcs []*FuncDecl) (string, error) {
-	g.buf.WriteString(cRuntime)
-	g.buf.WriteByte('\n')
-	// forward declarations
-	for _, fn := range funcs {
-		g.buf.WriteString(g.signature(fn) + ";\n")
-	}
-	g.buf.WriteByte('\n')
-	// definitions
+	// emit function bodies first (this also fills g.tramp via any go statements)
 	for _, fn := range funcs {
 		if err := g.function(fn); err != nil {
 			return "", err
 		}
 	}
-	g.buf.WriteString("int main(void) { mfl_main(); return 0; }\n")
-	return g.buf.String(), nil
+	var out strings.Builder
+	out.WriteString(cRuntime)
+	out.WriteByte('\n')
+	for _, fn := range funcs {
+		out.WriteString(g.signature(fn) + ";\n")
+	}
+	out.WriteByte('\n')
+	out.WriteString(g.tramp.String())
+	out.WriteString(g.buf.String())
+	out.WriteString("int main(void) { mfl_main(); return 0; }\n")
+	return out.String(), nil
 }
 
 func (g *cgen) signature(fn *FuncDecl) string {
@@ -204,9 +250,65 @@ func (g *cgen) stmt(s Stmt, depth int) error {
 		}
 		indentC(&g.buf, depth)
 		g.buf.WriteString("}\n")
+	case *IndexAssign:
+		x, err := g.expr(st.Target.X)
+		if err != nil {
+			return err
+		}
+		idx, err := g.expr(st.Target.Idx)
+		if err != nil {
+			return err
+		}
+		val, err := g.expr(st.Val)
+		if err != nil {
+			return err
+		}
+		ct := cType(g.c.ElemKindOf(st.Target.X))
+		fmt.Fprintf(&g.buf, "((%s*)(%s).data)[%s] = %s;\n", ct, x, idx, val)
+	case *GoStmt:
+		return g.goStmt(st)
 	default:
 		return fmt.Errorf("codegen: unknown statement %T", s)
 	}
+	return nil
+}
+
+// goStmt spawns a pthread. For each go-call site it emits a per-site arg struct
+// and trampoline, then a detached pthread_create at the call site.
+func (g *cgen) goStmt(st *GoStmt) error {
+	id := g.goID
+	g.goID++
+	callee := st.Call.Callee
+	n := len(st.Call.Args)
+
+	// arg struct + trampoline (a leading dummy field avoids an empty struct)
+	fmt.Fprintf(&g.tramp, "struct mfl_go_%d { char _;", id)
+	for i := 0; i < n; i++ {
+		fmt.Fprintf(&g.tramp, " %s a%d;", cType(g.c.ParamKind(callee, i)), i)
+	}
+	g.tramp.WriteString(" };\n")
+	fmt.Fprintf(&g.tramp, "static void* mfl_go_run_%d(void* p) { struct mfl_go_%d* s = (struct mfl_go_%d*)p; mfl_%s(",
+		id, id, id, callee)
+	for i := 0; i < n; i++ {
+		if i > 0 {
+			g.tramp.WriteString(", ")
+		}
+		fmt.Fprintf(&g.tramp, "s->a%d", i)
+	}
+	g.tramp.WriteString("); free(s); return NULL; }\n")
+
+	// call site
+	g.buf.WriteString("{\n")
+	fmt.Fprintf(&g.buf, "        struct mfl_go_%d* s = malloc(sizeof(*s));\n", id)
+	for i, a := range st.Call.Args {
+		e, err := g.expr(a)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(&g.buf, "        s->a%d = (%s);\n", i, e)
+	}
+	fmt.Fprintf(&g.buf, "        pthread_t t; pthread_create(&t, NULL, mfl_go_run_%d, s); pthread_detach(t);\n", id)
+	g.buf.WriteString("    }\n")
 	return nil
 }
 
@@ -281,6 +383,19 @@ func (g *cgen) expr(e Expr) (string, error) {
 		return g.binary(ex)
 	case *Call:
 		return g.call(ex)
+	case *SliceLit:
+		return g.sliceLit(ex)
+	case *Index:
+		x, err := g.expr(ex.X)
+		if err != nil {
+			return "", err
+		}
+		idx, err := g.expr(ex.Idx)
+		if err != nil {
+			return "", err
+		}
+		ct := cType(g.c.ElemKindOf(ex.X))
+		return fmt.Sprintf("((%s*)(%s).data)[%s]", ct, x, idx), nil
 	}
 	return "", fmt.Errorf("codegen: unknown expression %T", e)
 }
@@ -300,6 +415,26 @@ func (g *cgen) binary(ex *Binary) (string, error) {
 	return fmt.Sprintf("(%s %s %s)", l, ex.Op, r), nil
 }
 
+func (g *cgen) sliceLit(ex *SliceLit) (string, error) {
+	ek := g.c.ElemKindOf(ex)
+	builder, cast := "mfl_lit_i64", "int64_t"
+	switch ek {
+	case KFloat:
+		builder, cast = "mfl_lit_f64", "double"
+	case KString:
+		builder, cast = "mfl_lit_str", "char*"
+	}
+	parts := []string{strconv.Itoa(len(ex.Elems))}
+	for _, el := range ex.Elems {
+		e, err := g.expr(el)
+		if err != nil {
+			return "", err
+		}
+		parts = append(parts, fmt.Sprintf("(%s)(%s)", cast, e))
+	}
+	return builder + "(" + strings.Join(parts, ", ") + ")", nil
+}
+
 func (g *cgen) call(ex *Call) (string, error) {
 	args := make([]string, len(ex.Args))
 	for i, a := range ex.Args {
@@ -311,7 +446,15 @@ func (g *cgen) call(ex *Call) (string, error) {
 	}
 	switch ex.Callee {
 	case "len":
+		if g.c.NodeKind(ex.Args[0]) == KSlice {
+			return fmt.Sprintf("((%s).len)", args[0]), nil
+		}
 		return fmt.Sprintf("((int64_t)strlen(%s))", args[0]), nil
+	case "append":
+		ct := cType(g.c.ElemKindOf(ex.Args[0]))
+		return fmt.Sprintf("mfl_append(%s, &(%s){%s}, sizeof(%s))", args[0], ct, args[1], ct), nil
+	case "sleep":
+		return fmt.Sprintf("mfl_sleep(%s)", args[0]), nil
 	case "str":
 		if g.c.NodeKind(ex.Args[0]) == KFloat {
 			return fmt.Sprintf("mfl_str_d(%s)", args[0]), nil

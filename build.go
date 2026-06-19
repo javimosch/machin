@@ -30,7 +30,7 @@ func BuildBinary(funcs []*FuncDecl, outPath string) error {
 	}
 	tmp.Close()
 
-	cmd := exec.Command(ccPath(), "-O2", "-std=c11", "-o", outPath, tmp.Name())
+	cmd := exec.Command(ccPath(), "-O2", "-std=c11", "-pthread", "-o", outPath, tmp.Name())
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("%s failed: %v\n%s", ccPath(), err, out)
 	}

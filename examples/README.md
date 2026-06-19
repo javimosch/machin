@@ -38,7 +38,9 @@ machin build examples/complex/primes.mfl --emit-c   # see the generated C
 | `to_binary`       | recursive base conversion via string building |
 | `pi_leibniz`      | float arithmetic, Leibniz series for π |
 | `perfect_numbers` | proper-divisor sums |
-| `http_server`     | a TCP/HTTP server serving an HTML page (sockets, `for {}`) |
+| `slices`          | slice literals, `append`, indexing, `len`, in-place reverse |
+| `goroutines`      | `go` spawns concurrent workers; `sleep` waits |
+| `http_server`     | concurrent TCP/HTTP server — `go handle(conn)` per request |
 
 `http_server` loops forever, so it's skipped by `run.sh`. Run it directly:
 

@@ -187,17 +187,41 @@ func cmdEncode(args []string) error {
 	return nil
 }
 
-// normalize flattens a function to one canonical line (comments stripped).
+// normalize flattens a function to one canonical line, joining lines with a
+// single space. It is string-aware: `//` inside a string literal is not a
+// comment, and whitespace inside string literals is preserved.
 func normalize(src string) string {
-	var b strings.Builder
+	var parts []string
 	for _, line := range strings.Split(src, "\n") {
-		if idx := strings.Index(line, "//"); idx >= 0 {
-			line = line[:idx]
+		line = strings.TrimSpace(stripLineComment(line))
+		if line != "" {
+			parts = append(parts, line)
 		}
-		b.WriteString(strings.TrimSpace(line))
-		b.WriteByte(' ')
 	}
-	return strings.Join(strings.Fields(b.String()), " ")
+	return strings.Join(parts, " ")
+}
+
+// stripLineComment removes a // comment from a line, ignoring // that appears
+// inside a string literal.
+func stripLineComment(line string) string {
+	inStr := false
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		if inStr {
+			if c == '\\' {
+				i++ // skip escaped char
+			} else if c == '"' {
+				inStr = false
+			}
+			continue
+		}
+		if c == '"' {
+			inStr = true
+		} else if c == '/' && i+1 < len(line) && line[i+1] == '/' {
+			return line[:i]
+		}
+	}
+	return line
 }
 
 // splitFunctions splits readable source into per-function blocks (brace-aware).

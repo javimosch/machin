@@ -120,6 +120,17 @@ func (p *Parser) parseStmt() (Stmt, error) {
 			return p.parseWhile()
 		case "for":
 			return p.parseFor()
+		case "go":
+			p.next()
+			call, err := p.parsePostfix()
+			if err != nil {
+				return nil, err
+			}
+			c, ok := call.(*Call)
+			if !ok {
+				return nil, fmt.Errorf("go requires a function call")
+			}
+			return &GoStmt{Call: c}, nil
 		case "var":
 			p.next()
 			nameTok, err := p.expect(TIdent, "")
@@ -136,20 +147,35 @@ func (p *Parser) parseStmt() (Stmt, error) {
 			return &AssignStmt{Name: nameTok.Val, Op: ":=", Val: val}, nil
 		}
 	}
-	// assignment: ident := expr  | ident = expr
-	if t.Kind == TIdent && (p.toks[p.pos+1].Val == ":=" || p.toks[p.pos+1].Val == "=") {
+	// declaration: ident := expr
+	if t.Kind == TIdent && p.toks[p.pos+1].Val == ":=" {
 		name := p.next().Val
-		op := p.next().Val
+		p.next() // :=
 		val, err := p.parseExpr()
 		if err != nil {
 			return nil, err
 		}
-		return &AssignStmt{Name: name, Op: op, Val: val}, nil
+		return &AssignStmt{Name: name, Op: ":=", Val: val}, nil
 	}
-	// expression statement
+	// expression, possibly an assignment target (ident = / slice[i] =)
 	x, err := p.parseExpr()
 	if err != nil {
 		return nil, err
+	}
+	if p.peek().Val == "=" {
+		p.next()
+		val, err := p.parseExpr()
+		if err != nil {
+			return nil, err
+		}
+		switch lhs := x.(type) {
+		case *Ident:
+			return &AssignStmt{Name: lhs.Name, Op: "=", Val: val}, nil
+		case *Index:
+			return &IndexAssign{Target: lhs, Val: val}, nil
+		default:
+			return nil, fmt.Errorf("cannot assign to %T", x)
+		}
 	}
 	return &ExprStmt{X: x}, nil
 }
@@ -268,7 +294,27 @@ func (p *Parser) parseUnary() (Expr, error) {
 		}
 		return &Unary{Op: t.Val, X: x}, nil
 	}
-	return p.parsePrimary()
+	return p.parsePostfix()
+}
+
+// parsePostfix parses a primary followed by any number of [index] operators.
+func (p *Parser) parsePostfix() (Expr, error) {
+	x, err := p.parsePrimary()
+	if err != nil {
+		return nil, err
+	}
+	for p.peek().Val == "[" {
+		p.next()
+		idx, err := p.parseExpr()
+		if err != nil {
+			return nil, err
+		}
+		if _, err := p.expect(TPunct, "]"); err != nil {
+			return nil, err
+		}
+		x = &Index{X: x, Idx: idx}
+	}
+	return x, nil
 }
 
 func (p *Parser) parsePrimary() (Expr, error) {
@@ -322,8 +368,45 @@ func (p *Parser) parsePrimary() (Expr, error) {
 			}
 			return x, nil
 		}
+		if t.Val == "[" {
+			return p.parseSliceLit()
+		}
 	}
 	return nil, fmt.Errorf("unexpected token %q at pos %d", t.Val, t.Pos)
+}
+
+// parseSliceLit parses a typed slice literal: []int{1, 2, 3} or []string{}.
+func (p *Parser) parseSliceLit() (Expr, error) {
+	if _, err := p.expect(TPunct, "["); err != nil {
+		return nil, err
+	}
+	if _, err := p.expect(TPunct, "]"); err != nil {
+		return nil, err
+	}
+	elemTok := p.next() // element type name
+	if elemTok.Kind != TIdent {
+		return nil, fmt.Errorf("slice element type must be a name, got %q", elemTok.Val)
+	}
+	if _, err := p.expect(TPunct, "{"); err != nil {
+		return nil, err
+	}
+	var elems []Expr
+	for p.peek().Val != "}" {
+		e, err := p.parseExpr()
+		if err != nil {
+			return nil, err
+		}
+		elems = append(elems, e)
+		if p.peek().Val == "," {
+			p.next()
+		} else {
+			break
+		}
+	}
+	if _, err := p.expect(TPunct, "}"); err != nil {
+		return nil, err
+	}
+	return &SliceLit{Elem: elemTok.Val, Elems: elems}, nil
 }
 
 func (p *Parser) parseCall(callee string) (Expr, error) {
