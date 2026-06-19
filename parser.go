@@ -118,6 +118,8 @@ func (p *Parser) parseStmt() (Stmt, error) {
 			return p.parseIf()
 		case "while":
 			return p.parseWhile()
+		case "for":
+			return p.parseFor()
 		case "var":
 			p.next()
 			nameTok, err := p.expect(TIdent, "")
@@ -183,6 +185,29 @@ func (p *Parser) parseIf() (Stmt, error) {
 
 func (p *Parser) parseWhile() (Stmt, error) {
 	p.next() // while
+	cond, err := p.parseExpr()
+	if err != nil {
+		return nil, err
+	}
+	body, err := p.parseBlock()
+	if err != nil {
+		return nil, err
+	}
+	return &WhileStmt{Cond: cond, Body: body}, nil
+}
+
+// parseFor handles Go's looping forms, desugared onto WhileStmt:
+//   for { ... }        infinite loop
+//   for cond { ... }   loop while cond
+func (p *Parser) parseFor() (Stmt, error) {
+	p.next() // for
+	if p.peek().Val == "{" {
+		body, err := p.parseBlock()
+		if err != nil {
+			return nil, err
+		}
+		return &WhileStmt{Cond: &BoolLit{Val: true}, Body: body}, nil
+	}
 	cond, err := p.parseExpr()
 	if err != nil {
 		return nil, err

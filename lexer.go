@@ -109,6 +109,8 @@ func (l *Lexer) lexString() error {
 			switch l.src[l.pos] {
 			case 'n':
 				sb.WriteByte('\n')
+			case 'r':
+				sb.WriteByte('\r')
 			case 't':
 				sb.WriteByte('\t')
 			case '"':

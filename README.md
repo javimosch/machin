@@ -60,13 +60,21 @@ Go-flavored, deliberately minimal. The decoded form of each base64 line obeys:
   literal is `int` unless it meets a float, then the value is `float`. `/` of two
   ints is integer division.
 - **Variables:** `x := expr` (declare), `x = expr` (assign), `var x = expr`.
-- **Control flow:** `if / else if / else`, `while cond { ... }`. Conditions must
-  be `bool`.
+- **Control flow:** `if / else if / else`; Go-style loops `for cond { ... }` and
+  bare `for { ... }` (infinite). `while cond { ... }` is also accepted.
+  Conditions must be `bool`.
 - **Operators:** `+ - * / %`, `== != < <= > >=`, `&& || !`. `+` concatenates
   when its operands are strings.
 - **Builtins:** `print`, `println`, `len(s)`, `str(n)`, `int(x)`.
+- **Networking** (the low-level shape of Go's `net` package):
+  `listen(port) → fd`, `accept(fd) → conn`, `read(conn) → string`,
+  `write(conn, s) → n`, `close(conn)`.
 
 A type clash (e.g. assigning a string to an int variable) is a compile error.
+
+```sh
+machin run examples/complex/http_server.mfl   # then open the printed URL
+```
 
 ## How it works
 

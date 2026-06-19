@@ -38,6 +38,15 @@ machin build examples/complex/primes.mfl --emit-c   # see the generated C
 | `to_binary`       | recursive base conversion via string building |
 | `pi_leibniz`      | float arithmetic, Leibniz series for π |
 | `perfect_numbers` | proper-divisor sums |
+| `http_server`     | a TCP/HTTP server serving an HTML page (sockets, `for {}`) |
+
+`http_server` loops forever, so it's skipped by `run.sh`. Run it directly:
+
+```sh
+machin run examples/complex/http_server.mfl
+# in another shell:
+curl -i http://localhost:48080/
+```
 
 ## bench/
 

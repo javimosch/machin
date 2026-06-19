@@ -27,6 +27,9 @@ const cRuntime = `#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <unistd.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
 
 static char* mfl_cat(const char* a, const char* b) {
     size_t la = strlen(a), lb = strlen(b);
@@ -36,6 +39,27 @@ static char* mfl_cat(const char* a, const char* b) {
 }
 static char* mfl_str_i(int64_t v) { char* b = malloc(24); snprintf(b, 24, "%lld", (long long)v); return b; }
 static char* mfl_str_d(double v)  { char* b = malloc(32); snprintf(b, 32, "%g", v); return b; }
+
+/* networking: the low-level shape of Go's net package */
+static int64_t mfl_listen(int64_t port) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    int opt = 1; setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    struct sockaddr_in a; memset(&a, 0, sizeof(a));
+    a.sin_family = AF_INET; a.sin_addr.s_addr = INADDR_ANY; a.sin_port = htons((uint16_t)port);
+    if (bind(fd, (struct sockaddr*)&a, sizeof(a)) < 0) { perror("bind"); exit(1); }
+    if (listen(fd, 64) < 0) { perror("listen"); exit(1); }
+    return fd;
+}
+static int64_t mfl_accept(int64_t fd) { return accept((int)fd, NULL, NULL); }
+static char* mfl_read(int64_t fd) {
+    char* buf = malloc(65536);
+    ssize_t n = read((int)fd, buf, 65535);
+    if (n < 0) n = 0;
+    buf[n] = 0;
+    return buf;
+}
+static int64_t mfl_write(int64_t fd, const char* s) { return (int64_t)write((int)fd, s, strlen(s)); }
+static void mfl_close(int64_t fd) { close((int)fd); }
 `
 
 func cType(k Kind) string {
@@ -295,6 +319,16 @@ func (g *cgen) call(ex *Call) (string, error) {
 		return fmt.Sprintf("mfl_str_i(%s)", args[0]), nil
 	case "int":
 		return fmt.Sprintf("((int64_t)(%s))", args[0]), nil
+	case "listen":
+		return fmt.Sprintf("mfl_listen(%s)", args[0]), nil
+	case "accept":
+		return fmt.Sprintf("mfl_accept(%s)", args[0]), nil
+	case "read":
+		return fmt.Sprintf("mfl_read(%s)", args[0]), nil
+	case "write":
+		return fmt.Sprintf("mfl_write(%s, %s)", args[0], args[1]), nil
+	case "close":
+		return fmt.Sprintf("mfl_close(%s)", args[0]), nil
 	case "print", "println":
 		return "", fmt.Errorf("print/println may only be used as a statement")
 	}
