@@ -1,0 +1,23 @@
+// functions.mfs — parameters, return values, and composition.
+
+func square(x) {
+    return x * x
+}
+
+func sum_of_squares(a, b) {
+    return square(a) + square(b)
+}
+
+func max(a, b) {
+    if a > b {
+        return a
+    }
+    return b
+}
+
+func main() {
+    println("square(5) =", square(5))
+    println("sum_of_squares(3, 4) =", sum_of_squares(3, 4))
+    println("max(8, 3) =", max(8, 3))
+    println("max(square(2), sum_of_squares(1, 2)) =", max(square(2), sum_of_squares(1, 2)))
+}

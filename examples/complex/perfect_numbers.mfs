@@ -1,0 +1,24 @@
+// perfect_numbers.mfs — a number equal to the sum of its proper divisors.
+
+func is_perfect(n) {
+    sum := 0
+    i := 1
+    while i < n {
+        if n % i == 0 {
+            sum = sum + i
+        }
+        i = i + 1
+    }
+    return sum == n
+}
+
+func main() {
+    println("perfect numbers up to 1000:")
+    n := 2
+    while n <= 1000 {
+        if is_perfect(n) {
+            println("  ", n)
+        }
+        n = n + 1
+    }
+}

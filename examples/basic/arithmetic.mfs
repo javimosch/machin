@@ -1,0 +1,10 @@
+// arithmetic.mfs — operators, precedence, int vs float division.
+
+func main() {
+    println("2 + 3 * 4   =", 2 + 3 * 4)
+    println("(2 + 3) * 4 =", (2 + 3) * 4)
+    println("17 / 5      =", 17 / 5)      // integer division
+    println("17 % 5      =", 17 % 5)
+    println("17.0 / 5    =", 17.0 / 5)    // float promotion
+    println("-(3 - 8)    =", -(3 - 8))
+}

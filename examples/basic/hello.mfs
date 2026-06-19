@@ -1,0 +1,5 @@
+// hello.mfs — the smallest MFL program.
+
+func main() {
+    println("hello, machine")
+}

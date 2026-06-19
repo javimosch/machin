@@ -1,0 +1,20 @@
+// fast_power.mfs — exponentiation by squaring (O(log exp)).
+
+func ipow(base, exp) {
+    result := 1
+    while exp > 0 {
+        if exp % 2 == 1 {
+            result = result * base
+        }
+        base = base * base
+        exp = exp / 2
+    }
+    return result
+}
+
+func main() {
+    println("2^10 =", ipow(2, 10))
+    println("3^5  =", ipow(3, 5))
+    println("5^0  =", ipow(5, 0))
+    println("2^30 =", ipow(2, 30))
+}
