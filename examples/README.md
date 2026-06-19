@@ -1,27 +1,22 @@
 # MFL examples
 
-Two files per example:
-
-- **`*.mfl`** — the actual MFL program: **base64, one function per line, blank
-  line between functions**. This is what `machin run` executes.
-- **`*.mfs`** — the human-readable *projection* of the same program (Go-like
-  text). Used only for authoring; `machin encode` turns it into the `.mfl`.
+Every program here is a **`.mfl`** file: the actual MFL language — **base64, one
+function per line, blank line between functions**. There is no human-readable
+source file; the `.mfl` *is* the source. That's the machine-first point: the
+human states intent, the machine reads and writes the code.
 
 ```sh
-machin run examples/complex/primes.mfl    # run the real (base64) program
-machin decode examples/complex/primes.mfl # view it as readable source
-machin encode examples/complex/primes.mfs # (re)generate the .mfl
+machin run examples/complex/primes.mfl      # execute the program
+machin decode examples/complex/primes.mfl   # inspection escape-hatch only
+./examples/run.sh                            # run all programs
 ```
 
-Regenerate and run everything:
-
-```sh
-./examples/build.sh
-```
+`decode` exists so a human *can* peek when they want to — but reading MFL is the
+machine's job, not a required step in the workflow.
 
 ## basic/
 
-| example | shows |
+| program | shows |
 |---------|-------|
 | `hello`        | minimal program |
 | `arithmetic`   | operator precedence, int vs float division |
@@ -29,10 +24,11 @@ Regenerate and run everything:
 | `conditionals` | `if / else if / else` |
 | `loops`        | `while`, running sum, countdown |
 | `functions`    | parameters, return values, composition |
+| `temperature`  | float formulas, authored directly as MFL |
 
 ## complex/
 
-| example | shows |
+| program | shows |
 |---------|-------|
 | `primes`          | trial-division primality, list primes ≤ N |
 | `gcd_lcm`         | Euclidean gcd, derived lcm |
