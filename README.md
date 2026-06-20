@@ -226,6 +226,9 @@ make bench          # build + time fib(40)
 make bench-report   # MFL vs C vs Rust, reproducible Markdown table
 ```
 
+See [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) for the methodology, workload,
+and caveats.
+
 ---
 
 ## 🧱 Tech Stack
