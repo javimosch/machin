@@ -412,6 +412,13 @@ func (g *cgen) binary(ex *Binary) (string, error) {
 	if ex.Op == "+" && g.c.NodeKind(ex) == KString {
 		return fmt.Sprintf("mfl_cat(%s, %s)", l, r), nil
 	}
+	// String ==/!= must compare contents, not pointers.
+	if (ex.Op == "==" || ex.Op == "!=") && g.c.NodeKind(ex.L) == KString {
+		if ex.Op == "==" {
+			return fmt.Sprintf("(strcmp(%s, %s) == 0)", l, r), nil
+		}
+		return fmt.Sprintf("(strcmp(%s, %s) != 0)", l, r), nil
+	}
 	return fmt.Sprintf("(%s %s %s)", l, ex.Op, r), nil
 }
 
