@@ -216,8 +216,14 @@ MFL lands on hand-written C because it *is* C by the time the optimizer runs.
 | Peak RSS (fib) | ~1.4 MB |
 | Toolchain compile time | ~50 ms |
 
+These figures are reproducible — `scripts/bench.sh` generates equivalent C and
+Rust sources, compiles all three under `cc -O2` / `rustc -O`, and prints this
+table for your own hardware (absolute times vary by machine; the *ratios* are
+the point):
+
 ```bash
-make bench        # build + time fib(40)
+make bench          # build + time fib(40)
+make bench-report   # MFL vs C vs Rust, reproducible Markdown table
 ```
 
 ---
