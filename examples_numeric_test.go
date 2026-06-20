@@ -47,3 +47,12 @@ func TestExampleTriangular(t *testing.T) {
 		}
 	}
 }
+
+func TestExampleDigitSum(t *testing.T) {
+	got := runMFLFile(t, "examples/complex/digit_sum.mfl")
+	for _, want := range []string{"digit_sum 1234 = 10", "digit_sum 99999 = 45", "digit_sum 0 = 0"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("digit_sum output missing %q; got:\n%s", want, got)
+		}
+	}
+}
