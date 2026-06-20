@@ -78,8 +78,9 @@ type Checker struct {
 	// shared concrete slots (no inner type vars, safe to share)
 	cBool, cString, cVoid, cInt int
 
-	pairs []int      // flattened pairs: pairs[2i], pairs[2i+1]
-	plus  []plusCons // overloaded '+' constraints, resolved by fixpoint
+	pairs   []int      // flattened pairs: pairs[2i], pairs[2i+1]
+	plus    []plusCons // overloaded '+' constraints, resolved by fixpoint
+	lenArgs []Node     // len() argument nodes, validated after solve
 }
 
 type plusCons struct{ l, r, res int }
@@ -229,6 +230,13 @@ func Check(funcs []*FuncDecl) (*Checker, error) {
 		r := c.find(i)
 		if c.kind[r] == KVar || c.kind[r] == KNum {
 			c.kind[r] = KInt
+		}
+	}
+	// 5. len() only accepts strings and slices; reject anything else so a
+	// non-pointer arg is a type error, not strlen() UB at runtime.
+	for _, n := range c.lenArgs {
+		if k := c.kindOf(c.nodeSlot[n]); k != KString && k != KSlice {
+			return nil, fmt.Errorf("len: expected string or slice, got %s", k)
 		}
 	}
 	return c, nil
@@ -456,9 +464,15 @@ func (c *Checker) genBinary(fn *FuncDecl, ex *Binary) (int, error) {
 		res := newSlot(c, KVar)
 		c.plus = append(c.plus, plusCons{l: ls, r: rs, res: res})
 		return res, nil
-	case "-", "*", "/", "%":
+	case "-", "*", "/":
 		c.addPair(ls, rs)
 		c.addPair(ls, newSlot(c, KNum))
+		return ls, nil
+	case "%":
+		// C's % is integer-only; constrain operands so float % is a
+		// compile-time MFL type error rather than a raw cc failure.
+		c.addPair(ls, rs)
+		c.addPair(ls, c.cInt)
 		return ls, nil
 	case "==", "!=", "<", "<=", ">", ">=":
 		c.addPair(ls, rs)
@@ -488,6 +502,8 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 			return 0, fmt.Errorf("len: 1 arg")
 		}
 		// len works on strings or slices; codegen reads the resolved kind.
+		// Record the arg so we can reject non-string/non-slice after solve.
+		c.lenArgs = append(c.lenArgs, ex.Args[0])
 		return c.cInt, nil
 	case "append":
 		if len(argSlots) != 2 {
