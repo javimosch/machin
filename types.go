@@ -80,6 +80,9 @@ type Checker struct {
 
 	pairs []int      // flattened pairs: pairs[2i], pairs[2i+1]
 	plus  []plusCons // overloaded '+' constraints, resolved by fixpoint
+
+	mods []int // operand slots of '%': must resolve to int (validated post-solve)
+	lens []int // argument slots of len(): must be a slice or string
 }
 
 type plusCons struct{ l, r, res int }
@@ -217,6 +220,18 @@ func Check(funcs []*FuncDecl) (*Checker, error) {
 	// 3. solve
 	if err := c.solve(); err != nil {
 		return nil, err
+	}
+	// 3b. builtin argument constraints that can only be checked once kinds are
+	// known: '%' is int-only and len() needs a slice or string.
+	for _, s := range c.mods {
+		if k := c.kindOf(s); k != KInt && k != KNum {
+			return nil, fmt.Errorf("%% (modulo) requires int operands, got %s", k)
+		}
+	}
+	for _, s := range c.lens {
+		if k := c.kindOf(s); k != KString && k != KSlice {
+			return nil, fmt.Errorf("len expects a slice or string, got %s", k)
+		}
 	}
 	// 4. defaults
 	for name, ret := range c.funcRet {
@@ -456,9 +471,16 @@ func (c *Checker) genBinary(fn *FuncDecl, ex *Binary) (int, error) {
 		res := newSlot(c, KVar)
 		c.plus = append(c.plus, plusCons{l: ls, r: rs, res: res})
 		return res, nil
-	case "-", "*", "/", "%":
+	case "-", "*", "/":
 		c.addPair(ls, rs)
 		c.addPair(ls, newSlot(c, KNum))
+		return ls, nil
+	case "%":
+		// C's '%' is integer-only; require int operands and reject floats with
+		// a clean MFL type error (validated after solve) instead of leaking cc.
+		c.addPair(ls, rs)
+		c.addPair(ls, newSlot(c, KNum))
+		c.mods = append(c.mods, ls)
 		return ls, nil
 	case "==", "!=", "<", "<=", ">", ">=":
 		c.addPair(ls, rs)
@@ -487,7 +509,10 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		if len(argSlots) != 1 {
 			return 0, fmt.Errorf("len: 1 arg")
 		}
-		// len works on strings or slices; codegen reads the resolved kind.
+		// len works on strings or slices only; codegen reads the resolved kind.
+		// Record the argument so we can reject ints (which would otherwise
+		// compile to strlen() on a non-pointer) after solving.
+		c.lens = append(c.lens, argSlots[0])
 		return c.cInt, nil
 	case "append":
 		if len(argSlots) != 2 {
