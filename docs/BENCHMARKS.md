@@ -16,14 +16,16 @@ make bench-report          # or: bash scripts/bench.sh [N]
 1. builds the MFL compiler with `go build`,
 2. compiles `examples/bench/fib.mfl` to a native binary via `machin build`
    (which emits C and invokes `cc -O2`),
-3. generates an **equivalent** hand-written C source and compiles it with
+3. compiles the **equivalent** hand-written `examples/bench/fib.c` with
    `cc -O2`,
-4. generates an **equivalent** Rust source and compiles it with `rustc -O`
-   (skipped if `rustc` is not installed),
-5. times each binary best-of-3 (wall clock) and prints a Markdown table.
+4. compiles the **equivalent** `examples/bench/fib.rs` with `rustc -O`
+   (skipped with a note if `rustc` is not installed),
+5. checks all three agree on `fib(40) = 102334155`, then times each binary
+   best-of-3 (wall clock) and prints a Markdown table.
 
-The C and Rust sources are generated inside the script, so the comparison is
-self-contained — no checked-in binaries, no hidden flags.
+The C and Rust reference sources are checked into `examples/bench/` so you can
+read them and confirm they match the `.mfl` — no checked-in binaries, no hidden
+flags. The run fails loudly if any implementation disagrees on the result.
 
 ## Workload
 

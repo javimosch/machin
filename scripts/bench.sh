@@ -5,17 +5,20 @@
 # implementations of naive `fib(40)` under the same conditions:
 #
 #   1. MFL  — compiled to native via `machin build` (emits C, then `cc -O2`)
-#   2. C    — hand-written, compiled with `cc -O2`
-#   3. Rust — compiled with `rustc -O` (skipped if rustc is absent)
+#   2. C    — examples/bench/fib.c, compiled with `cc -O2`
+#   3. Rust — examples/bench/fib.rs, compiled with `rustc -O` (skipped if absent)
 #
-# Output is a Markdown table you can paste straight into the README. Because the
-# C and Rust sources are generated here, anyone can re-run `scripts/bench.sh` and
-# verify the comparison on their own hardware.
+# The C and Rust reference sources are checked into examples/bench/ and kept
+# equivalent to examples/bench/fib.mfl, so anyone can read them and re-run
+# `scripts/bench.sh` to verify the comparison on their own hardware.
 #
-# Usage: scripts/bench.sh [N]   (default N=40)
+# Usage: scripts/bench.sh
+#
+# Fixed at fib(40) to match examples/bench/fib.mfl (whose argument is baked in);
+# the C and Rust references default to 40 as well, so all three agree.
 set -euo pipefail
 
-N="${1:-40}"
+N=40
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
@@ -51,27 +54,30 @@ MFL_SIZE=$(wc -c < "$WORK/fib_mfl" | tr -d ' ')
 
 # --- 2. hand-written C ---
 echo "Compiling C fib($N)..."
-cat > "$WORK/fib.c" <<EOF
-#include <stdio.h>
-long fib(long n){ if(n<2) return n; return fib(n-1)+fib(n-2); }
-int main(void){ printf("%ld\n", fib($N)); return 0; }
-EOF
-"$CC" -O2 "$WORK/fib.c" -o "$WORK/fib_c"
-C_T=$(time_best "$WORK/fib_c")
+"$CC" -O2 examples/bench/fib.c -o "$WORK/fib_c"
+C_OUT=$("$WORK/fib_c" "$N")
+C_T=$(time_best "$WORK/fib_c" "$N")
 
 # --- 3. Rust (optional) ---
 RUST_T="n/a"
+RUST_OUT="(skipped)"
 if command -v rustc >/dev/null 2>&1; then
   echo "Compiling Rust fib($N)..."
-  cat > "$WORK/fib.rs" <<EOF
-fn fib(n: u64) -> u64 { if n < 2 { n } else { fib(n-1) + fib(n-2) } }
-fn main(){ println!("{}", fib($N)); }
-EOF
-  rustc -O "$WORK/fib.rs" -o "$WORK/fib_rs" 2>/dev/null
-  RUST_T=$(time_best "$WORK/fib_rs")
+  rustc -O examples/bench/fib.rs -o "$WORK/fib_rs" 2>/dev/null
+  RUST_OUT=$("$WORK/fib_rs" "$N")
+  RUST_T=$(time_best "$WORK/fib_rs" "$N")
 else
   echo "rustc not found — skipping Rust comparison."
 fi
+
+# Sanity: every implementation must agree on the result.
+for pair in "C:$C_OUT" "Rust:$RUST_OUT"; do
+  name="${pair%%:*}"; got="${pair#*:}"
+  if [ "$got" != "(skipped)" ] && [ "$got" != "$MFL_OUT" ]; then
+    echo "ERROR: $name produced $got, expected $MFL_OUT (matching MFL)" >&2
+    exit 1
+  fi
+done
 
 echo
 echo "fib($N) = $MFL_OUT  (best-of-3 wall-clock, $(uname -m), $($CC --version 2>/dev/null | head -1))"
@@ -80,6 +86,7 @@ echo "| Implementation            | Time   | Notes                              
 echo "|---------------------------|--------|------------------------------------|"
 echo "| **MFL** (native, cc -O2)  | ${MFL_T}s | emits C, optimized by the system compiler |"
 echo "| hand-written C (cc -O2)   | ${C_T}s | the baseline MFL compiles to       |"
-echo "| Rust (rustc -O)           | ${RUST_T}s | for reference                      |"
+RUST_CELL="${RUST_T}s"; [ "$RUST_T" = "n/a" ] && RUST_CELL="n/a (rustc absent)"
+echo "| Rust (rustc -O)           | ${RUST_CELL} | for reference                      |"
 echo
 echo "MFL binary size: ${MFL_SIZE} bytes"
