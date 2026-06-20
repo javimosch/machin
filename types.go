@@ -78,8 +78,9 @@ type Checker struct {
 	// shared concrete slots (no inner type vars, safe to share)
 	cBool, cString, cVoid, cInt int
 
-	pairs []int      // flattened pairs: pairs[2i], pairs[2i+1]
-	plus  []plusCons // overloaded '+' constraints, resolved by fixpoint
+	pairs   []int      // flattened pairs: pairs[2i], pairs[2i+1]
+	plus    []plusCons // overloaded '+' constraints, resolved by fixpoint
+	lenArgs []int      // arg slots passed to len(); must resolve to string/slice
 }
 
 type plusCons struct{ l, r, res int }
@@ -217,6 +218,14 @@ func Check(funcs []*FuncDecl) (*Checker, error) {
 	// 3. solve
 	if err := c.solve(); err != nil {
 		return nil, err
+	}
+	// 3b. validate len() arguments: only strings and slices have a length.
+	// Checked before defaults so an unconstrained/numeric arg (e.g. len(5))
+	// is rejected rather than silently defaulted to int (#3).
+	for _, slot := range c.lenArgs {
+		if k := c.kindOf(slot); k != KString && k != KSlice {
+			return nil, fmt.Errorf("type mismatch: len expects string or slice, got %s", k)
+		}
 	}
 	// 4. defaults
 	for name, ret := range c.funcRet {
@@ -456,10 +465,17 @@ func (c *Checker) genBinary(fn *FuncDecl, ex *Binary) (int, error) {
 		res := newSlot(c, KVar)
 		c.plus = append(c.plus, plusCons{l: ls, r: rs, res: res})
 		return res, nil
-	case "-", "*", "/", "%":
+	case "-", "*", "/":
 		c.addPair(ls, rs)
 		c.addPair(ls, newSlot(c, KNum))
 		return ls, nil
+	case "%":
+		// C's '%' is integer-only, so constrain BOTH operands to int. This
+		// turns float modulo into a clean MFL type error at check time
+		// instead of leaking a raw cc error from invalid generated C (#2).
+		c.addPair(ls, c.cInt)
+		c.addPair(rs, c.cInt)
+		return c.cInt, nil
 	case "==", "!=", "<", "<=", ">", ">=":
 		c.addPair(ls, rs)
 		return c.cBool, nil
@@ -488,6 +504,8 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 			return 0, fmt.Errorf("len: 1 arg")
 		}
 		// len works on strings or slices; codegen reads the resolved kind.
+		// Record the arg so we can reject len(int) etc. after solving (#3).
+		c.lenArgs = append(c.lenArgs, argSlots[0])
 		return c.cInt, nil
 	case "append":
 		if len(argSlots) != 2 {
