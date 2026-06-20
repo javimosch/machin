@@ -34,6 +34,9 @@ machin build examples/complex/primes.mfl --emit-c   # see the generated C
 | `collatz`         | 3n+1 sequence length; busiest start < 100 |
 | `ackermann`       | deep non-primitive recursion |
 | `fast_power`      | exponentiation by squaring |
+| `modpow`          | modular exponentiation (square-and-multiply) |
+| `binomial`        | binomial coefficients C(n,k) + Pascal's triangle |
+| `factorial`       | iterative factorial table 0! … 12! |
 | `isqrt`           | Newton's-method integer sqrt + perfect-square test |
 | `to_binary`       | recursive base conversion via string building |
 | `pi_leibniz`      | float arithmetic, Leibniz series for π |
