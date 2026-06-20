@@ -412,6 +412,11 @@ func (g *cgen) binary(ex *Binary) (string, error) {
 	if ex.Op == "+" && g.c.NodeKind(ex) == KString {
 		return fmt.Sprintf("mfl_cat(%s, %s)", l, r), nil
 	}
+	// String equality must compare contents, not pointers: a == "a"+"b" is
+	// true by value even though the operands are distinct allocations.
+	if (ex.Op == "==" || ex.Op == "!=") && g.c.NodeKind(ex.L) == KString {
+		return fmt.Sprintf("(strcmp(%s, %s) %s 0)", l, r, ex.Op), nil
+	}
 	return fmt.Sprintf("(%s %s %s)", l, ex.Op, r), nil
 }
 
@@ -446,10 +451,15 @@ func (g *cgen) call(ex *Call) (string, error) {
 	}
 	switch ex.Callee {
 	case "len":
-		if g.c.NodeKind(ex.Args[0]) == KSlice {
+		switch g.c.NodeKind(ex.Args[0]) {
+		case KSlice:
 			return fmt.Sprintf("((%s).len)", args[0]), nil
+		case KString:
+			return fmt.Sprintf("((int64_t)strlen(%s))", args[0]), nil
+		default:
+			// Without this guard len(5) would emit strlen() on a non-pointer.
+			return "", fmt.Errorf("len: expected string or slice, got %s", g.c.NodeKind(ex.Args[0]))
 		}
-		return fmt.Sprintf("((int64_t)strlen(%s))", args[0]), nil
 	case "append":
 		ct := cType(g.c.ElemKindOf(ex.Args[0]))
 		return fmt.Sprintf("mfl_append(%s, &(%s){%s}, sizeof(%s))", args[0], ct, args[1], ct), nil
