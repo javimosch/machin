@@ -456,10 +456,16 @@ func (c *Checker) genBinary(fn *FuncDecl, ex *Binary) (int, error) {
 		res := newSlot(c, KVar)
 		c.plus = append(c.plus, plusCons{l: ls, r: rs, res: res})
 		return res, nil
-	case "-", "*", "/", "%":
+	case "-", "*", "/":
 		c.addPair(ls, rs)
 		c.addPair(ls, newSlot(c, KNum))
 		return ls, nil
+	case "%":
+		// C's % is integer-only; constrain both operands to int so a float
+		// modulo is a compile-time MFL type error rather than a raw cc error.
+		c.addPair(ls, c.cInt)
+		c.addPair(rs, c.cInt)
+		return c.cInt, nil
 	case "==", "!=", "<", "<=", ">", ">=":
 		c.addPair(ls, rs)
 		return c.cBool, nil
