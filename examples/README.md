@@ -36,6 +36,8 @@ machin build examples/complex/primes.mfl --emit-c   # see the generated C
 | `fast_power`      | exponentiation by squaring |
 | `isqrt`           | Newton's-method integer sqrt + perfect-square test |
 | `to_binary`       | recursive base conversion via string building |
+| `catalan`         | integer-safe multiplicative recurrence for Catalan numbers |
+| `lucas`           | iterative Lucas sequence with base-case guards |
 | `pi_leibniz`      | float arithmetic, Leibniz series for π |
 | `perfect_numbers` | proper-divisor sums |
 | `slices`          | slice literals, `append`, indexing, `len`, in-place reverse |
