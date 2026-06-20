@@ -200,15 +200,22 @@ curl -i http://localhost:48080/
 
 ## ⚡ Performance
 
-`fib(40)` — naive recursion, ~331M calls:
+`fib(40)` — naive recursion, ~331M calls. These figures are **reproducible**:
+run `make bench-report` (or [`examples/bench/run.sh`](examples/bench/run.sh)) to
+regenerate them on your own machine. The harness builds each implementation,
+checks they all compute the same answer, and reports best-of-N wall times.
 
 | Implementation | Time | Notes |
 |----------------|------|-------|
-| **MFL** (native, `cc -O2`) | **0.20s** | emits C, optimized by the system compiler |
-| hand-written C (`cc -O2`)  | 0.19s | the baseline MFL compiles to |
-| Rust (`rustc -O`)          | 0.29s | for reference |
+| **MFL** (native, `cc -O2`) | **0.16s** | emits C, optimized by the system compiler |
+| hand-written C (`cc -O2`)  | 0.13s | the baseline MFL compiles to |
+| Rust (`rustc -O`)          | 0.24s | for reference |
 
-MFL lands on hand-written C because it *is* C by the time the optimizer runs.
+<sub>Sample run on the reference host (gcc 13.3, rustc 1.75, go 1.22);
+absolute numbers vary by machine — the ratios are the point. See
+[`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) for methodology.</sub>
+
+MFL lands close to hand-written C because it *is* C by the time the optimizer runs.
 
 | Metric | Value |
 |--------|-------|
@@ -217,7 +224,8 @@ MFL lands on hand-written C because it *is* C by the time the optimizer runs.
 | Toolchain compile time | ~50 ms |
 
 ```bash
-make bench        # build + time fib(40)
+make bench         # build + time the MFL fib(40) binary
+make bench-report  # reproducible MFL vs C vs Rust comparison table
 ```
 
 ---
