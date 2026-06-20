@@ -88,6 +88,9 @@ fi
 # --- Emit the report (markdown) ---------------------------------------------
 # Written to $REPORT (default examples/bench/BENCHMARKS.md) and echoed to stdout.
 REPORT="${REPORT:-$SCRIPT_DIR/BENCHMARKS.md}"
+# Write to a temp file then atomically rename, so a concurrent run (or a reader)
+# never sees a half-written / truncated report.
+REPORT_TMP="$WORK/report.md"
 {
     echo "# Benchmark report — fib(40)"
     echo
@@ -106,7 +109,8 @@ REPORT="${REPORT:-$SCRIPT_DIR/BENCHMARKS.md}"
     else
         echo "| Rust                    | —      | —      | —        | rustc not found — skipped |"
     fi
-} | tee "$REPORT"
+} | tee "$REPORT_TMP"
+mv "$REPORT_TMP" "$REPORT"
 
 echo
 echo "report written to ${REPORT/#$ROOT\//}"
