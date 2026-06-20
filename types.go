@@ -80,6 +80,9 @@ type Checker struct {
 
 	pairs []int      // flattened pairs: pairs[2i], pairs[2i+1]
 	plus  []plusCons // overloaded '+' constraints, resolved by fixpoint
+
+	modSlots []int // operand slots of '%'; must resolve to int (not float)
+	lenSlots []int // argument slots of len(); must resolve to string or slice
 }
 
 type plusCons struct{ l, r, res int }
@@ -229,6 +232,17 @@ func Check(funcs []*FuncDecl) (*Checker, error) {
 		r := c.find(i)
 		if c.kind[r] == KVar || c.kind[r] == KNum {
 			c.kind[r] = KInt
+		}
+	}
+	// 5. operand-shape checks (run after defaults so KNum has settled to int)
+	for _, s := range c.modSlots {
+		if k := c.kindOf(s); k != KInt {
+			return nil, fmt.Errorf("type error: '%%' requires int operands, got %s", k)
+		}
+	}
+	for _, s := range c.lenSlots {
+		if k := c.kindOf(s); k != KString && k != KSlice {
+			return nil, fmt.Errorf("type error: len() requires a string or slice, got %s", k)
 		}
 	}
 	return c, nil
@@ -456,9 +470,16 @@ func (c *Checker) genBinary(fn *FuncDecl, ex *Binary) (int, error) {
 		res := newSlot(c, KVar)
 		c.plus = append(c.plus, plusCons{l: ls, r: rs, res: res})
 		return res, nil
-	case "-", "*", "/", "%":
+	case "-", "*", "/":
 		c.addPair(ls, rs)
 		c.addPair(ls, newSlot(c, KNum))
+		return ls, nil
+	case "%":
+		// C's '%' is integer-only; require int operands and report a clean
+		// MFL type error (verified post-solve) rather than leaking a cc error.
+		c.addPair(ls, rs)
+		c.addPair(ls, newSlot(c, KNum))
+		c.modSlots = append(c.modSlots, ls)
 		return ls, nil
 	case "==", "!=", "<", "<=", ">", ">=":
 		c.addPair(ls, rs)
@@ -487,7 +508,9 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		if len(argSlots) != 1 {
 			return 0, fmt.Errorf("len: 1 arg")
 		}
-		// len works on strings or slices; codegen reads the resolved kind.
+		// len works on strings or slices only; codegen reads the resolved
+		// kind. Record the arg slot so we can reject e.g. len(int) post-solve.
+		c.lenSlots = append(c.lenSlots, argSlots[0])
 		return c.cInt, nil
 	case "append":
 		if len(argSlots) != 2 {
