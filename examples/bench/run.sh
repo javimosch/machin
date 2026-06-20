@@ -48,6 +48,19 @@ check() {
     }
 }
 
+# human-readable byte size of a file (portable: prefer stat, fall back to wc -c).
+file_size() {
+    stat -c%s "$1" 2>/dev/null || stat -f%z "$1" 2>/dev/null || wc -c < "$1"
+}
+
+# peak resident set size in KB via GNU `/usr/bin/time -v`, or "n/a".
+peak_rss_kb() {
+    local bin="$1" line
+    command -v /usr/bin/time >/dev/null 2>&1 || { echo "n/a"; return; }
+    line="$(/usr/bin/time -v "$bin" 2>&1 >/dev/null | grep -i 'Maximum resident' || true)"
+    [ -n "$line" ] && echo "${line##*: }" || echo "n/a"
+}
+
 declare -a NAMES TIMES NOTES
 
 # --- MFL -------------------------------------------------------------------
@@ -91,3 +104,10 @@ echo "|----------------|------|-------|"
 for i in "${!NAMES[@]}"; do
     printf "| %s | %ss | %s |\n" "${NAMES[$i]}" "${TIMES[$i]}" "${NOTES[$i]}"
 done
+
+# Footprint of the MFL-produced binary — size and peak RSS.
+echo
+echo "| Metric (MFL binary) | Value |"
+echo "|---------------------|-------|"
+printf "| Compiled binary size | %s bytes |\n" "$(file_size "$OUT/fib_mfl")"
+printf "| Peak RSS | %s KB |\n" "$(peak_rss_kb "$OUT/fib_mfl")"

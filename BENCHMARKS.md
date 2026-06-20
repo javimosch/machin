@@ -13,14 +13,14 @@ examples/bench/run.sh      # human-readable report
 RUNS=10 examples/bench/run.sh   # more repetitions, tighter best-of
 ```
 
-The harness ([`examples/bench/run.sh`](../examples/bench/run.sh)):
+The harness ([`examples/bench/run.sh`](examples/bench/run.sh)):
 
 1. Builds the MFL toolchain from source and compiles
-   [`examples/bench/fib.mfl`](../examples/bench/fib.mfl) to a native binary.
+   [`examples/bench/fib.mfl`](examples/bench/fib.mfl) to a native binary.
 2. Compiles the hand-written C baseline
-   ([`fib.c`](../examples/bench/fib.c)) with `cc -O2`.
+   ([`fib.c`](examples/bench/fib.c)) with `cc -O2`.
 3. Compiles the Rust reference
-   ([`fib.rs`](../examples/bench/fib.rs)) with `rustc -O`.
+   ([`fib.rs`](examples/bench/fib.rs)) with `rustc -O`.
 4. **Verifies every implementation prints the same result** (`fib(40) ==
    102334155`) — a benchmark that computes the wrong answer is meaningless.
 5. Runs each binary `RUNS` times (default 5) and keeps the best wall-clock
@@ -47,6 +47,13 @@ Measured on the reference CI host — your absolute numbers will differ, but the
 | **MFL** (native, `cc -O2`) | **0.155s** | emits C, optimized by the system compiler |
 | hand-written C (`cc -O2`)  | 0.125s | the baseline MFL compiles to |
 | Rust (`rustc -O`)          | 0.242s | for reference |
+
+The runner also reports the footprint of the MFL-produced binary:
+
+| Metric (MFL binary) | Value |
+|---------------------|-------|
+| Compiled binary size | ~16 KB |
+| Peak RSS | ~1.5 MB |
 
 Toolchain versions for the run above:
 

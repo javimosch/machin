@@ -213,7 +213,7 @@ checks they all compute the same answer, and reports best-of-N wall times.
 
 <sub>Sample run on the reference host (gcc 13.3, rustc 1.75, go 1.22);
 absolute numbers vary by machine — the ratios are the point. See
-[`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) for methodology.</sub>
+[`BENCHMARKS.md`](BENCHMARKS.md) for methodology.</sub>
 
 MFL lands close to hand-written C because it *is* C by the time the optimizer runs.
 
