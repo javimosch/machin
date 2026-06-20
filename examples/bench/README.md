@@ -13,7 +13,8 @@ instead of taking them on faith.
 | `fib.mfl`       | the MFL program under test (base64, one function per line) |
 | `fib.c`         | hand-written C baseline — the algorithm MFL compiles to    |
 | `fib.rs`        | Rust reference implementation                              |
-| `run_bench.sh`  | builds all three natively, times them, prints a table      |
+| `run_bench.sh`  | builds all three natively, times them, writes the report   |
+| `BENCHMARKS.md` | generated report (time + binary size + peak RSS per impl)  |
 
 ## Running
 
@@ -35,7 +36,10 @@ the Rust row is skipped automatically if it is not on `PATH`.
    `fib.c` with `cc -O2`, and `fib.rs` with `rustc -O`.
 3. Verifies all three print the same answer (`fib(40) = 102334155`) before
    trusting any timing.
-4. Times each binary `RUNS` times and reports the best wall-clock per row.
+4. Times each binary `RUNS` times and records the best wall-clock, the binary
+   size, and the peak RSS (via `/usr/bin/time -v` when available) per row.
+5. Writes the table to `BENCHMARKS.md` (override with the `REPORT` env var) and
+   echoes it to stdout.
 
 Because MFL *is* C by the time the optimizer runs, the MFL and hand-written C
 rows should land in the same class; absolute values vary by CPU and compiler.
