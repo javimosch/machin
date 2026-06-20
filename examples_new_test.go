@@ -37,3 +37,10 @@ func TestExampleSumSquares(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestExampleMultiples(t *testing.T) {
+	want := "sum of multiples of 3 or 5 below 1000 = 233168\n"
+	if got := runExample(t, "examples/complex/multiples.mfl"); got != want {
+		t.Fatalf("got %q", got)
+	}
+}
