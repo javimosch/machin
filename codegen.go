@@ -265,6 +265,10 @@ func (g *cgen) stmt(s Stmt, depth int) error {
 		}
 		ct := cType(g.c.ElemKindOf(st.Target.X))
 		fmt.Fprintf(&g.buf, "((%s*)(%s).data)[%s] = %s;\n", ct, x, idx, val)
+	case *BreakStmt:
+		g.buf.WriteString("break;\n")
+	case *ContinueStmt:
+		g.buf.WriteString("continue;\n")
 	case *GoStmt:
 		return g.goStmt(st)
 	default:

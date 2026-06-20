@@ -6,8 +6,9 @@ import (
 )
 
 type Parser struct {
-	toks []Token
-	pos  int
+	toks      []Token
+	pos       int
+	loopDepth int // >0 while parsing inside a while/for body; gates break/continue
 }
 
 func (p *Parser) peek() Token { return p.toks[p.pos] }
@@ -120,6 +121,18 @@ func (p *Parser) parseStmt() (Stmt, error) {
 			return p.parseWhile()
 		case "for":
 			return p.parseFor()
+		case "break":
+			p.next()
+			if p.loopDepth == 0 {
+				return nil, fmt.Errorf("break outside loop")
+			}
+			return &BreakStmt{}, nil
+		case "continue":
+			p.next()
+			if p.loopDepth == 0 {
+				return nil, fmt.Errorf("continue outside loop")
+			}
+			return &ContinueStmt{}, nil
 		case "go":
 			p.next()
 			call, err := p.parsePostfix()
@@ -215,7 +228,7 @@ func (p *Parser) parseWhile() (Stmt, error) {
 	if err != nil {
 		return nil, err
 	}
-	body, err := p.parseBlock()
+	body, err := p.parseLoopBody()
 	if err != nil {
 		return nil, err
 	}
@@ -228,7 +241,7 @@ func (p *Parser) parseWhile() (Stmt, error) {
 func (p *Parser) parseFor() (Stmt, error) {
 	p.next() // for
 	if p.peek().Val == "{" {
-		body, err := p.parseBlock()
+		body, err := p.parseLoopBody()
 		if err != nil {
 			return nil, err
 		}
@@ -238,11 +251,20 @@ func (p *Parser) parseFor() (Stmt, error) {
 	if err != nil {
 		return nil, err
 	}
-	body, err := p.parseBlock()
+	body, err := p.parseLoopBody()
 	if err != nil {
 		return nil, err
 	}
 	return &WhileStmt{Cond: cond, Body: body}, nil
+}
+
+// parseLoopBody parses a brace block while marking that we are inside a loop,
+// so break/continue are accepted (and rejected outside any loop).
+func (p *Parser) parseLoopBody() ([]Stmt, error) {
+	p.loopDepth++
+	body, err := p.parseBlock()
+	p.loopDepth--
+	return body, err
 }
 
 // ---- Expression parsing (precedence climbing) ----

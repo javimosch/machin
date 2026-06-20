@@ -44,3 +44,10 @@ func TestExampleMultiples(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestExampleLinearSearch(t *testing.T) {
+	want := "first even i with i*i==64: 8\nfirst even i with i*i==49: -1\n"
+	if got := runExample(t, "examples/complex/linear_search.mfl"); got != want {
+		t.Fatalf("got %q", got)
+	}
+}

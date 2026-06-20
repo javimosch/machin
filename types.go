@@ -360,6 +360,10 @@ func (c *Checker) genStmt(fn *FuncDecl, s Stmt) error {
 		}
 		_, err := c.genExpr(fn, st.Call)
 		return err
+	case *BreakStmt, *ContinueStmt:
+		// Pure control flow: no operands to type-check. The parser already
+		// guarantees these appear only inside a loop.
+		return nil
 	}
 	return fmt.Errorf("typecheck: unknown statement %T", s)
 }

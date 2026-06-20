@@ -87,13 +87,20 @@ type IndexAssign struct {
 // GoStmt spawns a goroutine: go f(args).
 type GoStmt struct{ Call *Call }
 
-func (ExprStmt) node()    {}
-func (AssignStmt) node()  {}
-func (ReturnStmt) node()  {}
-func (IfStmt) node()      {}
-func (WhileStmt) node()   {}
-func (IndexAssign) node() {}
-func (GoStmt) node()      {}
+// BreakStmt and ContinueStmt are loop control-flow statements. They are only
+// valid inside a while/for body; the parser rejects them elsewhere.
+type BreakStmt struct{}
+type ContinueStmt struct{}
+
+func (ExprStmt) node()     {}
+func (AssignStmt) node()   {}
+func (ReturnStmt) node()   {}
+func (IfStmt) node()       {}
+func (WhileStmt) node()    {}
+func (IndexAssign) node()  {}
+func (GoStmt) node()       {}
+func (BreakStmt) node()    {}
+func (ContinueStmt) node() {}
 
 // ---- Top level ----
 

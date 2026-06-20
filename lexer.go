@@ -28,6 +28,7 @@ var keywords = map[string]bool{
 	"func": true, "return": true, "if": true, "else": true,
 	"while": true, "for": true, "true": true, "false": true,
 	"nil": true, "var": true, "go": true,
+	"break": true, "continue": true,
 }
 
 type Lexer struct {
