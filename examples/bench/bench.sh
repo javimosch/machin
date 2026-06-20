@@ -20,8 +20,8 @@ OUT=$(mktemp -d)
 trap 'rm -rf "$OUT"' EXIT
 
 if [ ! -x "$MACHIN" ]; then
-    echo "error: machin binary not found at '$MACHIN' (run 'make build' first" >&2
-    echo "       or set MACHIN=/path/to/machin)" >&2
+    echo "error: machin binary not found at '$MACHIN'" >&2
+    echo "       run 'make build' first, or set MACHIN=/path/to/machin" >&2
     exit 1
 fi
 
