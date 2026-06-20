@@ -141,7 +141,8 @@ func (l *Lexer) lexOpOrPunct() error {
 		two = l.src[l.pos : l.pos+2]
 	}
 	switch two {
-	case "==", "!=", "<=", ">=", "&&", "||", ":=":
+	case "==", "!=", "<=", ">=", "&&", "||", ":=",
+		"+=", "-=", "*=", "/=", "%=", "++", "--":
 		l.pos += 2
 		l.toks = append(l.toks, Token{Kind: TOp, Val: two, Pos: start})
 		return nil

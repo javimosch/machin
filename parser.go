@@ -168,16 +168,39 @@ func (p *Parser) parseStmt() (Stmt, error) {
 		if err != nil {
 			return nil, err
 		}
-		switch lhs := x.(type) {
-		case *Ident:
-			return &AssignStmt{Name: lhs.Name, Op: "=", Val: val}, nil
-		case *Index:
-			return &IndexAssign{Target: lhs, Val: val}, nil
-		default:
-			return nil, fmt.Errorf("cannot assign to %T", x)
+		return p.assignTo(x, val)
+	}
+	// compound assignment: x += e, x -= e, ... and increment: x++ / x--
+	switch op := p.peek().Val; op {
+	case "+=", "-=", "*=", "/=", "%=":
+		p.next()
+		rhs, err := p.parseExpr()
+		if err != nil {
+			return nil, err
 		}
+		// desugar `x OP= e` into `x = x OP e`
+		val := &Binary{Op: op[:1], L: x, R: rhs}
+		return p.assignTo(x, val)
+	case "++", "--":
+		p.next()
+		// desugar `x++` into `x = x + 1` (and `x--` into `x = x - 1`)
+		val := &Binary{Op: op[:1], L: x, R: &IntLit{Val: 1}}
+		return p.assignTo(x, val)
 	}
 	return &ExprStmt{X: x}, nil
+}
+
+// assignTo builds an assignment statement to an lvalue (ident or index),
+// reused by plain `=` and the desugared compound/increment operators.
+func (p *Parser) assignTo(target, val Expr) (Stmt, error) {
+	switch lhs := target.(type) {
+	case *Ident:
+		return &AssignStmt{Name: lhs.Name, Op: "=", Val: val}, nil
+	case *Index:
+		return &IndexAssign{Target: lhs, Val: val}, nil
+	default:
+		return nil, fmt.Errorf("cannot assign to %T", target)
+	}
 }
 
 func (p *Parser) parseIf() (Stmt, error) {
