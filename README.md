@@ -210,6 +210,11 @@ curl -i http://localhost:48080/
 
 MFL lands on hand-written C because it *is* C by the time the optimizer runs.
 
+> These figures are **illustrative and hardware-dependent** — regenerate and verify
+> them on your own machine with `make bench-report` (see [`examples/bench/`](examples/bench/README.md)).
+> The harness compiles all three implementations, checks they agree on the answer,
+> then reports the best wall-clock per row.
+
 | Metric | Value |
 |--------|-------|
 | Compiled binary size (fib) | ~16 KB |
@@ -217,7 +222,8 @@ MFL lands on hand-written C because it *is* C by the time the optimizer runs.
 | Toolchain compile time | ~50 ms |
 
 ```bash
-make bench        # build + time fib(40)
+make bench         # build + time fib(40) — MFL only
+make bench-report  # reproducible MFL vs C vs Rust comparison table
 ```
 
 ---
