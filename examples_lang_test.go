@@ -32,3 +32,31 @@ func TestJosephus(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestSumPrimesBelow(t *testing.T) {
+	got := runNative(t,
+		`func is_prime(n) { if n < 2 { return false } i := 2 while i * i <= n { if n % i == 0 { return false } i = i + 1 } return true }`,
+		`func sum_primes_below(n) { s := 0 i := 2 while i < n { if is_prime(i) { s = s + i } i = i + 1 } return s }`,
+		`func main() { println(sum_primes_below(10), sum_primes_below(100)) }`)
+	if got != "17 1060\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestRunningMax(t *testing.T) {
+	got := runNative(t,
+		`func main() { xs := []int{3, 1, 4, 1, 5, 9, 2, 6} m := xs[0] i := 1 while i < len(xs) { if xs[i] > m { m = xs[i] } print(m, "") i = i + 1 } println("") }`)
+	if got != "3 4 4 5 9 9 9 \n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestGcdArray(t *testing.T) {
+	got := runNative(t,
+		`func gcd(a, b) { while b != 0 { t := b b = a % b a = t } return a }`,
+		`func gcd_array(xs) { g := xs[0] i := 1 while i < len(xs) { g = gcd(g, xs[i]) i = i + 1 } return g }`,
+		`func main() { xs := []int{48, 36, 60, 24} println(gcd_array(xs)) }`)
+	if got != "12\n" {
+		t.Fatalf("got %q", got)
+	}
+}
