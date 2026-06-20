@@ -36,3 +36,18 @@ func TestPowerTableExample(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestRunningSumExample(t *testing.T) {
+	// Prefix sums of {3,1,4,1,5}; exercises slices, len, and for loops.
+	if got := runExample(t, "examples/complex/running_sum.mfl"); got != "3\n4\n8\n9\n14\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestBaseConvertExample(t *testing.T) {
+	// 13 in base 2, 255 in base 8, 42 in base 5 (bases <= 10 so digits map
+	// directly); exercises recursive string building via str().
+	if got := runExample(t, "examples/complex/base_convert.mfl"); got != "1101\n377\n132\n" {
+		t.Fatalf("got %q", got)
+	}
+}
