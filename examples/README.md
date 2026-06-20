@@ -41,6 +41,8 @@ machin build examples/complex/primes.mfl --emit-c   # see the generated C
 | `fizzbuzz`        | `if / else if` chains, modulo classification |
 | `tribonacci`      | iterative three-term recurrence, running state |
 | `sum_factorials`  | factorials accumulated in a loop |
+| `popcount`        | count set bits via repeated `% 2` / `/ 2` |
+| `sum_of_cubes`    | sum of cubes equals the square of a triangular number |
 | `slices`          | slice literals, `append`, indexing, `len`, in-place reverse |
 | `goroutines`      | `go` spawns concurrent workers; `sleep` waits |
 | `http_server`     | concurrent TCP/HTTP server — `go handle(conn)` per request |

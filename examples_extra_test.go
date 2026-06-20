@@ -32,3 +32,21 @@ func TestSumFactorialsExample(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestPopcountExample(t *testing.T) {
+	got := runNative(t,
+		`func popcount(n) { c := 0 while n > 0 { c = c + n % 2 n = n / 2 } return c }`,
+		`func main() { println(popcount(0), popcount(7), popcount(8), popcount(15), popcount(16)) }`)
+	if got != "0 3 1 4 1\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestSumOfCubesExample(t *testing.T) {
+	got := runNative(t,
+		`func cube(n) { return n * n * n }`,
+		`func main() { sum := 0 i := 1 while i <= 10 { sum = sum + cube(i) i = i + 1 } println(sum) }`)
+	if got != "3025\n" {
+		t.Fatalf("got %q", got)
+	}
+}
