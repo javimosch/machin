@@ -211,6 +211,11 @@ curl -i http://localhost:48080/
 
 MFL lands on hand-written C because it *is* C by the time the optimizer runs.
 
+These numbers are **machine-dependent**. Reproduce them on your own box with
+`make bench-report`, which builds all three contenders from
+[`examples/bench/`](examples/bench/), times them, and regenerates
+[`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
+
 | Metric | Value |
 |--------|-------|
 | Compiled binary size (fib) | ~16 KB |
