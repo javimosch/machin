@@ -68,3 +68,21 @@ func TestNumDivisorsExample(t *testing.T) {
 		}
 	}
 }
+
+func TestCountPrimesExample(t *testing.T) {
+	got := runExampleFile(t, "examples/complex/count_primes.mfl")
+	// pi(10)=4, pi(100)=25, pi(1000)=168
+	for _, want := range []string{"primes <= 10: 4", "primes <= 100: 25", "primes <= 1000: 168"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("count_primes output missing %q; got:\n%s", want, got)
+		}
+	}
+}
+
+func TestDigitCountExample(t *testing.T) {
+	got := runExampleFile(t, "examples/complex/digit_count.mfl")
+	// 0->1, 7->1, 42->2, 100000->6, -12345->5
+	if got != "1\n1\n2\n6\n5\n" {
+		t.Fatalf("digit_count output = %q", got)
+	}
+}
