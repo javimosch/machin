@@ -119,6 +119,9 @@ n := len(xs)           // length
 | `println(...)`              | print arguments followed by a newline        |
 | `len(x)`                    | length of a slice or string                  |
 | `append(xs, v)`             | return `xs` with `v` appended                |
+| `str(n)`                    | convert an `int` or `float` to its `string`  |
+| `int(n)`                    | convert a numeric value to `int` (truncates) |
+| `sleep(ms)`                 | suspend the current goroutine (milliseconds) |
 | `listen(port)`              | open a TCP listening socket                  |
 | `accept(fd)`                | accept a connection, return its socket fd    |
 | `read(fd)` / `write(fd, s)` | read from / write to a socket                |
@@ -132,8 +135,9 @@ n := len(xs)           // length
 go handle(conn)   // run handle(conn) in a goroutine
 ```
 
-`go` launches a function call concurrently. Combined with the networking
-builtins, this enables the concurrent HTTP server in
+`go` launches a function call concurrently. `sleep(ms)` suspends the current
+goroutine for the given number of milliseconds. Combined with the networking
+builtins, these enable the concurrent HTTP server in
 `examples/complex/http_server.mfl`.
 
 ---
