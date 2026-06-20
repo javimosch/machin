@@ -32,7 +32,9 @@ echo "building machin toolchain..."
 
 # --- Compile each implementation to a native binary -------------------------
 echo "compiling fib (MFL / C / Rust)..."
-"$WORK/machin" build "$SCRIPT_DIR/fib.mfl" -o "$WORK/fib_mfl" >/dev/null
+# machin prints a "built ..." line to stderr; keep the harness output clean but
+# still surface real failures (set -e aborts on a non-zero build).
+"$WORK/machin" build "$SCRIPT_DIR/fib.mfl" -o "$WORK/fib_mfl" >/dev/null 2>&1
 "$CC" -O2 "$SCRIPT_DIR/fib.c" -o "$WORK/fib_c"
 
 HAVE_RUST=0

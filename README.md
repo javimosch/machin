@@ -202,6 +202,12 @@ curl -i http://localhost:48080/
 
 `fib(40)` — naive recursion, ~331M calls:
 
+> The figures below are **illustrative and hardware-dependent** — regenerate and
+> verify them on your own machine with `make bench-report` (see
+> [`examples/bench/`](examples/bench/README.md)). The harness compiles all three
+> implementations, checks they agree on the answer, then reports the best
+> wall-clock per row.
+
 | Implementation | Time | Notes |
 |----------------|------|-------|
 | **MFL** (native, `cc -O2`) | **0.20s** | emits C, optimized by the system compiler |
@@ -209,11 +215,6 @@ curl -i http://localhost:48080/
 | Rust (`rustc -O`)          | 0.29s | for reference |
 
 MFL lands on hand-written C because it *is* C by the time the optimizer runs.
-
-> These figures are **illustrative and hardware-dependent** — regenerate and verify
-> them on your own machine with `make bench-report` (see [`examples/bench/`](examples/bench/README.md)).
-> The harness compiles all three implementations, checks they agree on the answer,
-> then reports the best wall-clock per row.
 
 | Metric | Value |
 |--------|-------|
