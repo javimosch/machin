@@ -177,13 +177,14 @@ per-call-site arg struct + trampoline driven by `pthread_create`.
 
 ## 🧩 Examples
 
-`examples/` holds 21 programs, each a `.mfl`. `make examples` runs them all.
+`examples/` holds a growing set of programs, each a `.mfl`. `make examples` runs them all.
 
 | Program | Shows |
 |---------|-------|
 | `basic/hello`, `arithmetic`, `variables`, `conditionals`, `loops`, `functions` | language tour |
 | `basic/temperature` | float formulas |
 | `complex/primes`, `gcd_lcm`, `collatz`, `ackermann`, `fast_power`, `isqrt` | numeric algorithms |
+| `complex/armstrong`, `nth_prime`, `power_table` | digit math, prime search, integer powers |
 | `complex/to_binary`, `pi_leibniz`, `perfect_numbers` | strings, floats, divisors |
 | `complex/slices` | slice literals, `append`, indexing, in-place reverse |
 | `complex/goroutines` | `go` spawns concurrent workers; `sleep` waits |
