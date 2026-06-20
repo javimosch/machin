@@ -30,6 +30,7 @@ machin build examples/complex/primes.mfl --emit-c   # see the generated C
 | program | shows |
 |---------|-------|
 | `primes`          | trial-division primality, list primes ≤ N |
+| `sieve`           | Sieve of Eratosthenes — flag slice, in-place marking |
 | `gcd_lcm`         | Euclidean gcd, derived lcm |
 | `collatz`         | 3n+1 sequence length; busiest start < 100 |
 | `ackermann`       | deep non-primitive recursion |
@@ -38,6 +39,7 @@ machin build examples/complex/primes.mfl --emit-c   # see the generated C
 | `to_binary`       | recursive base conversion via string building |
 | `pi_leibniz`      | float arithmetic, Leibniz series for π |
 | `perfect_numbers` | proper-divisor sums |
+| `fib_table`       | iterative Fibonacci built bottom-up into a slice (DP) |
 | `slices`          | slice literals, `append`, indexing, `len`, in-place reverse |
 | `goroutines`      | `go` spawns concurrent workers; `sleep` waits |
 | `http_server`     | concurrent TCP/HTTP server — `go handle(conn)` per request |
