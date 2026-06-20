@@ -94,6 +94,45 @@ func TestGoroutine(t *testing.T) {
 	}
 }
 
+// mustNotCompile parses the given function sources and asserts that type
+// checking rejects them — used for the compile-time type-error regressions.
+func mustNotCompile(t *testing.T, funcs ...string) error {
+	t.Helper()
+	var fns []*FuncDecl
+	for _, f := range funcs {
+		fn, err := ParseFunc(normalize(f))
+		if err != nil {
+			t.Fatalf("parse %q: %v", f, err)
+		}
+		fns = append(fns, fn)
+	}
+	_, err := Check(fns)
+	if err == nil {
+		t.Fatal("expected a compile-time type error, got none")
+	}
+	return err
+}
+
+// Issue #1: string ==/!= must compare contents, not C pointer identity, so
+// two equal-but-distinct strings compare equal.
+func TestStringEquality(t *testing.T) {
+	got := runNative(t, `func main() { a := "ab" b := "a" + "b" if a == b { println("equal") } else { println("not equal") } }`)
+	if got != "equal\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+// Issue #2: % on floats is a compile-time MFL type error, not leaked cc output.
+func TestModuloFloatRejected(t *testing.T) {
+	mustNotCompile(t, `func main() { x := 5.0 y := 2.0 println(x % y) }`)
+}
+
+// Issue #3: len() on a non-string/non-slice is a compile-time type error,
+// not a strlen() on a non-pointer at runtime.
+func TestLenOnIntRejected(t *testing.T) {
+	mustNotCompile(t, `func main() { n := 42 println(len(n)) }`)
+}
+
 func TestTypeMismatch(t *testing.T) {
 	fn, err := ParseFunc(normalize(`func main() { x := 1 x = "s" }`))
 	if err != nil {
