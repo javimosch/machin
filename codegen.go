@@ -77,6 +77,7 @@ static char* mfl_cat(const char* a, const char* b) {
     memcpy(r, a, la); memcpy(r + la, b, lb); r[la + lb] = 0;
     return r;
 }
+static int64_t mfl_streq(const char* a, const char* b) { return strcmp(a, b) == 0; }
 static char* mfl_str_i(int64_t v) { char* b = malloc(24); snprintf(b, 24, "%lld", (long long)v); return b; }
 static char* mfl_str_d(double v)  { char* b = malloc(32); snprintf(b, 32, "%g", v); return b; }
 
@@ -411,6 +412,13 @@ func (g *cgen) binary(ex *Binary) (string, error) {
 	}
 	if ex.Op == "+" && g.c.NodeKind(ex) == KString {
 		return fmt.Sprintf("mfl_cat(%s, %s)", l, r), nil
+	}
+	// String equality compares contents, not pointers.
+	if (ex.Op == "==" || ex.Op == "!=") && g.c.NodeKind(ex.L) == KString {
+		if ex.Op == "==" {
+			return fmt.Sprintf("mfl_streq(%s, %s)", l, r), nil
+		}
+		return fmt.Sprintf("(!mfl_streq(%s, %s))", l, r), nil
 	}
 	return fmt.Sprintf("(%s %s %s)", l, ex.Op, r), nil
 }
