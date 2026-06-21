@@ -1,0 +1,58 @@
+name: release
+
+# Cut a release by pushing a version tag:
+#   git tag v0.5.0 && git push origin v0.5.0
+# This cross-compiles machin for linux/macOS x amd64/arm64 and attaches the
+# binaries (plus SHA256SUMS.txt) to the GitHub release for that tag.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write # create releases and upload assets
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build binaries
+        env:
+          CGO_ENABLED: "0" # pure Go: static binaries that cross-compile cleanly
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          mkdir -p dist
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            os="${target%/*}"; arch="${target#*/}"
+            echo "building machin-${TAG}-${os}-${arch}"
+            GOOS="$os" GOARCH="$arch" \
+              go build -trimpath -ldflags="-s -w" \
+              -o "dist/machin-${TAG}-${os}-${arch}" .
+          done
+          ( cd dist && sha256sum machin-* > SHA256SUMS.txt )
+          ls -l dist
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          # If a release already exists for this tag (e.g. authored by hand),
+          # attach/overwrite the binaries; otherwise create it with notes
+          # generated from the commit history.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* \
+              --title "MFL $TAG" \
+              --generate-notes
+          fi
