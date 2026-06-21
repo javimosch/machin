@@ -336,6 +336,35 @@ func TestClosureIIFE(t *testing.T) {
 	}
 }
 
+func TestVariadicCollect(t *testing.T) {
+	got := runProg(t,
+		`func sum(nums...) { t := 0 for _, n := range nums { t = t + n } return t }`,
+		`func main() { println(sum(), sum(1, 2, 3), sum(10, 20, 30, 40)) }`)
+	if got != "0 6 100\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestVariadicSpreadAndFixed(t *testing.T) {
+	got := runProg(t,
+		`func tail(first, rest...) { n := len(rest) return first + n }`,
+		`func main() { xs := []int{7, 7, 7} println(tail(100, 1, 2), tail(100, xs...)) }`)
+	if got != "102 103\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestVariadicGeneric(t *testing.T) {
+	// one variadic function used at int and string
+	got := runProg(t,
+		`func cat(parts...) { s := "" for _, p := range parts { s = s + p } return s }`,
+		`func count(parts...) { return len(parts) }`,
+		`func main() { println(cat("a", "b", "c"), count(1, 2, 3, 4)) }`)
+	if got != "abc 4\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
 func TestNamedReturnsBare(t *testing.T) {
 	got := runProg(t,
 		`func divmod(a, b) (q, r) { q = a / b r = a % b return }`,

@@ -124,6 +124,20 @@ Parameters are untyped in the syntax; their types are inferred. A function may
 return zero, one, or several values (§9). Functions are **implicitly generic**
 (§11).
 
+The last parameter may be **variadic**, written `name...`. It collects the
+trailing call arguments into a slice:
+
+```go
+func sum(nums...) {            // nums is a slice
+    t := 0
+    for _, n := range nums { t = t + n }
+    return t
+}
+
+sum(1, 2, 3)                   // collect: nums = []int{1, 2, 3}
+sum(xs...)                     // spread: nums = xs
+```
+
 ### 5.3 Variables
 
 ```go
@@ -310,7 +324,7 @@ id(42); id("hi"); id(3.14)   // → three native functions
 Program     = { Decl } .
 Decl        = FuncDecl | TypeDecl .
 TypeDecl    = "type" ident "struct" "{" { ident TypeName } "}" .
-FuncDecl    = "func" ident "(" [ identList ] ")" [ "(" identList ")" ] Block .
+FuncDecl    = "func" ident "(" [ identList [ "..." ] ] ")" [ "(" identList ")" ] Block .
 TypeName    = "int" | "float" | "bool" | "string" | ident
             | "[]" TypeName | "map" "[" TypeName "]" TypeName | "chan" TypeName .
 Block       = "{" { Stmt } "}" .
@@ -331,7 +345,7 @@ FuncLit     = "func" "(" [ identList ] ")" Block .
 
 ## 15. Status and non-goals
 
-Implemented: the entire surface above, including arena memory management (§12)
-and named return values (§9). Not yet implemented: variadic parameters,
+Implemented: the entire surface above, including arena memory management (§12),
+named return values (§9), and variadic parameters (§5.2). Not yet implemented:
 by-reference closure capture, polymorphic recursion, a tracing GC across
 goroutines, and bounds/overflow checks. These are refinements, not core gaps.

@@ -1546,13 +1546,41 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		return 0, err
 	}
 	params := c.funcParam[inst]
-	if len(params) != len(argSlots) {
-		return 0, fmt.Errorf("%s: expected %d args, got %d", ex.Callee, len(params), len(argSlots))
-	}
-	for i := range params {
-		c.addPair(params[i], argSlots[i])
-	}
 	c.callInst[fn.Name][ex] = inst
+	if c.funcs[ex.Callee].Variadic {
+		nfixed := len(params) - 1
+		vparam := params[nfixed] // the variadic parameter is a slice
+		if ex.Spread {
+			if len(argSlots) != nfixed+1 {
+				return 0, fmt.Errorf("%s: expected %d args before the spread, got %d", ex.Callee, nfixed, len(argSlots)-1)
+			}
+			for i := 0; i < nfixed; i++ {
+				c.addPair(params[i], argSlots[i])
+			}
+			c.addPair(vparam, argSlots[nfixed]) // spread slice IS the variadic slice
+		} else {
+			if len(argSlots) < nfixed {
+				return 0, fmt.Errorf("%s: expected at least %d args, got %d", ex.Callee, nfixed, len(argSlots))
+			}
+			for i := 0; i < nfixed; i++ {
+				c.addPair(params[i], argSlots[i])
+			}
+			elem, err := c.sliceElem(vparam)
+			if err != nil {
+				return 0, err
+			}
+			for i := nfixed; i < len(argSlots); i++ {
+				c.addPair(argSlots[i], elem)
+			}
+		}
+	} else {
+		if len(params) != len(argSlots) {
+			return 0, fmt.Errorf("%s: expected %d args, got %d", ex.Callee, len(params), len(argSlots))
+		}
+		for i := range params {
+			c.addPair(params[i], argSlots[i])
+		}
+	}
 	rets := c.funcRets[inst]
 	switch len(rets) {
 	case 0:
@@ -1570,6 +1598,15 @@ func (c *Checker) RetArity(fn string) int { return len(c.funcRets[fn]) }
 
 // RetNames returns the named return identifiers of an instance (empty if none).
 func (c *Checker) RetNames(inst string) []string { return c.instFn[inst].Returns }
+
+// ParamElemCType returns the element C type of a slice-typed parameter.
+func (c *Checker) ParamElemCType(fn string, i int) string {
+	r := c.find(c.funcParam[fn][i])
+	if c.kind[r] == KSlice && c.elem[r] >= 0 {
+		return c.ctypeSlot(c.elem[r])
+	}
+	return "int64_t"
+}
 func (c *Checker) RetKindAt(fn string, i int) Kind { return c.kindOf(c.funcRets[fn][i]) }
 func (c *Checker) ParamKind(fn string, i int) Kind {
 	return c.kindOf(c.funcParam[fn][i])

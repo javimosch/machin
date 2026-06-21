@@ -48,6 +48,9 @@ type Binary struct {
 type Call struct {
 	Callee string
 	Args   []Expr
+	// Spread marks the final argument as a slice to spread into a variadic
+	// parameter: f(xs...).
+	Spread bool
 }
 
 // SliceLit is a typed slice literal: []int{1, 2, 3} or []string{}.
@@ -210,6 +213,9 @@ type FuncDecl struct {
 	// bare `return`. Empty when the function has no named returns.
 	Returns []string
 	Body    []Stmt
+	// Variadic marks the last parameter as variadic: it collects trailing call
+	// arguments into a slice.
+	Variadic bool
 	// IsLambda marks a lifted lambda: it is always invoked via the closure
 	// convention (a leading void* env), and its first NumCaptures params are
 	// captured variables, supplied at runtime from that heap environment.

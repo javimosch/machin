@@ -1373,7 +1373,29 @@ func (g *cgen) call(ex *Call) (string, error) {
 		params, ret := g.c.VarFuncSig(g.curFn, ex.Callee)
 		return g.closureCall("v_"+ex.Callee, params, ret, args), nil
 	}
-	return fmt.Sprintf("%s(%s)", g.c.CalleeCName(g.curFn, ex), strings.Join(args, ", ")), nil
+	cname := g.c.CalleeCName(g.curFn, ex)
+	inst := g.c.CalleeInst(g.curFn, ex)
+	if g.c.SrcFunc(inst).Variadic {
+		nfixed := len(g.c.SrcFunc(inst).Params) - 1
+		call := append([]string{}, args[:nfixed]...)
+		if ex.Spread {
+			call = append(call, args[nfixed]) // pass the spread slice directly
+		} else {
+			// build a slice from the trailing arguments
+			ect := g.c.ParamElemCType(inst, nfixed)
+			id := g.tmpID
+			g.tmpID++
+			var b strings.Builder
+			fmt.Fprintf(&b, "({ mfl_slice _v%d = {0};", id)
+			for _, a := range args[nfixed:] {
+				fmt.Fprintf(&b, " _v%d = mfl_append(_v%d, &((%s[1]){%s})[0], sizeof(%s));", id, id, ect, a, ect)
+			}
+			fmt.Fprintf(&b, " _v%d; })", id)
+			call = append(call, b.String())
+		}
+		return fmt.Sprintf("%s(%s)", cname, strings.Join(call, ", ")), nil
+	}
+	return fmt.Sprintf("%s(%s)", cname, strings.Join(args, ", ")), nil
 }
 
 // closureCall invokes a function value: cast its fn pointer to the right

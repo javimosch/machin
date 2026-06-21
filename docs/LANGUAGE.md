@@ -51,6 +51,9 @@ func main() { println(add(2, 3)) }
 
 - Parameters are untyped in the surface syntax; their types are inferred from
   use at call sites.
+- The last parameter may be **variadic** (`name...`): it collects the trailing
+  arguments into a slice. Call it with extra args (`sum(1, 2, 3)`) or spread a
+  slice (`sum(xs...)`). See `examples/complex/variadic.mfl`.
 - `main` is the program entry point.
 - A function returning a value uses `return expr`; a function used only for its
   side effects may omit `return`.
