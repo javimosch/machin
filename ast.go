@@ -206,7 +206,10 @@ func (GoStmt) node()      {}
 type FuncDecl struct {
 	Name   string
 	Params []string
-	Body   []Stmt
+	// Returns are named return values: locals, zero-initialized, returned by a
+	// bare `return`. Empty when the function has no named returns.
+	Returns []string
+	Body    []Stmt
 	// IsLambda marks a lifted lambda: it is always invoked via the closure
 	// convention (a leading void* env), and its first NumCaptures params are
 	// captured variables, supplied at runtime from that heap environment.

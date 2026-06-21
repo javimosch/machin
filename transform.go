@@ -18,8 +18,12 @@ func liftClosures(prog *Program) {
 	for len(worklist) > 0 {
 		fn := worklist[0]
 		worklist = worklist[1:]
+		bound := localNames(fn.Params, fn.Body)
+		for _, r := range fn.Returns {
+			bound[r] = true // named returns are locals, capturable by lambdas
+		}
 		l := &lifter{
-			bound:   localNames(fn.Params, fn.Body),
+			bound:   bound,
 			counter: &counter,
 			emit: func(nf *FuncDecl) {
 				lifted = append(lifted, nf)

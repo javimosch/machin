@@ -336,6 +336,34 @@ func TestClosureIIFE(t *testing.T) {
 	}
 }
 
+func TestNamedReturnsBare(t *testing.T) {
+	got := runProg(t,
+		`func divmod(a, b) (q, r) { q = a / b r = a % b return }`,
+		`func main() { q, r := divmod(17, 5) println(q, r) }`)
+	if got != "3 2\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestNamedReturnsFallthrough(t *testing.T) {
+	// no explicit return: the named value is returned at the end
+	got := runProg(t,
+		`func inc(n) (m) { m = n + 1 }`,
+		`func main() { println(inc(41)) }`)
+	if got != "42\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestNamedReturnsMixedExplicit(t *testing.T) {
+	got := runProg(t,
+		`func clamp(x, lo, hi) (y) { y = x if x < lo { return lo } if x > hi { return hi } return }`,
+		`func main() { println(clamp(5, 0, 10), clamp(-3, 0, 10), clamp(99, 0, 10)) }`)
+	if got != "5 0 10\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
 func TestMultiReturnDestructure(t *testing.T) {
 	got := runProg(t,
 		`func divmod(a, b) { return a / b, a % b }`,
