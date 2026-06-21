@@ -79,6 +79,9 @@ type FieldAccess struct {
 // MakeChan constructs a channel: make(chan T).
 type MakeChan struct{ Elem string }
 
+// MakeMap constructs a map: make(map[K]V).
+type MakeMap struct{ Key, Val string }
+
 // Recv receives from a channel: <-ch.
 type Recv struct{ Ch Expr }
 
@@ -96,6 +99,7 @@ func (Index) node()       {}
 func (StructLit) node()   {}
 func (FieldAccess) node() {}
 func (MakeChan) node()    {}
+func (MakeMap) node()     {}
 func (Recv) node()        {}
 
 // ---- Statements ----

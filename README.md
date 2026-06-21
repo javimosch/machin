@@ -141,11 +141,12 @@ func main() {
 |---------|--------|
 | **Types** | `int` (int64), `float` (double), `bool`, `string`, slices `[]T`, structs — inferred |
 | **Slices** | `[]int{...}`, `s[i]` read/assign, `len(s)`, `append(s, x)` |
+| **Maps** | `make(map[K]V)`, `m[k]` read/assign, `len`, `has(m,k)`, `delete(m,k)`, `keys(m)`; int/string keys |
 | **Structs** | `type T struct { ... }`, `T{f: v}` / `T{...}`, `p.f` read/assign, value semantics, `[]T` |
 | **Control flow** | `if / else if / else`, `for cond {}`, `for {}`, `while cond {}` |
 | **Concurrency** | `go f(args)`, channels `make(chan T)` / `ch <- v` / `<-ch`, `sleep(ms)` |
 | **Operators** | `+ - * / %`, `== != < <= > >=`, `&& \|\| !`; `+` concatenates strings |
-| **Builtins** | `print`, `println`, `len`, `str`, `int`, `append`, `sleep` |
+| **Builtins** | `print`, `println`, `len`, `str`, `int`, `append`, `sleep`, `has`, `delete`, `keys` |
 | **Networking** | `listen`, `accept`, `read`, `write`, `close` |
 
 ---
@@ -188,6 +189,7 @@ per-call-site arg struct + trampoline driven by `pthread_create`.
 | `complex/primes`, `gcd_lcm`, `collatz`, `ackermann`, `fast_power`, `isqrt` | numeric algorithms |
 | `complex/to_binary`, `pi_leibniz`, `perfect_numbers` | strings, floats, divisors |
 | `complex/slices` | slice literals, `append`, indexing, in-place reverse |
+| `complex/maps` | word frequency + int-keyed lookup table |
 | `complex/goroutines` | `go` spawns concurrent workers; `sleep` waits |
 | `complex/channels` | fan-in worker pool — goroutines communicate over a channel |
 | `complex/http_server` | concurrent TCP/HTTP server — `go handle(conn)` per request |
@@ -261,11 +263,12 @@ make install      # install to $(PREFIX)/bin  (default /usr/local)
 | Slices `[]T` (`literal`, index, `len`, `append`) | ✅ done |
 | Structs (`type T struct`, literals, field access, `[]T`) | ✅ done |
 | Channels (`make(chan T)`, `ch <- v`, `<-ch`) | ✅ done |
+| Maps (`make(map[K]V)`, index, `has`/`delete`/`keys`) | ✅ done |
 | Control flow (`if`, `for`, `while`) | ✅ done |
 | Goroutines (`go`) + `sleep` | ✅ done |
 | Networking (`listen`/`accept`/`read`/`write`/`close`) | ✅ done |
 | Concurrent HTTP server example | ✅ done |
-| Maps | ⬜ planned |
+| `range` loops, comma-ok, map of struct values | ⬜ planned |
 | Bounds / overflow checks (`--safe`) | ⬜ planned |
 
 ---

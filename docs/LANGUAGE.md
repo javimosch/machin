@@ -111,6 +111,33 @@ n := len(xs)           // length
 
 ---
 
+## Maps
+
+A hash map from comparable keys (`int` or `string`) to any value type:
+
+```go
+freq := make(map[string]int)
+freq["go"] = freq["go"] + 1   // a missing key reads as the zero value (0, "", …)
+n := freq["go"]               // index read
+println(len(freq))            // number of entries
+if has(freq, "go") { ... }    // membership test
+delete(freq, "go")            // remove a key
+
+ks := keys(freq)              // iterate via keys(m) -> []K
+i := 0
+for i < len(ks) {
+    println(ks[i], freq[ks[i]])
+    i = i + 1
+}
+```
+
+- `make(map[K]V)` constructs a map. Keys are `int` or `string`; values are any type.
+- `m[k]` reads (returning the value type's zero value if absent) and `m[k] = v` writes.
+- `len(m)`, `has(m, k)`, `delete(m, k)`, and `keys(m)` (a `[]K` slice) round out the API.
+- Iteration order is unspecified.
+
+---
+
 ## Structs
 
 A struct type is its own top-level declaration — on disk, its own base64 line:
@@ -152,6 +179,9 @@ first := users[0]                                // value copy
 | `println(...)`              | print arguments followed by a newline        |
 | `len(x)`                    | length of a slice or string                  |
 | `append(xs, v)`             | return `xs` with `v` appended                |
+| `has(m, k)`                 | whether map `m` contains key `k`             |
+| `delete(m, k)`              | remove key `k` from map `m`                  |
+| `keys(m)`                   | a slice of map `m`'s keys                    |
 | `str(n)`                    | convert an `int` or `float` to its `string`  |
 | `int(n)`                    | convert a numeric value to `int` (truncates) |
 | `sleep(ms)`                 | suspend the current goroutine (milliseconds) |

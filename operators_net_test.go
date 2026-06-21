@@ -78,7 +78,7 @@ func TestModuloIntStillWorks(t *testing.T) {
 // --- Issue #3: len() on a non-string/non-slice is a type error, never strlen() on a scalar. ---
 
 func TestLenOnIntRejected(t *testing.T) {
-	checkErr(t, "string or slice", `func main() { println(len(5)) }`)
+	checkErr(t, "len: argument must be", `func main() { println(len(5)) }`)
 }
 
 func TestLenOnStringAndSliceStillWorks(t *testing.T) {
