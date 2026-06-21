@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+From a language to a platform you can build on.
+
+- **machweb — a web framework written in MFL.** `Request`/`Response` types,
+  response builders (`ok_text`/`ok_html`/`ok_json`/`created`/`bad_request`/
+  `not_found`), `parse_request`, a `param(path, prefix)` path helper, and
+  `serve(port, handler)` which dispatches each request — in its own goroutine —
+  to a handler closure `func(Request) Response`. A backend compiles to a single
+  native binary with no runtime dependencies. See [`framework/`](framework/).
+- **Map-based router.** `new_router()` → `route(r, method, path, handler)` →
+  `serve_router(port, r)`. Handlers live in a `map[string]func` keyed by
+  `"METHOD PATH"`; routing is method-aware and unmatched requests return `404`.
+- **The `func` type.** A function-value type whose signature is inferred by
+  unification — it lets closures be stored in slices, maps
+  (`make(map[string]func)`), and struct fields. This is what makes a router's
+  handler table possible.
+- **Multi-file `machin encode`.** `encode` now accepts several source files and
+  concatenates them, so a framework and an app compose into one program:
+  `machin encode framework/machweb.src myapp.src > app.mfl`.
+
 ## v0.3.0
 
 Ergonomics, toward feeling like Go to write:
