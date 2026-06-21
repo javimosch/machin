@@ -1,6 +1,6 @@
 # The MFL Language Specification
 
-Version 0.2.0
+Version 0.2.1
 
 MFL (Machine-First Language) is a statically-typed, Go-flavored backend language
 whose canonical on-disk form is **base64**. It is compiled to native code through
@@ -319,7 +319,7 @@ FuncLit     = "func" "(" [ identList ] ")" Block .
 
 ## 15. Status and non-goals (v0.2.0)
 
-Implemented: the entire surface above. Not yet implemented: named return values,
+Implemented: the entire surface above plus arena memory management (§12). Not yet implemented: named return values,
 variadic parameters, by-reference closure capture, polymorphic recursion,
 garbage collection, and bounds/overflow checks. These are refinements, not core
 gaps.

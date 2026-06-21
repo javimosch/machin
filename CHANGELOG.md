@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.2.1
 
 - **Arena memory management.** Value buffers (strings, slice backings, closure
   environments) are allocated from a per-goroutine arena and reclaimed in bulk
