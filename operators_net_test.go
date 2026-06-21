@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -137,6 +138,56 @@ func TestClosureSharedCell(t *testing.T) {
 		`func main() { println(build()) }`)
 	if got != "102\n" {
 		t.Fatalf("shared capture cell: got %q, want \"102\\n\"", got)
+	}
+}
+
+// --- Scoped arenas: `arena { }` bounds the memory of a long-lived loop. ---
+
+// buildRun compiles a single-function program, runs it, and returns its stdout
+// plus the child's peak RSS in KB (Linux getrusage via ProcessState).
+func buildRun(t *testing.T, srcs ...string) (string, int64) {
+	t.Helper()
+	bin, err := os.CreateTemp("", "mfl-arena-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin.Close()
+	defer os.Remove(bin.Name())
+	if err := BuildBinary(&Program{Funcs: parseFuncs(t, srcs...)}, bin.Name(), false); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	cmd := exec.Command(bin.Name())
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	ru, _ := cmd.ProcessState.SysUsage().(*syscall.Rusage)
+	return string(out), ru.Maxrss
+}
+
+// A loop that allocates each iteration grows memory unboundedly when run on the
+// goroutine arena, but stays flat when the per-iteration work is wrapped in an
+// `arena { }` block. The output must be identical either way, and the scoped
+// version's peak RSS must be a small fraction of the unscoped version's.
+func TestScopedArenaBoundsMemory(t *testing.T) {
+	const work = `func work(i) { s := "iter-" + str(i) s = s + "-" + str(i * i) return len(s) }`
+	loop := func(scoped bool) string {
+		body := `total = total + work(n)`
+		if scoped {
+			body = `arena { total = total + work(n) }`
+		}
+		return `func main() { total := 0 n := 0 while n < 400000 { ` + body + ` n = n + 1 } println(total) }`
+	}
+	unscopedOut, unscopedRSS := buildRun(t, loop(false), work)
+	scopedOut, scopedRSS := buildRun(t, loop(true), work)
+
+	if scopedOut != unscopedOut {
+		t.Fatalf("arena changed program output: scoped %q vs unscoped %q", scopedOut, unscopedOut)
+	}
+	// The unscoped loop retains ~all allocations; the scoped one frees each
+	// iteration. Require at least a 5x reduction (the real gap is ~100x).
+	if scopedRSS*5 >= unscopedRSS {
+		t.Fatalf("arena did not bound memory: scoped RSS %d KB vs unscoped %d KB", scopedRSS, unscopedRSS)
 	}
 }
 

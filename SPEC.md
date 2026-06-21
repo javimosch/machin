@@ -306,6 +306,16 @@ id(42); id("hi"); id(3.14)   // → three native functions
     a heap pointer sent over a channel, or stored in a map outliving the
     sender) may be reclaimed while still referenced. Pass such values by copy or
     keep them in the receiver's scope.
+- A **scoped arena** block, `arena { ... }`, installs a fresh arena for the
+  duration of the block and frees everything allocated inside it when the block
+  ends. This bounds the memory of a *single* long-lived goroutine that allocates
+  per iteration (the one case the per-goroutine arena alone does not cover):
+  wrap the loop body in `arena { ... }` and peak memory stays flat instead of
+  growing without limit. Blocks nest. The contract is that **nothing allocated
+  inside the block escapes it** — a value computed inside and read after the
+  block (assigned to an outer variable, returned, sent on a channel) dangles, as
+  with a stack frame. Scalars (ints, floats, bools) are not heap-allocated, so
+  accumulating them across the block is always safe.
 - By default, integer overflow wraps (two's complement) and division by zero /
   out-of-bounds slice access are undefined (they follow the generated C).
 - Building with **`--safe`** inserts runtime checks: a slice index out of range,
@@ -358,8 +368,8 @@ FuncLit     = "func" "(" [ identList ] ")" Block .
 
 ## 15. Status and non-goals
 
-Implemented: the entire surface above, including arena memory management (§12),
-named return values (§9), variadic parameters (§5.2), by-reference closure
-capture (§11.1), and opt-in bounds/overflow checks (`--safe`). Not yet
-implemented: polymorphic recursion and a tracing GC across goroutines. These are
-refinements, not core gaps.
+Implemented: the entire surface above, including arena memory management with
+scoped `arena { }` blocks (§12), named return values (§9), variadic parameters
+(§5.2), by-reference closure capture (§11.1), and opt-in bounds/overflow checks
+(`--safe`). Not yet implemented: polymorphic recursion and an automatic tracing
+GC. These are refinements, not core gaps.

@@ -150,6 +150,8 @@ func (l *lifter) stmt(s Stmt) {
 		st.Val = l.expr(st.Val)
 	case *GoStmt:
 		l.exprs(st.Call.Args)
+	case *ArenaStmt:
+		l.stmts(st.Body)
 	}
 }
 
@@ -199,6 +201,8 @@ func collectDeclared(body []Stmt, set map[string]bool) {
 			collectDeclared(st.Then, set)
 			collectDeclared(st.Else, set)
 		case *WhileStmt:
+			collectDeclared(st.Body, set)
+		case *ArenaStmt:
 			collectDeclared(st.Body, set)
 		}
 	}
@@ -298,6 +302,10 @@ func freeIdents(body []Stmt, params []string) map[string]bool {
 		case *GoStmt:
 			for _, a := range st.Call.Args {
 				we(a)
+			}
+		case *ArenaStmt:
+			for _, t := range st.Body {
+				ws(t)
 			}
 		}
 	}
