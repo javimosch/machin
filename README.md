@@ -146,6 +146,7 @@ func main() {
 | **Control flow** | `if / else if / else`, `for cond {}`, `for {}`, `while cond {}`, `for k, v := range x {}` |
 | **Multiple returns** | `return a, b`; `q, r := f()`; parallel `a, b = b, a`; comma-ok `v, ok := lookup(m, k)`; `_` ignores |
 | **Closures** | `func(x) { ... }` literals, capture by value, pass/return/store function values, higher-order functions |
+| **Generics** | functions are implicitly generic — specialized per concrete call-site type (monomorphization), no annotations |
 | **Concurrency** | `go f(args)`, channels `make(chan T)` / `ch <- v` / `<-ch`, `sleep(ms)` |
 | **Operators** | `+ - * / %`, `== != < <= > >=`, `&& \|\| !`; `+` concatenates strings |
 | **Builtins** | `print`, `println`, `len`, `str`, `int`, `append`, `sleep`, `has`, `delete`, `keys`, `json`, `parse`, `http_body` |
@@ -197,6 +198,7 @@ per-call-site arg struct + trampoline driven by `pthread_create`.
 | `complex/ranges` | `for k, v := range` over slices, strings, and maps |
 | `complex/multi_return` | multiple returns, comma-ok, `_`, parallel swap |
 | `complex/closures` | capturing lambdas, higher-order functions, IIFE |
+| `complex/generics` | one source function specialized at int / string / float |
 | `complex/goroutines` | `go` spawns concurrent workers; `sleep` waits |
 | `complex/channels` | fan-in worker pool — goroutines communicate over a channel |
 | `complex/http_server` | concurrent TCP/HTTP server — `go handle(conn)` per request |
@@ -284,10 +286,11 @@ make install      # install to $(PREFIX)/bin  (default /usr/local)
 | `range` loops over slices, maps, strings | ✅ done |
 | Multiple return values + parallel/comma-ok assignment | ✅ done |
 | Closures + higher-order functions (lambda-lifting) | ✅ done |
+| Generics via monomorphization (implicit, no annotations) | ✅ done |
 | Goroutines (`go`) + `sleep` | ✅ done |
 | Networking (`listen`/`accept`/`read`/`write`/`close`) | ✅ done |
 | Concurrent HTTP server example | ✅ done |
-| named returns, variadic params, generics | ⬜ planned |
+| named returns, variadic params, by-reference capture | ⬜ planned |
 | Bounds / overflow checks (`--safe`) | ⬜ planned |
 
 ---
