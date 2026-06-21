@@ -59,6 +59,7 @@ const cRuntime = `#include <stdio.h>
 #include <string.h>
 #include <stdint.h>
 #include <stdarg.h>
+#include <ctype.h>
 #include <unistd.h>
 #include <time.h>
 #include <pthread.h>
@@ -243,6 +244,58 @@ static void mfl_js_skip(const char** p) { /* skip one JSON value, including extr
     while (**p && **p!=',' && **p!='}' && **p!=']') (*p)++;
 }
 static int mfl_js_more(const char** p) { mfl_js_ws(p); if (**p==',') { (*p)++; return 1; } return 0; }
+
+/* string operations */
+static char* mfl_substr(const char* s, int64_t i, int64_t j) {
+    int64_t n = strlen(s);
+    if (i < 0) i = 0; if (j > n) j = n; if (i > j) i = j;
+    int64_t len = j - i;
+    char* r = malloc(len + 1); memcpy(r, s + i, len); r[len] = 0;
+    return r;
+}
+static int64_t mfl_index(const char* s, const char* sub) { const char* f = strstr(s, sub); return f ? (int64_t)(f - s) : -1; }
+static int mfl_contains(const char* s, const char* sub) { return strstr(s, sub) != NULL; }
+static int mfl_has_prefix(const char* s, const char* p) { return strncmp(s, p, strlen(p)) == 0; }
+static int mfl_has_suffix(const char* s, const char* p) { size_t ls = strlen(s), lp = strlen(p); return lp <= ls && strcmp(s + ls - lp, p) == 0; }
+static char* mfl_charat(const char* s, int64_t i) { int64_t n = strlen(s); if (i < 0 || i >= n) return mfl_dup(""); char* r = malloc(2); r[0] = s[i]; r[1] = 0; return r; }
+static char* mfl_to_upper(const char* s) { size_t n = strlen(s); char* r = malloc(n + 1); for (size_t i = 0; i < n; i++) r[i] = toupper((unsigned char)s[i]); r[n] = 0; return r; }
+static char* mfl_to_lower(const char* s) { size_t n = strlen(s); char* r = malloc(n + 1); for (size_t i = 0; i < n; i++) r[i] = tolower((unsigned char)s[i]); r[n] = 0; return r; }
+static char* mfl_trim(const char* s) {
+    while (*s && isspace((unsigned char)*s)) s++;
+    int64_t n = strlen(s);
+    while (n > 0 && isspace((unsigned char)s[n-1])) n--;
+    char* r = malloc(n + 1); memcpy(r, s, n); r[n] = 0; return r;
+}
+static char* mfl_replace(const char* s, const char* old, const char* neww) {
+    size_t lo = strlen(old);
+    if (lo == 0) return mfl_dup(s);
+    size_t ln = strlen(neww), cnt = 0;
+    const char* t = s; while ((t = strstr(t, old))) { cnt++; t += lo; }
+    char* r = malloc(strlen(s) + cnt * (ln > lo ? ln - lo : 0) + 1);
+    char* w = r; const char* p = s;
+    while (1) { const char* f = strstr(p, old); if (!f) { strcpy(w, p); break; }
+        memcpy(w, p, f - p); w += f - p; memcpy(w, neww, ln); w += ln; p = f + lo; }
+    return r;
+}
+static mfl_slice mfl_split(const char* s, const char* sep) {
+    mfl_slice out = {0};
+    size_t ls = strlen(sep);
+    if (ls == 0) { int64_t n = strlen(s);
+        for (int64_t i = 0; i < n; i++) { char* c = malloc(2); c[0] = s[i]; c[1] = 0; out = mfl_append(out, &c, sizeof(char*)); }
+        return out; }
+    const char* p = s;
+    while (1) { const char* f = strstr(p, sep);
+        if (!f) { char* piece = mfl_dup(p); out = mfl_append(out, &piece, sizeof(char*)); break; }
+        size_t len = f - p; char* piece = malloc(len + 1); memcpy(piece, p, len); piece[len] = 0;
+        out = mfl_append(out, &piece, sizeof(char*)); p = f + ls; }
+    return out;
+}
+static char* mfl_join(mfl_slice xs, const char* sep) {
+    if (xs.len == 0) return mfl_dup("");
+    char* r = mfl_dup(((char**)xs.data)[0]);
+    for (int64_t i = 1; i < xs.len; i++) { r = mfl_cat(r, sep); r = mfl_cat(r, ((char**)xs.data)[i]); }
+    return r;
+}
 
 /* networking: the low-level shape of Go's net package */
 static int64_t mfl_listen(int64_t port) {
@@ -967,6 +1020,30 @@ func (g *cgen) call(ex *Call) (string, error) {
 		return fmt.Sprintf("({ const char* _p = (%s); %s(&_p); })", args[0], name), nil
 	case "http_body":
 		return fmt.Sprintf("mfl_http_body(%s)", args[0]), nil
+	case "to_upper":
+		return fmt.Sprintf("mfl_to_upper(%s)", args[0]), nil
+	case "to_lower":
+		return fmt.Sprintf("mfl_to_lower(%s)", args[0]), nil
+	case "trim":
+		return fmt.Sprintf("mfl_trim(%s)", args[0]), nil
+	case "contains":
+		return fmt.Sprintf("mfl_contains(%s, %s)", args[0], args[1]), nil
+	case "has_prefix":
+		return fmt.Sprintf("mfl_has_prefix(%s, %s)", args[0], args[1]), nil
+	case "has_suffix":
+		return fmt.Sprintf("mfl_has_suffix(%s, %s)", args[0], args[1]), nil
+	case "index":
+		return fmt.Sprintf("mfl_index(%s, %s)", args[0], args[1]), nil
+	case "substr":
+		return fmt.Sprintf("mfl_substr(%s, %s, %s)", args[0], args[1], args[2]), nil
+	case "charat":
+		return fmt.Sprintf("mfl_charat(%s, %s)", args[0], args[1]), nil
+	case "replace":
+		return fmt.Sprintf("mfl_replace(%s, %s, %s)", args[0], args[1], args[2]), nil
+	case "split":
+		return fmt.Sprintf("mfl_split(%s, %s)", args[0], args[1]), nil
+	case "join":
+		return fmt.Sprintf("mfl_join(%s, %s)", args[0], args[1]), nil
 	case "append":
 		// &((T[1]){v})[0] yields a T* for any element type, including structs
 		// (a plain &(T){v} would mis-init an aggregate field-by-field).
