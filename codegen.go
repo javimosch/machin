@@ -412,6 +412,11 @@ func (g *cgen) binary(ex *Binary) (string, error) {
 	if ex.Op == "+" && g.c.NodeKind(ex) == KString {
 		return fmt.Sprintf("mfl_cat(%s, %s)", l, r), nil
 	}
+	// Compare strings by value, not by pointer. C's == on char* compares
+	// addresses, so equal-but-distinct strings would wrongly differ.
+	if (ex.Op == "==" || ex.Op == "!=") && g.c.NodeKind(ex.L) == KString {
+		return fmt.Sprintf("(strcmp(%s, %s) %s 0)", l, r, ex.Op), nil
+	}
 	return fmt.Sprintf("(%s %s %s)", l, ex.Op, r), nil
 }
 
