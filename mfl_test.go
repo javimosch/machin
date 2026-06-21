@@ -251,6 +251,16 @@ func TestStringRouteParse(t *testing.T) {
 	}
 }
 
+func TestJSONStructWithSliceField(t *testing.T) {
+	// the shape the self-host /api/info endpoint serializes
+	got := runProg(t,
+		`type Info struct { name string  tags []string }`,
+		`func main() { i := Info{name: "MFL", tags: []string{"a", "b"}} println(json(i)) }`)
+	if got != "{\"name\":\"MFL\",\"tags\":[\"a\",\"b\"]}\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
 func TestGenericIdentity(t *testing.T) {
 	// one source function specialized at int, string, and float
 	got := runProg(t,
