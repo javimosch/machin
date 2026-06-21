@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.4.1
+
+- **Release automation.** Pushing a `v*` tag now cross-compiles machin for
+  linux/macOS × amd64/arm64 (pure Go, static, ~2 MB) and attaches the binaries
+  plus `SHA256SUMS.txt` to the GitHub release — no manual upload step.
+
 ## v0.4.0
 
 Native-language depth: safety, real closures, and bounded memory — plus the
