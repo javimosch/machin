@@ -14,7 +14,7 @@ func CompileToC(p *Program) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	g := &cgen{c: c}
+	g := &cgen{c: c, jsonMemo: map[string]string{}}
 	return g.program(p)
 }
 
@@ -23,6 +23,12 @@ func CompileToC(p *Program) (string, error) {
 func cTypeName(t string) string {
 	if strings.HasPrefix(t, "[]") {
 		return "mfl_slice"
+	}
+	if strings.HasPrefix(t, "map[") {
+		return "mfl_map*"
+	}
+	if strings.HasPrefix(t, "chan ") {
+		return "mfl_chan*"
 	}
 	switch t {
 	case "int":
@@ -38,10 +44,13 @@ func cTypeName(t string) string {
 }
 
 type cgen struct {
-	c     *Checker
-	buf   strings.Builder // function bodies
-	tramp strings.Builder // goroutine trampolines
-	goID  int
+	c        *Checker
+	buf      strings.Builder // function bodies
+	tramp    strings.Builder // goroutine trampolines
+	goID     int
+	jsonFns  strings.Builder   // generated per-type JSON serializers
+	jsonMemo map[string]string // type string -> serializer function name
+	jsonID   int
 }
 
 const cRuntime = `#include <stdio.h>
@@ -176,6 +185,23 @@ static char* mfl_cat(const char* a, const char* b) {
 }
 static char* mfl_str_i(int64_t v) { char* b = malloc(24); snprintf(b, 24, "%lld", (long long)v); return b; }
 static char* mfl_str_d(double v)  { char* b = malloc(32); snprintf(b, 32, "%g", v); return b; }
+static char* mfl_dup(const char* s) { size_t n = strlen(s); char* r = malloc(n+1); memcpy(r, s, n+1); return r; }
+static char* mfl_json_str(const char* s) { /* quote + escape a string */
+    if (!s) s = "";
+    size_t n = strlen(s), j = 0;
+    char* b = malloc(n*2 + 3);
+    b[j++] = '"';
+    for (size_t i = 0; i < n; i++) {
+        char c = s[i];
+        if (c=='"' || c=='\\') { b[j++]='\\'; b[j++]=c; }
+        else if (c=='\n') { b[j++]='\\'; b[j++]='n'; }
+        else if (c=='\t') { b[j++]='\\'; b[j++]='t'; }
+        else if (c=='\r') { b[j++]='\\'; b[j++]='r'; }
+        else b[j++]=c;
+    }
+    b[j++]='"'; b[j]=0;
+    return b;
+}
 
 /* networking: the low-level shape of Go's net package */
 static int64_t mfl_listen(int64_t port) {
@@ -253,6 +279,11 @@ func (g *cgen) program(p *Program) (string, error) {
 		fmt.Fprintf(&out, " } mfl_%s;\n", td.Name)
 	}
 	if len(p.Types) > 0 {
+		out.WriteByte('\n')
+	}
+	// JSON serializers (generated on demand by json()); reference struct typedefs
+	if g.jsonFns.Len() > 0 {
+		out.WriteString(g.jsonFns.String())
 		out.WriteByte('\n')
 	}
 	for _, fn := range p.Funcs {
@@ -648,6 +679,97 @@ func (g *cgen) mapKeyArgs(mapNode Node, keyExpr string) (string, string) {
 	return keyExpr, "NULL"
 }
 
+// jsonSerializer ensures a C function exists that serializes a value of the
+// given MFL type to a JSON string, returning the function name. It recurses
+// into element/field/value types, emitting children before parents.
+func (g *cgen) jsonSerializer(typeStr string) (string, error) {
+	if name, ok := g.jsonMemo[typeStr]; ok {
+		return name, nil
+	}
+	name := fmt.Sprintf("mfl_json_v%d", g.jsonID)
+	g.jsonID++
+	g.jsonMemo[typeStr] = name // reserve before recursion
+	ct := cTypeName(typeStr)
+	var body string
+
+	switch {
+	case typeStr == "int":
+		body = "return mfl_str_i(v);"
+	case typeStr == "float":
+		body = "return mfl_str_d(v);"
+	case typeStr == "bool":
+		body = `return mfl_dup(v ? "true" : "false");`
+	case typeStr == "string":
+		body = "return mfl_json_str(v);"
+	case strings.HasPrefix(typeStr, "[]"):
+		elem := typeStr[2:]
+		es, err := g.jsonSerializer(elem)
+		if err != nil {
+			return "", err
+		}
+		ect := cTypeName(elem)
+		body = fmt.Sprintf(`char* out = mfl_dup("[");
+    for (int64_t i = 0; i < v.len; i++) {
+        if (i) out = mfl_cat(out, ",");
+        out = mfl_cat(out, %s(((%s*)v.data)[i]));
+    }
+    return mfl_cat(out, "]");`, es, ect)
+	case strings.HasPrefix(typeStr, "map["):
+		kt, vt, err := splitMapType(typeStr)
+		if err != nil {
+			return "", err
+		}
+		vs, err := g.jsonSerializer(vt)
+		if err != nil {
+			return "", err
+		}
+		kct, vct := cTypeName(kt), cTypeName(vt)
+		var keyJSON, getCall string
+		if kt == "string" {
+			keyJSON = "mfl_json_str(_k)"
+			getCall = "mfl_map_get(v, 0, _k, &_val);"
+		} else {
+			keyJSON = "mfl_json_str(mfl_str_i(_k))"
+			getCall = "mfl_map_get(v, _k, NULL, &_val);"
+		}
+		body = fmt.Sprintf(`mfl_slice _ks = mfl_map_keys(v);
+    char* out = mfl_dup("{");
+    for (int64_t i = 0; i < _ks.len; i++) {
+        if (i) out = mfl_cat(out, ",");
+        %s _k = ((%s*)_ks.data)[i];
+        %s _val; %s
+        out = mfl_cat(out, %s);
+        out = mfl_cat(out, ":");
+        out = mfl_cat(out, %s(_val));
+    }
+    return mfl_cat(out, "}");`, kct, kct, vct, getCall, keyJSON, vs)
+	default:
+		td, ok := g.c.StructTypes()[typeStr]
+		if !ok {
+			return "", fmt.Errorf("json: cannot serialize type %q", typeStr)
+		}
+		var b strings.Builder
+		b.WriteString(`char* out = mfl_dup("{");` + "\n")
+		for i, f := range td.Fields {
+			fs, err := g.jsonSerializer(f.Type)
+			if err != nil {
+				return "", err
+			}
+			prefix := `"\"` + f.Name + `\":"`
+			if i > 0 {
+				prefix = `",\"` + f.Name + `\":"`
+			}
+			fmt.Fprintf(&b, "    out = mfl_cat(out, %s);\n", prefix)
+			fmt.Fprintf(&b, "    out = mfl_cat(out, %s(v.f_%s));\n", fs, f.Name)
+		}
+		b.WriteString(`    return mfl_cat(out, "}");`)
+		body = b.String()
+	}
+
+	fmt.Fprintf(&g.jsonFns, "static char* %s(%s v) {\n    %s\n}\n", name, ct, body)
+	return name, nil
+}
+
 func (g *cgen) call(ex *Call) (string, error) {
 	args := make([]string, len(ex.Args))
 	for i, a := range ex.Args {
@@ -674,6 +796,12 @@ func (g *cgen) call(ex *Call) (string, error) {
 		return fmt.Sprintf("mfl_map_del(%s, %s, %s)", args[0], ik, sk), nil
 	case "keys":
 		return fmt.Sprintf("mfl_map_keys(%s)", args[0]), nil
+	case "json":
+		name, err := g.jsonSerializer(g.c.TypeString(ex.Args[0]))
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("%s(%s)", name, args[0]), nil
 	case "append":
 		// &((T[1]){v})[0] yields a T* for any element type, including structs
 		// (a plain &(T){v} would mis-init an aggregate field-by-field).

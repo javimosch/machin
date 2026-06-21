@@ -7,7 +7,7 @@ go build -o machin .
 
 find examples -name '*.mfl' | sort | while read -r mfl; do
     case "$mfl" in
-        *server*) echo "########## $mfl (long-running — skipped) ##########"; echo; continue ;;
+        *server*|*_api*) echo "########## $mfl (long-running — skipped) ##########"; echo; continue ;;
     esac
     echo "########## machin run $mfl ##########"
     ./machin run "$mfl"

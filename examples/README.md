@@ -45,6 +45,8 @@ machin build examples/complex/primes.mfl --emit-c   # see the generated C
 | `goroutines`      | `go` spawns concurrent workers; `sleep` waits |
 | `channels`        | fan-in worker pool — goroutines communicate over a channel |
 | `http_server`     | concurrent TCP/HTTP server — `go handle(conn)` per request |
+| `json`            | `json()` serialization of scalars, slices, structs, maps |
+| `json_api`        | JSON-over-HTTP API — each request returns JSON-serialized structs |
 
 `http_server` loops forever, so it's skipped by `run.sh`. Run it directly:
 
