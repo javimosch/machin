@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Changelog June 2026 - machin</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+    <style>
+      body { font-family: 'Inter', system-ui, sans-serif; background-color: #0a0a0b; color: #e2e8f0; }
+      h1, h2, h3 { font-family: 'Geist', system-ui, sans-serif; }
+      .tab-btn { transition: all 0.2s ease; }
+      .tab-btn.active { background-color: #1a1a1d; border-color: #3b82f6; color: #fff; }
+      .tab-content { display: none; animation: fadeIn 0.3s ease; }
+      .tab-content.active { display: block; }
+      @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+      .feature-card { background: linear-gradient(135deg, #1a1a1d 0%, #151517 100%); border: 1px solid #262629; transition: all 0.3s ease; }
+      .feature-card:hover { border-color: #3b82f6; transform: translateY(-2px); }
+    </style>
+  </head>
+  <body class="bg-[#0a0a0b] min-h-screen">
+    <div class="max-w-5xl mx-auto px-6 py-16">
+      <header class="mb-16">
+        <a href="changelog.html" class="text-blue-400 hover:text-blue-300 text-sm mb-6 inline-block transition-colors">&larr; Back to Changelog</a>
+        <h1 class="text-5xl font-bold text-white mt-4 tracking-tight">Changelog</h1>
+        <p class="text-slate-400 mt-3 text-lg">June 2026</p>
+        
+        <!-- Tabs -->
+        <div class="flex gap-2 mt-8">
+          <button onclick="switchTab('product')" id="tab-product" class="tab-btn active px-5 py-2.5 rounded-lg border border-slate-700 text-slate-300 font-medium text-sm hover:border-slate-600">
+            Product
+          </button>
+          <button onclick="switchTab('technical')" id="tab-technical" class="tab-btn px-5 py-2.5 rounded-lg border border-slate-700 text-slate-300 font-medium text-sm hover:border-slate-600">
+            Technical
+          </button>
+        </div>
+      </header>
+
+      <!-- Product Changelog -->
+      <div id="content-product" class="tab-content active">
+
+        <div class="feature-card rounded-xl p-6">
+          <div class="flex items-start gap-4">
+            <div class="w-12 h-12 rounded-lg bg-blue-500/10 flex items-center justify-center flex-shrink-0">
+              <span class="text-2xl">🧬</span>
+            </div>
+            <div>
+              <h3 class="text-xl font-semibold text-white mb-2">A new machine-first language</h3>
+              <p class="text-slate-400 leading-relaxed">MFL was born: a backend language whose source is base64 — one function per line — designed to be written and read by machines, not humans. The whole toolchain (lexer, parser, type inference, code generator) ships in Go.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="feature-card rounded-xl p-6">
+          <div class="flex items-start gap-4">
+            <div class="w-12 h-12 rounded-lg bg-emerald-500/10 flex items-center justify-center flex-shrink-0">
+              <span class="text-2xl">⚡</span>
+            </div>
+            <div>
+              <h3 class="text-xl font-semibold text-white mb-2">Compiles to native code</h3>
+              <p class="text-slate-400 leading-relaxed">Programs are translated to C and compiled with cc -O2 — values are unboxed and there is no runtime VM. fib(40) runs in ~0.20s, neck-and-neck with hand-written C. Static typing is fully inferred: no annotations, type clashes caught at build time.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="feature-card rounded-xl p-6">
+          <div class="flex items-start gap-4">
+            <div class="w-12 h-12 rounded-lg bg-purple-500/10 flex items-center justify-center flex-shrink-0">
+              <span class="text-2xl">🧱</span>
+            </div>
+            <div>
+              <h3 class="text-xl font-semibold text-white mb-2">The full Go-flavored core</h3>
+              <p class="text-slate-400 leading-relaxed">Slices, structs, and maps; closures and higher-order functions; implicit generics by monomorphization; multiple and named returns; variadic parameters; and range loops — the language reads and writes much like Go, all compiled with no boxing.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="feature-card rounded-xl p-6">
+          <div class="flex items-start gap-4">
+            <div class="w-12 h-12 rounded-lg bg-amber-500/10 flex items-center justify-center flex-shrink-0">
+              <span class="text-2xl">🧵</span>
+            </div>
+            <div>
+              <h3 class="text-xl font-semibold text-white mb-2">Concurrency that doesn't leak</h3>
+              <p class="text-slate-400 leading-relaxed">Goroutines (pthread-backed), channels for communication, and a per-goroutine arena that reclaims memory when a request finishes — so a long-running server stays memory-bounded (RSS flat across 12,000 requests).</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="feature-card rounded-xl p-6">
+          <div class="flex items-start gap-4">
+            <div class="w-12 h-12 rounded-lg bg-blue-500/10 flex items-center justify-center flex-shrink-0">
+              <span class="text-2xl">🌐</span>
+            </div>
+            <div>
+              <h3 class="text-xl font-semibold text-white mb-2">Bidirectional JSON over HTTP</h3>
+              <p class="text-slate-400 leading-relaxed">BSD sockets, concurrent HTTP serving, JSON serialization and parsing (json(x) / parse(s, T{})), plus a string-operations library — enough to build a routed JSON API on a native binary with no runtime dependencies.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="feature-card rounded-xl p-6">
+          <div class="flex items-start gap-4">
+            <div class="w-12 h-12 rounded-lg bg-emerald-500/10 flex items-center justify-center flex-shrink-0">
+              <span class="text-2xl">🚀</span>
+            </div>
+            <div>
+              <h3 class="text-xl font-semibold text-white mb-2">machweb — a backend framework</h3>
+              <p class="text-slate-400 leading-relaxed">A tiny web framework written in MFL itself: Request/Response types, response builders, request parsing, and a map-based router that dispatches each request — in its own goroutine — to a handler. Compose it with your app and compile to a single executable.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="feature-card rounded-xl p-6">
+          <div class="flex items-start gap-4">
+            <div class="w-12 h-12 rounded-lg bg-purple-500/10 flex items-center justify-center flex-shrink-0">
+              <span class="text-2xl">📦</span>
+            </div>
+            <div>
+              <h3 class="text-xl font-semibold text-white mb-2">Released v0.1.0 → v0.3.0</h3>
+              <p class="text-slate-400 leading-relaxed">Three tagged releases this month, a formal language specification (SPEC.md), 35+ runnable examples, and a self-hosted server that serves the project's own catalog — the language is now capable enough to host part of its own tooling.</p>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Technical Changelog -->
+      <div id="content-technical" class="tab-content">
+        <div class="space-y-8">
+
+        <section>
+          <h2 class="text-2xl font-semibold text-red-400 mb-4 flex items-center gap-2">
+            <span>🐛</span> Bug Fixes
+          </h2>
+          <ul class="space-y-2 text-slate-300">
+            <li><span class="text-slate-500 text-sm mr-3">[21/06]</span>fix(types,codegen): correct string equality, float %, and len() typing (#30)</li>
+          </ul>
+        </section>
+
+        <section>
+          <h2 class="text-2xl font-semibold text-purple-400 mb-4 flex items-center gap-2">
+            <span>💼</span> Other
+          </h2>
+          <ul class="space-y-2 text-slate-300">
+            <li><span class="text-slate-500 text-sm mr-3">[21/06]</span>Add docs/ landing page and update CHANGELOG</li>
+            <li><span class="text-slate-500 text-sm mr-3">[21/06]</span>Add a map-based router to machweb (+ the func type) (#62)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[21/06]</span>Add machweb: a backend web framework written in MFL (#61)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[21/06]</span>Release v0.3.0: named returns and variadic parameters</li>
+            <li><span class="text-slate-500 text-sm mr-3">[21/06]</span>Add variadic parameters (v0.3) (#60)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[21/06]</span>Add named return values (v0.3 feature) (#59)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[21/06]</span>Release v0.2.1: arena memory management</li>
+            <li><span class="text-slate-500 text-sm mr-3">[21/06]</span>Add arena memory management (per-goroutine reclamation) (#58)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[21/06]</span>Add a self-hosted server written in MFL (#57)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[21/06]</span>Consolidate v0.2.0: add SPEC.md and CHANGELOG, bump version</li>
+            <li><span class="text-slate-500 text-sm mr-3">[21/06]</span>Add generics via monomorphization (implicit, no annotations) (#56)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[21/06]</span>Add closures and first-class functions (lambda-lifting) (#55)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[21/06]</span>Add multiple return values + parallel/comma-ok assignment (#54)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[21/06]</span>Add for-range loops over slices, maps, and strings (#53)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[21/06]</span>Add string operations + an HTTP router example (#52)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[21/06]</span>Add JSON parsing: parse(s, T{}) + http_body, POST echo API (#51)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[21/06]</span>Add JSON serialization and a JSON-over-HTTP API (#50)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[21/06]</span>Add maps: make(map[K]V), indexing, has/delete/keys (#49)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[21/06]</span>Add channels: goroutine communication (#48)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[21/06]</span>Add structs: the keystone composite type (#47)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[21/06]</span>Add language reference and Sieve example</li>
+            <li><span class="text-slate-500 text-sm mr-3">[20/06]</span>Add Makefile, LICENSE, and tau-style README</li>
+            <li><span class="text-slate-500 text-sm mr-3">[20/06]</span>Add slices and goroutines; concurrent HTTP server</li>
+            <li><span class="text-slate-500 text-sm mr-3">[20/06]</span>Add Go-style for loops and sockets; HTTP server example</li>
+            <li><span class="text-slate-500 text-sm mr-3">[20/06]</span>Compile MFL to native code; remove interpreter and decode</li>
+            <li><span class="text-slate-500 text-sm mr-3">[20/06]</span>Make .mfl the source of truth; drop human-readable .mfs crutch</li>
+            <li><span class="text-slate-500 text-sm mr-3">[20/06]</span>Add basic + complex MFL examples (compiled to .mfl)</li>
+          </ul>
+        </section>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      function switchTab(tab) {
+        document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+        document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+        document.getElementById('content-' + tab).classList.add('active');
+        document.getElementById('tab-' + tab).classList.add('active');
+      }
+    </script>
+  </body>
+</html>
