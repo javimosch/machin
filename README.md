@@ -18,7 +18,7 @@
 
 > A statically-typed language whose on-disk form is base64 — one function per line, blank line between functions. It compiles to native machine code through C.
 
-📖 Full reference: [`SPEC.md`](SPEC.md) · language tour: [`docs/LANGUAGE.md`](docs/LANGUAGE.md)
+📖 Full reference: [`SPEC.md`](SPEC.md) · language tour: [`docs/LANGUAGE.md`](docs/LANGUAGE.md) · self-hosted server: [`selfhost/`](selfhost/)
 
 ```bash
 # A program IS base64 — one function per line:
