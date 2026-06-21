@@ -336,6 +336,18 @@ func TestClosureIIFE(t *testing.T) {
 	}
 }
 
+func TestMapOfClosuresRouter(t *testing.T) {
+	// the map-based router pattern: handler closures stored in map[string]func,
+	// dispatched by key, with a miss fallback
+	got := runProg(t,
+		`func reg(m, k, h) { m[k] = h }`,
+		`func dispatch(m, k, x) (out) { if has(m, k) { h := m[k] out = h(x) } else { out = -1 } }`,
+		`func main() { r := make(map[string]func) reg(r, "double", func(x) { return x * 2 }) reg(r, "square", func(x) { return x * x }) println(dispatch(r, "double", 5), dispatch(r, "square", 5), dispatch(r, "nope", 5), len(r)) }`)
+	if got != "10 25 -1 2\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
 func TestFrameworkDispatchPattern(t *testing.T) {
 	// the machweb pattern: a handler closure returning a struct, dispatched
 	// through a function that calls it (as serve -> handle -> handler does)

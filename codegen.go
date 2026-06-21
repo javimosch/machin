@@ -39,6 +39,8 @@ func cTypeName(t string) string {
 		return "int"
 	case "string":
 		return "char*"
+	case "func":
+		return "mfl_closure"
 	}
 	return "mfl_" + t
 }

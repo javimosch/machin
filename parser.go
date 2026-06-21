@@ -176,6 +176,10 @@ func (p *Parser) parseTypeName() (string, error) {
 		}
 		return "chan " + elem, nil
 	}
+	if p.peek().Val == "func" { // a function value; its signature is inferred
+		p.next()
+		return "func", nil
+	}
 	t := p.next()
 	if t.Kind != TIdent {
 		return "", fmt.Errorf("expected a type name, got %q", t.Val)

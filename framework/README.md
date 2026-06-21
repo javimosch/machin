@@ -55,6 +55,25 @@ reclaimed when the response is sent).
   `param("/users/42", "/users/") == "42"`.
 - `json(x)` / `parse(s, T{})` — serialize / parse JSON (built into machin).
 
+## Map-based router
+
+For exact `METHOD PATH` matching, register handlers on a router (a
+`map[string]func`) and serve it:
+
+```go
+func main() {
+    r := new_router()
+    route(r, "GET",  "/",          func(req) { return ok_text("home") })
+    route(r, "GET",  "/api/todos", func(req) { return ok_json(json(todos())) })
+    route(r, "POST", "/api/echo",  func(req) { return ok_json(req.body) })
+    serve_router(48080, r)
+}
+```
+
+Unmatched method+path combinations return `404` automatically. See
+`framework/router_app.src`. (For dynamic segments like `/hello/<name>`, use the
+plain `serve(port, handler)` form with `param`.)
+
 ## Example
 
 `example.src` is a small JSON todo API. Run it:
