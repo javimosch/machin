@@ -14,7 +14,7 @@ func CompileToC(p *Program) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	g := &cgen{c: c, jsonMemo: map[string]string{}}
+	g := &cgen{c: c, jsonMemo: map[string]string{}, parseMemo: map[string]string{}}
 	return g.program(p)
 }
 
@@ -48,9 +48,10 @@ type cgen struct {
 	buf      strings.Builder // function bodies
 	tramp    strings.Builder // goroutine trampolines
 	goID     int
-	jsonFns  strings.Builder   // generated per-type JSON serializers
-	jsonMemo map[string]string // type string -> serializer function name
-	jsonID   int
+	jsonFns   strings.Builder   // generated per-type JSON serializers + parsers
+	jsonMemo  map[string]string // type string -> serializer function name
+	parseMemo map[string]string // type string -> parser function name
+	jsonID    int
 }
 
 const cRuntime = `#include <stdio.h>
@@ -202,6 +203,46 @@ static char* mfl_json_str(const char* s) { /* quote + escape a string */
     b[j++]='"'; b[j]=0;
     return b;
 }
+static char* mfl_http_body(const char* s) { /* bytes after the blank line of an HTTP message */
+    const char* b = strstr(s, "\r\n\r\n");
+    return mfl_dup(b ? b + 4 : "");
+}
+
+/* JSON parsing: a cursor (const char**) walked by recursive-descent helpers */
+static void mfl_js_ws(const char** p) { while (**p==' '||**p=='\t'||**p=='\n'||**p=='\r') (*p)++; }
+static int64_t mfl_js_int(const char** p) { mfl_js_ws(p); char* e; long long v = strtoll(*p, &e, 10); *p = e; return v; }
+static double mfl_js_float(const char** p) { mfl_js_ws(p); char* e; double v = strtod(*p, &e); *p = e; return v; }
+static int mfl_js_bool(const char** p) { mfl_js_ws(p); if (**p=='t') { *p += 4; return 1; } if (**p=='f') { *p += 5; return 0; } return 0; }
+static char* mfl_js_str(const char** p) {
+    mfl_js_ws(p);
+    if (**p != '"') return mfl_dup("");
+    (*p)++;
+    char* out = malloc(strlen(*p) + 1); size_t j = 0;
+    while (**p && **p != '"') {
+        char c = **p;
+        if (c == '\\') {
+            (*p)++; char e = **p;
+            if (e=='n') out[j++]='\n'; else if (e=='t') out[j++]='\t'; else if (e=='r') out[j++]='\r';
+            else out[j++] = e;
+        } else out[j++] = c;
+        (*p)++;
+    }
+    if (**p == '"') (*p)++;
+    out[j] = 0; return out;
+}
+static void mfl_js_skip(const char** p) { /* skip one JSON value, including extra object fields */
+    mfl_js_ws(p);
+    char c = **p;
+    if (c == '"') { free(mfl_js_str(p)); return; }
+    if (c == '{') { (*p)++; mfl_js_ws(p); if (**p=='}') { (*p)++; return; }
+        while (1) { free(mfl_js_str(p)); mfl_js_ws(p); if (**p==':') (*p)++; mfl_js_skip(p); mfl_js_ws(p); if (**p==',') { (*p)++; continue; } break; }
+        if (**p=='}') (*p)++; return; }
+    if (c == '[') { (*p)++; mfl_js_ws(p); if (**p==']') { (*p)++; return; }
+        while (1) { mfl_js_skip(p); mfl_js_ws(p); if (**p==',') { (*p)++; continue; } break; }
+        if (**p==']') (*p)++; return; }
+    while (**p && **p!=',' && **p!='}' && **p!=']') (*p)++;
+}
+static int mfl_js_more(const char** p) { mfl_js_ws(p); if (**p==',') { (*p)++; return 1; } return 0; }
 
 /* networking: the low-level shape of Go's net package */
 static int64_t mfl_listen(int64_t port) {
@@ -770,6 +811,121 @@ func (g *cgen) jsonSerializer(typeStr string) (string, error) {
 	return name, nil
 }
 
+// jsonParser ensures a C function exists that parses JSON (via a cursor) into a
+// value of the given type, returning the function name. Mirrors jsonSerializer.
+func (g *cgen) jsonParser(typeStr string) (string, error) {
+	if name, ok := g.parseMemo[typeStr]; ok {
+		return name, nil
+	}
+	name := fmt.Sprintf("mfl_jp_v%d", g.jsonID)
+	g.jsonID++
+	g.parseMemo[typeStr] = name
+	ct := cTypeName(typeStr)
+	var body string
+
+	switch {
+	case typeStr == "int":
+		body = "return mfl_js_int(p);"
+	case typeStr == "float":
+		body = "return mfl_js_float(p);"
+	case typeStr == "bool":
+		body = "return mfl_js_bool(p);"
+	case typeStr == "string":
+		body = "return mfl_js_str(p);"
+	case strings.HasPrefix(typeStr, "[]"):
+		elem := typeStr[2:]
+		ep, err := g.jsonParser(elem)
+		if err != nil {
+			return "", err
+		}
+		ect := cTypeName(elem)
+		body = fmt.Sprintf(`mfl_slice s = {0};
+    mfl_js_ws(p);
+    if (**p == '[') {
+        (*p)++; mfl_js_ws(p);
+        if (**p != ']') {
+            while (1) {
+                %s _e = %s(p);
+                s = mfl_append(s, &_e, sizeof(%s));
+                if (mfl_js_more(p)) continue;
+                break;
+            }
+        }
+        mfl_js_ws(p); if (**p == ']') (*p)++;
+    }
+    return s;`, ect, ep, ect)
+	case strings.HasPrefix(typeStr, "map["):
+		kt, vt, err := splitMapType(typeStr)
+		if err != nil {
+			return "", err
+		}
+		vp, err := g.jsonParser(vt)
+		if err != nil {
+			return "", err
+		}
+		vct := cTypeName(vt)
+		keyIsStr, setCall := 0, "mfl_map_set(m, strtoll(_k, 0, 10), 0, &_val);"
+		if kt == "string" {
+			keyIsStr, setCall = 1, "mfl_map_set(m, 0, _k, &_val);"
+		}
+		body = fmt.Sprintf(`mfl_map* m = mfl_make_map(%d, sizeof(%s));
+    mfl_js_ws(p);
+    if (**p == '{') {
+        (*p)++; mfl_js_ws(p);
+        if (**p != '}') {
+            while (1) {
+                char* _k = mfl_js_str(p); mfl_js_ws(p); if (**p == ':') (*p)++;
+                %s _val = %s(p);
+                %s
+                free(_k);
+                if (mfl_js_more(p)) continue;
+                break;
+            }
+        }
+        mfl_js_ws(p); if (**p == '}') (*p)++;
+    }
+    return m;`, keyIsStr, vct, vct, vp, setCall)
+	default:
+		td, ok := g.c.StructTypes()[typeStr]
+		if !ok {
+			return "", fmt.Errorf("parse: cannot parse into type %q", typeStr)
+		}
+		var b strings.Builder
+		fmt.Fprintf(&b, "%s out = {0};\n", ct)
+		b.WriteString(`    mfl_js_ws(p);
+    if (**p == '{') {
+        (*p)++; mfl_js_ws(p);
+        if (**p != '}') {
+            while (1) {
+                char* _k = mfl_js_str(p); mfl_js_ws(p); if (**p == ':') (*p)++;
+`)
+		for i, f := range td.Fields {
+			fp, err := g.jsonParser(f.Type)
+			if err != nil {
+				return "", err
+			}
+			kw := "if"
+			if i > 0 {
+				kw = "else if"
+			}
+			fmt.Fprintf(&b, "                %s (strcmp(_k, %q) == 0) out.f_%s = %s(p);\n", kw, f.Name, f.Name, fp)
+		}
+		b.WriteString(`                else mfl_js_skip(p);
+                free(_k);
+                if (mfl_js_more(p)) continue;
+                break;
+            }
+        }
+        mfl_js_ws(p); if (**p == '}') (*p)++;
+    }
+    return out;`)
+		body = b.String()
+	}
+
+	fmt.Fprintf(&g.jsonFns, "static %s %s(const char** p) {\n    %s\n}\n", ct, name, body)
+	return name, nil
+}
+
 func (g *cgen) call(ex *Call) (string, error) {
 	args := make([]string, len(ex.Args))
 	for i, a := range ex.Args {
@@ -802,6 +958,15 @@ func (g *cgen) call(ex *Call) (string, error) {
 			return "", err
 		}
 		return fmt.Sprintf("%s(%s)", name, args[0]), nil
+	case "parse":
+		// the witness (Args[1]) supplies the target type; its value is unused
+		name, err := g.jsonParser(g.c.TypeString(ex.Args[1]))
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("({ const char* _p = (%s); %s(&_p); })", args[0], name), nil
+	case "http_body":
+		return fmt.Sprintf("mfl_http_body(%s)", args[0]), nil
 	case "append":
 		// &((T[1]){v})[0] yields a T* for any element type, including structs
 		// (a plain &(T){v} would mis-init an aggregate field-by-field).

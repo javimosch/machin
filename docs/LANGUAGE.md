@@ -183,6 +183,8 @@ first := users[0]                                // value copy
 | `delete(m, k)`              | remove key `k` from map `m`                  |
 | `keys(m)`                   | a slice of map `m`'s keys                    |
 | `json(x)`                   | serialize any value to a JSON string         |
+| `parse(s, T{})`             | parse a JSON string into a value of `T`'s type |
+| `http_body(req)`            | the body of an HTTP message (after the blank line) |
 | `str(n)`                    | convert an `int` or `float` to its `string`  |
 | `int(n)`                    | convert a numeric value to `int` (truncates) |
 | `sleep(ms)`                 | suspend the current goroutine (milliseconds) |
@@ -222,6 +224,23 @@ func main() {
 
 Maps serialize as JSON objects (int keys are stringified). See
 `examples/complex/json.mfl` and the JSON API server `examples/complex/json_api.mfl`.
+
+`parse(s, witness)` goes the other way: it parses a JSON string into a value of
+the **witness's type**. The witness is only used for its type — pass a zero
+value like `Todo{}`, `[]int{}`, or `make(map[string]int)`:
+
+```go
+t := parse(s, Todo{})                 // JSON object  -> struct
+xs := parse("[1,2,3]", []int{})       // JSON array   -> []int
+m := parse(s, make(map[string]int))   // JSON object  -> map
+n := parse("42", 0)                   // JSON number  -> int
+```
+
+Struct parsing tolerates field reordering, ignores unknown fields, and
+zero-fills missing ones. `http_body(req)` returns the body of an HTTP message
+(the bytes after the blank line) — so a server can `parse(http_body(req), T{})`.
+See `examples/complex/json_parse.mfl` and the echo server
+`examples/complex/json_echo_api.mfl`.
 
 ### Channels
 

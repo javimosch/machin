@@ -978,6 +978,19 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		}
 		// any value serializes; codegen reads the resolved type
 		return c.cString, nil
+	case "parse":
+		// parse(jsonString, witness) -> a value of the witness's type
+		if len(argSlots) != 2 {
+			return 0, fmt.Errorf("parse: 2 args (json string, type witness)")
+		}
+		c.addPair(argSlots[0], c.cString)
+		return argSlots[1], nil
+	case "http_body":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("http_body: 1 arg")
+		}
+		c.addPair(argSlots[0], c.cString)
+		return c.cString, nil
 	case "str":
 		if len(argSlots) != 1 {
 			return 0, fmt.Errorf("str: 1 arg")

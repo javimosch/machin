@@ -192,6 +192,40 @@ func TestJSONStructAndMap(t *testing.T) {
 	}
 }
 
+func TestJSONParseStructRoundTrip(t *testing.T) {
+	got := runProg(t,
+		`type P struct { x int  y string  ok bool }`,
+		`func main() { p := parse(json(P{x: 5, y: "hi", ok: true}), P{}) println(p.x, p.y, p.ok) }`)
+	if got != "5 hi true\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestJSONParseStructToleratesOrderAndExtras(t *testing.T) {
+	got := runProg(t,
+		`type P struct { a int  b int }`,
+		`func main() { p := parse("{\"b\":2,\"extra\":9,\"a\":1}", P{}) println(p.a, p.b) }`)
+	if got != "1 2\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestJSONParseSliceAndMap(t *testing.T) {
+	got := runProg(t,
+		`func main() { xs := parse("[10, 20, 30]", []int{}) m := parse("{\"k\":9}", make(map[string]int)) println(len(xs), xs[2], m["k"]) }`)
+	if got != "3 30 9\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestHTTPBody(t *testing.T) {
+	got := runProg(t,
+		`func main() { println(http_body("POST / HTTP/1.1\r\nHost: x\r\n\r\nthe-body")) }`)
+	if got != "the-body\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
 func TestChannelSendRecv(t *testing.T) {
 	got := runProg(t,
 		`func send(c) { c <- 42 }`,
