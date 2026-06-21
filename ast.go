@@ -92,7 +92,8 @@ type CallValue struct {
 }
 
 // MakeClosure is produced by lambda-lifting: it builds a closure value over a
-// lifted top-level function, capturing the named variables by value.
+// lifted top-level function, capturing the named variables by reference
+// (pointers to their heap boxes, so the closure shares mutable state).
 type MakeClosure struct {
 	FuncName string
 	Captures []string
@@ -221,6 +222,9 @@ type FuncDecl struct {
 	// captured variables, supplied at runtime from that heap environment.
 	IsLambda    bool
 	NumCaptures int
+	// Boxed names the variables (locals or params) that are captured by a
+	// closure and therefore heap-boxed, so captures are by reference.
+	Boxed map[string]bool
 }
 
 func (FuncDecl) node() {}

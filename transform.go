@@ -22,9 +22,13 @@ func liftClosures(prog *Program) {
 		for _, r := range fn.Returns {
 			bound[r] = true // named returns are locals, capturable by lambdas
 		}
+		if fn.Boxed == nil {
+			fn.Boxed = map[string]bool{}
+		}
 		l := &lifter{
-			bound:   bound,
-			counter: &counter,
+			bound:     bound,
+			enclosing: fn,
+			counter:   &counter,
 			emit: func(nf *FuncDecl) {
 				lifted = append(lifted, nf)
 				worklist = append(worklist, nf)
@@ -38,9 +42,10 @@ func liftClosures(prog *Program) {
 }
 
 type lifter struct {
-	bound   map[string]bool
-	counter *int
-	emit    func(*FuncDecl)
+	bound     map[string]bool
+	enclosing *FuncDecl // the function whose body is being lifted
+	counter   *int
+	emit      func(*FuncDecl)
 }
 
 // lift turns a FuncLit into a lifted FuncDecl + a MakeClosure referencing it.
@@ -54,6 +59,15 @@ func (l *lifter) lift(lit *FuncLit) Expr {
 	}
 	sort.Strings(caps)
 
+	// Captures are by reference: each captured variable is heap-boxed in the
+	// enclosing function, and the lambda receives the box pointer under the same
+	// name. Both sides access it through a dereference, so mutations are shared.
+	boxed := map[string]bool{}
+	for _, c := range caps {
+		l.enclosing.Boxed[c] = true
+		boxed[c] = true
+	}
+
 	name := fmt.Sprintf("lambda_%d", *l.counter)
 	*l.counter++
 	fn := &FuncDecl{
@@ -62,6 +76,7 @@ func (l *lifter) lift(lit *FuncLit) Expr {
 		Body:        lit.Body,
 		IsLambda:    true,
 		NumCaptures: len(caps),
+		Boxed:       boxed,
 	}
 	l.emit(fn)
 	return &MakeClosure{FuncName: name, Captures: caps}

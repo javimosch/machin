@@ -10,6 +10,7 @@ import (
 // `cc -O2`, so MFL's runtime cost is whatever the C compiler's optimizer
 // produces — native, on par with C/Rust/Zig for scalar code.
 func CompileToC(p *Program, safe bool) (string, error) {
+	liftClosures(p) // idempotent: a no-op once literals are already lifted
 	c, err := Check(p)
 	if err != nil {
 		return "", err
@@ -430,9 +431,11 @@ func (g *cgen) program(p *Program) (string, error) {
 	for _, inst := range g.c.Reps() {
 		src := g.c.SrcFunc(inst)
 		if src.IsLambda && src.NumCaptures > 0 {
+			// Each environment field is a pointer to the captured variable's heap
+			// box, so the closure shares storage with its enclosing scope.
 			fmt.Fprintf(&out, "typedef struct {")
 			for i := 0; i < src.NumCaptures; i++ {
-				fmt.Fprintf(&out, " %s f%d;", g.c.ParamCType(inst, i), i)
+				fmt.Fprintf(&out, " %s* f%d;", g.c.ParamCType(inst, i), i)
 			}
 			fmt.Fprintf(&out, " } %s_env;\n", g.c.CName(inst))
 		}
@@ -482,7 +485,13 @@ func (g *cgen) signature(inst string) string {
 		parts = append(parts, "void* _env") // captures arrive via the environment
 	}
 	for i := fn.NumCaptures; i < len(fn.Params); i++ {
-		parts = append(parts, g.c.ParamCType(inst, i)+" v_"+fn.Params[i])
+		// A parameter captured by a nested closure is received by value under a
+		// temporary name, then boxed on entry (see function()).
+		cname := "v_" + fn.Params[i]
+		if fn.Boxed[fn.Params[i]] {
+			cname = "_arg_" + fn.Params[i]
+		}
+		parts = append(parts, g.c.ParamCType(inst, i)+" "+cname)
 	}
 	params := strings.Join(parts, ", ")
 	if params == "" {
@@ -495,15 +504,30 @@ func (g *cgen) function(inst string) error {
 	fn := g.c.SrcFunc(inst)
 	g.curFn = inst
 	g.buf.WriteString(g.signature(inst) + " {\n")
-	// unpack captured variables from the closure environment
+	// unpack captured variables from the closure environment. Each is a pointer
+	// to the shared heap box; the lambda accesses it by reference (varRef).
 	if fn.IsLambda && fn.NumCaptures > 0 {
 		env := g.c.CName(inst) + "_env"
 		fmt.Fprintf(&g.buf, "    %s* _e = (%s*)_env;\n", env, env)
 		for i := 0; i < fn.NumCaptures; i++ {
-			fmt.Fprintf(&g.buf, "    %s v_%s = _e->f%d;\n", g.c.ParamCType(inst, i), fn.Params[i], i)
+			fmt.Fprintf(&g.buf, "    %s* v_%s = _e->f%d;\n", g.c.ParamCType(inst, i), fn.Params[i], i)
+		}
+	}
+	// box any parameter captured by a nested closure: copy the by-value argument
+	// into a fresh heap cell so the closure can share and mutate it.
+	for i := fn.NumCaptures; i < len(fn.Params); i++ {
+		name := fn.Params[i]
+		if fn.Boxed[name] {
+			ct := g.c.ParamCType(inst, i)
+			fmt.Fprintf(&g.buf, "    %s* v_%s = mfl_alloc(sizeof(%s)); *v_%s = _arg_%s;\n", ct, name, ct, name, name)
 		}
 	}
 	for _, name := range g.c.Locals(inst) {
+		if fn.Boxed[name] {
+			ct := g.c.VarCType(inst, name)
+			fmt.Fprintf(&g.buf, "    %s* v_%s = mfl_alloc(sizeof(%s)); *v_%s = %s;\n", ct, name, ct, name, cZero(g.c.VarKind(inst, name)))
+			continue
+		}
 		fmt.Fprintf(&g.buf, "    %s v_%s = %s;\n", g.c.VarCType(inst, name), name, cZero(g.c.VarKind(inst, name)))
 	}
 	for _, s := range fn.Body {
@@ -527,11 +551,11 @@ func (g *cgen) emitNamedReturn(inst string) {
 	case 0:
 		g.buf.WriteString("return;\n")
 	case 1:
-		fmt.Fprintf(&g.buf, "return v_%s;\n", names[0])
+		fmt.Fprintf(&g.buf, "return %s;\n", g.varRef(names[0]))
 	default:
 		parts := make([]string, len(names))
 		for i, n := range names {
-			parts[i] = "v_" + n
+			parts[i] = g.varRef(n)
 		}
 		fmt.Fprintf(&g.buf, "return (%s_ret){ %s };\n", g.c.CName(inst), strings.Join(parts, ", "))
 	}
@@ -560,7 +584,7 @@ func (g *cgen) stmt(s Stmt, depth int) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(&g.buf, "v_%s = %s;\n", st.Name, e)
+		fmt.Fprintf(&g.buf, "%s = %s;\n", g.varRef(st.Name), e)
 	case *ReturnStmt:
 		if len(st.Vals) == 0 {
 			// a bare return yields the named return locals (or nothing for void)
@@ -677,7 +701,7 @@ func (g *cgen) multiAssign(st *MultiAssign, depth int) error {
 			return
 		}
 		indentC(&g.buf, depth+1)
-		fmt.Fprintf(&g.buf, "v_%s = %s;\n", name, val)
+		fmt.Fprintf(&g.buf, "%s = %s;\n", g.varRef(name), val)
 	}
 
 	if len(st.Rhs) == 1 {
@@ -709,7 +733,7 @@ func (g *cgen) multiAssign(st *MultiAssign, depth int) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(&g.buf, "v_%s = %s;\n", st.Names[0], e)
+		fmt.Fprintf(&g.buf, "%s = %s;\n", g.varRef(st.Names[0]), e)
 		return nil
 	}
 
@@ -765,11 +789,11 @@ func (g *cgen) rangeStmt(st *RangeStmt, depth int) error {
 		fmt.Fprintf(&g.buf, "for (int64_t _i%d = 0; _i%d < _r%d.len; _i%d++) {\n", id, id, id, id)
 		if hasKey {
 			indentC(&g.buf, depth+2)
-			fmt.Fprintf(&g.buf, "v_%s = _i%d;\n", st.Key, id)
+			fmt.Fprintf(&g.buf, "%s = _i%d;\n", g.varRef(st.Key), id)
 		}
 		if hasVal {
 			indentC(&g.buf, depth+2)
-			fmt.Fprintf(&g.buf, "v_%s = ((%s*)_r%d.data)[_i%d];\n", st.Val, ect, id, id)
+			fmt.Fprintf(&g.buf, "%s = ((%s*)_r%d.data)[_i%d];\n", g.varRef(st.Val), ect, id, id)
 		}
 	case KString:
 		indentC(&g.buf, depth+1)
@@ -778,11 +802,11 @@ func (g *cgen) rangeStmt(st *RangeStmt, depth int) error {
 		fmt.Fprintf(&g.buf, "for (int64_t _i%d = 0; _s%d[_i%d]; _i%d++) {\n", id, id, id, id)
 		if hasKey {
 			indentC(&g.buf, depth+2)
-			fmt.Fprintf(&g.buf, "v_%s = _i%d;\n", st.Key, id)
+			fmt.Fprintf(&g.buf, "%s = _i%d;\n", g.varRef(st.Key), id)
 		}
 		if hasVal {
 			indentC(&g.buf, depth+2)
-			fmt.Fprintf(&g.buf, "v_%s = mfl_charat(_s%d, _i%d);\n", st.Val, id, id)
+			fmt.Fprintf(&g.buf, "%s = mfl_charat(_s%d, _i%d);\n", g.varRef(st.Val), id, id)
 		}
 	case KMap:
 		kct, vct := g.c.MapKeyCType(g.curFn, st.X), g.c.MapValCType(g.curFn, st.X)
@@ -800,11 +824,11 @@ func (g *cgen) rangeStmt(st *RangeStmt, depth int) error {
 		fmt.Fprintf(&g.buf, "%s _k%d = ((%s*)_ks%d.data)[_i%d];\n", kct, id, kct, id, id)
 		if hasKey {
 			indentC(&g.buf, depth+2)
-			fmt.Fprintf(&g.buf, "v_%s = _k%d;\n", st.Key, id)
+			fmt.Fprintf(&g.buf, "%s = _k%d;\n", g.varRef(st.Key), id)
 		}
 		if hasVal {
 			indentC(&g.buf, depth+2)
-			fmt.Fprintf(&g.buf, "%s _v%d; mfl_map_get(_m%d, %s, %s, &_v%d); v_%s = _v%d;\n", vct, id, id, ik, sk, id, st.Val, id)
+			fmt.Fprintf(&g.buf, "%s _v%d; mfl_map_get(_m%d, %s, %s, &_v%d); %s = _v%d;\n", vct, id, id, ik, sk, id, g.varRef(st.Val), id)
 		}
 	default:
 		return fmt.Errorf("codegen: cannot range over %s", g.c.NodeKind(g.curFn, st.X))
@@ -921,7 +945,7 @@ func (g *cgen) expr(e Expr) (string, error) {
 	case *NilLit:
 		return "0", nil
 	case *Ident:
-		return "v_" + ex.Name, nil
+		return g.varRef(ex.Name), nil
 	case *Unary:
 		x, err := g.expr(ex.X)
 		if err != nil {
@@ -1042,6 +1066,23 @@ func (g *cgen) binary(ex *Binary) (string, error) {
 		}
 	}
 	return fmt.Sprintf("(%s %s %s)", l, ex.Op, r), nil
+}
+
+// isBoxed reports whether a variable in the current instance is captured by a
+// closure and therefore heap-boxed (captured by reference).
+func (g *cgen) isBoxed(name string) bool {
+	return g.c.SrcFunc(g.curFn).Boxed[name]
+}
+
+// varRef is the C lvalue/rvalue for a variable: a plain local, or a dereference
+// of its heap box when the variable is captured by reference. `v_name` always
+// names the storage (the box pointer for boxed variables); varRef names the
+// value through it, so both the enclosing scope and the closure see mutations.
+func (g *cgen) varRef(name string) string {
+	if g.isBoxed(name) {
+		return "(*v_" + name + ")"
+	}
+	return "v_" + name
 }
 
 // boundsIdx wraps a slice index with a bounds check when --safe is set.
@@ -1409,7 +1450,7 @@ func (g *cgen) call(ex *Call) (string, error) {
 	if !g.c.IsTopFunc(ex.Callee) {
 		// a function-valued local variable, called by name
 		params, ret := g.c.VarFuncSig(g.curFn, ex.Callee)
-		return g.closureCall("v_"+ex.Callee, params, ret, args), nil
+		return g.closureCall(g.varRef(ex.Callee), params, ret, args), nil
 	}
 	cname := g.c.CalleeCName(g.curFn, ex)
 	inst := g.c.CalleeInst(g.curFn, ex)
