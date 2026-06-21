@@ -139,8 +139,9 @@ func main() {
 
 | Feature | Detail |
 |---------|--------|
-| **Types** | `int` (int64), `float` (double), `bool`, `string`, slices `[]T` — inferred |
+| **Types** | `int` (int64), `float` (double), `bool`, `string`, slices `[]T`, structs — inferred |
 | **Slices** | `[]int{...}`, `s[i]` read/assign, `len(s)`, `append(s, x)` |
+| **Structs** | `type T struct { ... }`, `T{f: v}` / `T{...}`, `p.f` read/assign, value semantics, `[]T` |
 | **Control flow** | `if / else if / else`, `for cond {}`, `for {}`, `while cond {}` |
 | **Concurrency** | `go f(args)`, `sleep(ms)` |
 | **Operators** | `+ - * / %`, `== != < <= > >=`, `&& \|\| !`; `+` concatenates strings |
@@ -257,11 +258,12 @@ make install      # install to $(PREFIX)/bin  (default /usr/local)
 | `--emit-c` | ✅ done |
 | int / float / bool / string | ✅ done |
 | Slices `[]T` (`literal`, index, `len`, `append`) | ✅ done |
+| Structs (`type T struct`, literals, field access, `[]T`) | ✅ done |
 | Control flow (`if`, `for`, `while`) | ✅ done |
 | Goroutines (`go`) + `sleep` | ✅ done |
 | Networking (`listen`/`accept`/`read`/`write`/`close`) | ✅ done |
 | Concurrent HTTP server example | ✅ done |
-| Maps, structs, channels | ⬜ planned |
+| Maps, channels | ⬜ planned |
 | Bounds / overflow checks (`--safe`) | ⬜ planned |
 
 ---

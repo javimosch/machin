@@ -23,7 +23,7 @@ func runNative(t *testing.T, funcs ...string) string {
 		}
 		fns = append(fns, fn)
 	}
-	out, err := RunCaptured(fns)
+	out, err := RunCaptured(&Program{Funcs: fns})
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -94,12 +94,62 @@ func TestGoroutine(t *testing.T) {
 	}
 }
 
+// runProg runs a whole program (struct types + functions) through the native path.
+func runProg(t *testing.T, srcs ...string) string {
+	t.Helper()
+	var decls []string
+	for _, s := range srcs {
+		decls = append(decls, normalize(s))
+	}
+	prog, err := ParseProgram(decls)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	out, err := RunCaptured(prog)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	return out
+}
+
+func TestStructFieldsAndAssign(t *testing.T) {
+	got := runProg(t,
+		`type P struct { x int  y int }`,
+		`func main() { p := P{x: 3, y: 4} p.x = 10 println(p.x + p.y) }`)
+	if got != "14\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestStructParamReturnAndSlice(t *testing.T) {
+	got := runProg(t,
+		`type P struct { x int  y int }`,
+		`func mk(a, b) { return P{x: a, y: b} }`,
+		`func main() { ps := []P{} ps = append(ps, mk(1, 2)) ps = append(ps, mk(3, 4)) s := 0 i := 0 for i < len(ps) { s = s + ps[i].x + ps[i].y i = i + 1 } println(s, len(ps)) }`)
+	if got != "10 2\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestStructFieldTypeMismatch(t *testing.T) {
+	prog, err := ParseProgram([]string{
+		normalize(`type P struct { x int }`),
+		normalize(`func main() { p := P{x: "no"} println(p.x) }`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Check(prog); err == nil {
+		t.Fatal("expected field type mismatch error")
+	}
+}
+
 func TestTypeMismatch(t *testing.T) {
 	fn, err := ParseFunc(normalize(`func main() { x := 1 x = "s" }`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Check([]*FuncDecl{fn}); err == nil {
+	if _, err := Check(&Program{Funcs: []*FuncDecl{fn}}); err == nil {
 		t.Fatal("expected type mismatch error")
 	}
 }

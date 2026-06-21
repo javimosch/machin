@@ -15,8 +15,8 @@ func ccPath() string {
 }
 
 // BuildBinary compiles the program to a native executable at outPath via cc -O2.
-func BuildBinary(funcs []*FuncDecl, outPath string) error {
-	csrc, err := CompileToC(funcs)
+func BuildBinary(prog *Program, outPath string) error {
+	csrc, err := CompileToC(prog)
 	if err != nil {
 		return err
 	}
@@ -38,14 +38,14 @@ func BuildBinary(funcs []*FuncDecl, outPath string) error {
 }
 
 // RunCaptured builds the program to a temp binary, runs it, and returns stdout.
-func RunCaptured(funcs []*FuncDecl) (string, error) {
+func RunCaptured(prog *Program) (string, error) {
 	bin, err := os.CreateTemp("", "mfl-bin-*")
 	if err != nil {
 		return "", err
 	}
 	bin.Close()
 	defer os.Remove(bin.Name())
-	if err := BuildBinary(funcs, bin.Name()); err != nil {
+	if err := BuildBinary(prog, bin.Name()); err != nil {
 		return "", err
 	}
 	out, err := exec.Command(bin.Name()).Output()

@@ -36,7 +36,7 @@ func parseFuncs(t *testing.T, funcs ...string) []*FuncDecl {
 // output from a downstream compile failure.
 func checkErr(t *testing.T, want string, funcs ...string) {
 	t.Helper()
-	_, err := Check(parseFuncs(t, funcs...))
+	_, err := Check(&Program{Funcs: parseFuncs(t, funcs...)})
 	if err == nil {
 		t.Fatalf("expected type error containing %q, got nil", want)
 	}
@@ -104,7 +104,7 @@ func TestNetworkingExampleCompiles(t *testing.T) {
 	}
 	bin.Close()
 	defer os.Remove(bin.Name())
-	if err := BuildBinary(fns, bin.Name()); err != nil {
+	if err := BuildBinary(&Program{Funcs: fns}, bin.Name()); err != nil {
 		t.Fatalf("networking example failed to compile: %v", err)
 	}
 }
@@ -122,7 +122,7 @@ func TestNetworkingRoundTrip(t *testing.T) {
 	}
 	bin.Close()
 	defer os.Remove(bin.Name())
-	if err := BuildBinary(fns, bin.Name()); err != nil {
+	if err := BuildBinary(&Program{Funcs: fns}, bin.Name()); err != nil {
 		t.Fatalf("server failed to compile: %v", err)
 	}
 

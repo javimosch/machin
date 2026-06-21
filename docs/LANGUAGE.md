@@ -111,6 +111,39 @@ n := len(xs)           // length
 
 ---
 
+## Structs
+
+A struct type is its own top-level declaration — on disk, its own base64 line:
+
+```go
+type User struct {
+    name   string
+    age    int
+    active bool
+}
+```
+
+Construct with keyed or positional literals, read and assign fields with `.`,
+and use them like any other value (passed by value, stored in slices):
+
+```go
+u := User{name: "Ada", age: 36, active: true}   // keyed
+v := User{"Linus", 54, false}                    // positional
+u.age = u.age + 1                                // field assignment
+println(u.name, u.age)                           // field access
+
+users := []User{}                                // slice of structs
+users = append(users, u)
+first := users[0]                                // value copy
+```
+
+- Field types are explicit in the declaration (`name string`); everything else
+  stays inferred.
+- Structs have **value semantics** — assigning or passing one copies it.
+- A field can be a scalar, `string`, another struct, or a slice.
+
+---
+
 ## Builtins
 
 | Builtin                     | Purpose                                      |

@@ -27,7 +27,7 @@ type Token struct {
 var keywords = map[string]bool{
 	"func": true, "return": true, "if": true, "else": true,
 	"while": true, "for": true, "true": true, "false": true,
-	"nil": true, "var": true, "go": true,
+	"nil": true, "var": true, "go": true, "type": true, "struct": true,
 }
 
 type Lexer struct {
@@ -147,7 +147,7 @@ func (l *Lexer) lexOpOrPunct() error {
 		return nil
 	}
 	switch c {
-	case '(', ')', '{', '}', ',', ';', '[', ']':
+	case '(', ')', '{', '}', ',', ';', '[', ']', '.', ':':
 		l.pos++
 		l.toks = append(l.toks, Token{Kind: TPunct, Val: string(c), Pos: start})
 		return nil

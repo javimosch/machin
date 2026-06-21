@@ -40,6 +40,7 @@ machin build examples/complex/primes.mfl --emit-c   # see the generated C
 | `perfect_numbers` | proper-divisor sums |
 | `sieve`           | Sieve of Eratosthenes over a slice |
 | `slices`          | slice literals, `append`, indexing, `len`, in-place reverse |
+| `structs`         | `type` declaration, struct literals, field access, `[]struct` of records |
 | `goroutines`      | `go` spawns concurrent workers; `sleep` waits |
 | `http_server`     | concurrent TCP/HTTP server — `go handle(conn)` per request |
 
