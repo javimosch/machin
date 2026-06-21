@@ -1,0 +1,40 @@
+// A small JSON API built on machweb. Compose and run:
+//   machin encode framework/machweb.src framework/example.src > app.mfl
+//   machin run app.mfl
+//
+// Then:
+//   curl localhost:48080/
+//   curl localhost:48080/api/todos
+//   curl localhost:48080/hello/machine
+//   curl -X POST -d '{"id":9,"title":"posted"}' localhost:48080/api/echo
+
+type Todo struct {
+    id    int
+    title string
+    done  bool
+}
+
+func todos() (list) {
+    list = []Todo{}
+    list = append(list, Todo{id: 1, title: "learn MFL", done: true})
+    list = append(list, Todo{id: 2, title: "build a backend on machweb", done: false})
+}
+
+func route(req) (res) {
+    if req.path == "/" {
+        res = ok_html("<h1>machweb</h1><p>Endpoints: <code>/api/todos</code>, <code>/hello/&lt;name&gt;</code>, POST <code>/api/echo</code></p>")
+    } else if req.path == "/api/todos" {
+        res = ok_json(json(todos()))
+    } else if has_prefix(req.path, "/hello/") {
+        res = ok_text("hello, " + param(req.path, "/hello/"))
+    } else if req.method == "POST" && req.path == "/api/echo" {
+        t := parse(req.body, Todo{})
+        res = ok_json(json(t))
+    } else {
+        res = not_found()
+    }
+}
+
+func main() {
+    serve(48080, func(req) { return route(req) })
+}

@@ -155,17 +155,23 @@ func cmdBuild(args []string) error {
 	return nil
 }
 
-// cmdEncode lifts loose Go-like text into canonical MFL. This is a machine
-// convenience for minting programs, not a human authoring path.
+// cmdEncode lifts loose Go-like text into canonical MFL. Multiple source files
+// are concatenated in order, so a framework can be composed with an app:
+//   machin encode framework/machweb.src myapp.src > app.mfl
 func cmdEncode(args []string) error {
-	if len(args) != 1 {
-		return fmt.Errorf("encode: need exactly one source file")
+	if len(args) < 1 {
+		return fmt.Errorf("encode: need at least one source file")
 	}
-	data, err := os.ReadFile(args[0])
-	if err != nil {
-		return err
+	var combined strings.Builder
+	for _, path := range args {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		combined.Write(data)
+		combined.WriteByte('\n')
 	}
-	blocks, err := splitFunctions(string(data))
+	blocks, err := splitFunctions(combined.String())
 	if err != nil {
 		return err
 	}

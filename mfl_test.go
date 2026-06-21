@@ -336,6 +336,18 @@ func TestClosureIIFE(t *testing.T) {
 	}
 }
 
+func TestFrameworkDispatchPattern(t *testing.T) {
+	// the machweb pattern: a handler closure returning a struct, dispatched
+	// through a function that calls it (as serve -> handle -> handler does)
+	got := runProg(t,
+		`type Resp struct { code int  body string }`,
+		`func dispatch(h, n) (r) { r = h(n) }`,
+		`func main() { res := dispatch(func(x) { return Resp{code: 200, body: str(x * 2)} }, 21) println(res.code, res.body) }`)
+	if got != "200 42\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
 func TestVariadicCollect(t *testing.T) {
 	got := runProg(t,
 		`func sum(nums...) { t := 0 for _, n := range nums { t = t + n } return t }`,
