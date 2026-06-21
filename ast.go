@@ -114,7 +114,15 @@ type AssignStmt struct {
 	Val     Expr
 }
 
-type ReturnStmt struct{ Val Expr } // Val may be nil
+type ReturnStmt struct{ Vals []Expr } // empty for a bare return
+
+// MultiAssign is `a, b := rhs` / `a, b = rhs`, where rhs is either a single call
+// returning len(Names) values, or len(Names) parallel expressions.
+type MultiAssign struct {
+	Names []string
+	Op    string // ":=" or "="
+	Rhs   []Expr
+}
 
 type IfStmt struct {
 	Cond Expr
@@ -161,6 +169,7 @@ type GoStmt struct{ Call *Call }
 
 func (ExprStmt) node()    {}
 func (AssignStmt) node()  {}
+func (MultiAssign) node() {}
 func (ReturnStmt) node()  {}
 func (IfStmt) node()      {}
 func (WhileStmt) node()   {}

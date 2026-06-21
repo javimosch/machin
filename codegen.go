@@ -52,7 +52,9 @@ type cgen struct {
 	jsonMemo  map[string]string // type string -> serializer function name
 	parseMemo map[string]string // type string -> parser function name
 	jsonID    int
-	rangeID   int // unique temp names for for-range loops
+	rangeID   int    // unique temp names for for-range loops
+	tmpID     int    // unique temp names for multi-assignment
+	curFn     string // name of the function currently being emitted
 }
 
 const cRuntime = `#include <stdio.h>
@@ -373,6 +375,18 @@ func (g *cgen) program(p *Program) (string, error) {
 		}
 		fmt.Fprintf(&out, " } mfl_%s;\n", td.Name)
 	}
+	// result structs for functions returning multiple values
+	for _, fn := range p.Funcs {
+		n := g.c.RetArity(fn.Name)
+		if n < 2 {
+			continue
+		}
+		fmt.Fprintf(&out, "typedef struct {")
+		for i := 0; i < n; i++ {
+			fmt.Fprintf(&out, " %s r%d;", g.c.RetCTypeAt(fn.Name, i), i)
+		}
+		fmt.Fprintf(&out, " } mfl_ret_%s;\n", fn.Name)
+	}
 	if len(p.Types) > 0 {
 		out.WriteByte('\n')
 	}
@@ -391,8 +405,20 @@ func (g *cgen) program(p *Program) (string, error) {
 	return out.String(), nil
 }
 
+// retType is a function's C return type: void, the single value's type, or a
+// generated result struct for multiple returns.
+func (g *cgen) retType(name string) string {
+	switch g.c.RetArity(name) {
+	case 0:
+		return "void"
+	case 1:
+		return g.c.RetCTypeAt(name, 0)
+	default:
+		return "mfl_ret_" + name
+	}
+}
+
 func (g *cgen) signature(fn *FuncDecl) string {
-	ret := g.c.RetCType(fn.Name)
 	parts := make([]string, len(fn.Params))
 	for i, p := range fn.Params {
 		parts[i] = g.c.ParamCType(fn.Name, i) + " v_" + p
@@ -401,10 +427,11 @@ func (g *cgen) signature(fn *FuncDecl) string {
 	if params == "" {
 		params = "void"
 	}
-	return fmt.Sprintf("%s mfl_%s(%s)", ret, fn.Name, params)
+	return fmt.Sprintf("%s mfl_%s(%s)", g.retType(fn.Name), fn.Name, params)
 }
 
 func (g *cgen) function(fn *FuncDecl) error {
+	g.curFn = fn.Name
 	g.buf.WriteString(g.signature(fn) + " {\n")
 	for _, name := range g.c.Locals(fn.Name) {
 		fmt.Fprintf(&g.buf, "    %s v_%s = %s;\n", g.c.VarCType(fn.Name, name), name, cZero(g.c.VarKind(fn.Name, name)))
@@ -443,15 +470,25 @@ func (g *cgen) stmt(s Stmt, depth int) error {
 		}
 		fmt.Fprintf(&g.buf, "v_%s = %s;\n", st.Name, e)
 	case *ReturnStmt:
-		if st.Val == nil {
+		if len(st.Vals) == 0 {
 			g.buf.WriteString("return;\n")
 			return nil
 		}
-		e, err := g.expr(st.Val)
-		if err != nil {
-			return err
+		exprs := make([]string, len(st.Vals))
+		for i, v := range st.Vals {
+			e, err := g.expr(v)
+			if err != nil {
+				return err
+			}
+			exprs[i] = "(" + e + ")"
 		}
-		g.buf.WriteString("return " + e + ";\n")
+		if len(exprs) == 1 {
+			g.buf.WriteString("return " + exprs[0] + ";\n")
+		} else {
+			fmt.Fprintf(&g.buf, "return (mfl_ret_%s){ %s };\n", g.curFn, strings.Join(exprs, ", "))
+		}
+	case *MultiAssign:
+		return g.multiAssign(st, depth)
 	case *IfStmt:
 		cond, err := g.expr(st.Cond)
 		if err != nil {
@@ -535,6 +572,69 @@ func (g *cgen) stmt(s Stmt, depth int) error {
 	default:
 		return fmt.Errorf("codegen: unknown statement %T", s)
 	}
+	return nil
+}
+
+// multiAssign emits `a, b := rhs`: destructure a multi-return call via its
+// result struct, or evaluate parallel RHS expressions into temps first (so
+// `a, b = b, a` works) and then assign.
+func (g *cgen) multiAssign(st *MultiAssign, depth int) error {
+	assign := func(name, val string) {
+		if name == "_" {
+			return
+		}
+		indentC(&g.buf, depth+1)
+		fmt.Fprintf(&g.buf, "v_%s = %s;\n", name, val)
+	}
+
+	if len(st.Rhs) == 1 {
+		if call, ok := st.Rhs[0].(*Call); ok && g.c.RetArity(call.Callee) >= 2 {
+			args := make([]string, len(call.Args))
+			for i, a := range call.Args {
+				e, err := g.expr(a)
+				if err != nil {
+					return err
+				}
+				args[i] = e
+			}
+			id := g.tmpID
+			g.tmpID++
+			g.buf.WriteString("{\n")
+			indentC(&g.buf, depth+1)
+			fmt.Fprintf(&g.buf, "mfl_ret_%s _t%d = mfl_%s(%s);\n", call.Callee, id, call.Callee, strings.Join(args, ", "))
+			for i, name := range st.Names {
+				assign(name, fmt.Sprintf("_t%d.r%d", id, i))
+			}
+			indentC(&g.buf, depth)
+			g.buf.WriteString("}\n")
+			return nil
+		}
+		// single value to a single name
+		e, err := g.expr(st.Rhs[0])
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(&g.buf, "v_%s = %s;\n", st.Names[0], e)
+		return nil
+	}
+
+	// parallel assignment: evaluate all RHS into temps, then assign
+	id := g.tmpID
+	g.tmpID++
+	g.buf.WriteString("{\n")
+	for i, e := range st.Rhs {
+		ce, err := g.expr(e)
+		if err != nil {
+			return err
+		}
+		indentC(&g.buf, depth+1)
+		fmt.Fprintf(&g.buf, "%s _t%d_%d = %s;\n", g.c.NodeCType(e), id, i, ce)
+	}
+	for i, name := range st.Names {
+		assign(name, fmt.Sprintf("_t%d_%d", id, i))
+	}
+	indentC(&g.buf, depth)
+	g.buf.WriteString("}\n")
 	return nil
 }
 

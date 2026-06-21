@@ -69,6 +69,33 @@ x = x + 1    // reassign (type must match)
 
 ---
 
+## Multiple return values
+
+A function may return more than one value, and a call destructures across names:
+
+```go
+func divmod(a, b) { return a / b, a % b }
+
+func lookup(m, k) { return m[k], has(m, k) }   // Go-style (value, ok)
+
+func main() {
+    q, r := divmod(17, 5)        // 3, 2
+    v, ok := lookup(m, "x")      // comma-ok
+    _, rem := divmod(20, 6)      // _ ignores a value
+    a, b = b, a                  // parallel assignment (swap)
+}
+```
+
+- The number of returned values is fixed per function (from its `return`s).
+- A multi-value call may only appear as the sole right-hand side of a
+  multi-assignment — not nested in another expression.
+- `a, b = e1, e2` evaluates both right-hand sides before assigning. Use `_` to
+  discard a value.
+
+See `examples/complex/multi_return.mfl`.
+
+---
+
 ## Control flow
 
 ```go

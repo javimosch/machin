@@ -42,6 +42,7 @@ machin build examples/complex/primes.mfl --emit-c   # see the generated C
 | `slices`          | slice literals, `append`, indexing, `len`, in-place reverse |
 | `maps`            | `map[string]int` word frequency + `map[int]string` lookup, `has`/`delete`/`keys` |
 | `ranges`          | `for k, v := range` over slices, strings, and maps |
+| `multi_return`    | multiple return values, comma-ok `(v, ok)`, `_`, parallel swap |
 | `structs`         | `type` declaration, struct literals, field access, `[]struct` of records |
 | `goroutines`      | `go` spawns concurrent workers; `sleep` waits |
 | `channels`        | fan-in worker pool — goroutines communicate over a channel |
