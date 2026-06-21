@@ -261,6 +261,26 @@ func TestJSONStructWithSliceField(t *testing.T) {
 	}
 }
 
+func TestArenaAllocChurn(t *testing.T) {
+	// heavy allocation churn with a live accumulator (arena alloc/realloc path)
+	got := runProg(t,
+		`func main() { acc := "" i := 0 for i < 5000 { junk := "x" + str(i) if i % 1000 == 0 { acc = acc + "|" } i = i + 1 } println(len(acc)) }`)
+	if got != "5\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestArenaGoroutineReclaim(t *testing.T) {
+	// each goroutine builds a string in its own arena, sends the length (a value,
+	// not a pointer), and its arena is freed on return — no corruption.
+	got := runProg(t,
+		`func work(c) { s := "" i := 0 for i < 100 { s = s + "x" i = i + 1 } c <- len(s) }`,
+		`func main() { c := make(chan int) go work(c) go work(c) println(<-c + <-c) }`)
+	if got != "200\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
 func TestGenericIdentity(t *testing.T) {
 	// one source function specialized at int, string, and float
 	got := runProg(t,

@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **Arena memory management.** Value buffers (strings, slice backings, closure
+  environments) are allocated from a per-goroutine arena and reclaimed in bulk
+  when the goroutine returns; the main goroutine's arena lives for the whole
+  program. This bounds the memory of a long-running concurrent server — under a
+  12,000-request load the self-host server's RSS plateaus at ~1.8 MB instead of
+  growing unbounded. (Subsystems that free explicitly — channels, maps — keep
+  raw allocation.)
+
 ## v0.2.0
 
 A consolidation release. MFL grew from a base64 POC interpreter into a
