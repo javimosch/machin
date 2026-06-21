@@ -144,6 +144,35 @@ func TestStructFieldTypeMismatch(t *testing.T) {
 	}
 }
 
+func TestChannelSendRecv(t *testing.T) {
+	got := runProg(t,
+		`func send(c) { c <- 42 }`,
+		`func main() { ch := make(chan int) go send(ch) println(<-ch) }`)
+	if got != "42\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestChannelFanIn(t *testing.T) {
+	// three values produced on a goroutine, summed by main via the channel
+	got := runProg(t,
+		`func prod(c) { i := 1 for i <= 3 { c <- i * 10 i = i + 1 } }`,
+		`func main() { c := make(chan int) go prod(c) s := 0 i := 0 for i < 3 { s = s + <-c i = i + 1 } println(s) }`)
+	if got != "60\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestChannelElemInference(t *testing.T) {
+	// the channel element type is inferred from the send, used by recv
+	got := runProg(t,
+		`func main() { c := make(chan string) go reply(c) println(<-c) }`,
+		`func reply(c) { c <- "pong" }`)
+	if got != "pong\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
 func TestTypeMismatch(t *testing.T) {
 	fn, err := ParseFunc(normalize(`func main() { x := 1 x = "s" }`))
 	if err != nil {

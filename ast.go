@@ -76,6 +76,12 @@ type FieldAccess struct {
 	Name string
 }
 
+// MakeChan constructs a channel: make(chan T).
+type MakeChan struct{ Elem string }
+
+// Recv receives from a channel: <-ch.
+type Recv struct{ Ch Expr }
+
 func (IntLit) node()    {}
 func (FloatLit) node()  {}
 func (StringLit) node() {}
@@ -89,6 +95,8 @@ func (SliceLit) node()    {}
 func (Index) node()       {}
 func (StructLit) node()   {}
 func (FieldAccess) node() {}
+func (MakeChan) node()    {}
+func (Recv) node()        {}
 
 // ---- Statements ----
 
@@ -127,6 +135,12 @@ type FieldAssign struct {
 	Val    Expr
 }
 
+// SendStmt sends on a channel: ch <- v.
+type SendStmt struct {
+	Ch  Expr
+	Val Expr
+}
+
 // GoStmt spawns a goroutine: go f(args).
 type GoStmt struct{ Call *Call }
 
@@ -137,6 +151,7 @@ func (IfStmt) node()      {}
 func (WhileStmt) node()   {}
 func (IndexAssign) node() {}
 func (FieldAssign) node() {}
+func (SendStmt) node()    {}
 func (GoStmt) node()      {}
 
 // ---- Top level ----

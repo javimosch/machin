@@ -173,6 +173,27 @@ goroutine for the given number of milliseconds. Combined with the networking
 builtins, these enable the concurrent HTTP server in
 `examples/complex/http_server.mfl`.
 
+### Channels
+
+Channels let goroutines communicate and synchronize without `sleep`:
+
+```go
+ch := make(chan int)   // a channel carrying int
+go produce(ch)         // a goroutine that sends on ch
+v := <-ch              // receive (blocks until a value is available)
+
+func produce(c) {
+    c <- 42            // send
+}
+```
+
+- `make(chan T)` creates a channel of element type `T` (scalar, string, struct, …).
+- `ch <- v` sends; `<-ch` receives. A receive blocks until a value arrives.
+- The element type is inferred from sends/receives, so `make(chan int)` and a
+  later `c <- "x"` would be a compile error.
+
+See `examples/complex/channels.mfl` for a fan-in worker pool.
+
 ---
 
 ## See also

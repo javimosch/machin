@@ -100,7 +100,7 @@ override with `$CC`) on PATH at compile time.
 - 🧬 **Dense canonical form** — base64, one function per line; functions are independently addressable
 - 🏎️ **Native codegen** — `.mfl → parse → infer types → emit C → cc -O2 → binary`
 - 🧮 **Inferred static types** — `int`, `float`, `bool`, `string`, slices `[]T` — unified, no boxing
-- 🧵 **Concurrency** — `go f(args)` spawns a pthread-backed goroutine
+- 🧵 **Concurrency** — `go f(args)` spawns a pthread-backed goroutine; channels (`make(chan T)`, `<-`) for communication
 - 🌐 **Networking** — `listen / accept / read / write / close`, the low-level shape of Go's `net`
 - ✅ **Compile-time type errors** — a type clash is a build failure, not a runtime surprise
 
@@ -143,7 +143,7 @@ func main() {
 | **Slices** | `[]int{...}`, `s[i]` read/assign, `len(s)`, `append(s, x)` |
 | **Structs** | `type T struct { ... }`, `T{f: v}` / `T{...}`, `p.f` read/assign, value semantics, `[]T` |
 | **Control flow** | `if / else if / else`, `for cond {}`, `for {}`, `while cond {}` |
-| **Concurrency** | `go f(args)`, `sleep(ms)` |
+| **Concurrency** | `go f(args)`, channels `make(chan T)` / `ch <- v` / `<-ch`, `sleep(ms)` |
 | **Operators** | `+ - * / %`, `== != < <= > >=`, `&& \|\| !`; `+` concatenates strings |
 | **Builtins** | `print`, `println`, `len`, `str`, `int`, `append`, `sleep` |
 | **Networking** | `listen`, `accept`, `read`, `write`, `close` |
@@ -189,6 +189,7 @@ per-call-site arg struct + trampoline driven by `pthread_create`.
 | `complex/to_binary`, `pi_leibniz`, `perfect_numbers` | strings, floats, divisors |
 | `complex/slices` | slice literals, `append`, indexing, in-place reverse |
 | `complex/goroutines` | `go` spawns concurrent workers; `sleep` waits |
+| `complex/channels` | fan-in worker pool — goroutines communicate over a channel |
 | `complex/http_server` | concurrent TCP/HTTP server — `go handle(conn)` per request |
 | `bench/fib` | `fib(40)` benchmark |
 
@@ -259,11 +260,12 @@ make install      # install to $(PREFIX)/bin  (default /usr/local)
 | int / float / bool / string | ✅ done |
 | Slices `[]T` (`literal`, index, `len`, `append`) | ✅ done |
 | Structs (`type T struct`, literals, field access, `[]T`) | ✅ done |
+| Channels (`make(chan T)`, `ch <- v`, `<-ch`) | ✅ done |
 | Control flow (`if`, `for`, `while`) | ✅ done |
 | Goroutines (`go`) + `sleep` | ✅ done |
 | Networking (`listen`/`accept`/`read`/`write`/`close`) | ✅ done |
 | Concurrent HTTP server example | ✅ done |
-| Maps, channels | ⬜ planned |
+| Maps | ⬜ planned |
 | Bounds / overflow checks (`--safe`) | ⬜ planned |
 
 ---

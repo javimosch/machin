@@ -90,6 +90,37 @@ static void mfl_sleep(int64_t ms) {
     nanosleep(&ts, NULL);
 }
 
+/* channels: a mutex + condvar FIFO carrying fixed-size elements */
+typedef struct mfl_cnode { struct mfl_cnode* next; void* data; } mfl_cnode;
+typedef struct {
+    pthread_mutex_t mu; pthread_cond_t cnd;
+    mfl_cnode *head, *tail; int64_t es;
+} mfl_chan;
+static mfl_chan* mfl_make_chan(int64_t es) {
+    mfl_chan* c = malloc(sizeof(mfl_chan));
+    pthread_mutex_init(&c->mu, NULL); pthread_cond_init(&c->cnd, NULL);
+    c->head = c->tail = NULL; c->es = es;
+    return c;
+}
+static void mfl_chan_send(mfl_chan* c, const void* v) {
+    mfl_cnode* n = malloc(sizeof(mfl_cnode));
+    n->data = malloc(c->es); memcpy(n->data, v, c->es); n->next = NULL;
+    pthread_mutex_lock(&c->mu);
+    if (c->tail) c->tail->next = n; else c->head = n;
+    c->tail = n;
+    pthread_cond_signal(&c->cnd);
+    pthread_mutex_unlock(&c->mu);
+}
+static void mfl_chan_recv(mfl_chan* c, void* out) {
+    pthread_mutex_lock(&c->mu);
+    while (!c->head) pthread_cond_wait(&c->cnd, &c->mu);
+    mfl_cnode* n = c->head; c->head = n->next;
+    if (!c->head) c->tail = NULL;
+    pthread_mutex_unlock(&c->mu);
+    memcpy(out, n->data, c->es);
+    free(n->data); free(n);
+}
+
 static char* mfl_cat(const char* a, const char* b) {
     size_t la = strlen(a), lb = strlen(b);
     char* r = malloc(la + lb + 1);
@@ -135,6 +166,8 @@ func cType(k Kind) string {
 		return "void"
 	case KSlice:
 		return "mfl_slice"
+	case KChan:
+		return "mfl_chan*"
 	}
 	return "int64_t"
 }
@@ -303,6 +336,17 @@ func (g *cgen) stmt(s Stmt, depth int) error {
 			return err
 		}
 		fmt.Fprintf(&g.buf, "(%s).f_%s = %s;\n", x, st.Target.Name, val)
+	case *SendStmt:
+		ch, err := g.expr(st.Ch)
+		if err != nil {
+			return err
+		}
+		val, err := g.expr(st.Val)
+		if err != nil {
+			return err
+		}
+		ct := g.c.ElemCType(st.Ch)
+		fmt.Fprintf(&g.buf, "mfl_chan_send(%s, &((%s[1]){%s})[0]);\n", ch, ct, val)
 	case *GoStmt:
 		return g.goStmt(st)
 	default:
@@ -370,7 +414,7 @@ func (g *cgen) printCall(call *Call, depth int) error {
 			fmt.Fprintf(&g.buf, "fputs((%s) ? \"true\" : \"false\", stdout);", e)
 		case KString:
 			fmt.Fprintf(&g.buf, "fputs((%s), stdout);", e)
-		case KSlice, KStruct:
+		case KSlice, KStruct, KChan:
 			return fmt.Errorf("cannot print a %s value", g.c.NodeKind(a))
 		default:
 			fmt.Fprintf(&g.buf, "printf(\"%%lld\", (long long)(%s));", e)
@@ -443,6 +487,15 @@ func (g *cgen) expr(e Expr) (string, error) {
 			return "", err
 		}
 		return fmt.Sprintf("(%s).f_%s", x, ex.Name), nil
+	case *MakeChan:
+		return fmt.Sprintf("mfl_make_chan(sizeof(%s))", g.c.ElemCType(ex)), nil
+	case *Recv:
+		ch, err := g.expr(ex.Ch)
+		if err != nil {
+			return "", err
+		}
+		// statement-expression yields the received value (gcc/clang)
+		return fmt.Sprintf("({ %s _r; mfl_chan_recv(%s, &_r); _r; })", g.c.NodeCType(ex), ch), nil
 	}
 	return "", fmt.Errorf("codegen: unknown expression %T", e)
 }

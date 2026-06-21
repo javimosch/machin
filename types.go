@@ -25,6 +25,7 @@ const (
 	KVoid
 	KSlice  // []elem; element kind stored in the slot's elem slot
 	KStruct // a named struct; name stored in the slot's sname
+	KChan   // chan elem; element kind stored in the slot's elem slot
 )
 
 func (k Kind) String() string {
@@ -47,6 +48,8 @@ func (k Kind) String() string {
 		return "slice"
 	case KStruct:
 		return "struct"
+	case KChan:
+		return "chan"
 	}
 	return "?"
 }
@@ -112,6 +115,27 @@ func newStructSlot(c *Checker, name string) int {
 	return s
 }
 
+// newChanSlot makes a KChan slot whose element is the given slot.
+func newChanSlot(c *Checker, elemSlot int) int {
+	s := newSlot(c, KChan)
+	c.elem[s] = elemSlot
+	return s
+}
+
+// chanElem forces slot to be a channel and returns its element slot.
+func (c *Checker) chanElem(slot int) (int, error) {
+	r := c.find(slot)
+	if c.kind[r] == KChan && c.elem[r] >= 0 {
+		return c.elem[r], nil
+	}
+	e := newSlot(c, KVar)
+	s := newChanSlot(c, e)
+	if _, err := c.union(slot, s); err != nil {
+		return 0, err
+	}
+	return c.elem[c.find(slot)], nil
+}
+
 // typeSlot builds a fresh slot for a declared type string: int, float, bool,
 // string, a struct name, or []elem.
 func (c *Checker) typeSlot(t string) (int, error) {
@@ -121,6 +145,13 @@ func (c *Checker) typeSlot(t string) (int, error) {
 			return 0, err
 		}
 		return newSliceSlot(c, e), nil
+	}
+	if strings.HasPrefix(t, "chan ") {
+		e, err := c.typeSlot(strings.TrimPrefix(t, "chan "))
+		if err != nil {
+			return 0, err
+		}
+		return newChanSlot(c, e), nil
 	}
 	switch t {
 	case "int":
@@ -198,6 +229,9 @@ func reconcile(a, b Kind) (Kind, error) {
 	if a == KStruct && b == KStruct {
 		return KStruct, nil // names reconciled by union
 	}
+	if a == KChan && b == KChan {
+		return KChan, nil // element slots reconciled by union
+	}
 	return KVar, fmt.Errorf("type mismatch: %s vs %s", a, b)
 }
 
@@ -210,9 +244,9 @@ func (c *Checker) union(a, b int) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	// merge element slots when joining slices
+	// merge element slots when joining slices or channels
 	var ea, eb int = -1, -1
-	if merged == KSlice {
+	if merged == KSlice || merged == KChan {
 		ea, eb = c.elem[ra], c.elem[rb]
 	}
 	if merged == KStruct {
@@ -223,7 +257,7 @@ func (c *Checker) union(a, b int) (bool, error) {
 	}
 	c.parent[rb] = ra
 	c.kind[ra] = merged
-	if merged == KSlice {
+	if merged == KSlice || merged == KChan {
 		keep := ea
 		if keep < 0 {
 			keep = eb
@@ -515,6 +549,21 @@ func (c *Checker) genStmt(fn *FuncDecl, s Stmt) error {
 		}
 		c.fieldUses = append(c.fieldUses, fieldUse{base: xs, field: st.Target.Name, result: vs})
 		return nil
+	case *SendStmt:
+		cs, err := c.genExpr(fn, st.Ch)
+		if err != nil {
+			return err
+		}
+		eslot, err := c.chanElem(cs)
+		if err != nil {
+			return err
+		}
+		vs, err := c.genExpr(fn, st.Val)
+		if err != nil {
+			return err
+		}
+		c.addPair(vs, eslot)
+		return nil
 	case *GoStmt:
 		if _, ok := c.funcs[st.Call.Callee]; !ok {
 			return fmt.Errorf("go: %q is not a user function", st.Call.Callee)
@@ -598,6 +647,18 @@ func (c *Checker) genExprInner(fn *FuncDecl, e Expr) (int, error) {
 		}
 		c.addPair(is, c.cInt)
 		return eslot, nil
+	case *MakeChan:
+		eslot, err := c.typeSlot(ex.Elem)
+		if err != nil {
+			return 0, err
+		}
+		return newChanSlot(c, eslot), nil
+	case *Recv:
+		cs, err := c.genExpr(fn, ex.Ch)
+		if err != nil {
+			return 0, err
+		}
+		return c.chanElem(cs)
 	case *StructLit:
 		return c.genStructLit(fn, ex)
 	case *FieldAccess:
@@ -786,10 +847,10 @@ func (c *Checker) VarKind(fn, name string) Kind { return c.kindOf(c.vars[fn][nam
 func (c *Checker) NodeKind(n Node) Kind         { return c.kindOf(c.nodeSlot[n]) }
 func (c *Checker) Locals(fn string) []string    { return c.localOrder[fn] }
 
-// ElemKindOf returns the element kind of a slice-typed expression node.
+// ElemKindOf returns the element kind of a slice- or channel-typed node.
 func (c *Checker) ElemKindOf(n Node) Kind {
 	r := c.find(c.nodeSlot[n])
-	if c.kind[r] == KSlice && c.elem[r] >= 0 {
+	if (c.kind[r] == KSlice || c.kind[r] == KChan) && c.elem[r] >= 0 {
 		return c.kindOf(c.elem[r])
 	}
 	return KInt
@@ -811,6 +872,8 @@ func (c *Checker) ctypeSlot(slot int) string {
 		return "mfl_slice"
 	case KStruct:
 		return "mfl_" + c.sname[r]
+	case KChan:
+		return "mfl_chan*"
 	}
 	return "int64_t"
 }
@@ -820,10 +883,10 @@ func (c *Checker) ParamCType(fn string, i int) string { return c.ctypeSlot(c.fun
 func (c *Checker) VarCType(fn, name string) string { return c.ctypeSlot(c.vars[fn][name]) }
 func (c *Checker) NodeCType(n Node) string         { return c.ctypeSlot(c.nodeSlot[n]) }
 
-// ElemCType renders the C type of a slice node's element.
+// ElemCType renders the C type of a slice- or channel-node's element.
 func (c *Checker) ElemCType(n Node) string {
 	r := c.find(c.nodeSlot[n])
-	if c.kind[r] == KSlice && c.elem[r] >= 0 {
+	if (c.kind[r] == KSlice || c.kind[r] == KChan) && c.elem[r] >= 0 {
 		return c.ctypeSlot(c.elem[r])
 	}
 	return "int64_t"
