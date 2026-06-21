@@ -52,6 +52,7 @@ type cgen struct {
 	jsonMemo  map[string]string // type string -> serializer function name
 	parseMemo map[string]string // type string -> parser function name
 	jsonID    int
+	rangeID   int // unique temp names for for-range loops
 }
 
 const cRuntime = `#include <stdio.h>
@@ -527,11 +528,99 @@ func (g *cgen) stmt(s Stmt, depth int) error {
 		}
 		ct := g.c.ElemCType(st.Ch)
 		fmt.Fprintf(&g.buf, "mfl_chan_send(%s, &((%s[1]){%s})[0]);\n", ch, ct, val)
+	case *RangeStmt:
+		return g.rangeStmt(st, depth)
 	case *GoStmt:
 		return g.goStmt(st)
 	default:
 		return fmt.Errorf("codegen: unknown statement %T", s)
 	}
+	return nil
+}
+
+// rangeStmt desugars `for k, v := range x` to a C loop over a slice, map, or
+// string. The loop variables are ordinary function locals (declared at the top
+// of the function); here they are assigned each iteration.
+func (g *cgen) rangeStmt(st *RangeStmt, depth int) error {
+	id := g.rangeID
+	g.rangeID++
+	x, err := g.expr(st.X)
+	if err != nil {
+		return err
+	}
+	hasKey := st.Key != "" && st.Key != "_"
+	hasVal := st.Val != "" && st.Val != "_"
+
+	emitBody := func() error {
+		for _, s := range st.Body {
+			if err := g.stmt(s, depth+2); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	g.buf.WriteString("{\n")
+	switch g.c.NodeKind(st.X) {
+	case KSlice:
+		ect := g.c.ElemCType(st.X)
+		indentC(&g.buf, depth+1)
+		fmt.Fprintf(&g.buf, "mfl_slice _r%d = %s;\n", id, x)
+		indentC(&g.buf, depth+1)
+		fmt.Fprintf(&g.buf, "for (int64_t _i%d = 0; _i%d < _r%d.len; _i%d++) {\n", id, id, id, id)
+		if hasKey {
+			indentC(&g.buf, depth+2)
+			fmt.Fprintf(&g.buf, "v_%s = _i%d;\n", st.Key, id)
+		}
+		if hasVal {
+			indentC(&g.buf, depth+2)
+			fmt.Fprintf(&g.buf, "v_%s = ((%s*)_r%d.data)[_i%d];\n", st.Val, ect, id, id)
+		}
+	case KString:
+		indentC(&g.buf, depth+1)
+		fmt.Fprintf(&g.buf, "const char* _s%d = %s;\n", id, x)
+		indentC(&g.buf, depth+1)
+		fmt.Fprintf(&g.buf, "for (int64_t _i%d = 0; _s%d[_i%d]; _i%d++) {\n", id, id, id, id)
+		if hasKey {
+			indentC(&g.buf, depth+2)
+			fmt.Fprintf(&g.buf, "v_%s = _i%d;\n", st.Key, id)
+		}
+		if hasVal {
+			indentC(&g.buf, depth+2)
+			fmt.Fprintf(&g.buf, "v_%s = mfl_charat(_s%d, _i%d);\n", st.Val, id, id)
+		}
+	case KMap:
+		kct, vct := g.c.MapKeyCType(st.X), g.c.MapValCType(st.X)
+		ik, sk := "_k"+fmt.Sprint(id), "NULL"
+		if g.c.MapKeyKind(st.X) == KString {
+			ik, sk = "0", "_k"+fmt.Sprint(id)
+		}
+		indentC(&g.buf, depth+1)
+		fmt.Fprintf(&g.buf, "mfl_map* _m%d = %s;\n", id, x)
+		indentC(&g.buf, depth+1)
+		fmt.Fprintf(&g.buf, "mfl_slice _ks%d = mfl_map_keys(_m%d);\n", id, id)
+		indentC(&g.buf, depth+1)
+		fmt.Fprintf(&g.buf, "for (int64_t _i%d = 0; _i%d < _ks%d.len; _i%d++) {\n", id, id, id, id)
+		indentC(&g.buf, depth+2)
+		fmt.Fprintf(&g.buf, "%s _k%d = ((%s*)_ks%d.data)[_i%d];\n", kct, id, kct, id, id)
+		if hasKey {
+			indentC(&g.buf, depth+2)
+			fmt.Fprintf(&g.buf, "v_%s = _k%d;\n", st.Key, id)
+		}
+		if hasVal {
+			indentC(&g.buf, depth+2)
+			fmt.Fprintf(&g.buf, "%s _v%d; mfl_map_get(_m%d, %s, %s, &_v%d); v_%s = _v%d;\n", vct, id, id, ik, sk, id, st.Val, id)
+		}
+	default:
+		return fmt.Errorf("codegen: cannot range over %s", g.c.NodeKind(st.X))
+	}
+	if err := emitBody(); err != nil {
+		return err
+	}
+	indentC(&g.buf, depth+1)
+	g.buf.WriteString("}\n")
+	indentC(&g.buf, depth)
+	g.buf.WriteString("}\n")
 	return nil
 }
 

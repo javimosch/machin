@@ -251,6 +251,35 @@ func TestStringRouteParse(t *testing.T) {
 	}
 }
 
+func TestRangeSlice(t *testing.T) {
+	got := runProg(t, `func main() { xs := []int{2, 4, 6} s := 0 for i, v := range xs { s = s + i * v } println(s) }`)
+	if got != "16\n" { // 0*2 + 1*4 + 2*6
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestRangeStringChars(t *testing.T) {
+	got := runProg(t, `func main() { out := "" for i, c := range "xyz" { out = out + c } println(out) }`)
+	if got != "xyz\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestRangeMapValues(t *testing.T) {
+	// iteration order is unspecified, so sum (order-independent)
+	got := runProg(t, `func main() { m := make(map[string]int) m["a"] = 1 m["b"] = 2 m["c"] = 3 s := 0 for k, v := range m { s = s + v } println(s) }`)
+	if got != "6\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestRangeKeyOnly(t *testing.T) {
+	got := runProg(t, `func main() { xs := []int{9, 9, 9, 9} c := 0 for i := range xs { c = i } println(c) }`)
+	if got != "3\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
 func TestChannelSendRecv(t *testing.T) {
 	got := runProg(t,
 		`func send(c) { c <- 42 }`,

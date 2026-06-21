@@ -370,6 +370,39 @@ func (p *Parser) parseWhile() (Stmt, error) {
 	return &WhileStmt{Cond: cond, Body: body}, nil
 }
 
+// parseRange parses `IDENT [, IDENT] := range EXPR { ... }` (the `for` already
+// consumed). The first name is the index/key, the optional second is the value.
+func (p *Parser) parseRange() (Stmt, error) {
+	key, err := p.expect(TIdent, "")
+	if err != nil {
+		return nil, err
+	}
+	val := ""
+	if p.peek().Val == "," {
+		p.next()
+		vt, err := p.expect(TIdent, "")
+		if err != nil {
+			return nil, err
+		}
+		val = vt.Val
+	}
+	if _, err := p.expect(TOp, ":="); err != nil {
+		return nil, err
+	}
+	if _, err := p.expect(TKeyword, "range"); err != nil {
+		return nil, err
+	}
+	x, err := p.parseExpr()
+	if err != nil {
+		return nil, err
+	}
+	body, err := p.parseBlock()
+	if err != nil {
+		return nil, err
+	}
+	return &RangeStmt{Key: key.Val, Val: val, X: x, Body: body}, nil
+}
+
 // parseFor handles Go's looping forms, desugared onto WhileStmt:
 //   for { ... }        infinite loop
 //   for cond { ... }   loop while cond
@@ -381,6 +414,10 @@ func (p *Parser) parseFor() (Stmt, error) {
 			return nil, err
 		}
 		return &WhileStmt{Cond: &BoolLit{Val: true}, Body: body}, nil
+	}
+	// range header: `for IDENT [, IDENT] := range EXPR`
+	if p.peek().Kind == TIdent && (p.toks[p.pos+1].Val == ":=" || p.toks[p.pos+1].Val == ",") {
+		return p.parseRange()
 	}
 	cond, err := p.parseExpr()
 	if err != nil {
