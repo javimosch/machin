@@ -137,6 +137,11 @@ func (l *Lexer) lexString() error {
 func (l *Lexer) lexOpOrPunct() error {
 	start := l.pos
 	c := l.src[l.pos]
+	if l.pos+2 < len(l.src) && l.src[l.pos:l.pos+3] == "..." {
+		l.pos += 3
+		l.toks = append(l.toks, Token{Kind: TPunct, Val: "...", Pos: start})
+		return nil
+	}
 	two := ""
 	if l.pos+1 < len(l.src) {
 		two = l.src[l.pos : l.pos+2]

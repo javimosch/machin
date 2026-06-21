@@ -195,12 +195,18 @@ func (p *Parser) parseFuncDecl() (*FuncDecl, error) {
 		return nil, err
 	}
 	var params []string
+	variadic := false
 	for p.peek().Val != ")" {
 		pt, err := p.expect(TIdent, "")
 		if err != nil {
 			return nil, err
 		}
 		params = append(params, pt.Val)
+		if p.peek().Val == "..." { // variadic: must be the last parameter
+			p.next()
+			variadic = true
+			break
+		}
 		if p.peek().Val == "," {
 			p.next()
 		} else {
@@ -234,7 +240,7 @@ func (p *Parser) parseFuncDecl() (*FuncDecl, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &FuncDecl{Name: nameTok.Val, Params: params, Returns: returns, Body: body}, nil
+	return &FuncDecl{Name: nameTok.Val, Params: params, Returns: returns, Variadic: variadic, Body: body}, nil
 }
 
 func (p *Parser) parseBlock() ([]Stmt, error) {
@@ -574,7 +580,7 @@ func (p *Parser) parsePostfix() (Expr, error) {
 			}
 			x = &FieldAccess{X: x, Name: name.Val}
 		case "(":
-			args, err := p.parseCallArgs()
+			args, _, err := p.parseCallArgs()
 			if err != nil {
 				return nil, err
 			}
@@ -774,25 +780,32 @@ func (p *Parser) parseSliceLit() (Expr, error) {
 }
 
 func (p *Parser) parseCall(callee string) (Expr, error) {
-	args, err := p.parseCallArgs()
+	args, spread, err := p.parseCallArgs()
 	if err != nil {
 		return nil, err
 	}
-	return &Call{Callee: callee, Args: args}, nil
+	return &Call{Callee: callee, Args: args, Spread: spread}, nil
 }
 
-// parseCallArgs parses a parenthesized, comma-separated argument list.
-func (p *Parser) parseCallArgs() ([]Expr, error) {
+// parseCallArgs parses a parenthesized argument list, reporting whether the
+// final argument is spread (`expr...`).
+func (p *Parser) parseCallArgs() ([]Expr, bool, error) {
 	if _, err := p.expect(TPunct, "("); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	var args []Expr
+	spread := false
 	for p.peek().Val != ")" {
 		a, err := p.parseExpr()
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		args = append(args, a)
+		if p.peek().Val == "..." { // spread: must be the last argument
+			p.next()
+			spread = true
+			break
+		}
 		if p.peek().Val == "," {
 			p.next()
 		} else {
@@ -800,9 +813,9 @@ func (p *Parser) parseCallArgs() ([]Expr, error) {
 		}
 	}
 	if _, err := p.expect(TPunct, ")"); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return args, nil
+	return args, spread, nil
 }
 
 // parseFuncLit parses an anonymous function: func(a, b) { ... }.
