@@ -1,8 +1,23 @@
 # Changelog
 
-## Unreleased
+## v0.4.0
 
-From a language to a platform you can build on.
+Native-language depth: safety, real closures, and bounded memory — plus the
+platform layer (framework, router, `func` type) that landed since v0.3.0.
+
+- **`--safe` build mode.** `machin run|build <file> --safe` inserts runtime
+  checks: a slice index out of range, integer division/modulo by zero, or
+  integer `+`/`-`/`*` overflow prints a Go-style `panic:` to stderr and exits
+  non-zero. Opt-in — the default build keeps zero check overhead.
+- **By-reference closure capture.** Closures now capture enclosing variables by
+  reference (Go semantics): a captured variable lives in a shared cell, so a
+  closure can mutate state that outlives the call that made it. The
+  counter/accumulator idiom (`func counter() { n := 0  return func() { n = n + 1
+  return n } }`) works, and sibling closures share one cell.
+- **Scoped arenas (`arena { }`).** Wrapping a loop body in `arena { ... }`
+  reclaims everything allocated inside the block when it ends, keeping a
+  long-lived loop's memory flat (measured ~240 MB → ~1.4 MB over a 1M-iteration
+  allocating loop). Blocks nest and compose with goroutines and `--safe`.
 
 - **machweb — a web framework written in MFL.** `Request`/`Response` types,
   response builders (`ok_text`/`ok_html`/`ok_json`/`created`/`bad_request`/
