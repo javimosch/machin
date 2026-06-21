@@ -267,10 +267,15 @@ value arrives.
 ### 11.1 Function values and closures
 
 A `func(params) { ... }` literal is a value that can be stored, passed, and
-returned. It **captures** free variables from the enclosing scope **by value**
-at the moment it is created. Function values hold a single return value (or
-none). Compilation is by closure conversion (lambda-lifting): a literal becomes
-a top-level function plus a captured environment.
+returned. It **captures** free variables from the enclosing scope **by
+reference** (as in Go): a captured variable lives in a shared heap cell, so
+assignments made through the closure are visible to the enclosing scope and to
+any other closure over the same variable, and vice versa. This makes the
+mutable-state idiom work — e.g. a `counter()` that returns a closure
+incrementing a captured local on each call. Function values hold a single return
+value (or none). Compilation is by closure conversion (lambda-lifting): a
+literal becomes a top-level function plus an environment of pointers to the
+captured cells.
 
 ### 11.2 Generics
 
@@ -354,6 +359,7 @@ FuncLit     = "func" "(" [ identList ] ")" Block .
 ## 15. Status and non-goals
 
 Implemented: the entire surface above, including arena memory management (§12),
-named return values (§9), and variadic parameters (§5.2). Not yet implemented:
-by-reference closure capture, polymorphic recursion, a tracing GC across
-goroutines, and bounds/overflow checks. These are refinements, not core gaps.
+named return values (§9), variadic parameters (§5.2), by-reference closure
+capture (§11.1), and opt-in bounds/overflow checks (`--safe`). Not yet
+implemented: polymorphic recursion and a tracing GC across goroutines. These are
+refinements, not core gaps.
