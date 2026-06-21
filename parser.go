@@ -79,6 +79,7 @@ func ParseProgram(decls []string) (*Program, error) {
 		}
 		prog.Funcs = append(prog.Funcs, fn)
 	}
+	liftClosures(prog) // closure conversion: lift function literals to top level
 	return prog, nil
 }
 
@@ -543,23 +544,32 @@ func (p *Parser) parsePostfix() (Expr, error) {
 	if err != nil {
 		return nil, err
 	}
-	for p.peek().Val == "[" || p.peek().Val == "." {
-		if p.next().Val == "." {
+	for p.peek().Val == "[" || p.peek().Val == "." || p.peek().Val == "(" {
+		switch p.peek().Val {
+		case ".":
+			p.next()
 			name, err := p.expect(TIdent, "")
 			if err != nil {
 				return nil, err
 			}
 			x = &FieldAccess{X: x, Name: name.Val}
-			continue
+		case "(":
+			args, err := p.parseCallArgs()
+			if err != nil {
+				return nil, err
+			}
+			x = &CallValue{Fn: x, Args: args}
+		default: // "["
+			p.next()
+			idx, err := p.parseExpr()
+			if err != nil {
+				return nil, err
+			}
+			if _, err := p.expect(TPunct, "]"); err != nil {
+				return nil, err
+			}
+			x = &Index{X: x, Idx: idx}
 		}
-		idx, err := p.parseExpr()
-		if err != nil {
-			return nil, err
-		}
-		if _, err := p.expect(TPunct, "]"); err != nil {
-			return nil, err
-		}
-		x = &Index{X: x, Idx: idx}
 	}
 	return x, nil
 }
@@ -597,6 +607,8 @@ func (p *Parser) parsePrimary() (Expr, error) {
 			return &NilLit{}, nil
 		case "make":
 			return p.parseMake()
+		case "func":
+			return p.parseFuncLit()
 		}
 		return nil, fmt.Errorf("unexpected keyword %q", t.Val)
 	case TIdent:
@@ -742,7 +754,18 @@ func (p *Parser) parseSliceLit() (Expr, error) {
 }
 
 func (p *Parser) parseCall(callee string) (Expr, error) {
-	p.next() // (
+	args, err := p.parseCallArgs()
+	if err != nil {
+		return nil, err
+	}
+	return &Call{Callee: callee, Args: args}, nil
+}
+
+// parseCallArgs parses a parenthesized, comma-separated argument list.
+func (p *Parser) parseCallArgs() ([]Expr, error) {
+	if _, err := p.expect(TPunct, "("); err != nil {
+		return nil, err
+	}
 	var args []Expr
 	for p.peek().Val != ")" {
 		a, err := p.parseExpr()
@@ -759,5 +782,34 @@ func (p *Parser) parseCall(callee string) (Expr, error) {
 	if _, err := p.expect(TPunct, ")"); err != nil {
 		return nil, err
 	}
-	return &Call{Callee: callee, Args: args}, nil
+	return args, nil
+}
+
+// parseFuncLit parses an anonymous function: func(a, b) { ... }.
+func (p *Parser) parseFuncLit() (Expr, error) {
+	p.next() // func
+	if _, err := p.expect(TPunct, "("); err != nil {
+		return nil, err
+	}
+	var params []string
+	for p.peek().Val != ")" {
+		pt, err := p.expect(TIdent, "")
+		if err != nil {
+			return nil, err
+		}
+		params = append(params, pt.Val)
+		if p.peek().Val == "," {
+			p.next()
+		} else {
+			break
+		}
+	}
+	if _, err := p.expect(TPunct, ")"); err != nil {
+		return nil, err
+	}
+	body, err := p.parseBlock()
+	if err != nil {
+		return nil, err
+	}
+	return &FuncLit{Params: params, Body: body}, nil
 }

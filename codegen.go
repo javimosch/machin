@@ -72,6 +72,9 @@ const cRuntime = `#include <stdio.h>
 /* slices: a Go-style header over an unboxed backing array */
 typedef struct { void* data; int64_t len; int64_t cap; } mfl_slice;
 
+/* closures: a function pointer plus a heap environment of captured values */
+typedef struct { void* fn; void* env; } mfl_closure;
+
 static mfl_slice mfl_append(mfl_slice s, const void* elem, int64_t es) {
     if (s.len >= s.cap) {
         int64_t nc = s.cap ? s.cap * 2 : 4;
@@ -340,6 +343,8 @@ func cType(k Kind) string {
 		return "mfl_chan*"
 	case KMap:
 		return "mfl_map*"
+	case KFunc:
+		return "mfl_closure"
 	}
 	return "int64_t"
 }
@@ -350,7 +355,7 @@ func cZero(k Kind) string {
 		return "0.0"
 	case KString:
 		return "\"\"" // the zero value of a string is "", not NULL
-	case KSlice, KStruct:
+	case KSlice, KStruct, KFunc:
 		return "{0}"
 	default:
 		return "0"
@@ -374,6 +379,17 @@ func (g *cgen) program(p *Program) (string, error) {
 			fmt.Fprintf(&out, " %s f_%s;", cTypeName(f.Type), f.Name)
 		}
 		fmt.Fprintf(&out, " } mfl_%s;\n", td.Name)
+	}
+	// closure environment structs (one per capturing lambda)
+	for _, fn := range p.Funcs {
+		if !fn.IsLambda || fn.NumCaptures == 0 {
+			continue
+		}
+		fmt.Fprintf(&out, "typedef struct {")
+		for i := 0; i < fn.NumCaptures; i++ {
+			fmt.Fprintf(&out, " %s f%d;", g.c.ParamCType(fn.Name, i), i)
+		}
+		fmt.Fprintf(&out, " } mfl_env_%s;\n", fn.Name)
 	}
 	// result structs for functions returning multiple values
 	for _, fn := range p.Funcs {
@@ -419,9 +435,12 @@ func (g *cgen) retType(name string) string {
 }
 
 func (g *cgen) signature(fn *FuncDecl) string {
-	parts := make([]string, len(fn.Params))
-	for i, p := range fn.Params {
-		parts[i] = g.c.ParamCType(fn.Name, i) + " v_" + p
+	var parts []string
+	if fn.IsLambda {
+		parts = append(parts, "void* _env") // captures arrive via the environment
+	}
+	for i := fn.NumCaptures; i < len(fn.Params); i++ {
+		parts = append(parts, g.c.ParamCType(fn.Name, i)+" v_"+fn.Params[i])
 	}
 	params := strings.Join(parts, ", ")
 	if params == "" {
@@ -433,6 +452,13 @@ func (g *cgen) signature(fn *FuncDecl) string {
 func (g *cgen) function(fn *FuncDecl) error {
 	g.curFn = fn.Name
 	g.buf.WriteString(g.signature(fn) + " {\n")
+	// unpack captured variables from the closure environment
+	if fn.IsLambda && fn.NumCaptures > 0 {
+		fmt.Fprintf(&g.buf, "    mfl_env_%s* _e = (mfl_env_%s*)_env;\n", fn.Name, fn.Name)
+		for i := 0; i < fn.NumCaptures; i++ {
+			fmt.Fprintf(&g.buf, "    %s v_%s = _e->f%d;\n", g.c.ParamCType(fn.Name, i), fn.Params[i], i)
+		}
+	}
 	for _, name := range g.c.Locals(fn.Name) {
 		fmt.Fprintf(&g.buf, "    %s v_%s = %s;\n", g.c.VarCType(fn.Name, name), name, cZero(g.c.VarKind(fn.Name, name)))
 	}
@@ -865,6 +891,35 @@ func (g *cgen) expr(e Expr) (string, error) {
 			return "", err
 		}
 		return fmt.Sprintf("(%s).f_%s", x, ex.Name), nil
+	case *MakeClosure:
+		name := ex.FuncName
+		if len(ex.Captures) == 0 {
+			return fmt.Sprintf("(mfl_closure){ (void*)mfl_%s, NULL }", name), nil
+		}
+		id := g.tmpID
+		g.tmpID++
+		var b strings.Builder
+		fmt.Fprintf(&b, "({ mfl_env_%s* _e%d = malloc(sizeof(mfl_env_%s));", name, id, name)
+		for i, cap := range ex.Captures {
+			fmt.Fprintf(&b, " _e%d->f%d = v_%s;", id, i, cap)
+		}
+		fmt.Fprintf(&b, " (mfl_closure){ (void*)mfl_%s, _e%d }; })", name, id)
+		return b.String(), nil
+	case *CallValue:
+		clos, err := g.expr(ex.Fn)
+		if err != nil {
+			return "", err
+		}
+		args := make([]string, len(ex.Args))
+		for i, a := range ex.Args {
+			e, err := g.expr(a)
+			if err != nil {
+				return "", err
+			}
+			args[i] = e
+		}
+		params, ret := g.c.NodeFuncSig(ex.Fn)
+		return g.closureCall(clos, params, ret, args), nil
 	case *MakeChan:
 		return fmt.Sprintf("mfl_make_chan(sizeof(%s))", g.c.ElemCType(ex)), nil
 	case *MakeMap:
@@ -1260,5 +1315,27 @@ func (g *cgen) call(ex *Call) (string, error) {
 	case "print", "println":
 		return "", fmt.Errorf("print/println may only be used as a statement")
 	}
+	if !g.c.IsTopFunc(ex.Callee) {
+		// a function-valued local variable, called by name
+		params, ret := g.c.VarFuncSig(g.curFn, ex.Callee)
+		return g.closureCall("v_"+ex.Callee, params, ret, args), nil
+	}
 	return fmt.Sprintf("mfl_%s(%s)", ex.Callee, strings.Join(args, ", ")), nil
+}
+
+// closureCall invokes a function value: cast its fn pointer to the right
+// signature and pass the environment as the leading argument.
+func (g *cgen) closureCall(clos string, paramCTypes []string, retCType string, args []string) string {
+	id := g.tmpID
+	g.tmpID++
+	fnSig := "(void*"
+	for _, p := range paramCTypes {
+		fnSig += ", " + p
+	}
+	fnSig += ")"
+	callArgs := fmt.Sprintf("_c%d.env", id)
+	for _, a := range args {
+		callArgs += ", " + a
+	}
+	return fmt.Sprintf("({ mfl_closure _c%d = %s; ((%s(*)%s)_c%d.fn)(%s); })", id, clos, retCType, fnSig, id, callArgs)
 }
