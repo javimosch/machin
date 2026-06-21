@@ -47,6 +47,8 @@ machin build examples/complex/primes.mfl --emit-c   # see the generated C
 | `http_server`     | concurrent TCP/HTTP server — `go handle(conn)` per request |
 | `json`            | `json()` serialization of scalars, slices, structs, maps |
 | `json_api`        | JSON-over-HTTP API — each request returns JSON-serialized structs |
+| `json_parse`      | `parse(s, T{})` — JSON into struct/slice/map/scalar, with round-trips |
+| `json_echo_api`   | POST JSON → parse into a struct → echo it back as JSON |
 
 `http_server` loops forever, so it's skipped by `run.sh`. Run it directly:
 

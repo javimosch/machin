@@ -146,8 +146,8 @@ func main() {
 | **Control flow** | `if / else if / else`, `for cond {}`, `for {}`, `while cond {}` |
 | **Concurrency** | `go f(args)`, channels `make(chan T)` / `ch <- v` / `<-ch`, `sleep(ms)` |
 | **Operators** | `+ - * / %`, `== != < <= > >=`, `&& \|\| !`; `+` concatenates strings |
-| **Builtins** | `print`, `println`, `len`, `str`, `int`, `append`, `sleep`, `has`, `delete`, `keys`, `json` |
-| **JSON** | `json(x)` serializes any value (struct, slice, map, scalar) to a JSON string |
+| **Builtins** | `print`, `println`, `len`, `str`, `int`, `append`, `sleep`, `has`, `delete`, `keys`, `json`, `parse`, `http_body` |
+| **JSON** | `json(x)` serializes any value to JSON; `parse(s, T{})` parses JSON into a value of `T` |
 | **Networking** | `listen`, `accept`, `read`, `write`, `close` |
 
 ---
@@ -196,6 +196,8 @@ per-call-site arg struct + trampoline driven by `pthread_create`.
 | `complex/http_server` | concurrent TCP/HTTP server — `go handle(conn)` per request |
 | `complex/json` | `json()` serialization of scalars, slices, structs, maps |
 | `complex/json_api` | JSON-over-HTTP API — returns JSON-serialized structs |
+| `complex/json_parse` | `parse(s, T{})` — JSON → struct/slice/map/scalar round-trips |
+| `complex/json_echo_api` | POST JSON → parse into a struct → echo it back as JSON |
 | `bench/fib` | `fib(40)` benchmark |
 
 ```bash
@@ -268,12 +270,12 @@ make install      # install to $(PREFIX)/bin  (default /usr/local)
 | Channels (`make(chan T)`, `ch <- v`, `<-ch`) | ✅ done |
 | Maps (`make(map[K]V)`, index, `has`/`delete`/`keys`) | ✅ done |
 | JSON serialization (`json(x)`) + JSON-over-HTTP example | ✅ done |
+| JSON parsing (`parse(s, T{})`) + POST echo API | ✅ done |
 | Control flow (`if`, `for`, `while`) | ✅ done |
 | Goroutines (`go`) + `sleep` | ✅ done |
 | Networking (`listen`/`accept`/`read`/`write`/`close`) | ✅ done |
 | Concurrent HTTP server example | ✅ done |
-| JSON parsing (request bodies → structs) | ⬜ planned |
-| `range` loops, comma-ok, map of struct values | ⬜ planned |
+| String ops (index/substring/split), `range` loops, comma-ok | ⬜ planned |
 | Bounds / overflow checks (`--safe`) | ⬜ planned |
 
 ---
