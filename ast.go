@@ -76,6 +76,25 @@ type FieldAccess struct {
 	Name string
 }
 
+// FuncLit is a function literal (lambda): func(a, b) { ... }.
+type FuncLit struct {
+	Params []string
+	Body   []Stmt
+}
+
+// CallValue calls a function-valued expression: f(args), (g())(args), fs[i](x).
+type CallValue struct {
+	Fn   Expr
+	Args []Expr
+}
+
+// MakeClosure is produced by lambda-lifting: it builds a closure value over a
+// lifted top-level function, capturing the named variables by value.
+type MakeClosure struct {
+	FuncName string
+	Captures []string
+}
+
 // MakeChan constructs a channel: make(chan T).
 type MakeChan struct{ Elem string }
 
@@ -98,6 +117,9 @@ func (SliceLit) node()    {}
 func (Index) node()       {}
 func (StructLit) node()   {}
 func (FieldAccess) node() {}
+func (FuncLit) node()     {}
+func (CallValue) node()   {}
+func (MakeClosure) node() {}
 func (MakeChan) node()    {}
 func (MakeMap) node()     {}
 func (Recv) node()        {}
@@ -185,6 +207,11 @@ type FuncDecl struct {
 	Name   string
 	Params []string
 	Body   []Stmt
+	// IsLambda marks a lifted lambda: it is always invoked via the closure
+	// convention (a leading void* env), and its first NumCaptures params are
+	// captured variables, supplied at runtime from that heap environment.
+	IsLambda    bool
+	NumCaptures int
 }
 
 func (FuncDecl) node() {}

@@ -27,6 +27,7 @@ const (
 	KStruct // a named struct; name stored in the slot's sname
 	KChan   // chan elem; element kind stored in the slot's elem slot
 	KMap    // map[k]v; key/value kinds stored in mkey/mval slots
+	KFunc   // a function value; signature stored in the slot's fsig
 )
 
 func (k Kind) String() string {
@@ -53,6 +54,8 @@ func (k Kind) String() string {
 		return "chan"
 	case KMap:
 		return "map"
+	case KFunc:
+		return "func"
 	}
 	return "?"
 }
@@ -64,8 +67,9 @@ type Checker struct {
 	kind   []Kind
 	elem   []int    // for KSlice/KChan slots: the element slot; -1 otherwise
 	sname  []string // for KStruct slots: the struct type name; "" otherwise
-	mkey   []int    // for KMap slots: the key slot; -1 otherwise
-	mval   []int    // for KMap slots: the value slot; -1 otherwise
+	mkey   []int       // for KMap slots: the key slot; -1 otherwise
+	mval   []int       // for KMap slots: the value slot; -1 otherwise
+	fsig   []*funcSig  // for KFunc slots: the signature; nil otherwise
 
 	structs map[string]*TypeDecl // declared struct types
 
@@ -108,6 +112,13 @@ type indexUse struct {
 
 type plusCons struct{ l, r, res int }
 
+// funcSig is a function value's signature: parameter slots and a single return
+// slot (ret < 0 means void).
+type funcSig struct {
+	params []int
+	ret    int
+}
+
 // fieldUse defers a struct field access/assignment: once base resolves to a
 // struct, result is unified with the field's declared type.
 type fieldUse struct {
@@ -123,7 +134,33 @@ func newSlot(c *Checker, k Kind) int {
 	c.sname = append(c.sname, "")
 	c.mkey = append(c.mkey, -1)
 	c.mval = append(c.mval, -1)
+	c.fsig = append(c.fsig, nil)
 	return len(c.parent) - 1
+}
+
+// newFuncSlot makes a KFunc slot with the given signature.
+func newFuncSlot(c *Checker, sig *funcSig) int {
+	s := newSlot(c, KFunc)
+	c.fsig[s] = sig
+	return s
+}
+
+// funcOf forces slot to be a function value of the given parameter arity and
+// returns its signature.
+func (c *Checker) funcOf(slot, arity int) (*funcSig, error) {
+	r := c.find(slot)
+	if c.kind[r] == KFunc && c.fsig[r] != nil {
+		return c.fsig[r], nil
+	}
+	params := make([]int, arity)
+	for i := range params {
+		params[i] = newSlot(c, KVar)
+	}
+	sig := &funcSig{params: params, ret: newSlot(c, KVar)}
+	if _, err := c.union(slot, newFuncSlot(c, sig)); err != nil {
+		return nil, err
+	}
+	return c.fsig[c.find(slot)], nil
 }
 
 // newMapSlot makes a KMap slot with the given key and value slots.
@@ -318,6 +355,9 @@ func reconcile(a, b Kind) (Kind, error) {
 	if a == KMap && b == KMap {
 		return KMap, nil // key/value slots reconciled by union
 	}
+	if a == KFunc && b == KFunc {
+		return KFunc, nil // signatures reconciled by union
+	}
 	return KVar, fmt.Errorf("type mismatch: %s vs %s", a, b)
 }
 
@@ -339,6 +379,13 @@ func (c *Checker) union(a, b int) (bool, error) {
 		na, nb := c.sname[ra], c.sname[rb]
 		if na != "" && nb != "" && na != nb {
 			return false, fmt.Errorf("type mismatch: struct %s vs %s", na, nb)
+		}
+	}
+	var sigA, sigB *funcSig
+	if merged == KFunc {
+		sigA, sigB = c.fsig[ra], c.fsig[rb]
+		if sigA != nil && sigB != nil && len(sigA.params) != len(sigB.params) {
+			return false, fmt.Errorf("function arity mismatch: %d vs %d", len(sigA.params), len(sigB.params))
 		}
 	}
 	c.parent[rb] = ra
@@ -377,6 +424,25 @@ func (c *Checker) union(a, b int) (bool, error) {
 		if mva >= 0 && mvb >= 0 && mva != mvb {
 			if _, err := c.union(mva, mvb); err != nil {
 				return false, err
+			}
+		}
+	}
+	if merged == KFunc {
+		keep := sigA
+		if keep == nil {
+			keep = sigB
+		}
+		c.fsig[ra] = keep
+		if sigA != nil && sigB != nil && sigA != sigB {
+			for i := range sigA.params {
+				if _, err := c.union(sigA.params[i], sigB.params[i]); err != nil {
+					return false, err
+				}
+			}
+			if sigA.ret >= 0 && sigB.ret >= 0 {
+				if _, err := c.union(sigA.ret, sigB.ret); err != nil {
+					return false, err
+				}
 			}
 		}
 	}
@@ -947,6 +1013,44 @@ func (c *Checker) genExprInner(fn *FuncDecl, e Expr) (int, error) {
 			return 0, err
 		}
 		return newMapSlot(c, ks, vs), nil
+	case *MakeClosure:
+		params := c.funcParam[ex.FuncName]
+		nc := len(ex.Captures)
+		env := c.vars[fn.Name]
+		for i, capName := range ex.Captures {
+			capSlot, ok := env[capName]
+			if !ok {
+				return 0, fmt.Errorf("closure capture %q is not in scope", capName)
+			}
+			c.addPair(params[i], capSlot)
+		}
+		ret := c.cVoid
+		switch rets := c.funcRets[ex.FuncName]; len(rets) {
+		case 0:
+			ret = c.cVoid
+		case 1:
+			ret = rets[0]
+		default:
+			return 0, fmt.Errorf("a function value cannot return multiple values")
+		}
+		return newFuncSlot(c, &funcSig{params: params[nc:], ret: ret}), nil
+	case *CallValue:
+		fs, err := c.genExpr(fn, ex.Fn)
+		if err != nil {
+			return 0, err
+		}
+		sig, err := c.funcOf(fs, len(ex.Args))
+		if err != nil {
+			return 0, err
+		}
+		for i, a := range ex.Args {
+			as, err := c.genExpr(fn, a)
+			if err != nil {
+				return 0, err
+			}
+			c.addPair(sig.params[i], as)
+		}
+		return sig.ret, nil
 	case *MakeChan:
 		eslot, err := c.typeSlot(ex.Elem)
 		if err != nil {
@@ -1292,6 +1396,17 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 	}
 	params, ok := c.funcParam[ex.Callee]
 	if !ok {
+		// not a top-level function — maybe a function-valued local variable
+		if slot, isVar := c.vars[fn.Name][ex.Callee]; isVar {
+			sig, err := c.funcOf(slot, len(argSlots))
+			if err != nil {
+				return 0, err
+			}
+			for i := range argSlots {
+				c.addPair(sig.params[i], argSlots[i])
+			}
+			return sig.ret, nil
+		}
 		return 0, fmt.Errorf("%s: call to undefined function %q", fn.Name, ex.Callee)
 	}
 	if len(params) != len(argSlots) {
@@ -1351,6 +1466,8 @@ func (c *Checker) ctypeSlot(slot int) string {
 		return "mfl_chan*"
 	case KMap:
 		return "mfl_map*"
+	case KFunc:
+		return "mfl_closure"
 	}
 	return "int64_t"
 }
@@ -1371,6 +1488,26 @@ func (c *Checker) ElemCType(n Node) string {
 
 // Types returns the declared struct types (codegen emits a C typedef per type).
 func (c *Checker) StructTypes() map[string]*TypeDecl { return c.structs }
+
+// IsTopFunc reports whether name is a top-level function (vs a closure value).
+func (c *Checker) IsTopFunc(name string) bool { _, ok := c.funcs[name]; return ok }
+
+// sigCTypes returns the parameter and return C types of a function-valued slot.
+func (c *Checker) sigCTypes(slot int) ([]string, string) {
+	r := c.find(slot)
+	if c.kind[r] == KFunc && c.fsig[r] != nil {
+		sig := c.fsig[r]
+		ps := make([]string, len(sig.params))
+		for i, p := range sig.params {
+			ps[i] = c.ctypeSlot(p)
+		}
+		return ps, c.ctypeSlot(sig.ret)
+	}
+	return nil, "int64_t"
+}
+
+func (c *Checker) NodeFuncSig(n Node) ([]string, string)        { return c.sigCTypes(c.nodeSlot[n]) }
+func (c *Checker) VarFuncSig(fn, name string) ([]string, string) { return c.sigCTypes(c.vars[fn][name]) }
 
 // TypeString renders a node's resolved type as a canonical string (int, float,
 // bool, string, a struct name, []T, map[K]V) — used to key JSON serializers.

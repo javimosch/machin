@@ -251,6 +251,31 @@ func TestStringRouteParse(t *testing.T) {
 	}
 }
 
+func TestClosureCapture(t *testing.T) {
+	got := runProg(t,
+		`func adder(n) { return func(x) { return x + n } }`,
+		`func main() { inc := adder(1) add10 := adder(10) println(inc(5), add10(5)) }`)
+	if got != "6 15\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestClosureHigherOrder(t *testing.T) {
+	got := runProg(t,
+		`func apply(f, x) { return f(x) }`,
+		`func main() { factor := 3 println(apply(func(x) { return x * factor }, 7)) }`)
+	if got != "21\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestClosureIIFE(t *testing.T) {
+	got := runProg(t, `func main() { println(func(a, b) { return a * b }(6, 7)) }`)
+	if got != "42\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
 func TestMultiReturnDestructure(t *testing.T) {
 	got := runProg(t,
 		`func divmod(a, b) { return a / b, a % b }`,

@@ -69,6 +69,41 @@ x = x + 1    // reassign (type must match)
 
 ---
 
+## Functions as values (closures)
+
+Functions are values. A `func(params) { ... }` literal is an expression you can
+store, pass, return, and call. A literal **captures** variables from the
+enclosing scope (by value, at the moment it is created):
+
+```go
+func adder(n) {
+    return func(x) { return x + n }   // captures n
+}
+
+func map_slice(xs, f) {               // higher-order function
+    out := []int{}
+    for _, v := range xs {
+        out = append(out, f(v))
+    }
+    return out
+}
+
+func main() {
+    inc := adder(1)
+    println(inc(5))                                   // 6
+    doubled := map_slice([]int{1, 2, 3}, func(x) { return x * 2 })
+    sum := func(a, b) { return a + b }(2, 3)          // call a literal directly
+}
+```
+
+- Function values are compiled by closure conversion (lambda-lifting): each
+  literal becomes a top-level function plus a captured environment.
+- Capture is **by value** — a closure snapshots the captured variables when it
+  is created; later changes to them are not seen by the closure.
+- A function value holds a single return value (or none).
+
+---
+
 ## Multiple return values
 
 A function may return more than one value, and a call destructures across names:
