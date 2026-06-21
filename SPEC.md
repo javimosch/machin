@@ -218,6 +218,18 @@ A multi-value call may appear only as the sole right-hand side of a
 multi-assignment. `_` discards a value. A function returning ≥2 values compiles
 to a generated result struct.
 
+**Named returns.** A function may name its return values in the signature; they
+become zero-initialized locals, and a bare `return` (or falling off the end)
+yields their current values:
+
+```go
+func divmod(a, b) (q, r) {
+    q = a / b
+    r = a % b
+    return            // returns q, r
+}
+```
+
 ---
 
 ## 10. Concurrency
@@ -298,7 +310,7 @@ id(42); id("hi"); id(3.14)   // → three native functions
 Program     = { Decl } .
 Decl        = FuncDecl | TypeDecl .
 TypeDecl    = "type" ident "struct" "{" { ident TypeName } "}" .
-FuncDecl    = "func" ident "(" [ identList ] ")" Block .
+FuncDecl    = "func" ident "(" [ identList ] ")" [ "(" identList ")" ] Block .
 TypeName    = "int" | "float" | "bool" | "string" | ident
             | "[]" TypeName | "map" "[" TypeName "]" TypeName | "chan" TypeName .
 Block       = "{" { Stmt } "}" .
@@ -317,9 +329,9 @@ FuncLit     = "func" "(" [ identList ] ")" Block .
 
 ---
 
-## 15. Status and non-goals (v0.2.0)
+## 15. Status and non-goals
 
-Implemented: the entire surface above plus arena memory management (§12). Not yet implemented: named return values,
-variadic parameters, by-reference closure capture, polymorphic recursion,
-garbage collection, and bounds/overflow checks. These are refinements, not core
-gaps.
+Implemented: the entire surface above, including arena memory management (§12)
+and named return values (§9). Not yet implemented: variadic parameters,
+by-reference closure capture, polymorphic recursion, a tracing GC across
+goroutines, and bounds/overflow checks. These are refinements, not core gaps.

@@ -496,8 +496,30 @@ func (g *cgen) function(inst string) error {
 			return err
 		}
 	}
+	// a named-return function may fall off the end, yielding the named values
+	if len(fn.Returns) > 0 {
+		g.buf.WriteString("    ")
+		g.emitNamedReturn(inst)
+	}
 	g.buf.WriteString("}\n\n")
 	return nil
+}
+
+// emitNamedReturn writes a return of the function's named return locals.
+func (g *cgen) emitNamedReturn(inst string) {
+	names := g.c.RetNames(inst)
+	switch len(names) {
+	case 0:
+		g.buf.WriteString("return;\n")
+	case 1:
+		fmt.Fprintf(&g.buf, "return v_%s;\n", names[0])
+	default:
+		parts := make([]string, len(names))
+		for i, n := range names {
+			parts[i] = "v_" + n
+		}
+		fmt.Fprintf(&g.buf, "return (%s_ret){ %s };\n", g.c.CName(inst), strings.Join(parts, ", "))
+	}
 }
 
 func indentC(b *strings.Builder, n int) {
@@ -526,7 +548,8 @@ func (g *cgen) stmt(s Stmt, depth int) error {
 		fmt.Fprintf(&g.buf, "v_%s = %s;\n", st.Name, e)
 	case *ReturnStmt:
 		if len(st.Vals) == 0 {
-			g.buf.WriteString("return;\n")
+			// a bare return yields the named return locals (or nothing for void)
+			g.emitNamedReturn(g.curFn)
 			return nil
 		}
 		exprs := make([]string, len(st.Vals))

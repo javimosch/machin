@@ -147,6 +147,7 @@ func main() {
 | **Structs** | `type T struct { ... }`, `T{f: v}` / `T{...}`, `p.f` read/assign, value semantics, `[]T` |
 | **Control flow** | `if / else if / else`, `for cond {}`, `for {}`, `while cond {}`, `for k, v := range x {}` |
 | **Multiple returns** | `return a, b`; `q, r := f()`; parallel `a, b = b, a`; comma-ok `v, ok := lookup(m, k)`; `_` ignores |
+| **Named returns** | `func divmod(a, b) (q, r) { q = …; r = …; return }` — zero-init locals, bare `return` |
 | **Closures** | `func(x) { ... }` literals, capture by value, pass/return/store function values, higher-order functions |
 | **Generics** | functions are implicitly generic — specialized per concrete call-site type (monomorphization), no annotations |
 | **Concurrency** | `go f(args)`, channels `make(chan T)` / `ch <- v` / `<-ch`, `sleep(ms)` |
@@ -199,6 +200,7 @@ per-call-site arg struct + trampoline driven by `pthread_create`.
 | `complex/maps` | word frequency + int-keyed lookup table |
 | `complex/ranges` | `for k, v := range` over slices, strings, and maps |
 | `complex/multi_return` | multiple returns, comma-ok, `_`, parallel swap |
+| `complex/named_returns` | named return values, bare `return`, fall-through |
 | `complex/closures` | capturing lambdas, higher-order functions, IIFE |
 | `complex/generics` | one source function specialized at int / string / float |
 | `complex/goroutines` | `go` spawns concurrent workers; `sleep` waits |
@@ -287,13 +289,14 @@ make install      # install to $(PREFIX)/bin  (default /usr/local)
 | Control flow (`if`, `for`, `while`) | ✅ done |
 | `range` loops over slices, maps, strings | ✅ done |
 | Multiple return values + parallel/comma-ok assignment | ✅ done |
+| Named return values | ✅ done |
 | Closures + higher-order functions (lambda-lifting) | ✅ done |
 | Generics via monomorphization (implicit, no annotations) | ✅ done |
 | Arena memory management (per-goroutine; bounds servers) | ✅ done |
 | Goroutines (`go`) + `sleep` | ✅ done |
 | Networking (`listen`/`accept`/`read`/`write`/`close`) | ✅ done |
 | Concurrent HTTP server example | ✅ done |
-| tracing GC across goroutines, named returns, variadics | ⬜ planned |
+| tracing GC across goroutines, variadic params, by-ref capture | ⬜ planned |
 | Bounds / overflow checks (`--safe`) | ⬜ planned |
 
 ---

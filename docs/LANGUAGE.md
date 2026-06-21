@@ -151,7 +151,18 @@ func main() {
 - `a, b = e1, e2` evaluates both right-hand sides before assigning. Use `_` to
   discard a value.
 
-See `examples/complex/multi_return.mfl`.
+Return values may also be **named** in the signature. Named returns are
+zero-initialized locals; a bare `return` (or falling off the end) yields them:
+
+```go
+func divmod(a, b) (q, r) {
+    q = a / b
+    r = a % b
+    return
+}
+```
+
+See `examples/complex/multi_return.mfl` and `examples/complex/named_returns.mfl`.
 
 ---
 

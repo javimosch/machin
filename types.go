@@ -491,6 +491,15 @@ func returnArity(body []Stmt) int {
 	return 0
 }
 
+// funcArity is a function's number of return values: its named returns, or the
+// count inferred from its return statements.
+func funcArity(fn *FuncDecl) int {
+	if len(fn.Returns) > 0 {
+		return len(fn.Returns)
+	}
+	return returnArity(fn.Body)
+}
+
 // instantiate creates a fresh specialization of a function (new parameter,
 // return, and local slots) and generates its body's constraints. A recursive
 // call reuses the in-progress instance (monomorphic recursion). The caller
@@ -512,19 +521,28 @@ func (c *Checker) instantiate(name string) (string, error) {
 		env[p] = params[i]
 	}
 	c.funcParam[inst] = params
-	rets := make([]int, returnArity(fn.Body))
+	c.vars[inst] = env
+	// return slots: when named, each is also a zero-initialized local in scope
+	arity := len(fn.Returns)
+	if arity == 0 {
+		arity = returnArity(fn.Body)
+	}
+	rets := make([]int, arity)
 	for i := range rets {
 		rets[i] = newSlot(c, KVar)
+		if i < len(fn.Returns) {
+			env[fn.Returns[i]] = rets[i]
+			c.localOrder[inst] = append(c.localOrder[inst], fn.Returns[i])
+		}
 	}
 	c.funcRets[inst] = rets
-	c.vars[inst] = env
 	c.nodeSlot[inst] = map[Node]int{}
 	c.callInst[inst] = map[*Call]string{}
 	c.closureInst[inst] = map[*MakeClosure]string{}
 
 	prev, had := c.instStack[name]
 	c.instStack[name] = inst
-	syn := &FuncDecl{Name: inst, Params: fn.Params, Body: fn.Body, IsLambda: fn.IsLambda, NumCaptures: fn.NumCaptures}
+	syn := &FuncDecl{Name: inst, Params: fn.Params, Returns: fn.Returns, Body: fn.Body, IsLambda: fn.IsLambda, NumCaptures: fn.NumCaptures}
 	for _, s := range fn.Body {
 		if err := c.genStmt(syn, s); err != nil {
 			return "", err
@@ -905,7 +923,8 @@ func (c *Checker) genStmt(fn *FuncDecl, s Stmt) error {
 	case *ReturnStmt:
 		rets := c.funcRets[fn.Name]
 		if len(st.Vals) == 0 {
-			if len(rets) != 0 {
+			// a bare return is fine for a void function or one with named returns
+			if len(rets) != 0 && len(fn.Returns) == 0 {
 				return fmt.Errorf("%s: bare return in a function that returns %d values", fn.Name, len(rets))
 			}
 			return nil
@@ -1238,7 +1257,7 @@ func (c *Checker) genMultiAssign(fn *FuncDecl, st *MultiAssign) error {
 	if len(st.Rhs) == 1 {
 		// a single call returning multiple values destructures across the names
 		if call, ok := st.Rhs[0].(*Call); ok {
-			if srcFn, isUser := c.funcs[call.Callee]; isUser && returnArity(srcFn.Body) >= 2 {
+			if srcFn, isUser := c.funcs[call.Callee]; isUser && funcArity(srcFn) >= 2 {
 				argSlots := make([]int, len(call.Args))
 				for i, a := range call.Args {
 					as, err := c.genExpr(fn, a)
@@ -1548,6 +1567,9 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 // ---- queries used by codegen ----
 
 func (c *Checker) RetArity(fn string) int { return len(c.funcRets[fn]) }
+
+// RetNames returns the named return identifiers of an instance (empty if none).
+func (c *Checker) RetNames(inst string) []string { return c.instFn[inst].Returns }
 func (c *Checker) RetKindAt(fn string, i int) Kind { return c.kindOf(c.funcRets[fn][i]) }
 func (c *Checker) ParamKind(fn string, i int) Kind {
 	return c.kindOf(c.funcParam[fn][i])

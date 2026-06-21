@@ -43,6 +43,7 @@ machin build examples/complex/primes.mfl --emit-c   # see the generated C
 | `maps`            | `map[string]int` word frequency + `map[int]string` lookup, `has`/`delete`/`keys` |
 | `ranges`          | `for k, v := range` over slices, strings, and maps |
 | `multi_return`    | multiple return values, comma-ok `(v, ok)`, `_`, parallel swap |
+| `named_returns`   | named return values, bare `return`, fall-through |
 | `closures`        | capturing lambdas, higher-order functions, IIFE |
 | `generics`        | one source function specialized at int / string / float (monomorphization) |
 | `structs`         | `type` declaration, struct literals, field access, `[]struct` of records |

@@ -210,11 +210,31 @@ func (p *Parser) parseFuncDecl() (*FuncDecl, error) {
 	if _, err := p.expect(TPunct, ")"); err != nil {
 		return nil, err
 	}
+	// optional named return values: func f(a, b) (q, r) { ... }
+	var returns []string
+	if p.peek().Val == "(" {
+		p.next()
+		for p.peek().Val != ")" {
+			rt, err := p.expect(TIdent, "")
+			if err != nil {
+				return nil, err
+			}
+			returns = append(returns, rt.Val)
+			if p.peek().Val == "," {
+				p.next()
+			} else {
+				break
+			}
+		}
+		if _, err := p.expect(TPunct, ")"); err != nil {
+			return nil, err
+		}
+	}
 	body, err := p.parseBlock()
 	if err != nil {
 		return nil, err
 	}
-	return &FuncDecl{Name: nameTok.Val, Params: params, Body: body}, nil
+	return &FuncDecl{Name: nameTok.Val, Params: params, Returns: returns, Body: body}, nil
 }
 
 func (p *Parser) parseBlock() ([]Stmt, error) {
