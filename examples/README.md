@@ -42,6 +42,7 @@ machin build examples/complex/primes.mfl --emit-c   # see the generated C
 | `slices`          | slice literals, `append`, indexing, `len`, in-place reverse |
 | `structs`         | `type` declaration, struct literals, field access, `[]struct` of records |
 | `goroutines`      | `go` spawns concurrent workers; `sleep` waits |
+| `channels`        | fan-in worker pool — goroutines communicate over a channel |
 | `http_server`     | concurrent TCP/HTTP server — `go handle(conn)` per request |
 
 `http_server` loops forever, so it's skipped by `run.sh`. Run it directly:

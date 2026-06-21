@@ -274,6 +274,14 @@ func (p *Parser) parseStmt() (Stmt, error) {
 	if err != nil {
 		return nil, err
 	}
+	if p.peek().Val == "<-" { // channel send: ch <- v
+		p.next()
+		val, err := p.parseExpr()
+		if err != nil {
+			return nil, err
+		}
+		return &SendStmt{Ch: x, Val: val}, nil
+	}
 	if p.peek().Val == "=" {
 		p.next()
 		val, err := p.parseExpr()
@@ -408,6 +416,14 @@ func (p *Parser) parseUnary() (Expr, error) {
 		}
 		return &Unary{Op: t.Val, X: x}, nil
 	}
+	if t.Kind == TOp && t.Val == "<-" { // channel receive
+		p.next()
+		ch, err := p.parseUnary()
+		if err != nil {
+			return nil, err
+		}
+		return &Recv{Ch: ch}, nil
+	}
 	return p.parsePostfix()
 }
 
@@ -469,6 +485,8 @@ func (p *Parser) parsePrimary() (Expr, error) {
 		case "nil":
 			p.next()
 			return &NilLit{}, nil
+		case "make":
+			return p.parseMake()
 		}
 		return nil, fmt.Errorf("unexpected keyword %q", t.Val)
 	case TIdent:
@@ -497,6 +515,25 @@ func (p *Parser) parsePrimary() (Expr, error) {
 		}
 	}
 	return nil, fmt.Errorf("unexpected token %q at pos %d", t.Val, t.Pos)
+}
+
+// parseMake parses channel construction: make(chan T).
+func (p *Parser) parseMake() (Expr, error) {
+	p.next() // make
+	if _, err := p.expect(TPunct, "("); err != nil {
+		return nil, err
+	}
+	if _, err := p.expect(TKeyword, "chan"); err != nil {
+		return nil, err
+	}
+	elem, err := p.parseTypeName()
+	if err != nil {
+		return nil, err
+	}
+	if _, err := p.expect(TPunct, ")"); err != nil {
+		return nil, err
+	}
+	return &MakeChan{Elem: elem}, nil
 }
 
 // parseStructLit parses Point{x: 1, y: 2} (keyed) or Point{1, 2} (positional).
