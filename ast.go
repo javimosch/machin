@@ -3,6 +3,27 @@ package main
 // Node is the base interface for AST nodes.
 type Node interface{ node() }
 
+// Program is a whole MFL program: struct type declarations plus functions.
+type Program struct {
+	Types []*TypeDecl
+	Funcs []*FuncDecl
+}
+
+// Field is one struct field with an explicit type (int, float, bool, string,
+// []elem, or another struct name).
+type Field struct {
+	Name string
+	Type string
+}
+
+// TypeDecl is a struct type declaration: type Name struct { ... }.
+type TypeDecl struct {
+	Name   string
+	Fields []Field
+}
+
+func (TypeDecl) node() {}
+
 // ---- Expressions ----
 
 type Expr interface{ Node }
@@ -41,6 +62,20 @@ type Index struct {
 	Idx Expr
 }
 
+// StructLit constructs a struct value: Point{x: 1, y: 2} or Point{1, 2}.
+// FieldNames is nil for positional literals.
+type StructLit struct {
+	Type       string
+	FieldNames []string
+	Vals       []Expr
+}
+
+// FieldAccess reads a struct field: p.x.
+type FieldAccess struct {
+	X    Expr
+	Name string
+}
+
 func (IntLit) node()    {}
 func (FloatLit) node()  {}
 func (StringLit) node() {}
@@ -50,8 +85,10 @@ func (Ident) node()     {}
 func (Unary) node()     {}
 func (Binary) node()    {}
 func (Call) node()      {}
-func (SliceLit) node()  {}
-func (Index) node()     {}
+func (SliceLit) node()    {}
+func (Index) node()       {}
+func (StructLit) node()   {}
+func (FieldAccess) node() {}
 
 // ---- Statements ----
 
@@ -84,6 +121,12 @@ type IndexAssign struct {
 	Val    Expr
 }
 
+// FieldAssign is assignment to a struct field: p.x = v.
+type FieldAssign struct {
+	Target *FieldAccess
+	Val    Expr
+}
+
 // GoStmt spawns a goroutine: go f(args).
 type GoStmt struct{ Call *Call }
 
@@ -93,6 +136,7 @@ func (ReturnStmt) node()  {}
 func (IfStmt) node()      {}
 func (WhileStmt) node()   {}
 func (IndexAssign) node() {}
+func (FieldAssign) node() {}
 func (GoStmt) node()      {}
 
 // ---- Top level ----

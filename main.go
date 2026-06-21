@@ -56,14 +56,14 @@ A .mfl program is base64, one function per line, blank line between functions.
 `)
 }
 
-// loadMFL reads a .mfl file, base64-decodes each non-blank line, and parses
-// each into a FuncDecl.
-func loadMFL(path string) ([]*FuncDecl, error) {
+// loadMFL reads a .mfl file, base64-decodes each non-blank line, and parses the
+// decoded declarations into a Program (struct types + functions).
+func loadMFL(path string) (*Program, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	var fns []*FuncDecl
+	var decls []string
 	for n, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -73,23 +73,23 @@ func loadMFL(path string) ([]*FuncDecl, error) {
 		if err != nil {
 			return nil, fmt.Errorf("line %d: base64 decode: %w", n+1, err)
 		}
-		fn, err := ParseFunc(string(raw))
-		if err != nil {
-			return nil, fmt.Errorf("line %d: parse: %w", n+1, err)
-		}
-		fns = append(fns, fn)
+		decls = append(decls, string(raw))
 	}
-	if len(fns) == 0 {
+	prog, err := ParseProgram(decls)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if len(prog.Funcs) == 0 {
 		return nil, fmt.Errorf("%s: no functions", path)
 	}
-	return fns, nil
+	return prog, nil
 }
 
 func cmdRun(args []string) error {
 	if len(args) != 1 {
 		return fmt.Errorf("run: need exactly one .mfl file")
 	}
-	fns, err := loadMFL(args[0])
+	prog, err := loadMFL(args[0])
 	if err != nil {
 		return err
 	}
@@ -99,7 +99,7 @@ func cmdRun(args []string) error {
 	}
 	bin.Close()
 	defer os.Remove(bin.Name())
-	if err := BuildBinary(fns, bin.Name()); err != nil {
+	if err := BuildBinary(prog, bin.Name()); err != nil {
 		return err
 	}
 	cmd := exec.Command(bin.Name())
@@ -133,12 +133,12 @@ func cmdBuild(args []string) error {
 	if src == "" {
 		return fmt.Errorf("build: need a .mfl file")
 	}
-	fns, err := loadMFL(src)
+	prog, err := loadMFL(src)
 	if err != nil {
 		return err
 	}
 	if emitC {
-		c, err := CompileToC(fns)
+		c, err := CompileToC(prog)
 		if err != nil {
 			return err
 		}
@@ -148,7 +148,7 @@ func cmdBuild(args []string) error {
 	if out == "" {
 		out = strings.TrimSuffix(filepath.Base(src), filepath.Ext(src))
 	}
-	if err := BuildBinary(fns, out); err != nil {
+	if err := BuildBinary(prog, out); err != nil {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "built %s\n", out)
@@ -165,22 +165,23 @@ func cmdEncode(args []string) error {
 	if err != nil {
 		return err
 	}
-	funcs, err := splitFunctions(string(data))
+	blocks, err := splitFunctions(string(data))
 	if err != nil {
 		return err
 	}
-	var fns []*FuncDecl
+	var decls []string
 	var out strings.Builder
-	for i, f := range funcs {
-		fn, perr := ParseFunc(normalize(f))
-		if perr != nil {
-			return fmt.Errorf("function %d: %w", i+1, perr)
-		}
-		fns = append(fns, fn)
-		out.WriteString(base64.StdEncoding.EncodeToString([]byte(normalize(f))))
+	for _, b := range blocks {
+		n := normalize(b)
+		decls = append(decls, n)
+		out.WriteString(base64.StdEncoding.EncodeToString([]byte(n)))
 		out.WriteString("\n\n")
 	}
-	if _, err := Check(fns); err != nil {
+	prog, err := ParseProgram(decls)
+	if err != nil {
+		return fmt.Errorf("parse: %w", err)
+	}
+	if _, err := Check(prog); err != nil {
 		return fmt.Errorf("typecheck: %w", err)
 	}
 	fmt.Print(out.String())

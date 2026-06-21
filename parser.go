@@ -6,8 +6,9 @@ import (
 )
 
 type Parser struct {
-	toks []Token
-	pos  int
+	toks    []Token
+	pos     int
+	structs map[string]bool // known struct type names (for T{...} literals)
 }
 
 func (p *Parser) peek() Token { return p.toks[p.pos] }
@@ -28,12 +29,16 @@ func (p *Parser) expect(kind TokKind, val string) (Token, error) {
 }
 
 // ParseFunc parses a single decoded function source into a FuncDecl.
-func ParseFunc(src string) (*FuncDecl, error) {
+func ParseFunc(src string) (*FuncDecl, error) { return ParseFuncWith(src, nil) }
+
+// ParseFuncWith parses a function, recognizing T{...} literals for the given
+// known struct type names.
+func ParseFuncWith(src string, structs map[string]bool) (*FuncDecl, error) {
 	toks, err := Lex(src)
 	if err != nil {
 		return nil, err
 	}
-	p := &Parser{toks: toks}
+	p := &Parser{toks: toks, structs: structs}
 	fn, err := p.parseFuncDecl()
 	if err != nil {
 		return nil, err
@@ -42,6 +47,113 @@ func ParseFunc(src string) (*FuncDecl, error) {
 		return nil, fmt.Errorf("trailing tokens after function: %q", p.peek().Val)
 	}
 	return fn, nil
+}
+
+// ParseProgram parses decoded top-level declarations (each was one base64
+// line). Type declarations are parsed first so their names are known when
+// parsing functions, which lets `T{...}` be disambiguated from a block.
+func ParseProgram(decls []string) (*Program, error) {
+	prog := &Program{}
+	structs := map[string]bool{}
+	var funcSrcs []string
+	for _, src := range decls {
+		toks, err := Lex(src)
+		if err != nil {
+			return nil, err
+		}
+		if toks[0].Kind == TKeyword && toks[0].Val == "type" {
+			td, err := ParseType(src)
+			if err != nil {
+				return nil, err
+			}
+			prog.Types = append(prog.Types, td)
+			structs[td.Name] = true
+		} else {
+			funcSrcs = append(funcSrcs, src)
+		}
+	}
+	for _, src := range funcSrcs {
+		fn, err := ParseFuncWith(src, structs)
+		if err != nil {
+			return nil, err
+		}
+		prog.Funcs = append(prog.Funcs, fn)
+	}
+	return prog, nil
+}
+
+// ParseType parses a single decoded struct type declaration.
+func ParseType(src string) (*TypeDecl, error) {
+	toks, err := Lex(src)
+	if err != nil {
+		return nil, err
+	}
+	p := &Parser{toks: toks}
+	td, err := p.parseTypeDecl()
+	if err != nil {
+		return nil, err
+	}
+	if p.peek().Kind != TEOF {
+		return nil, fmt.Errorf("trailing tokens after type: %q", p.peek().Val)
+	}
+	return td, nil
+}
+
+// parseTypeDecl parses: type Name struct { field type  field type ... }
+func (p *Parser) parseTypeDecl() (*TypeDecl, error) {
+	if _, err := p.expect(TKeyword, "type"); err != nil {
+		return nil, err
+	}
+	name, err := p.expect(TIdent, "")
+	if err != nil {
+		return nil, err
+	}
+	if _, err := p.expect(TKeyword, "struct"); err != nil {
+		return nil, err
+	}
+	if _, err := p.expect(TPunct, "{"); err != nil {
+		return nil, err
+	}
+	var fields []Field
+	for p.peek().Val != "}" && p.peek().Kind != TEOF {
+		fname, err := p.expect(TIdent, "")
+		if err != nil {
+			return nil, err
+		}
+		ftype, err := p.parseTypeName()
+		if err != nil {
+			return nil, err
+		}
+		fields = append(fields, Field{Name: fname.Val, Type: ftype})
+		for p.peek().Val == ";" || p.peek().Val == "," {
+			p.next()
+		}
+	}
+	if _, err := p.expect(TPunct, "}"); err != nil {
+		return nil, err
+	}
+	return &TypeDecl{Name: name.Val, Fields: fields}, nil
+}
+
+// parseTypeName parses a field/element type: int, float, bool, string, a struct
+// name, or []elem.
+func (p *Parser) parseTypeName() (string, error) {
+	if p.peek().Val == "[" {
+		p.next()
+		if _, err := p.expect(TPunct, "]"); err != nil {
+			return "", err
+		}
+		elem, err := p.parseTypeName()
+		if err != nil {
+			return "", err
+		}
+		return "[]" + elem, nil
+	}
+	t := p.next()
+	if t.Kind != TIdent {
+		return "", fmt.Errorf("expected a type name, got %q", t.Val)
+	}
+	return t.Val, nil
 }
 
 func (p *Parser) parseFuncDecl() (*FuncDecl, error) {
@@ -173,6 +285,8 @@ func (p *Parser) parseStmt() (Stmt, error) {
 			return &AssignStmt{Name: lhs.Name, Op: "=", Val: val}, nil
 		case *Index:
 			return &IndexAssign{Target: lhs, Val: val}, nil
+		case *FieldAccess:
+			return &FieldAssign{Target: lhs, Val: val}, nil
 		default:
 			return nil, fmt.Errorf("cannot assign to %T", x)
 		}
@@ -303,8 +417,15 @@ func (p *Parser) parsePostfix() (Expr, error) {
 	if err != nil {
 		return nil, err
 	}
-	for p.peek().Val == "[" {
-		p.next()
+	for p.peek().Val == "[" || p.peek().Val == "." {
+		if p.next().Val == "." {
+			name, err := p.expect(TIdent, "")
+			if err != nil {
+				return nil, err
+			}
+			x = &FieldAccess{X: x, Name: name.Val}
+			continue
+		}
 		idx, err := p.parseExpr()
 		if err != nil {
 			return nil, err
@@ -355,6 +476,9 @@ func (p *Parser) parsePrimary() (Expr, error) {
 		if p.peek().Val == "(" {
 			return p.parseCall(t.Val)
 		}
+		if p.peek().Val == "{" && p.structs[t.Val] {
+			return p.parseStructLit(t.Val)
+		}
 		return &Ident{Name: t.Val}, nil
 	case TPunct:
 		if t.Val == "(" {
@@ -373,6 +497,45 @@ func (p *Parser) parsePrimary() (Expr, error) {
 		}
 	}
 	return nil, fmt.Errorf("unexpected token %q at pos %d", t.Val, t.Pos)
+}
+
+// parseStructLit parses Point{x: 1, y: 2} (keyed) or Point{1, 2} (positional).
+func (p *Parser) parseStructLit(typeName string) (Expr, error) {
+	if _, err := p.expect(TPunct, "{"); err != nil {
+		return nil, err
+	}
+	lit := &StructLit{Type: typeName}
+	for p.peek().Val != "}" && p.peek().Kind != TEOF {
+		// keyed?  ident ':' expr
+		if p.peek().Kind == TIdent && p.toks[p.pos+1].Val == ":" {
+			name := p.next().Val
+			p.next() // ':'
+			val, err := p.parseExpr()
+			if err != nil {
+				return nil, err
+			}
+			lit.FieldNames = append(lit.FieldNames, name)
+			lit.Vals = append(lit.Vals, val)
+		} else {
+			val, err := p.parseExpr()
+			if err != nil {
+				return nil, err
+			}
+			lit.Vals = append(lit.Vals, val)
+		}
+		if p.peek().Val == "," {
+			p.next()
+		} else {
+			break
+		}
+	}
+	if _, err := p.expect(TPunct, "}"); err != nil {
+		return nil, err
+	}
+	if len(lit.FieldNames) != 0 && len(lit.FieldNames) != len(lit.Vals) {
+		return nil, fmt.Errorf("struct literal %s mixes keyed and positional fields", typeName)
+	}
+	return lit, nil
 }
 
 // parseSliceLit parses a typed slice literal: []int{1, 2, 3} or []string{}.

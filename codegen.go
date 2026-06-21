@@ -9,13 +9,32 @@ import (
 // CompileToC type-checks the program and emits standalone C99. The C is fed to
 // `cc -O2`, so MFL's runtime cost is whatever the C compiler's optimizer
 // produces — native, on par with C/Rust/Zig for scalar code.
-func CompileToC(funcs []*FuncDecl) (string, error) {
-	c, err := Check(funcs)
+func CompileToC(p *Program) (string, error) {
+	c, err := Check(p)
 	if err != nil {
 		return "", err
 	}
 	g := &cgen{c: c}
-	return g.program(funcs)
+	return g.program(p)
+}
+
+// cTypeName renders a declared type string (int, float, bool, string, []elem,
+// or a struct name) as C — used for struct field declarations.
+func cTypeName(t string) string {
+	if strings.HasPrefix(t, "[]") {
+		return "mfl_slice"
+	}
+	switch t {
+	case "int":
+		return "int64_t"
+	case "float":
+		return "double"
+	case "bool":
+		return "int"
+	case "string":
+		return "char*"
+	}
+	return "mfl_" + t
 }
 
 type cgen struct {
@@ -126,16 +145,16 @@ func cZero(k Kind) string {
 		return "0.0"
 	case KString:
 		return "NULL"
-	case KSlice:
-		return "(mfl_slice){0}"
+	case KSlice, KStruct:
+		return "{0}"
 	default:
 		return "0"
 	}
 }
 
-func (g *cgen) program(funcs []*FuncDecl) (string, error) {
+func (g *cgen) program(p *Program) (string, error) {
 	// emit function bodies first (this also fills g.tramp via any go statements)
-	for _, fn := range funcs {
+	for _, fn := range p.Funcs {
 		if err := g.function(fn); err != nil {
 			return "", err
 		}
@@ -143,7 +162,18 @@ func (g *cgen) program(funcs []*FuncDecl) (string, error) {
 	var out strings.Builder
 	out.WriteString(cRuntime)
 	out.WriteByte('\n')
-	for _, fn := range funcs {
+	// struct typedefs, in declaration order (a struct may reference earlier ones)
+	for _, td := range p.Types {
+		fmt.Fprintf(&out, "typedef struct {")
+		for _, f := range td.Fields {
+			fmt.Fprintf(&out, " %s f_%s;", cTypeName(f.Type), f.Name)
+		}
+		fmt.Fprintf(&out, " } mfl_%s;\n", td.Name)
+	}
+	if len(p.Types) > 0 {
+		out.WriteByte('\n')
+	}
+	for _, fn := range p.Funcs {
 		out.WriteString(g.signature(fn) + ";\n")
 	}
 	out.WriteByte('\n')
@@ -154,10 +184,10 @@ func (g *cgen) program(funcs []*FuncDecl) (string, error) {
 }
 
 func (g *cgen) signature(fn *FuncDecl) string {
-	ret := cType(g.c.RetKind(fn.Name))
+	ret := g.c.RetCType(fn.Name)
 	parts := make([]string, len(fn.Params))
 	for i, p := range fn.Params {
-		parts[i] = cType(g.c.ParamKind(fn.Name, i)) + " v_" + p
+		parts[i] = g.c.ParamCType(fn.Name, i) + " v_" + p
 	}
 	params := strings.Join(parts, ", ")
 	if params == "" {
@@ -169,8 +199,7 @@ func (g *cgen) signature(fn *FuncDecl) string {
 func (g *cgen) function(fn *FuncDecl) error {
 	g.buf.WriteString(g.signature(fn) + " {\n")
 	for _, name := range g.c.Locals(fn.Name) {
-		k := g.c.VarKind(fn.Name, name)
-		fmt.Fprintf(&g.buf, "    %s v_%s = %s;\n", cType(k), name, cZero(k))
+		fmt.Fprintf(&g.buf, "    %s v_%s = %s;\n", g.c.VarCType(fn.Name, name), name, cZero(g.c.VarKind(fn.Name, name)))
 	}
 	for _, s := range fn.Body {
 		if err := g.stmt(s, 1); err != nil {
@@ -263,8 +292,17 @@ func (g *cgen) stmt(s Stmt, depth int) error {
 		if err != nil {
 			return err
 		}
-		ct := cType(g.c.ElemKindOf(st.Target.X))
-		fmt.Fprintf(&g.buf, "((%s*)(%s).data)[%s] = %s;\n", ct, x, idx, val)
+		fmt.Fprintf(&g.buf, "((%s*)(%s).data)[%s] = %s;\n", g.c.ElemCType(st.Target.X), x, idx, val)
+	case *FieldAssign:
+		x, err := g.expr(st.Target.X)
+		if err != nil {
+			return err
+		}
+		val, err := g.expr(st.Val)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(&g.buf, "(%s).f_%s = %s;\n", x, st.Target.Name, val)
 	case *GoStmt:
 		return g.goStmt(st)
 	default:
@@ -284,7 +322,7 @@ func (g *cgen) goStmt(st *GoStmt) error {
 	// arg struct + trampoline (a leading dummy field avoids an empty struct)
 	fmt.Fprintf(&g.tramp, "struct mfl_go_%d { char _;", id)
 	for i := 0; i < n; i++ {
-		fmt.Fprintf(&g.tramp, " %s a%d;", cType(g.c.ParamKind(callee, i)), i)
+		fmt.Fprintf(&g.tramp, " %s a%d;", g.c.ParamCType(callee, i), i)
 	}
 	g.tramp.WriteString(" };\n")
 	fmt.Fprintf(&g.tramp, "static void* mfl_go_run_%d(void* p) { struct mfl_go_%d* s = (struct mfl_go_%d*)p; mfl_%s(",
@@ -332,6 +370,8 @@ func (g *cgen) printCall(call *Call, depth int) error {
 			fmt.Fprintf(&g.buf, "fputs((%s) ? \"true\" : \"false\", stdout);", e)
 		case KString:
 			fmt.Fprintf(&g.buf, "fputs((%s), stdout);", e)
+		case KSlice, KStruct:
+			return fmt.Errorf("cannot print a %s value", g.c.NodeKind(a))
 		default:
 			fmt.Fprintf(&g.buf, "printf(\"%%lld\", (long long)(%s));", e)
 		}
@@ -394,8 +434,15 @@ func (g *cgen) expr(e Expr) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		ct := cType(g.c.ElemKindOf(ex.X))
-		return fmt.Sprintf("((%s*)(%s).data)[%s]", ct, x, idx), nil
+		return fmt.Sprintf("((%s*)(%s).data)[%s]", g.c.ElemCType(ex.X), x, idx), nil
+	case *StructLit:
+		return g.structLit(ex)
+	case *FieldAccess:
+		x, err := g.expr(ex.X)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("(%s).f_%s", x, ex.Name), nil
 	}
 	return "", fmt.Errorf("codegen: unknown expression %T", e)
 }
@@ -421,13 +468,21 @@ func (g *cgen) binary(ex *Binary) (string, error) {
 }
 
 func (g *cgen) sliceLit(ex *SliceLit) (string, error) {
+	if len(ex.Elems) == 0 {
+		return "(mfl_slice){0}", nil
+	}
 	ek := g.c.ElemKindOf(ex)
-	builder, cast := "mfl_lit_i64", "int64_t"
+	var builder, cast string
 	switch ek {
 	case KFloat:
 		builder, cast = "mfl_lit_f64", "double"
 	case KString:
 		builder, cast = "mfl_lit_str", "char*"
+	case KInt, KBool:
+		builder, cast = "mfl_lit_i64", "int64_t"
+	default:
+		// struct / nested-slice elements: build empty + append in source instead
+		return "", fmt.Errorf("non-empty []%s literals are not supported; build with append", ek)
 	}
 	parts := []string{strconv.Itoa(len(ex.Elems))}
 	for _, el := range ex.Elems {
@@ -438,6 +493,27 @@ func (g *cgen) sliceLit(ex *SliceLit) (string, error) {
 		parts = append(parts, fmt.Sprintf("(%s)(%s)", cast, e))
 	}
 	return builder + "(" + strings.Join(parts, ", ") + ")", nil
+}
+
+// structLit emits a C compound literal: (mfl_Point){ .f_x = (1), .f_y = (2) }
+// for keyed literals, or positional (mfl_Point){ (1), (2) }.
+func (g *cgen) structLit(ex *StructLit) (string, error) {
+	parts := make([]string, len(ex.Vals))
+	for i, v := range ex.Vals {
+		e, err := g.expr(v)
+		if err != nil {
+			return "", err
+		}
+		if len(ex.FieldNames) > 0 {
+			parts[i] = fmt.Sprintf(".f_%s = (%s)", ex.FieldNames[i], e)
+		} else {
+			parts[i] = "(" + e + ")"
+		}
+	}
+	if len(parts) == 0 {
+		return fmt.Sprintf("(mfl_%s){0}", ex.Type), nil
+	}
+	return fmt.Sprintf("(mfl_%s){%s}", ex.Type, strings.Join(parts, ", ")), nil
 }
 
 func (g *cgen) call(ex *Call) (string, error) {
@@ -456,8 +532,10 @@ func (g *cgen) call(ex *Call) (string, error) {
 		}
 		return fmt.Sprintf("((int64_t)strlen(%s))", args[0]), nil
 	case "append":
-		ct := cType(g.c.ElemKindOf(ex.Args[0]))
-		return fmt.Sprintf("mfl_append(%s, &(%s){%s}, sizeof(%s))", args[0], ct, args[1], ct), nil
+		// &((T[1]){v})[0] yields a T* for any element type, including structs
+		// (a plain &(T){v} would mis-init an aggregate field-by-field).
+		ct := g.c.ElemCType(ex.Args[0])
+		return fmt.Sprintf("mfl_append(%s, &((%s[1]){%s})[0], sizeof(%s))", args[0], ct, args[1], ct), nil
 	case "sleep":
 		return fmt.Sprintf("mfl_sleep(%s)", args[0]), nil
 	case "str":
