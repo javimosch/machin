@@ -75,29 +75,59 @@ typedef struct { void* data; int64_t len; int64_t cap; } mfl_slice;
 /* closures: a function pointer plus a heap environment of captured values */
 typedef struct { void* fn; void* env; } mfl_closure;
 
+/* ---- arena memory management ----
+   Value buffers (strings, slice backings, closure environments) are allocated
+   from a per-goroutine arena and reclaimed in bulk when the goroutine finishes.
+   The main goroutine's arena lives for the whole program. This bounds the
+   memory of a long-running concurrent server: each request handler runs in its
+   own goroutine and frees everything it allocated on return. Subsystems that
+   free explicitly (channels, maps, goroutine args) use raw malloc/free. */
+typedef struct mfl_blk { struct mfl_blk* next; size_t size; } mfl_blk;
+typedef struct { mfl_blk* head; } mfl_arena;
+static mfl_arena mfl_main_arena = { NULL };
+static _Thread_local mfl_arena* mfl_arena_cur = NULL;
+static void* mfl_alloc(size_t sz) {
+    if (!mfl_arena_cur) mfl_arena_cur = &mfl_main_arena;
+    if (sz == 0) sz = 1;
+    mfl_blk* b = malloc(sizeof(mfl_blk) + sz);
+    b->size = sz; b->next = mfl_arena_cur->head; mfl_arena_cur->head = b;
+    return (void*)(b + 1);
+}
+static void* mfl_calloc(size_t n, size_t sz) { void* p = mfl_alloc(n * sz); memset(p, 0, n * sz); return p; }
+static void* mfl_realloc(void* old, size_t sz) {
+    void* p = mfl_alloc(sz);
+    if (old) { size_t o = ((mfl_blk*)old - 1)->size; memcpy(p, old, o < sz ? o : sz); }
+    return p; /* old reclaimed with its arena */
+}
+static void mfl_arena_free(mfl_arena* a) {
+    mfl_blk* b = a->head;
+    while (b) { mfl_blk* n = b->next; free(b); b = n; }
+    a->head = NULL;
+}
+
 static mfl_slice mfl_append(mfl_slice s, const void* elem, int64_t es) {
     if (s.len >= s.cap) {
         int64_t nc = s.cap ? s.cap * 2 : 4;
-        s.data = realloc(s.data, nc * es); s.cap = nc;
+        s.data = mfl_realloc(s.data, nc * es); s.cap = nc;
     }
     memcpy((char*)s.data + s.len * es, elem, es);
     s.len++;
     return s;
 }
 static mfl_slice mfl_lit_i64(int64_t n, ...) {
-    mfl_slice s = { n ? malloc(n * 8) : NULL, n, n };
+    mfl_slice s = { n ? mfl_alloc(n * 8) : NULL, n, n };
     va_list ap; va_start(ap, n);
     for (int64_t i = 0; i < n; i++) ((int64_t*)s.data)[i] = va_arg(ap, int64_t);
     va_end(ap); return s;
 }
 static mfl_slice mfl_lit_f64(int64_t n, ...) {
-    mfl_slice s = { n ? malloc(n * 8) : NULL, n, n };
+    mfl_slice s = { n ? mfl_alloc(n * 8) : NULL, n, n };
     va_list ap; va_start(ap, n);
     for (int64_t i = 0; i < n; i++) ((double*)s.data)[i] = va_arg(ap, double);
     va_end(ap); return s;
 }
 static mfl_slice mfl_lit_str(int64_t n, ...) {
-    mfl_slice s = { n ? malloc(n * sizeof(char*)) : NULL, n, n };
+    mfl_slice s = { n ? mfl_alloc(n * sizeof(char*)) : NULL, n, n };
     va_list ap; va_start(ap, n);
     for (int64_t i = 0; i < n; i++) ((char**)s.data)[i] = va_arg(ap, char*);
     va_end(ap); return s;
@@ -175,7 +205,7 @@ static void mfl_map_del(mfl_map* m, int64_t ik, const char* sk) {
 static int64_t mfl_map_len(mfl_map* m) { return m->count; }
 static mfl_slice mfl_map_keys(mfl_map* m) {
     int64_t es = m->sk ? (int64_t)sizeof(char*) : (int64_t)sizeof(int64_t);
-    mfl_slice s = { m->count ? malloc(m->count*es) : NULL, m->count, m->count };
+    mfl_slice s = { m->count ? mfl_alloc(m->count*es) : NULL, m->count, m->count };
     int64_t idx = 0;
     for (int64_t b = 0; b < m->nb; b++)
         for (mfl_ment* e = m->buckets[b]; e; e = e->next) {
@@ -187,17 +217,17 @@ static mfl_slice mfl_map_keys(mfl_map* m) {
 
 static char* mfl_cat(const char* a, const char* b) {
     size_t la = strlen(a), lb = strlen(b);
-    char* r = malloc(la + lb + 1);
+    char* r = mfl_alloc(la + lb + 1);
     memcpy(r, a, la); memcpy(r + la, b, lb); r[la + lb] = 0;
     return r;
 }
-static char* mfl_str_i(int64_t v) { char* b = malloc(24); snprintf(b, 24, "%lld", (long long)v); return b; }
-static char* mfl_str_d(double v)  { char* b = malloc(32); snprintf(b, 32, "%g", v); return b; }
-static char* mfl_dup(const char* s) { size_t n = strlen(s); char* r = malloc(n+1); memcpy(r, s, n+1); return r; }
+static char* mfl_str_i(int64_t v) { char* b = mfl_alloc(24); snprintf(b, 24, "%lld", (long long)v); return b; }
+static char* mfl_str_d(double v)  { char* b = mfl_alloc(32); snprintf(b, 32, "%g", v); return b; }
+static char* mfl_dup(const char* s) { size_t n = strlen(s); char* r = mfl_alloc(n+1); memcpy(r, s, n+1); return r; }
 static char* mfl_json_str(const char* s) { /* quote + escape a string */
     if (!s) s = "";
     size_t n = strlen(s), j = 0;
-    char* b = malloc(n*2 + 3);
+    char* b = mfl_alloc(n*2 + 3);
     b[j++] = '"';
     for (size_t i = 0; i < n; i++) {
         char c = s[i];
@@ -224,7 +254,7 @@ static char* mfl_js_str(const char** p) {
     mfl_js_ws(p);
     if (**p != '"') return mfl_dup("");
     (*p)++;
-    char* out = malloc(strlen(*p) + 1); size_t j = 0;
+    char* out = mfl_alloc(strlen(*p) + 1); size_t j = 0;
     while (**p && **p != '"') {
         char c = **p;
         if (c == '\\') {
@@ -240,9 +270,9 @@ static char* mfl_js_str(const char** p) {
 static void mfl_js_skip(const char** p) { /* skip one JSON value, including extra object fields */
     mfl_js_ws(p);
     char c = **p;
-    if (c == '"') { free(mfl_js_str(p)); return; }
+    if (c == '"') { mfl_js_str(p); return; }
     if (c == '{') { (*p)++; mfl_js_ws(p); if (**p=='}') { (*p)++; return; }
-        while (1) { free(mfl_js_str(p)); mfl_js_ws(p); if (**p==':') (*p)++; mfl_js_skip(p); mfl_js_ws(p); if (**p==',') { (*p)++; continue; } break; }
+        while (1) { mfl_js_str(p); mfl_js_ws(p); if (**p==':') (*p)++; mfl_js_skip(p); mfl_js_ws(p); if (**p==',') { (*p)++; continue; } break; }
         if (**p=='}') (*p)++; return; }
     if (c == '[') { (*p)++; mfl_js_ws(p); if (**p==']') { (*p)++; return; }
         while (1) { mfl_js_skip(p); mfl_js_ws(p); if (**p==',') { (*p)++; continue; } break; }
@@ -256,28 +286,28 @@ static char* mfl_substr(const char* s, int64_t i, int64_t j) {
     int64_t n = strlen(s);
     if (i < 0) i = 0; if (j > n) j = n; if (i > j) i = j;
     int64_t len = j - i;
-    char* r = malloc(len + 1); memcpy(r, s + i, len); r[len] = 0;
+    char* r = mfl_alloc(len + 1); memcpy(r, s + i, len); r[len] = 0;
     return r;
 }
 static int64_t mfl_index(const char* s, const char* sub) { const char* f = strstr(s, sub); return f ? (int64_t)(f - s) : -1; }
 static int mfl_contains(const char* s, const char* sub) { return strstr(s, sub) != NULL; }
 static int mfl_has_prefix(const char* s, const char* p) { return strncmp(s, p, strlen(p)) == 0; }
 static int mfl_has_suffix(const char* s, const char* p) { size_t ls = strlen(s), lp = strlen(p); return lp <= ls && strcmp(s + ls - lp, p) == 0; }
-static char* mfl_charat(const char* s, int64_t i) { int64_t n = strlen(s); if (i < 0 || i >= n) return mfl_dup(""); char* r = malloc(2); r[0] = s[i]; r[1] = 0; return r; }
-static char* mfl_to_upper(const char* s) { size_t n = strlen(s); char* r = malloc(n + 1); for (size_t i = 0; i < n; i++) r[i] = toupper((unsigned char)s[i]); r[n] = 0; return r; }
-static char* mfl_to_lower(const char* s) { size_t n = strlen(s); char* r = malloc(n + 1); for (size_t i = 0; i < n; i++) r[i] = tolower((unsigned char)s[i]); r[n] = 0; return r; }
+static char* mfl_charat(const char* s, int64_t i) { int64_t n = strlen(s); if (i < 0 || i >= n) return mfl_dup(""); char* r = mfl_alloc(2); r[0] = s[i]; r[1] = 0; return r; }
+static char* mfl_to_upper(const char* s) { size_t n = strlen(s); char* r = mfl_alloc(n + 1); for (size_t i = 0; i < n; i++) r[i] = toupper((unsigned char)s[i]); r[n] = 0; return r; }
+static char* mfl_to_lower(const char* s) { size_t n = strlen(s); char* r = mfl_alloc(n + 1); for (size_t i = 0; i < n; i++) r[i] = tolower((unsigned char)s[i]); r[n] = 0; return r; }
 static char* mfl_trim(const char* s) {
     while (*s && isspace((unsigned char)*s)) s++;
     int64_t n = strlen(s);
     while (n > 0 && isspace((unsigned char)s[n-1])) n--;
-    char* r = malloc(n + 1); memcpy(r, s, n); r[n] = 0; return r;
+    char* r = mfl_alloc(n + 1); memcpy(r, s, n); r[n] = 0; return r;
 }
 static char* mfl_replace(const char* s, const char* old, const char* neww) {
     size_t lo = strlen(old);
     if (lo == 0) return mfl_dup(s);
     size_t ln = strlen(neww), cnt = 0;
     const char* t = s; while ((t = strstr(t, old))) { cnt++; t += lo; }
-    char* r = malloc(strlen(s) + cnt * (ln > lo ? ln - lo : 0) + 1);
+    char* r = mfl_alloc(strlen(s) + cnt * (ln > lo ? ln - lo : 0) + 1);
     char* w = r; const char* p = s;
     while (1) { const char* f = strstr(p, old); if (!f) { strcpy(w, p); break; }
         memcpy(w, p, f - p); w += f - p; memcpy(w, neww, ln); w += ln; p = f + lo; }
@@ -287,12 +317,12 @@ static mfl_slice mfl_split(const char* s, const char* sep) {
     mfl_slice out = {0};
     size_t ls = strlen(sep);
     if (ls == 0) { int64_t n = strlen(s);
-        for (int64_t i = 0; i < n; i++) { char* c = malloc(2); c[0] = s[i]; c[1] = 0; out = mfl_append(out, &c, sizeof(char*)); }
+        for (int64_t i = 0; i < n; i++) { char* c = mfl_alloc(2); c[0] = s[i]; c[1] = 0; out = mfl_append(out, &c, sizeof(char*)); }
         return out; }
     const char* p = s;
     while (1) { const char* f = strstr(p, sep);
         if (!f) { char* piece = mfl_dup(p); out = mfl_append(out, &piece, sizeof(char*)); break; }
-        size_t len = f - p; char* piece = malloc(len + 1); memcpy(piece, p, len); piece[len] = 0;
+        size_t len = f - p; char* piece = mfl_alloc(len + 1); memcpy(piece, p, len); piece[len] = 0;
         out = mfl_append(out, &piece, sizeof(char*)); p = f + ls; }
     return out;
 }
@@ -315,7 +345,7 @@ static int64_t mfl_listen(int64_t port) {
 }
 static int64_t mfl_accept(int64_t fd) { return accept((int)fd, NULL, NULL); }
 static char* mfl_read(int64_t fd) {
-    char* buf = malloc(65536);
+    char* buf = mfl_alloc(65536);
     ssize_t n = read((int)fd, buf, 65535);
     if (n < 0) n = 0;
     buf[n] = 0;
@@ -766,7 +796,7 @@ func (g *cgen) goStmt(st *GoStmt) error {
 		fmt.Fprintf(&g.tramp, " %s a%d;", g.c.ParamCType(inst, i), i)
 	}
 	g.tramp.WriteString(" };\n")
-	fmt.Fprintf(&g.tramp, "static void* mfl_go_run_%d(void* p) { struct mfl_go_%d* s = (struct mfl_go_%d*)p; %s(",
+	fmt.Fprintf(&g.tramp, "static void* mfl_go_run_%d(void* p) { mfl_arena _a = {0}; mfl_arena_cur = &_a; struct mfl_go_%d* s = (struct mfl_go_%d*)p; %s(",
 		id, id, id, cname)
 	for i := 0; i < n; i++ {
 		if i > 0 {
@@ -774,7 +804,7 @@ func (g *cgen) goStmt(st *GoStmt) error {
 		}
 		fmt.Fprintf(&g.tramp, "s->a%d", i)
 	}
-	g.tramp.WriteString("); free(s); return NULL; }\n")
+	g.tramp.WriteString("); free(s); mfl_arena_free(&_a); return NULL; }\n")
 
 	// call site
 	g.buf.WriteString("{\n")
@@ -901,7 +931,7 @@ func (g *cgen) expr(e Expr) (string, error) {
 		id := g.tmpID
 		g.tmpID++
 		var b strings.Builder
-		fmt.Fprintf(&b, "({ %s_env* _e%d = malloc(sizeof(%s_env));", name, id, name)
+		fmt.Fprintf(&b, "({ %s_env* _e%d = mfl_alloc(sizeof(%s_env));", name, id, name)
 		for i, cap := range ex.Captures {
 			fmt.Fprintf(&b, " _e%d->f%d = v_%s;", id, i, cap)
 		}
@@ -1176,7 +1206,6 @@ func (g *cgen) jsonParser(typeStr string) (string, error) {
                 char* _k = mfl_js_str(p); mfl_js_ws(p); if (**p == ':') (*p)++;
                 %s _val = %s(p);
                 %s
-                free(_k);
                 if (mfl_js_more(p)) continue;
                 break;
             }
@@ -1210,7 +1239,6 @@ func (g *cgen) jsonParser(typeStr string) (string, error) {
 			fmt.Fprintf(&b, "                %s (strcmp(_k, %q) == 0) out.f_%s = %s(p);\n", kw, f.Name, f.Name, fp)
 		}
 		b.WriteString(`                else mfl_js_skip(p);
-                free(_k);
                 if (mfl_js_more(p)) continue;
                 break;
             }

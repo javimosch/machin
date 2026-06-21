@@ -289,10 +289,11 @@ make install      # install to $(PREFIX)/bin  (default /usr/local)
 | Multiple return values + parallel/comma-ok assignment | ✅ done |
 | Closures + higher-order functions (lambda-lifting) | ✅ done |
 | Generics via monomorphization (implicit, no annotations) | ✅ done |
+| Arena memory management (per-goroutine; bounds servers) | ✅ done |
 | Goroutines (`go`) + `sleep` | ✅ done |
 | Networking (`listen`/`accept`/`read`/`write`/`close`) | ✅ done |
 | Concurrent HTTP server example | ✅ done |
-| named returns, variadic params, by-reference capture | ⬜ planned |
+| tracing GC across goroutines, named returns, variadics | ⬜ planned |
 | Bounds / overflow checks (`--safe`) | ⬜ planned |
 
 ---

@@ -261,9 +261,16 @@ id(42); id("hi"); id(3.14)   // → three native functions
 ## 12. Execution and memory
 
 - A program runs by calling `main`. The process exits 0 on normal completion.
-- Memory is heap-allocated and **not freed** (no GC, no manual free); programs
-  are expected to be short-lived services or batch jobs. This is a deliberate
-  simplification of the current implementation.
+- **Memory** is managed by a per-goroutine **arena**: value buffers (strings,
+  slice backings, closure environments) are allocated from the running
+  goroutine's arena and reclaimed in bulk when that goroutine finishes. The main
+  goroutine's arena lives for the whole program. This bounds the memory of a
+  long-running concurrent server — each request handler runs in its own
+  goroutine and frees everything it allocated on return.
+  - *Caveat:* a value allocated in one goroutine and shared with another (e.g.
+    a heap pointer sent over a channel, or stored in a map outliving the
+    sender) may be reclaimed while still referenced. Pass such values by copy or
+    keep them in the receiver's scope.
 - Integer overflow wraps (two's complement). Division by zero and
   out-of-bounds slice access are undefined (they follow the generated C).
 
