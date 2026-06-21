@@ -115,6 +115,31 @@ func TestSafeChecks(t *testing.T) {
 	}
 }
 
+// --- By-reference closure capture: closures share mutable captured state. ---
+
+// A counter() returns a closure that mutates a captured local. Each call must
+// observe the previous mutation (1, 2, 3), and a second counter must have an
+// independent cell — proving capture is by reference, not a value snapshot.
+func TestClosureCaptureByReference(t *testing.T) {
+	got := runNative(t,
+		`func counter() { n := 0 return func() { n = n + 1 return n } }`,
+		`func main() { c := counter() d := counter() println(c(), c(), c(), d(), c()) }`)
+	if got != "1 2 3 1 4\n" {
+		t.Fatalf("by-reference capture: got %q, want \"1 2 3 1 4\\n\"", got)
+	}
+}
+
+// Two closures over the same variable share one cell: a mutation through one is
+// visible through the other (and to the enclosing scope).
+func TestClosureSharedCell(t *testing.T) {
+	got := runNative(t,
+		`func build() { n := 100 inc := func() { n = n + 1 } get := func() { return n } inc() inc() return get() }`,
+		`func main() { println(build()) }`)
+	if got != "102\n" {
+		t.Fatalf("shared capture cell: got %q, want \"102\\n\"", got)
+	}
+}
+
 // --- Issue #4: networking builtins + concurrent server compile and run. ---
 
 // TestNetworkingExampleCompiles builds the documented concurrent HTTP server

@@ -150,7 +150,7 @@ func main() {
 | **Multiple returns** | `return a, b`; `q, r := f()`; parallel `a, b = b, a`; comma-ok `v, ok := lookup(m, k)`; `_` ignores |
 | **Named returns** | `func divmod(a, b) (q, r) { q = …; r = …; return }` — zero-init locals, bare `return` |
 | **Variadics** | `func sum(nums...) { ... }`; call `sum(1, 2, 3)` or spread `sum(xs...)` |
-| **Closures** | `func(x) { ... }` literals, capture by value, pass/return/store function values, higher-order functions |
+| **Closures** | `func(x) { ... }` literals, capture by reference (mutable captured state), pass/return/store function values, higher-order functions |
 | **Generics** | functions are implicitly generic — specialized per concrete call-site type (monomorphization), no annotations |
 | **Concurrency** | `go f(args)`, channels `make(chan T)` / `ch <- v` / `<-ch`, `sleep(ms)` |
 | **Operators** | `+ - * / %`, `== != < <= > >=`, `&& \|\| !`; `+` concatenates strings |
@@ -205,6 +205,7 @@ per-call-site arg struct + trampoline driven by `pthread_create`.
 | `complex/named_returns` | named return values, bare `return`, fall-through |
 | `complex/variadic` | variadic params: collect, spread, fixed+variadic, generic |
 | `complex/closures` | capturing lambdas, higher-order functions, IIFE |
+| `complex/counter` | by-reference capture: mutable closures sharing a cell |
 | `complex/generics` | one source function specialized at int / string / float |
 | `complex/goroutines` | `go` spawns concurrent workers; `sleep` waits |
 | `complex/channels` | fan-in worker pool — goroutines communicate over a channel |
@@ -301,7 +302,9 @@ make install      # install to $(PREFIX)/bin  (default /usr/local)
 | Goroutines (`go`) + `sleep` | ✅ done |
 | Networking (`listen`/`accept`/`read`/`write`/`close`) | ✅ done |
 | Concurrent HTTP server example | ✅ done |
-| tracing GC across goroutines, by-reference closure capture | ⬜ planned |
+| By-reference closure capture (mutable captured state, Go semantics) | ✅ done |
+| Bounds / div-zero / overflow checks (`--safe`) | ✅ done |
+| Tracing GC across goroutines | ⬜ planned |
 
 ---
 
