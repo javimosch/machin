@@ -110,6 +110,7 @@ override with `$CC`) on PATH at compile time.
 machin run   <file.mfl>            # compile to native + execute
 machin build <file.mfl> [-o out]   # compile to a native binary
 machin build <file.mfl> --emit-c   # print the generated C
+machin run|build <file.mfl> --safe # add bounds / div-zero / overflow checks
 machin encode <src>                # machine tool: mint MFL from loose Go-like text
 ```
 
@@ -293,6 +294,7 @@ make install      # install to $(PREFIX)/bin  (default /usr/local)
 | Multiple return values + parallel/comma-ok assignment | ✅ done |
 | Named return values | ✅ done |
 | Variadic parameters (`f(xs...)`, spread) | ✅ done |
+| Bounds / div-zero / overflow checks (`--safe`) | ✅ done |
 | Closures + higher-order functions (lambda-lifting) | ✅ done |
 | Generics via monomorphization (implicit, no annotations) | ✅ done |
 | Arena memory management (per-goroutine; bounds servers) | ✅ done |
@@ -300,7 +302,6 @@ make install      # install to $(PREFIX)/bin  (default /usr/local)
 | Networking (`listen`/`accept`/`read`/`write`/`close`) | ✅ done |
 | Concurrent HTTP server example | ✅ done |
 | tracing GC across goroutines, by-reference closure capture | ⬜ planned |
-| Bounds / overflow checks (`--safe`) | ⬜ planned |
 
 ---
 

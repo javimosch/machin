@@ -15,8 +15,10 @@ func ccPath() string {
 }
 
 // BuildBinary compiles the program to a native executable at outPath via cc -O2.
-func BuildBinary(prog *Program, outPath string) error {
-	csrc, err := CompileToC(prog)
+// When safe is set, runtime bounds, division-by-zero, and overflow checks are
+// inserted.
+func BuildBinary(prog *Program, outPath string, safe bool) error {
+	csrc, err := CompileToC(prog, safe)
 	if err != nil {
 		return err
 	}
@@ -45,7 +47,7 @@ func RunCaptured(prog *Program) (string, error) {
 	}
 	bin.Close()
 	defer os.Remove(bin.Name())
-	if err := BuildBinary(prog, bin.Name()); err != nil {
+	if err := BuildBinary(prog, bin.Name(), false); err != nil {
 		return "", err
 	}
 	out, err := exec.Command(bin.Name()).Output()

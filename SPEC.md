@@ -301,8 +301,12 @@ id(42); id("hi"); id(3.14)   // → three native functions
     a heap pointer sent over a channel, or stored in a map outliving the
     sender) may be reclaimed while still referenced. Pass such values by copy or
     keep them in the receiver's scope.
-- Integer overflow wraps (two's complement). Division by zero and
+- By default, integer overflow wraps (two's complement) and division by zero /
   out-of-bounds slice access are undefined (they follow the generated C).
+- Building with **`--safe`** inserts runtime checks: a slice index out of range,
+  integer division/modulo by zero, or integer `+`/`-`/`*` overflow prints a
+  `panic:` message to stderr and exits non-zero. `--safe` is opt-in; the default
+  build has zero check overhead.
 
 ---
 

@@ -87,6 +87,34 @@ func TestLenOnStringAndSliceStillWorks(t *testing.T) {
 	}
 }
 
+// --- --safe: bounds, div-by-zero, and overflow checks panic at runtime. ---
+
+func TestSafeChecks(t *testing.T) {
+	cases := []struct{ name, src, want string }{
+		{"bounds", `func main() { xs := []int{1, 2, 3} println(xs[5]) }`, "index out of range"},
+		{"divzero", `func main() { a := 7 b := 0 println(a / b) }`, "divide by zero"},
+		{"overflow", `func main() { x := 9000000000000000000 println(x + x) }`, "overflow"},
+	}
+	for _, c := range cases {
+		bin, err := os.CreateTemp("", "mfl-safe-*")
+		if err != nil {
+			t.Fatal(err)
+		}
+		bin.Close()
+		defer os.Remove(bin.Name())
+		if err := BuildBinary(&Program{Funcs: parseFuncs(t, c.src)}, bin.Name(), true); err != nil {
+			t.Fatalf("%s: build: %v", c.name, err)
+		}
+		out, err := exec.Command(bin.Name()).CombinedOutput()
+		if err == nil {
+			t.Fatalf("%s: expected a non-zero exit (a panic)", c.name)
+		}
+		if !strings.Contains(string(out), c.want) {
+			t.Fatalf("%s: got %q, want substring %q", c.name, out, c.want)
+		}
+	}
+}
+
 // --- Issue #4: networking builtins + concurrent server compile and run. ---
 
 // TestNetworkingExampleCompiles builds the documented concurrent HTTP server
@@ -104,7 +132,7 @@ func TestNetworkingExampleCompiles(t *testing.T) {
 	}
 	bin.Close()
 	defer os.Remove(bin.Name())
-	if err := BuildBinary(&Program{Funcs: fns}, bin.Name()); err != nil {
+	if err := BuildBinary(&Program{Funcs: fns}, bin.Name(), false); err != nil {
 		t.Fatalf("networking example failed to compile: %v", err)
 	}
 }
@@ -122,7 +150,7 @@ func TestNetworkingRoundTrip(t *testing.T) {
 	}
 	bin.Close()
 	defer os.Remove(bin.Name())
-	if err := BuildBinary(&Program{Funcs: fns}, bin.Name()); err != nil {
+	if err := BuildBinary(&Program{Funcs: fns}, bin.Name(), false); err != nil {
 		t.Fatalf("server failed to compile: %v", err)
 	}
 
