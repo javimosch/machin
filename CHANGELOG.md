@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.3.0
+
+Ergonomics, toward feeling like Go to write:
+
+- **Named return values.** `func divmod(a, b) (q, r) { q = a/b; r = a%b; return }`
+  — the named returns are zero-initialized locals; a bare `return` (or falling
+  off the end) yields them.
+- **Variadic parameters.** A function's last parameter may be variadic
+  (`func sum(nums...)`), collecting trailing call arguments into a slice. Call
+  with extra args (`sum(1, 2, 3)`) or spread a slice (`sum(xs...)`). Variadics
+  are generic — one source function specialized per element type.
+
 ## v0.2.1
 
 - **Arena memory management.** Value buffers (strings, slice backings, closure

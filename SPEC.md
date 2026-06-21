@@ -1,6 +1,6 @@
 # The MFL Language Specification
 
-Version 0.2.1
+Version 0.3.0
 
 MFL (Machine-First Language) is a statically-typed, Go-flavored backend language
 whose canonical on-disk form is **base64**. It is compiled to native code through
