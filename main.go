@@ -50,6 +50,7 @@ usage:
   machin run   <file.mfl>            compile to native + execute
   machin build <file.mfl> [-o out]   compile to a native binary
   machin build <file.mfl> --emit-c   print the generated C and stop
+  machin build|run <file.mfl> --safe  insert bounds / div-zero / overflow checks
   machin encode <src>                mint MFL from loose Go-like text (machine tool)
 
 A .mfl program is base64, one function per line, blank line between functions.
@@ -86,10 +87,19 @@ func loadMFL(path string) (*Program, error) {
 }
 
 func cmdRun(args []string) error {
-	if len(args) != 1 {
+	safe := false
+	var src string
+	for _, a := range args {
+		if a == "--safe" {
+			safe = true
+		} else {
+			src = a
+		}
+	}
+	if src == "" {
 		return fmt.Errorf("run: need exactly one .mfl file")
 	}
-	prog, err := loadMFL(args[0])
+	prog, err := loadMFL(src)
 	if err != nil {
 		return err
 	}
@@ -99,7 +109,7 @@ func cmdRun(args []string) error {
 	}
 	bin.Close()
 	defer os.Remove(bin.Name())
-	if err := BuildBinary(prog, bin.Name()); err != nil {
+	if err := BuildBinary(prog, bin.Name(), safe); err != nil {
 		return err
 	}
 	cmd := exec.Command(bin.Name())
@@ -115,7 +125,7 @@ func cmdRun(args []string) error {
 
 func cmdBuild(args []string) error {
 	var src, out string
-	emitC := false
+	emitC, safe := false, false
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "-o":
@@ -126,6 +136,8 @@ func cmdBuild(args []string) error {
 			out = args[i]
 		case "--emit-c":
 			emitC = true
+		case "--safe":
+			safe = true
 		default:
 			src = args[i]
 		}
@@ -138,7 +150,7 @@ func cmdBuild(args []string) error {
 		return err
 	}
 	if emitC {
-		c, err := CompileToC(prog)
+		c, err := CompileToC(prog, safe)
 		if err != nil {
 			return err
 		}
@@ -148,7 +160,7 @@ func cmdBuild(args []string) error {
 	if out == "" {
 		out = strings.TrimSuffix(filepath.Base(src), filepath.Ext(src))
 	}
-	if err := BuildBinary(prog, out); err != nil {
+	if err := BuildBinary(prog, out, safe); err != nil {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "built %s\n", out)

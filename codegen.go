@@ -9,12 +9,12 @@ import (
 // CompileToC type-checks the program and emits standalone C99. The C is fed to
 // `cc -O2`, so MFL's runtime cost is whatever the C compiler's optimizer
 // produces — native, on par with C/Rust/Zig for scalar code.
-func CompileToC(p *Program) (string, error) {
+func CompileToC(p *Program, safe bool) (string, error) {
 	c, err := Check(p)
 	if err != nil {
 		return "", err
 	}
-	g := &cgen{c: c, jsonMemo: map[string]string{}, parseMemo: map[string]string{}}
+	g := &cgen{c: c, safe: safe, jsonMemo: map[string]string{}, parseMemo: map[string]string{}}
 	return g.program(p)
 }
 
@@ -57,6 +57,7 @@ type cgen struct {
 	rangeID   int    // unique temp names for for-range loops
 	tmpID     int    // unique temp names for multi-assignment
 	curFn     string // name of the function currently being emitted
+	safe      bool   // emit runtime bounds / div-by-zero / overflow checks
 }
 
 const cRuntime = `#include <stdio.h>
@@ -106,6 +107,18 @@ static void mfl_arena_free(mfl_arena* a) {
     while (b) { mfl_blk* n = b->next; free(b); b = n; }
     a->head = NULL;
 }
+
+/* --safe runtime checks (used only when the program is built with --safe) */
+static void mfl_panic(const char* msg) { fputs("panic: ", stderr); fputs(msg, stderr); fputc('\n', stderr); exit(1); }
+static int64_t mfl_bounds(int64_t i, int64_t n) {
+    if (i < 0 || i >= n) { char b[80]; snprintf(b, 80, "index out of range [%lld] with length %lld", (long long)i, (long long)n); mfl_panic(b); }
+    return i;
+}
+static int64_t mfl_idiv(int64_t a, int64_t b) { if (b == 0) mfl_panic("integer divide by zero"); return a / b; }
+static int64_t mfl_imod(int64_t a, int64_t b) { if (b == 0) mfl_panic("integer modulo by zero"); return a % b; }
+static int64_t mfl_iadd(int64_t a, int64_t b) { int64_t r; if (__builtin_add_overflow(a, b, &r)) mfl_panic("integer overflow (+)"); return r; }
+static int64_t mfl_isub(int64_t a, int64_t b) { int64_t r; if (__builtin_sub_overflow(a, b, &r)) mfl_panic("integer overflow (-)"); return r; }
+static int64_t mfl_imul(int64_t a, int64_t b) { int64_t r; if (__builtin_mul_overflow(a, b, &r)) mfl_panic("integer overflow (*)"); return r; }
 
 static mfl_slice mfl_append(mfl_slice s, const void* elem, int64_t es) {
     if (s.len >= s.cap) {
@@ -622,7 +635,7 @@ func (g *cgen) stmt(s Stmt, depth int) error {
 			vt := g.c.MapValCType(g.curFn, st.Target.X)
 			fmt.Fprintf(&g.buf, "mfl_map_set(%s, %s, %s, &((%s[1]){%s})[0]);\n", x, ik, sk, vt, val)
 		} else {
-			fmt.Fprintf(&g.buf, "((%s*)(%s).data)[%s] = %s;\n", g.c.ElemCType(g.curFn, st.Target.X), x, idx, val)
+			fmt.Fprintf(&g.buf, "((%s*)(%s).data)[%s] = %s;\n", g.c.ElemCType(g.curFn, st.Target.X), x, g.boundsIdx(idx, x), val)
 		}
 	case *FieldAssign:
 		x, err := g.expr(st.Target.X)
@@ -939,7 +952,7 @@ func (g *cgen) expr(e Expr) (string, error) {
 			}
 			return fmt.Sprintf("({ %s _g; mfl_map_get(%s, %s, %s, &_g); %s })", g.c.NodeCType(g.curFn, ex), x, ik, sk, tail), nil
 		}
-		return fmt.Sprintf("((%s*)(%s).data)[%s]", g.c.ElemCType(g.curFn, ex.X), x, idx), nil
+		return fmt.Sprintf("((%s*)(%s).data)[%s]", g.c.ElemCType(g.curFn, ex.X), x, g.boundsIdx(idx, x)), nil
 	case *StructLit:
 		return g.structLit(ex)
 	case *FieldAccess:
@@ -1013,7 +1026,30 @@ func (g *cgen) binary(ex *Binary) (string, error) {
 	if (ex.Op == "==" || ex.Op == "!=") && g.c.NodeKind(g.curFn, ex.L) == KString {
 		return fmt.Sprintf("(strcmp(%s, %s) %s 0)", l, r, ex.Op), nil
 	}
+	// --safe: checked integer arithmetic (overflow) and division (by zero)
+	if g.safe && g.c.NodeKind(g.curFn, ex) == KInt {
+		switch ex.Op {
+		case "+":
+			return fmt.Sprintf("mfl_iadd(%s, %s)", l, r), nil
+		case "-":
+			return fmt.Sprintf("mfl_isub(%s, %s)", l, r), nil
+		case "*":
+			return fmt.Sprintf("mfl_imul(%s, %s)", l, r), nil
+		case "/":
+			return fmt.Sprintf("mfl_idiv(%s, %s)", l, r), nil
+		case "%":
+			return fmt.Sprintf("mfl_imod(%s, %s)", l, r), nil
+		}
+	}
 	return fmt.Sprintf("(%s %s %s)", l, ex.Op, r), nil
+}
+
+// boundsIdx wraps a slice index with a bounds check when --safe is set.
+func (g *cgen) boundsIdx(idx, sliceExpr string) string {
+	if !g.safe {
+		return idx
+	}
+	return fmt.Sprintf("mfl_bounds(%s, (%s).len)", idx, sliceExpr)
 }
 
 func (g *cgen) sliceLit(ex *SliceLit) (string, error) {
