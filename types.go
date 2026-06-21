@@ -972,6 +972,12 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 			return 0, err
 		}
 		return newSliceSlot(c, ks), nil
+	case "json":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("json: 1 arg")
+		}
+		// any value serializes; codegen reads the resolved type
+		return c.cString, nil
 	case "str":
 		if len(argSlots) != 1 {
 			return 0, fmt.Errorf("str: 1 arg")
@@ -1082,6 +1088,33 @@ func (c *Checker) ElemCType(n Node) string {
 
 // Types returns the declared struct types (codegen emits a C typedef per type).
 func (c *Checker) StructTypes() map[string]*TypeDecl { return c.structs }
+
+// TypeString renders a node's resolved type as a canonical string (int, float,
+// bool, string, a struct name, []T, map[K]V) — used to key JSON serializers.
+func (c *Checker) TypeString(n Node) string { return c.typeStringSlot(c.nodeSlot[n]) }
+
+func (c *Checker) typeStringSlot(slot int) string {
+	r := c.find(slot)
+	switch c.kind[r] {
+	case KFloat:
+		return "float"
+	case KBool:
+		return "bool"
+	case KString:
+		return "string"
+	case KStruct:
+		return c.sname[r]
+	case KSlice:
+		return "[]" + c.typeStringSlot(c.elem[r])
+	case KChan:
+		return "chan " + c.typeStringSlot(c.elem[r])
+	case KMap:
+		return "map[" + c.typeStringSlot(c.mkey[r]) + "]" + c.typeStringSlot(c.mval[r])
+	case KVoid:
+		return "void"
+	}
+	return "int"
+}
 
 // map key/value accessors for a map-typed node (used by codegen).
 func (c *Checker) MapKeyKind(n Node) Kind  { return c.mapPart(n, true, true).(Kind) }

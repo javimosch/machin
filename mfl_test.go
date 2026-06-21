@@ -168,6 +168,30 @@ func TestMapKeysSliceSum(t *testing.T) {
 	}
 }
 
+func TestJSONScalarsAndSlice(t *testing.T) {
+	got := runProg(t, `func main() { println(json(42), json(true), json([]int{1, 2, 3})) }`)
+	if got != "42 true [1,2,3]\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestJSONStringEscape(t *testing.T) {
+	// MFL string  he said "hi"  ->  JSON  "he said \"hi\""
+	got := runProg(t, `func main() { println(json("he said \"hi\"")) }`)
+	if got != "\"he said \\\"hi\\\"\"\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestJSONStructAndMap(t *testing.T) {
+	got := runProg(t,
+		`type P struct { x int  y string }`,
+		`func main() { println(json(P{x: 1, y: "ab"})) m := make(map[string]int) m["k"] = 7 println(json(m)) }`)
+	if got != "{\"x\":1,\"y\":\"ab\"}\n{\"k\":7}\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
 func TestChannelSendRecv(t *testing.T) {
 	got := runProg(t,
 		`func send(c) { c <- 42 }`,

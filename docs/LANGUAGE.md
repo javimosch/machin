@@ -182,6 +182,7 @@ first := users[0]                                // value copy
 | `has(m, k)`                 | whether map `m` contains key `k`             |
 | `delete(m, k)`              | remove key `k` from map `m`                  |
 | `keys(m)`                   | a slice of map `m`'s keys                    |
+| `json(x)`                   | serialize any value to a JSON string         |
 | `str(n)`                    | convert an `int` or `float` to its `string`  |
 | `int(n)`                    | convert a numeric value to `int` (truncates) |
 | `sleep(ms)`                 | suspend the current goroutine (milliseconds) |
@@ -202,6 +203,25 @@ go handle(conn)   // run handle(conn) in a goroutine
 goroutine for the given number of milliseconds. Combined with the networking
 builtins, these enable the concurrent HTTP server in
 `examples/complex/http_server.mfl`.
+
+### JSON
+
+`json(x)` serializes any value — scalar, `string` (escaped), slice, struct, or
+map — to a JSON string. Combined with the networking builtins, this is how an
+MFL server returns JSON:
+
+```go
+type Todo struct { id int  title string  done bool }
+
+func main() {
+    list := []Todo{}
+    list = append(list, Todo{id: 1, title: "ship", done: false})
+    println(json(list))   // [{"id":1,"title":"ship","done":false}]
+}
+```
+
+Maps serialize as JSON objects (int keys are stringified). See
+`examples/complex/json.mfl` and the JSON API server `examples/complex/json_api.mfl`.
 
 ### Channels
 

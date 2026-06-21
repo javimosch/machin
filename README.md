@@ -146,7 +146,8 @@ func main() {
 | **Control flow** | `if / else if / else`, `for cond {}`, `for {}`, `while cond {}` |
 | **Concurrency** | `go f(args)`, channels `make(chan T)` / `ch <- v` / `<-ch`, `sleep(ms)` |
 | **Operators** | `+ - * / %`, `== != < <= > >=`, `&& \|\| !`; `+` concatenates strings |
-| **Builtins** | `print`, `println`, `len`, `str`, `int`, `append`, `sleep`, `has`, `delete`, `keys` |
+| **Builtins** | `print`, `println`, `len`, `str`, `int`, `append`, `sleep`, `has`, `delete`, `keys`, `json` |
+| **JSON** | `json(x)` serializes any value (struct, slice, map, scalar) to a JSON string |
 | **Networking** | `listen`, `accept`, `read`, `write`, `close` |
 
 ---
@@ -193,6 +194,8 @@ per-call-site arg struct + trampoline driven by `pthread_create`.
 | `complex/goroutines` | `go` spawns concurrent workers; `sleep` waits |
 | `complex/channels` | fan-in worker pool — goroutines communicate over a channel |
 | `complex/http_server` | concurrent TCP/HTTP server — `go handle(conn)` per request |
+| `complex/json` | `json()` serialization of scalars, slices, structs, maps |
+| `complex/json_api` | JSON-over-HTTP API — returns JSON-serialized structs |
 | `bench/fib` | `fib(40)` benchmark |
 
 ```bash
@@ -264,10 +267,12 @@ make install      # install to $(PREFIX)/bin  (default /usr/local)
 | Structs (`type T struct`, literals, field access, `[]T`) | ✅ done |
 | Channels (`make(chan T)`, `ch <- v`, `<-ch`) | ✅ done |
 | Maps (`make(map[K]V)`, index, `has`/`delete`/`keys`) | ✅ done |
+| JSON serialization (`json(x)`) + JSON-over-HTTP example | ✅ done |
 | Control flow (`if`, `for`, `while`) | ✅ done |
 | Goroutines (`go`) + `sleep` | ✅ done |
 | Networking (`listen`/`accept`/`read`/`write`/`close`) | ✅ done |
 | Concurrent HTTP server example | ✅ done |
+| JSON parsing (request bodies → structs) | ⬜ planned |
 | `range` loops, comma-ok, map of struct values | ⬜ planned |
 | Bounds / overflow checks (`--safe`) | ⬜ planned |
 
