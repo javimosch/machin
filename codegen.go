@@ -121,6 +121,53 @@ static void mfl_chan_recv(mfl_chan* c, void* out) {
     free(n->data); free(n);
 }
 
+/* maps: a chained hash table keyed by int64 or string, fixed-size values */
+typedef struct mfl_ment { struct mfl_ment* next; int64_t ik; char* sk; void* val; } mfl_ment;
+typedef struct { mfl_ment** buckets; int64_t nb, count, vs; int sk; } mfl_map;
+static uint64_t mfl_hash_i(int64_t k) { uint64_t x=(uint64_t)k; x^=x>>33; x*=0xff51afd7ed558ccdULL; x^=x>>33; return x; }
+static uint64_t mfl_hash_s(const char* s) { uint64_t h=1469598103934665603ULL; while(*s){ h^=(unsigned char)*s++; h*=1099511628211ULL; } return h; }
+static mfl_map* mfl_make_map(int keyIsStr, int64_t vs) {
+    mfl_map* m = malloc(sizeof(mfl_map));
+    m->nb = 16; m->count = 0; m->sk = keyIsStr; m->vs = vs;
+    m->buckets = calloc(m->nb, sizeof(mfl_ment*));
+    return m;
+}
+static mfl_ment** mfl_map_at(mfl_map* m, int64_t ik, const char* sk) {
+    uint64_t h = m->sk ? mfl_hash_s(sk) : mfl_hash_i(ik);
+    mfl_ment** pp = &m->buckets[h & (m->nb - 1)];
+    while (*pp) { mfl_ment* e=*pp; if (m->sk ? strcmp(e->sk,sk)==0 : e->ik==ik) return pp; pp=&e->next; }
+    return pp;
+}
+static void mfl_map_set(mfl_map* m, int64_t ik, const char* sk, const void* val) {
+    mfl_ment** pp = mfl_map_at(m, ik, sk);
+    if (*pp) { memcpy((*pp)->val, val, m->vs); return; }
+    mfl_ment* e = malloc(sizeof(mfl_ment)); e->next=NULL; e->ik=ik; e->sk=NULL;
+    if (m->sk) { e->sk = malloc(strlen(sk)+1); strcpy(e->sk, sk); }
+    e->val = malloc(m->vs); memcpy(e->val, val, m->vs);
+    *pp = e; m->count++;
+}
+static void mfl_map_get(mfl_map* m, int64_t ik, const char* sk, void* out) {
+    mfl_ment** pp = mfl_map_at(m, ik, sk);
+    if (*pp) memcpy(out, (*pp)->val, m->vs); else memset(out, 0, m->vs);
+}
+static int mfl_map_has(mfl_map* m, int64_t ik, const char* sk) { return *mfl_map_at(m, ik, sk) != NULL; }
+static void mfl_map_del(mfl_map* m, int64_t ik, const char* sk) {
+    mfl_ment** pp = mfl_map_at(m, ik, sk);
+    if (*pp) { mfl_ment* e=*pp; *pp=e->next; free(e->sk); free(e->val); free(e); m->count--; }
+}
+static int64_t mfl_map_len(mfl_map* m) { return m->count; }
+static mfl_slice mfl_map_keys(mfl_map* m) {
+    int64_t es = m->sk ? (int64_t)sizeof(char*) : (int64_t)sizeof(int64_t);
+    mfl_slice s = { m->count ? malloc(m->count*es) : NULL, m->count, m->count };
+    int64_t idx = 0;
+    for (int64_t b = 0; b < m->nb; b++)
+        for (mfl_ment* e = m->buckets[b]; e; e = e->next) {
+            if (m->sk) ((char**)s.data)[idx] = e->sk; else ((int64_t*)s.data)[idx] = e->ik;
+            idx++;
+        }
+    return s;
+}
+
 static char* mfl_cat(const char* a, const char* b) {
     size_t la = strlen(a), lb = strlen(b);
     char* r = malloc(la + lb + 1);
@@ -168,6 +215,8 @@ func cType(k Kind) string {
 		return "mfl_slice"
 	case KChan:
 		return "mfl_chan*"
+	case KMap:
+		return "mfl_map*"
 	}
 	return "int64_t"
 }
@@ -177,7 +226,7 @@ func cZero(k Kind) string {
 	case KFloat:
 		return "0.0"
 	case KString:
-		return "NULL"
+		return "\"\"" // the zero value of a string is "", not NULL
 	case KSlice, KStruct:
 		return "{0}"
 	default:
@@ -325,7 +374,13 @@ func (g *cgen) stmt(s Stmt, depth int) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(&g.buf, "((%s*)(%s).data)[%s] = %s;\n", g.c.ElemCType(st.Target.X), x, idx, val)
+		if g.c.NodeKind(st.Target.X) == KMap {
+			ik, sk := g.mapKeyArgs(st.Target.X, idx)
+			vt := g.c.MapValCType(st.Target.X)
+			fmt.Fprintf(&g.buf, "mfl_map_set(%s, %s, %s, &((%s[1]){%s})[0]);\n", x, ik, sk, vt, val)
+		} else {
+			fmt.Fprintf(&g.buf, "((%s*)(%s).data)[%s] = %s;\n", g.c.ElemCType(st.Target.X), x, idx, val)
+		}
 	case *FieldAssign:
 		x, err := g.expr(st.Target.X)
 		if err != nil {
@@ -413,8 +468,8 @@ func (g *cgen) printCall(call *Call, depth int) error {
 		case KBool:
 			fmt.Fprintf(&g.buf, "fputs((%s) ? \"true\" : \"false\", stdout);", e)
 		case KString:
-			fmt.Fprintf(&g.buf, "fputs((%s), stdout);", e)
-		case KSlice, KStruct, KChan:
+			fmt.Fprintf(&g.buf, "{ const char* _s = (%s); fputs(_s ? _s : \"\", stdout); }", e)
+		case KSlice, KStruct, KChan, KMap:
 			return fmt.Errorf("cannot print a %s value", g.c.NodeKind(a))
 		default:
 			fmt.Fprintf(&g.buf, "printf(\"%%lld\", (long long)(%s));", e)
@@ -478,6 +533,15 @@ func (g *cgen) expr(e Expr) (string, error) {
 		if err != nil {
 			return "", err
 		}
+		if g.c.NodeKind(ex.X) == KMap {
+			ik, sk := g.mapKeyArgs(ex.X, idx)
+			// a missing string value zero-fills to NULL; surface it as ""
+			tail := "_g;"
+			if g.c.NodeKind(ex) == KString {
+				tail = "_g ? _g : \"\";"
+			}
+			return fmt.Sprintf("({ %s _g; mfl_map_get(%s, %s, %s, &_g); %s })", g.c.NodeCType(ex), x, ik, sk, tail), nil
+		}
 		return fmt.Sprintf("((%s*)(%s).data)[%s]", g.c.ElemCType(ex.X), x, idx), nil
 	case *StructLit:
 		return g.structLit(ex)
@@ -489,6 +553,12 @@ func (g *cgen) expr(e Expr) (string, error) {
 		return fmt.Sprintf("(%s).f_%s", x, ex.Name), nil
 	case *MakeChan:
 		return fmt.Sprintf("mfl_make_chan(sizeof(%s))", g.c.ElemCType(ex)), nil
+	case *MakeMap:
+		keyIsStr := 0
+		if g.c.MapKeyKind(ex) == KString {
+			keyIsStr = 1
+		}
+		return fmt.Sprintf("mfl_make_map(%d, sizeof(%s))", keyIsStr, g.c.MapValCType(ex)), nil
 	case *Recv:
 		ch, err := g.expr(ex.Ch)
 		if err != nil {
@@ -569,6 +639,15 @@ func (g *cgen) structLit(ex *StructLit) (string, error) {
 	return fmt.Sprintf("(mfl_%s){%s}", ex.Type, strings.Join(parts, ", ")), nil
 }
 
+// mapKeyArgs returns the (int-key, string-key) C arguments for a map op: a
+// string-keyed map passes (0, key); an int-keyed map passes (key, NULL).
+func (g *cgen) mapKeyArgs(mapNode Node, keyExpr string) (string, string) {
+	if g.c.MapKeyKind(mapNode) == KString {
+		return "0", keyExpr
+	}
+	return keyExpr, "NULL"
+}
+
 func (g *cgen) call(ex *Call) (string, error) {
 	args := make([]string, len(ex.Args))
 	for i, a := range ex.Args {
@@ -580,10 +659,21 @@ func (g *cgen) call(ex *Call) (string, error) {
 	}
 	switch ex.Callee {
 	case "len":
-		if g.c.NodeKind(ex.Args[0]) == KSlice {
+		switch g.c.NodeKind(ex.Args[0]) {
+		case KSlice:
 			return fmt.Sprintf("((%s).len)", args[0]), nil
+		case KMap:
+			return fmt.Sprintf("mfl_map_len(%s)", args[0]), nil
 		}
 		return fmt.Sprintf("((int64_t)strlen(%s))", args[0]), nil
+	case "has":
+		ik, sk := g.mapKeyArgs(ex.Args[0], args[1])
+		return fmt.Sprintf("mfl_map_has(%s, %s, %s)", args[0], ik, sk), nil
+	case "delete":
+		ik, sk := g.mapKeyArgs(ex.Args[0], args[1])
+		return fmt.Sprintf("mfl_map_del(%s, %s, %s)", args[0], ik, sk), nil
+	case "keys":
+		return fmt.Sprintf("mfl_map_keys(%s)", args[0]), nil
 	case "append":
 		// &((T[1]){v})[0] yields a T* for any element type, including structs
 		// (a plain &(T){v} would mis-init an aggregate field-by-field).

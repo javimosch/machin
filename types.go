@@ -26,6 +26,7 @@ const (
 	KSlice  // []elem; element kind stored in the slot's elem slot
 	KStruct // a named struct; name stored in the slot's sname
 	KChan   // chan elem; element kind stored in the slot's elem slot
+	KMap    // map[k]v; key/value kinds stored in mkey/mval slots
 )
 
 func (k Kind) String() string {
@@ -50,6 +51,8 @@ func (k Kind) String() string {
 		return "struct"
 	case KChan:
 		return "chan"
+	case KMap:
+		return "map"
 	}
 	return "?"
 }
@@ -59,8 +62,10 @@ func isNumeric(k Kind) bool { return k == KInt || k == KFloat || k == KNum }
 type Checker struct {
 	parent []int
 	kind   []Kind
-	elem   []int    // for KSlice slots: the element slot; -1 otherwise
+	elem   []int    // for KSlice/KChan slots: the element slot; -1 otherwise
 	sname  []string // for KStruct slots: the struct type name; "" otherwise
+	mkey   []int    // for KMap slots: the key slot; -1 otherwise
+	mval   []int    // for KMap slots: the value slot; -1 otherwise
 
 	structs map[string]*TypeDecl // declared struct types
 
@@ -79,8 +84,17 @@ type Checker struct {
 	pairs []int      // flattened pairs: pairs[2i], pairs[2i+1]
 	plus  []plusCons // overloaded '+' constraints, resolved by fixpoint
 
-	lenArgs   []int      // slots passed to len(); must resolve to string or slice
+	lenArgs   []int      // slots passed to len(); must resolve to string/slice/map
 	fieldUses []fieldUse // struct field access/assign, resolved after solve
+	indexUses []indexUse // x[i] access/assign, resolved after solve (slice or map)
+}
+
+// indexUse defers x[i]: once base resolves to a slice or map, idx and result
+// are unified with the element (slice) or key/value (map) types.
+type indexUse struct {
+	base   int
+	idx    int
+	result int
 }
 
 type plusCons struct{ l, r, res int }
@@ -98,7 +112,33 @@ func newSlot(c *Checker, k Kind) int {
 	c.kind = append(c.kind, k)
 	c.elem = append(c.elem, -1)
 	c.sname = append(c.sname, "")
+	c.mkey = append(c.mkey, -1)
+	c.mval = append(c.mval, -1)
 	return len(c.parent) - 1
+}
+
+// newMapSlot makes a KMap slot with the given key and value slots.
+func newMapSlot(c *Checker, keySlot, valSlot int) int {
+	s := newSlot(c, KMap)
+	c.mkey[s] = keySlot
+	c.mval[s] = valSlot
+	return s
+}
+
+// mapKV forces slot to be a map and returns its key and value slots.
+func (c *Checker) mapKV(slot int) (int, int, error) {
+	r := c.find(slot)
+	if c.kind[r] == KMap && c.mkey[r] >= 0 && c.mval[r] >= 0 {
+		return c.mkey[r], c.mval[r], nil
+	}
+	k := newSlot(c, KVar)
+	v := newSlot(c, KVar)
+	m := newMapSlot(c, k, v)
+	if _, err := c.union(slot, m); err != nil {
+		return 0, 0, err
+	}
+	rr := c.find(slot)
+	return c.mkey[rr], c.mval[rr], nil
 }
 
 // newSliceSlot makes a KSlice slot whose element is the given slot.
@@ -153,6 +193,21 @@ func (c *Checker) typeSlot(t string) (int, error) {
 		}
 		return newChanSlot(c, e), nil
 	}
+	if strings.HasPrefix(t, "map[") {
+		kt, vt, err := splitMapType(t)
+		if err != nil {
+			return 0, err
+		}
+		ks, err := c.typeSlot(kt)
+		if err != nil {
+			return 0, err
+		}
+		vs, err := c.typeSlot(vt)
+		if err != nil {
+			return 0, err
+		}
+		return newMapSlot(c, ks, vs), nil
+	}
 	switch t {
 	case "int":
 		return newSlot(c, KInt), nil
@@ -167,6 +222,25 @@ func (c *Checker) typeSlot(t string) (int, error) {
 		return newStructSlot(c, t), nil
 	}
 	return 0, fmt.Errorf("unknown type %q", t)
+}
+
+// splitMapType splits "map[KEY]VAL" into its key and value type strings,
+// honoring nested brackets in the key (e.g. map[[]int]string).
+func splitMapType(t string) (string, string, error) {
+	inner := t[len("map["):]
+	depth := 0
+	for i := 0; i < len(inner); i++ {
+		switch inner[i] {
+		case '[':
+			depth++
+		case ']':
+			if depth == 0 {
+				return inner[:i], inner[i+1:], nil
+			}
+			depth--
+		}
+	}
+	return "", "", fmt.Errorf("malformed map type %q", t)
 }
 
 // fieldType returns the declared type string of a struct field.
@@ -232,6 +306,9 @@ func reconcile(a, b Kind) (Kind, error) {
 	if a == KChan && b == KChan {
 		return KChan, nil // element slots reconciled by union
 	}
+	if a == KMap && b == KMap {
+		return KMap, nil // key/value slots reconciled by union
+	}
 	return KVar, fmt.Errorf("type mismatch: %s vs %s", a, b)
 }
 
@@ -272,6 +349,26 @@ func (c *Checker) union(a, b int) (bool, error) {
 	if merged == KStruct {
 		if c.sname[ra] == "" {
 			c.sname[ra] = c.sname[rb]
+		}
+	}
+	if merged == KMap {
+		mka, mkb := c.mkey[ra], c.mkey[rb]
+		mva, mvb := c.mval[ra], c.mval[rb]
+		if mka < 0 {
+			c.mkey[ra] = mkb
+		}
+		if mva < 0 {
+			c.mval[ra] = mvb
+		}
+		if mka >= 0 && mkb >= 0 && mka != mkb {
+			if _, err := c.union(mka, mkb); err != nil {
+				return false, err
+			}
+		}
+		if mva >= 0 && mvb >= 0 && mva != mvb {
+			if _, err := c.union(mva, mvb); err != nil {
+				return false, err
+			}
 		}
 	}
 	return true, nil
@@ -336,8 +433,8 @@ func Check(p *Program) (*Checker, error) {
 	if err := c.solve(); err != nil {
 		return nil, err
 	}
-	// 3b. resolve struct field accesses/assignments now that bases have a type
-	if err := c.resolveFields(); err != nil {
+	// 3b. resolve deferred x[i] and struct field uses now that bases have a type
+	if err := c.resolveDeferred(); err != nil {
 		return nil, err
 	}
 	// 4. defaults
@@ -355,8 +452,8 @@ func Check(p *Program) (*Checker, error) {
 	}
 	// 5. validate len() arguments now that kinds are fully resolved.
 	for _, slot := range c.lenArgs {
-		if k := c.kindOf(slot); k != KString && k != KSlice {
-			return nil, fmt.Errorf("len: argument must be a string or slice, got %s", k)
+		if k := c.kindOf(slot); k != KString && k != KSlice && k != KMap {
+			return nil, fmt.Errorf("len: argument must be a string, slice, or map, got %s", k)
 		}
 	}
 	return c, nil
@@ -369,6 +466,19 @@ func (c *Checker) checkTypeName(t string) error {
 	if strings.HasPrefix(t, "[]") {
 		return c.checkTypeName(t[2:])
 	}
+	if strings.HasPrefix(t, "chan ") {
+		return c.checkTypeName(strings.TrimPrefix(t, "chan "))
+	}
+	if strings.HasPrefix(t, "map[") {
+		kt, vt, err := splitMapType(t)
+		if err != nil {
+			return err
+		}
+		if err := c.checkTypeName(kt); err != nil {
+			return err
+		}
+		return c.checkTypeName(vt)
+	}
 	switch t {
 	case "int", "float", "bool", "string":
 		return nil
@@ -379,15 +489,30 @@ func (c *Checker) checkTypeName(t string) error {
 	return fmt.Errorf("unknown type %q", t)
 }
 
-// resolveFields ties off deferred struct field accesses: for each, once its
-// base expression has resolved to a struct, unify the result with the field's
-// declared type, then re-solve. Repeats to a fixpoint (chained access p.a.b).
-func (c *Checker) resolveFields() error {
-	done := make([]bool, len(c.fieldUses))
+// resolveDeferred ties off deferred x[i] index and struct field uses. Each is
+// resolved once its base expression has a concrete kind; resolving one may give
+// another its type (e.g. m[k].field), so this runs to a fixpoint, re-solving
+// after each round.
+func (c *Checker) resolveDeferred() error {
+	fieldDone := make([]bool, len(c.fieldUses))
+	indexDone := make([]bool, len(c.indexUses))
 	for {
 		progressed := false
+		for i, iu := range c.indexUses {
+			if indexDone[i] {
+				continue
+			}
+			ok, err := c.tryIndex(iu)
+			if err != nil {
+				return err
+			}
+			if ok {
+				indexDone[i] = true
+				progressed = true
+			}
+		}
 		for i, fu := range c.fieldUses {
-			if done[i] || c.kindOf(fu.base) != KStruct {
+			if fieldDone[i] || c.kindOf(fu.base) != KStruct {
 				continue
 			}
 			name := c.sname[c.find(fu.base)]
@@ -402,7 +527,7 @@ func (c *Checker) resolveFields() error {
 			if _, err := c.union(fu.result, fs); err != nil {
 				return err
 			}
-			done[i] = true
+			fieldDone[i] = true
 			progressed = true
 		}
 		if !progressed {
@@ -413,11 +538,48 @@ func (c *Checker) resolveFields() error {
 		}
 	}
 	for i, fu := range c.fieldUses {
-		if !done[i] {
+		if !fieldDone[i] {
 			return fmt.Errorf("cannot infer struct type for field .%s", fu.field)
 		}
 	}
+	for i := range c.indexUses {
+		if !indexDone[i] {
+			return fmt.Errorf("cannot index a non-slice/map value")
+		}
+	}
 	return nil
+}
+
+// tryIndex resolves one x[i]: slice → (idx int, result elem); map → (idx key,
+// result value). Returns false if the base kind is not yet known.
+func (c *Checker) tryIndex(iu indexUse) (bool, error) {
+	switch c.kindOf(iu.base) {
+	case KSlice:
+		e, err := c.sliceElem(iu.base)
+		if err != nil {
+			return false, err
+		}
+		if _, err := c.union(iu.idx, c.cInt); err != nil {
+			return false, err
+		}
+		if _, err := c.union(iu.result, e); err != nil {
+			return false, err
+		}
+		return true, nil
+	case KMap:
+		ks, vs, err := c.mapKV(iu.base)
+		if err != nil {
+			return false, err
+		}
+		if _, err := c.union(iu.idx, ks); err != nil {
+			return false, err
+		}
+		if _, err := c.union(iu.result, vs); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	return false, nil
 }
 
 func (c *Checker) solve() error {
@@ -523,20 +685,15 @@ func (c *Checker) genStmt(fn *FuncDecl, s Stmt) error {
 		if err != nil {
 			return err
 		}
-		eslot, err := c.sliceElem(xs)
-		if err != nil {
-			return err
-		}
 		is, err := c.genExpr(fn, st.Target.Idx)
 		if err != nil {
 			return err
 		}
-		c.addPair(is, c.cInt)
 		vs, err := c.genExpr(fn, st.Val)
 		if err != nil {
 			return err
 		}
-		c.addPair(vs, eslot)
+		c.indexUses = append(c.indexUses, indexUse{base: xs, idx: is, result: vs})
 		return nil
 	case *FieldAssign:
 		xs, err := c.genExpr(fn, st.Target.X)
@@ -637,16 +794,23 @@ func (c *Checker) genExprInner(fn *FuncDecl, e Expr) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		eslot, err := c.sliceElem(xs)
-		if err != nil {
-			return 0, err
-		}
 		is, err := c.genExpr(fn, ex.Idx)
 		if err != nil {
 			return 0, err
 		}
-		c.addPair(is, c.cInt)
-		return eslot, nil
+		res := newSlot(c, KVar)
+		c.indexUses = append(c.indexUses, indexUse{base: xs, idx: is, result: res})
+		return res, nil
+	case *MakeMap:
+		ks, err := c.typeSlot(ex.Key)
+		if err != nil {
+			return 0, err
+		}
+		vs, err := c.typeSlot(ex.Val)
+		if err != nil {
+			return 0, err
+		}
+		return newMapSlot(c, ks, vs), nil
 	case *MakeChan:
 		eslot, err := c.typeSlot(ex.Elem)
 		if err != nil {
@@ -786,6 +950,28 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		}
 		c.addPair(argSlots[0], c.cInt)
 		return c.cVoid, nil
+	case "has", "delete":
+		if len(argSlots) != 2 {
+			return 0, fmt.Errorf("%s: 2 args (map, key)", ex.Callee)
+		}
+		ks, _, err := c.mapKV(argSlots[0])
+		if err != nil {
+			return 0, err
+		}
+		c.addPair(argSlots[1], ks)
+		if ex.Callee == "has" {
+			return c.cBool, nil
+		}
+		return c.cVoid, nil
+	case "keys":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("keys: 1 arg (map)")
+		}
+		ks, _, err := c.mapKV(argSlots[0])
+		if err != nil {
+			return 0, err
+		}
+		return newSliceSlot(c, ks), nil
 	case "str":
 		if len(argSlots) != 1 {
 			return 0, fmt.Errorf("str: 1 arg")
@@ -874,6 +1060,8 @@ func (c *Checker) ctypeSlot(slot int) string {
 		return "mfl_" + c.sname[r]
 	case KChan:
 		return "mfl_chan*"
+	case KMap:
+		return "mfl_map*"
 	}
 	return "int64_t"
 }
@@ -894,3 +1082,30 @@ func (c *Checker) ElemCType(n Node) string {
 
 // Types returns the declared struct types (codegen emits a C typedef per type).
 func (c *Checker) StructTypes() map[string]*TypeDecl { return c.structs }
+
+// map key/value accessors for a map-typed node (used by codegen).
+func (c *Checker) MapKeyKind(n Node) Kind  { return c.mapPart(n, true, true).(Kind) }
+func (c *Checker) MapValCType(n Node) string { return c.mapPart(n, false, false).(string) }
+func (c *Checker) MapKeyCType(n Node) string { return c.mapPart(n, true, false).(string) }
+
+func (c *Checker) mapPart(n Node, key bool, asKind bool) interface{} {
+	r := c.find(c.nodeSlot[n])
+	slot := -1
+	if c.kind[r] == KMap {
+		if key {
+			slot = c.mkey[r]
+		} else {
+			slot = c.mval[r]
+		}
+	}
+	if slot < 0 {
+		if asKind {
+			return KInt
+		}
+		return "int64_t"
+	}
+	if asKind {
+		return c.kindOf(slot)
+	}
+	return c.ctypeSlot(slot)
+}

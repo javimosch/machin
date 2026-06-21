@@ -144,6 +144,30 @@ func TestStructFieldTypeMismatch(t *testing.T) {
 	}
 }
 
+func TestMapStringKeys(t *testing.T) {
+	got := runProg(t,
+		`func main() { m := make(map[string]int) m["a"] = 1 m["a"] = m["a"] + 5 println(m["a"], m["missing"], has(m, "a"), has(m, "z"), len(m)) }`)
+	if got != "6 0 true false 1\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestMapIntKeysAndDelete(t *testing.T) {
+	got := runProg(t,
+		`func main() { m := make(map[int]string) m[1] = "one" m[2] = "two" delete(m, 1) println(m[1], m[2], len(m), has(m, 1)) }`)
+	if got != " two 1 false\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestMapKeysSliceSum(t *testing.T) {
+	got := runProg(t,
+		`func main() { m := make(map[int]int) m[3] = 30 m[7] = 70 ks := keys(m) s := 0 i := 0 for i < len(ks) { s = s + m[ks[i]] i = i + 1 } println(s) }`)
+	if got != "100\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
 func TestChannelSendRecv(t *testing.T) {
 	got := runProg(t,
 		`func send(c) { c <- 42 }`,

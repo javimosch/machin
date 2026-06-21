@@ -149,6 +149,32 @@ func (p *Parser) parseTypeName() (string, error) {
 		}
 		return "[]" + elem, nil
 	}
+	if p.peek().Val == "map" {
+		p.next()
+		if _, err := p.expect(TPunct, "["); err != nil {
+			return "", err
+		}
+		key, err := p.parseTypeName()
+		if err != nil {
+			return "", err
+		}
+		if _, err := p.expect(TPunct, "]"); err != nil {
+			return "", err
+		}
+		val, err := p.parseTypeName()
+		if err != nil {
+			return "", err
+		}
+		return "map[" + key + "]" + val, nil
+	}
+	if p.peek().Val == "chan" {
+		p.next()
+		elem, err := p.parseTypeName()
+		if err != nil {
+			return "", err
+		}
+		return "chan " + elem, nil
+	}
 	t := p.next()
 	if t.Kind != TIdent {
 		return "", fmt.Errorf("expected a type name, got %q", t.Val)
@@ -517,23 +543,45 @@ func (p *Parser) parsePrimary() (Expr, error) {
 	return nil, fmt.Errorf("unexpected token %q at pos %d", t.Val, t.Pos)
 }
 
-// parseMake parses channel construction: make(chan T).
+// parseMake parses make(chan T) or make(map[K]V).
 func (p *Parser) parseMake() (Expr, error) {
 	p.next() // make
 	if _, err := p.expect(TPunct, "("); err != nil {
 		return nil, err
 	}
-	if _, err := p.expect(TKeyword, "chan"); err != nil {
-		return nil, err
+	switch p.peek().Val {
+	case "chan":
+		p.next()
+		elem, err := p.parseTypeName()
+		if err != nil {
+			return nil, err
+		}
+		if _, err := p.expect(TPunct, ")"); err != nil {
+			return nil, err
+		}
+		return &MakeChan{Elem: elem}, nil
+	case "map":
+		p.next()
+		if _, err := p.expect(TPunct, "["); err != nil {
+			return nil, err
+		}
+		key, err := p.parseTypeName()
+		if err != nil {
+			return nil, err
+		}
+		if _, err := p.expect(TPunct, "]"); err != nil {
+			return nil, err
+		}
+		val, err := p.parseTypeName()
+		if err != nil {
+			return nil, err
+		}
+		if _, err := p.expect(TPunct, ")"); err != nil {
+			return nil, err
+		}
+		return &MakeMap{Key: key, Val: val}, nil
 	}
-	elem, err := p.parseTypeName()
-	if err != nil {
-		return nil, err
-	}
-	if _, err := p.expect(TPunct, ")"); err != nil {
-		return nil, err
-	}
-	return &MakeChan{Elem: elem}, nil
+	return nil, fmt.Errorf("make: expected chan or map, got %q", p.peek().Val)
 }
 
 // parseStructLit parses Point{x: 1, y: 2} (keyed) or Point{1, 2} (positional).
