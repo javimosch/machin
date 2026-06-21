@@ -145,6 +145,17 @@ type SendStmt struct {
 	Val Expr
 }
 
+// RangeStmt iterates a slice, map, or string:
+//   for i, v := range xs   for k, v := range m   for c := range s
+// Key is the index/key var; Val is the value var ("" if absent). Either may be
+// "_" to ignore.
+type RangeStmt struct {
+	Key  string
+	Val  string
+	X    Expr
+	Body []Stmt
+}
+
 // GoStmt spawns a goroutine: go f(args).
 type GoStmt struct{ Call *Call }
 
@@ -156,6 +167,7 @@ func (WhileStmt) node()   {}
 func (IndexAssign) node() {}
 func (FieldAssign) node() {}
 func (SendStmt) node()    {}
+func (RangeStmt) node()   {}
 func (GoStmt) node()      {}
 
 // ---- Top level ----

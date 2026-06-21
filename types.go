@@ -87,6 +87,16 @@ type Checker struct {
 	lenArgs   []int      // slots passed to len(); must resolve to string/slice/map
 	fieldUses []fieldUse // struct field access/assign, resolved after solve
 	indexUses []indexUse // x[i] access/assign, resolved after solve (slice or map)
+	rangeUses []rangeUse // for-range loops, resolved after solve
+}
+
+// rangeUse defers a for-range: once base resolves, key/val are bound to the
+// index+element (slice/string) or key+value (map) types.
+type rangeUse struct {
+	base   int
+	key    int
+	val    int
+	hasVal bool
 }
 
 // indexUse defers x[i]: once base resolves to a slice or map, idx and result
@@ -496,6 +506,7 @@ func (c *Checker) checkTypeName(t string) error {
 func (c *Checker) resolveDeferred() error {
 	fieldDone := make([]bool, len(c.fieldUses))
 	indexDone := make([]bool, len(c.indexUses))
+	rangeDone := make([]bool, len(c.rangeUses))
 	for {
 		progressed := false
 		for i, iu := range c.indexUses {
@@ -508,6 +519,19 @@ func (c *Checker) resolveDeferred() error {
 			}
 			if ok {
 				indexDone[i] = true
+				progressed = true
+			}
+		}
+		for i, ru := range c.rangeUses {
+			if rangeDone[i] {
+				continue
+			}
+			ok, err := c.tryRange(ru)
+			if err != nil {
+				return err
+			}
+			if ok {
+				rangeDone[i] = true
 				progressed = true
 			}
 		}
@@ -547,7 +571,57 @@ func (c *Checker) resolveDeferred() error {
 			return fmt.Errorf("cannot index a non-slice/map value")
 		}
 	}
+	for i := range c.rangeUses {
+		if !rangeDone[i] {
+			return fmt.Errorf("cannot range over this value (need a slice, map, or string)")
+		}
+	}
 	return nil
+}
+
+// tryRange resolves one for-range loop once its base kind is known.
+func (c *Checker) tryRange(ru rangeUse) (bool, error) {
+	switch c.kindOf(ru.base) {
+	case KSlice:
+		if _, err := c.union(ru.key, c.cInt); err != nil {
+			return false, err
+		}
+		if ru.hasVal {
+			e, err := c.sliceElem(ru.base)
+			if err != nil {
+				return false, err
+			}
+			if _, err := c.union(ru.val, e); err != nil {
+				return false, err
+			}
+		}
+		return true, nil
+	case KString:
+		if _, err := c.union(ru.key, c.cInt); err != nil {
+			return false, err
+		}
+		if ru.hasVal {
+			if _, err := c.union(ru.val, c.cString); err != nil {
+				return false, err
+			}
+		}
+		return true, nil
+	case KMap:
+		ks, vs, err := c.mapKV(ru.base)
+		if err != nil {
+			return false, err
+		}
+		if _, err := c.union(ru.key, ks); err != nil {
+			return false, err
+		}
+		if ru.hasVal {
+			if _, err := c.union(ru.val, vs); err != nil {
+				return false, err
+			}
+		}
+		return true, nil
+	}
+	return false, nil
 }
 
 // tryIndex resolves one x[i]: slice → (idx int, result elem); map → (idx key,
@@ -720,6 +794,33 @@ func (c *Checker) genStmt(fn *FuncDecl, s Stmt) error {
 			return err
 		}
 		c.addPair(vs, eslot)
+		return nil
+	case *RangeStmt:
+		xs, err := c.genExpr(fn, st.X)
+		if err != nil {
+			return err
+		}
+		env := c.vars[fn.Name]
+		bind := func(name string) int {
+			if name == "" || name == "_" {
+				return newSlot(c, KVar) // throwaway, not bound to a name
+			}
+			if slot, ok := env[name]; ok {
+				return slot // reuse an existing local (flat function scope)
+			}
+			slot := newSlot(c, KVar)
+			env[name] = slot
+			c.localOrder[fn.Name] = append(c.localOrder[fn.Name], name)
+			return slot
+		}
+		keySlot := bind(st.Key)
+		valSlot := bind(st.Val)
+		c.rangeUses = append(c.rangeUses, rangeUse{base: xs, key: keySlot, val: valSlot, hasVal: st.Val != ""})
+		for _, s := range st.Body {
+			if err := c.genStmt(fn, s); err != nil {
+				return err
+			}
+		}
 		return nil
 	case *GoStmt:
 		if _, ok := c.funcs[st.Call.Callee]; !ok {
