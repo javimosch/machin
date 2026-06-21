@@ -115,7 +115,8 @@ machin encode <src>                # machine tool: mint MFL from loose Go-like t
 
 ## 📖 Language
 
-The decoded form of each base64 line is Go-flavored and deliberately minimal:
+The decoded form of each base64 line is Go-flavored and deliberately minimal.
+See [`docs/LANGUAGE.md`](docs/LANGUAGE.md) for the full reference.
 
 ```go
 func fib(n) {                       // types inferred — n is int

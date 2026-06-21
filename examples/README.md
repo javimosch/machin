@@ -38,6 +38,7 @@ machin build examples/complex/primes.mfl --emit-c   # see the generated C
 | `to_binary`       | recursive base conversion via string building |
 | `pi_leibniz`      | float arithmetic, Leibniz series for π |
 | `perfect_numbers` | proper-divisor sums |
+| `sieve`           | Sieve of Eratosthenes over a slice |
 | `slices`          | slice literals, `append`, indexing, `len`, in-place reverse |
 | `goroutines`      | `go` spawns concurrent workers; `sleep` waits |
 | `http_server`     | concurrent TCP/HTTP server — `go handle(conn)` per request |
