@@ -488,6 +488,10 @@ func returnArity(body []Stmt) int {
 			if n := returnArity(st.Body); n > 0 {
 				return n
 			}
+		case *ArenaStmt:
+			if n := returnArity(st.Body); n > 0 {
+				return n
+			}
 		}
 	}
 	return 0
@@ -1047,6 +1051,15 @@ func (c *Checker) genStmt(fn *FuncDecl, s Stmt) error {
 		}
 		_, err := c.genExpr(fn, st.Call)
 		return err
+	case *ArenaStmt:
+		// flat function scope: the body's statements type-check as usual; only
+		// allocation lifetime differs at runtime.
+		for _, s := range st.Body {
+			if err := c.genStmt(fn, s); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 	return fmt.Errorf("typecheck: unknown statement %T", s)
 }

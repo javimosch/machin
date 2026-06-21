@@ -193,6 +193,12 @@ type RangeStmt struct {
 // GoStmt spawns a goroutine: go f(args).
 type GoStmt struct{ Call *Call }
 
+// ArenaStmt is a scoped-arena block: arena { ... }. Allocations made inside the
+// block are reclaimed in bulk when the block ends, bounding the memory of a
+// long-lived loop. The contract is that nothing allocated inside escapes the
+// block (the machine author guarantees no escape, as with a stack frame).
+type ArenaStmt struct{ Body []Stmt }
+
 func (ExprStmt) node()    {}
 func (AssignStmt) node()  {}
 func (MultiAssign) node() {}
@@ -204,6 +210,7 @@ func (FieldAssign) node() {}
 func (SendStmt) node()    {}
 func (RangeStmt) node()   {}
 func (GoStmt) node()      {}
+func (ArenaStmt) node()   {}
 
 // ---- Top level ----
 

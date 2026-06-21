@@ -104,6 +104,7 @@ override with `$CC`) on PATH at compile time.
 - 🧮 **Inferred static types** — `int`, `float`, `bool`, `string`, slices `[]T` — unified, no boxing
 - 🧵 **Concurrency** — `go f(args)` spawns a pthread-backed goroutine; channels (`make(chan T)`, `<-`) for communication
 - 🌐 **Networking** — `listen / accept / read / write / close`, the low-level shape of Go's `net`
+- 🧹 **Memory** — per-goroutine arena, plus scoped `arena { }` blocks to keep a long-lived loop's memory flat
 - ✅ **Compile-time type errors** — a type clash is a build failure, not a runtime surprise
 
 ```bash
@@ -206,6 +207,7 @@ per-call-site arg struct + trampoline driven by `pthread_create`.
 | `complex/variadic` | variadic params: collect, spread, fixed+variadic, generic |
 | `complex/closures` | capturing lambdas, higher-order functions, IIFE |
 | `complex/counter` | by-reference capture: mutable closures sharing a cell |
+| `complex/arena` | scoped `arena { }`: flat memory across a long-lived loop |
 | `complex/generics` | one source function specialized at int / string / float |
 | `complex/goroutines` | `go` spawns concurrent workers; `sleep` waits |
 | `complex/channels` | fan-in worker pool — goroutines communicate over a channel |
@@ -299,12 +301,14 @@ make install      # install to $(PREFIX)/bin  (default /usr/local)
 | Closures + higher-order functions (lambda-lifting) | ✅ done |
 | Generics via monomorphization (implicit, no annotations) | ✅ done |
 | Arena memory management (per-goroutine; bounds servers) | ✅ done |
+| Scoped arenas (`arena { }`; bounds long-lived loops) | ✅ done |
 | Goroutines (`go`) + `sleep` | ✅ done |
 | Networking (`listen`/`accept`/`read`/`write`/`close`) | ✅ done |
 | Concurrent HTTP server example | ✅ done |
 | By-reference closure capture (mutable captured state, Go semantics) | ✅ done |
 | Bounds / div-zero / overflow checks (`--safe`) | ✅ done |
-| Tracing GC across goroutines | ⬜ planned |
+| Scoped arenas (`arena { }`) — bound a long-lived loop's memory | ✅ done |
+| Automatic tracing GC | ⬜ planned |
 
 ---
 

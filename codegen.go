@@ -57,6 +57,7 @@ type cgen struct {
 	jsonID    int
 	rangeID   int    // unique temp names for for-range loops
 	tmpID     int    // unique temp names for multi-assignment
+	arenaID   int    // unique temp names for scoped-arena blocks
 	curFn     string // name of the function currently being emitted
 	safe      bool   // emit runtime bounds / div-by-zero / overflow checks
 }
@@ -684,6 +685,19 @@ func (g *cgen) stmt(s Stmt, depth int) error {
 		fmt.Fprintf(&g.buf, "mfl_chan_send(%s, &((%s[1]){%s})[0]);\n", ch, ct, val)
 	case *RangeStmt:
 		return g.rangeStmt(st, depth)
+	case *ArenaStmt:
+		// install a fresh arena for the block's allocations, then free it in bulk
+		// on exit and restore the enclosing arena.
+		id := g.arenaID
+		g.arenaID++
+		fmt.Fprintf(&g.buf, "{ mfl_arena _sa%d = {0}; mfl_arena* _sp%d = mfl_arena_cur; mfl_arena_cur = &_sa%d;\n", id, id, id)
+		for _, b := range st.Body {
+			if err := g.stmt(b, depth+1); err != nil {
+				return err
+			}
+		}
+		indentC(&g.buf, depth)
+		fmt.Fprintf(&g.buf, "mfl_arena_cur = _sp%d; mfl_arena_free(&_sa%d); }\n", id, id)
 	case *GoStmt:
 		return g.goStmt(st)
 	default:

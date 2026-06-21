@@ -289,6 +289,13 @@ func (p *Parser) parseStmt() (Stmt, error) {
 			return p.parseWhile()
 		case "for":
 			return p.parseFor()
+		case "arena":
+			p.next()
+			body, err := p.parseBlock()
+			if err != nil {
+				return nil, err
+			}
+			return &ArenaStmt{Body: body}, nil
 		case "go":
 			p.next()
 			call, err := p.parsePostfix()
