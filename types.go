@@ -69,10 +69,9 @@ type Checker struct {
 
 	structs map[string]*TypeDecl // declared struct types
 
-	funcs      map[string]*FuncDecl
-	funcParam  map[string][]int
-	funcRet    map[string]int
-	funcHasVal map[string]bool
+	funcs     map[string]*FuncDecl
+	funcParam map[string][]int
+	funcRets  map[string][]int // one slot per return value (empty = void)
 
 	vars       map[string]map[string]int // func -> var name -> slot
 	localOrder map[string][]string       // func -> locals in declaration order
@@ -386,13 +385,41 @@ func (c *Checker) union(a, b int) (bool, error) {
 
 func (c *Checker) kindOf(slot int) Kind { return c.kind[c.find(slot)] }
 
+// returnArity finds a function's number of return values: the count in the
+// first return statement that has values (searching nested blocks), else 0.
+func returnArity(body []Stmt) int {
+	for _, s := range body {
+		switch st := s.(type) {
+		case *ReturnStmt:
+			if len(st.Vals) > 0 {
+				return len(st.Vals)
+			}
+		case *IfStmt:
+			if n := returnArity(st.Then); n > 0 {
+				return n
+			}
+			if n := returnArity(st.Else); n > 0 {
+				return n
+			}
+		case *WhileStmt:
+			if n := returnArity(st.Body); n > 0 {
+				return n
+			}
+		case *RangeStmt:
+			if n := returnArity(st.Body); n > 0 {
+				return n
+			}
+		}
+	}
+	return 0
+}
+
 // Check infers types for the program, returning an error on a type clash.
 func Check(p *Program) (*Checker, error) {
 	c := &Checker{
 		funcs:      map[string]*FuncDecl{},
 		funcParam:  map[string][]int{},
-		funcRet:    map[string]int{},
-		funcHasVal: map[string]bool{},
+		funcRets:   map[string][]int{},
 		vars:       map[string]map[string]int{},
 		localOrder: map[string][]string{},
 		nodeSlot:   map[Node]int{},
@@ -428,7 +455,11 @@ func Check(p *Program) (*Checker, error) {
 			env[p] = params[i]
 		}
 		c.funcParam[fn.Name] = params
-		c.funcRet[fn.Name] = newSlot(c, KVar)
+		rets := make([]int, returnArity(fn.Body))
+		for i := range rets {
+			rets[i] = newSlot(c, KVar)
+		}
+		c.funcRets[fn.Name] = rets
 		c.vars[fn.Name] = env
 	}
 	// 2. constraints
@@ -447,13 +478,8 @@ func Check(p *Program) (*Checker, error) {
 	if err := c.resolveDeferred(); err != nil {
 		return nil, err
 	}
-	// 4. defaults
-	for name, ret := range c.funcRet {
-		r := c.find(ret)
-		if c.kind[r] == KVar && !c.funcHasVal[name] {
-			c.kind[r] = KVoid
-		}
-	}
+	// 4. defaults — return slots (if any) default to int like other slots; a
+	// function with no return slots is void.
 	for i := range c.parent {
 		r := c.find(i)
 		if c.kind[r] == KVar || c.kind[r] == KNum {
@@ -714,17 +740,26 @@ func (c *Checker) genStmt(fn *FuncDecl, s Stmt) error {
 		c.addPair(slot, vs)
 		return nil
 	case *ReturnStmt:
-		if st.Val == nil {
-			c.addPair(c.funcRet[fn.Name], c.cVoid)
+		rets := c.funcRets[fn.Name]
+		if len(st.Vals) == 0 {
+			if len(rets) != 0 {
+				return fmt.Errorf("%s: bare return in a function that returns %d values", fn.Name, len(rets))
+			}
 			return nil
 		}
-		vs, err := c.genExpr(fn, st.Val)
-		if err != nil {
-			return err
+		if len(st.Vals) != len(rets) {
+			return fmt.Errorf("%s: returns %d values but this return has %d", fn.Name, len(rets), len(st.Vals))
 		}
-		c.funcHasVal[fn.Name] = true
-		c.addPair(c.funcRet[fn.Name], vs)
+		for i, v := range st.Vals {
+			vs, err := c.genExpr(fn, v)
+			if err != nil {
+				return err
+			}
+			c.addPair(rets[i], vs)
+		}
 		return nil
+	case *MultiAssign:
+		return c.genMultiAssign(fn, st)
 	case *IfStmt:
 		cs, err := c.genExpr(fn, st.Cond)
 		if err != nil {
@@ -973,6 +1008,74 @@ func (c *Checker) genBinary(fn *FuncDecl, ex *Binary) (int, error) {
 	return 0, fmt.Errorf("unknown operator %q", ex.Op)
 }
 
+func (c *Checker) genMultiAssign(fn *FuncDecl, st *MultiAssign) error {
+	env := c.vars[fn.Name]
+	nameSlots := make([]int, len(st.Names))
+	for i, n := range st.Names {
+		if n == "_" {
+			nameSlots[i] = newSlot(c, KVar)
+			continue
+		}
+		slot, ok := env[n]
+		if !ok {
+			if st.Op == "=" {
+				return fmt.Errorf("assignment to undefined variable %q", n)
+			}
+			slot = newSlot(c, KVar)
+			env[n] = slot
+			c.localOrder[fn.Name] = append(c.localOrder[fn.Name], n)
+		}
+		nameSlots[i] = slot
+	}
+
+	if len(st.Rhs) == 1 {
+		// a single call returning multiple values destructures across the names
+		if call, ok := st.Rhs[0].(*Call); ok {
+			if rets, isUser := c.funcRets[call.Callee]; isUser && len(rets) >= 2 {
+				if len(rets) != len(st.Names) {
+					return fmt.Errorf("%s returns %d values but %d are assigned", call.Callee, len(rets), len(st.Names))
+				}
+				params := c.funcParam[call.Callee]
+				if len(params) != len(call.Args) {
+					return fmt.Errorf("%s: expected %d args, got %d", call.Callee, len(params), len(call.Args))
+				}
+				for i, a := range call.Args {
+					as, err := c.genExpr(fn, a)
+					if err != nil {
+						return err
+					}
+					c.addPair(params[i], as)
+				}
+				for i := range rets {
+					c.addPair(nameSlots[i], rets[i])
+				}
+				return nil
+			}
+		}
+		if len(st.Names) != 1 {
+			return fmt.Errorf("%d variables but a single value on the right", len(st.Names))
+		}
+		vs, err := c.genExpr(fn, st.Rhs[0])
+		if err != nil {
+			return err
+		}
+		c.addPair(nameSlots[0], vs)
+		return nil
+	}
+
+	if len(st.Rhs) != len(st.Names) {
+		return fmt.Errorf("%d variables but %d values", len(st.Names), len(st.Rhs))
+	}
+	for i, e := range st.Rhs {
+		vs, err := c.genExpr(fn, e)
+		if err != nil {
+			return err
+		}
+		c.addPair(nameSlots[i], vs)
+	}
+	return nil
+}
+
 func (c *Checker) genStructLit(fn *FuncDecl, ex *StructLit) (int, error) {
 	td, ok := c.structs[ex.Type]
 	if !ok {
@@ -1197,12 +1300,21 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 	for i := range params {
 		c.addPair(params[i], argSlots[i])
 	}
-	return c.funcRet[ex.Callee], nil
+	rets := c.funcRets[ex.Callee]
+	switch len(rets) {
+	case 0:
+		return c.cVoid, nil
+	case 1:
+		return rets[0], nil
+	default:
+		return 0, fmt.Errorf("%s returns %d values; use a multi-assignment (a, b := %s(...))", ex.Callee, len(rets), ex.Callee)
+	}
 }
 
 // ---- queries used by codegen ----
 
-func (c *Checker) RetKind(fn string) Kind   { return c.kindOf(c.funcRet[fn]) }
+func (c *Checker) RetArity(fn string) int { return len(c.funcRets[fn]) }
+func (c *Checker) RetKindAt(fn string, i int) Kind { return c.kindOf(c.funcRets[fn][i]) }
 func (c *Checker) ParamKind(fn string, i int) Kind {
 	return c.kindOf(c.funcParam[fn][i])
 }
@@ -1243,7 +1355,7 @@ func (c *Checker) ctypeSlot(slot int) string {
 	return "int64_t"
 }
 
-func (c *Checker) RetCType(fn string) string       { return c.ctypeSlot(c.funcRet[fn]) }
+func (c *Checker) RetCTypeAt(fn string, i int) string { return c.ctypeSlot(c.funcRets[fn][i]) }
 func (c *Checker) ParamCType(fn string, i int) string { return c.ctypeSlot(c.funcParam[fn][i]) }
 func (c *Checker) VarCType(fn, name string) string { return c.ctypeSlot(c.vars[fn][name]) }
 func (c *Checker) NodeCType(n Node) string         { return c.ctypeSlot(c.nodeSlot[n]) }

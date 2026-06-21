@@ -247,11 +247,11 @@ func (p *Parser) parseStmt() (Stmt, error) {
 			if p.peek().Val == "}" || p.peek().Val == ";" {
 				return &ReturnStmt{}, nil
 			}
-			x, err := p.parseExpr()
+			vals, err := p.parseExprList()
 			if err != nil {
 				return nil, err
 			}
-			return &ReturnStmt{Val: x}, nil
+			return &ReturnStmt{Vals: vals}, nil
 		case "if":
 			return p.parseIf()
 		case "while":
@@ -284,6 +284,10 @@ func (p *Parser) parseStmt() (Stmt, error) {
 			}
 			return &AssignStmt{Name: nameTok.Val, Op: ":=", Val: val}, nil
 		}
+	}
+	// multi-assign: ident, ident, ... (:=|=) rhs
+	if t.Kind == TIdent && p.toks[p.pos+1].Val == "," {
+		return p.parseMultiAssign()
 	}
 	// declaration: ident := expr
 	if t.Kind == TIdent && p.toks[p.pos+1].Val == ":=" {
@@ -368,6 +372,49 @@ func (p *Parser) parseWhile() (Stmt, error) {
 		return nil, err
 	}
 	return &WhileStmt{Cond: cond, Body: body}, nil
+}
+
+// parseExprList parses one or more comma-separated expressions.
+func (p *Parser) parseExprList() ([]Expr, error) {
+	var list []Expr
+	for {
+		e, err := p.parseExpr()
+		if err != nil {
+			return nil, err
+		}
+		list = append(list, e)
+		if p.peek().Val != "," {
+			break
+		}
+		p.next()
+	}
+	return list, nil
+}
+
+// parseMultiAssign parses `a, b, ... (:=|=) rhs`.
+func (p *Parser) parseMultiAssign() (Stmt, error) {
+	var names []string
+	for {
+		n, err := p.expect(TIdent, "")
+		if err != nil {
+			return nil, err
+		}
+		names = append(names, n.Val)
+		if p.peek().Val != "," {
+			break
+		}
+		p.next()
+	}
+	op := p.peek().Val
+	if op != ":=" && op != "=" {
+		return nil, fmt.Errorf("expected := or = after name list, got %q", op)
+	}
+	p.next()
+	rhs, err := p.parseExprList()
+	if err != nil {
+		return nil, err
+	}
+	return &MultiAssign{Names: names, Op: op, Rhs: rhs}, nil
 }
 
 // parseRange parses `IDENT [, IDENT] := range EXPR { ... }` (the `for` already

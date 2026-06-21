@@ -251,6 +251,46 @@ func TestStringRouteParse(t *testing.T) {
 	}
 }
 
+func TestMultiReturnDestructure(t *testing.T) {
+	got := runProg(t,
+		`func divmod(a, b) { return a / b, a % b }`,
+		`func main() { q, r := divmod(17, 5) println(q, r) }`)
+	if got != "3 2\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestMultiReturnCommaOk(t *testing.T) {
+	got := runProg(t,
+		`func lookup(m, k) { return m[k], has(m, k) }`,
+		`func main() { m := make(map[string]int) m["x"] = 7 v, ok := lookup(m, "x") w, no := lookup(m, "y") println(v, ok, w, no) }`)
+	if got != "7 true 0 false\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestMultiReturnIgnoreAndSwap(t *testing.T) {
+	got := runProg(t,
+		`func pair() { return 10, 20 }`,
+		`func main() { _, b := pair() x := 1 y := 2 x, y = y, x println(b, x, y) }`)
+	if got != "20 2 1\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestMultiReturnInExprIsError(t *testing.T) {
+	prog, err := ParseProgram([]string{
+		normalize(`func two() { return 1, 2 }`),
+		normalize(`func main() { x := two() println(x) }`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Check(prog); err == nil {
+		t.Fatal("expected error using a 2-value function in single-value context")
+	}
+}
+
 func TestRangeSlice(t *testing.T) {
 	got := runProg(t, `func main() { xs := []int{2, 4, 6} s := 0 for i, v := range xs { s = s + i * v } println(s) }`)
 	if got != "16\n" { // 0*2 + 1*4 + 2*6

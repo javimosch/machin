@@ -144,6 +144,7 @@ func main() {
 | **Maps** | `make(map[K]V)`, `m[k]` read/assign, `len`, `has(m,k)`, `delete(m,k)`, `keys(m)`; int/string keys |
 | **Structs** | `type T struct { ... }`, `T{f: v}` / `T{...}`, `p.f` read/assign, value semantics, `[]T` |
 | **Control flow** | `if / else if / else`, `for cond {}`, `for {}`, `while cond {}`, `for k, v := range x {}` |
+| **Multiple returns** | `return a, b`; `q, r := f()`; parallel `a, b = b, a`; comma-ok `v, ok := lookup(m, k)`; `_` ignores |
 | **Concurrency** | `go f(args)`, channels `make(chan T)` / `ch <- v` / `<-ch`, `sleep(ms)` |
 | **Operators** | `+ - * / %`, `== != < <= > >=`, `&& \|\| !`; `+` concatenates strings |
 | **Builtins** | `print`, `println`, `len`, `str`, `int`, `append`, `sleep`, `has`, `delete`, `keys`, `json`, `parse`, `http_body` |
@@ -193,6 +194,7 @@ per-call-site arg struct + trampoline driven by `pthread_create`.
 | `complex/slices` | slice literals, `append`, indexing, in-place reverse |
 | `complex/maps` | word frequency + int-keyed lookup table |
 | `complex/ranges` | `for k, v := range` over slices, strings, and maps |
+| `complex/multi_return` | multiple returns, comma-ok, `_`, parallel swap |
 | `complex/goroutines` | `go` spawns concurrent workers; `sleep` waits |
 | `complex/channels` | fan-in worker pool — goroutines communicate over a channel |
 | `complex/http_server` | concurrent TCP/HTTP server — `go handle(conn)` per request |
@@ -278,10 +280,11 @@ make install      # install to $(PREFIX)/bin  (default /usr/local)
 | String ops (`split`/`join`/`substr`/`index`/…) + HTTP router | ✅ done |
 | Control flow (`if`, `for`, `while`) | ✅ done |
 | `range` loops over slices, maps, strings | ✅ done |
+| Multiple return values + parallel/comma-ok assignment | ✅ done |
 | Goroutines (`go`) + `sleep` | ✅ done |
 | Networking (`listen`/`accept`/`read`/`write`/`close`) | ✅ done |
 | Concurrent HTTP server example | ✅ done |
-| comma-ok `v, ok := m[k]`, multiple return values | ⬜ planned |
+| named returns, variadic params, closures | ⬜ planned |
 | Bounds / overflow checks (`--safe`) | ⬜ planned |
 
 ---
