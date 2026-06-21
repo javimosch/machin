@@ -274,6 +274,8 @@ func (c *Checker) typeSlot(t string) (int, error) {
 		return newSlot(c, KBool), nil
 	case "string":
 		return newSlot(c, KString), nil
+	case "func":
+		return newSlot(c, KFunc), nil // signature filled in by unification
 	}
 	if _, ok := c.structs[t]; ok {
 		return newStructSlot(c, t), nil
@@ -697,7 +699,7 @@ func (c *Checker) checkTypeName(t string) error {
 		return c.checkTypeName(vt)
 	}
 	switch t {
-	case "int", "float", "bool", "string":
+	case "int", "float", "bool", "string", "func":
 		return nil
 	}
 	if _, ok := c.structs[t]; ok {

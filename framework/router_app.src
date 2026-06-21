@@ -1,0 +1,33 @@
+// A JSON API using machweb's map-based router. Compose and run:
+//   machin encode framework/machweb.src framework/router_app.src > app.mfl
+//   machin run app.mfl
+//   ./framework/run.sh framework/router_app.src
+
+type Todo struct {
+    id    int
+    title string
+    done  bool
+}
+
+func todos() (list) {
+    list = []Todo{}
+    list = append(list, Todo{id: 1, title: "learn MFL", done: true})
+    list = append(list, Todo{id: 2, title: "route with machweb", done: false})
+}
+
+func main() {
+    r := new_router()
+    route(r, "GET", "/", func(req) {
+        return ok_html("<h1>machweb router</h1><p>GET <code>/api/todos</code>, GET <code>/health</code>, POST <code>/api/echo</code></p>")
+    })
+    route(r, "GET", "/health", func(req) {
+        return ok_json("{\"status\":\"ok\"}")
+    })
+    route(r, "GET", "/api/todos", func(req) {
+        return ok_json(json(todos()))
+    })
+    route(r, "POST", "/api/echo", func(req) {
+        return ok_json(json(parse(req.body, Todo{})))
+    })
+    serve_router(48080, r)
+}

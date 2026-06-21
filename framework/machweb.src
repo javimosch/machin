@@ -77,3 +77,34 @@ func serve(port, handler) {
         go machweb_handle(conn, handler)
     }
 }
+
+// ---- map-based router ----
+//
+// A router maps "METHOD PATH" to a handler closure func(Request) Response.
+//
+//   r := new_router()
+//   route(r, "GET", "/", func(req) { return ok_text("home") })
+//   serve_router(48080, r)
+
+func new_router() (r) {
+    r = make(map[string]func)
+}
+
+func route(router, method, path, handler) {
+    router[method + " " + path] = handler
+}
+
+func dispatch(router, req) (res) {
+    key := req.method + " " + req.path
+    if has(router, key) {
+        h := router[key]
+        res = h(req)
+    } else {
+        res = not_found()
+    }
+}
+
+// serve_router runs a router-backed server.
+func serve_router(port, router) {
+    serve(port, func(req) { return dispatch(router, req) })
+}

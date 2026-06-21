@@ -110,9 +110,13 @@ type User struct {
 }
 ```
 
-A field type is `int`, `float`, `bool`, `string`, `[]T`, `map[K]V`, or another
-struct name. Structs have **value semantics**: assigning or passing one copies
-it.
+A field type is `int`, `float`, `bool`, `string`, `[]T`, `map[K]V`, `func` (a
+function value), or another struct name. Structs have **value semantics**:
+assigning or passing one copies it.
+
+The `func` type denotes a function value whose signature is inferred from use —
+it lets closures be stored in slices, maps (`make(map[string]func)`), and struct
+fields, which is how a router keeps a table of handlers.
 
 ### 5.2 Functions
 
