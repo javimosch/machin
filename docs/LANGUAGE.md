@@ -69,6 +69,30 @@ x = x + 1    // reassign (type must match)
 
 ---
 
+## Generics
+
+There is no generic syntax — functions are **implicitly generic**. Because types
+are inferred, a function places no constraint on its parameters beyond how it
+uses them, so the same source function works at many types:
+
+```go
+func id(x) { return x }
+func third(xs) { return xs[2] }
+
+func main() {
+    println(id(42), id("hello"), id(3.14))          // int, string, float
+    println(third([]int{1, 2, 3}), third([]string{"a", "b", "c"}))
+}
+```
+
+Each call is compiled by **monomorphization**: the compiler stamps out one
+specialized C function per concrete call-site signature (deduplicated), so there
+is no boxing and no runtime cost — `id` above becomes three native functions.
+Recursion is monomorphic (a function is one concrete type within a single
+instantiation).
+
+---
+
 ## Functions as values (closures)
 
 Functions are values. A `func(params) { ... }` literal is an expression you can

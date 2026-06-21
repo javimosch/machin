@@ -79,7 +79,7 @@ type Checker struct {
 
 	vars       map[string]map[string]int // func -> var name -> slot
 	localOrder map[string][]string       // func -> locals in declaration order
-	nodeSlot   map[Node]int
+	nodeSlot   map[string]map[Node]int // instance -> expr node -> slot
 
 	// shared concrete slots (no inner type vars, safe to share)
 	cBool, cString, cVoid, cInt int
@@ -91,6 +91,17 @@ type Checker struct {
 	fieldUses []fieldUse // struct field access/assign, resolved after solve
 	indexUses []indexUse // x[i] access/assign, resolved after solve (slice or map)
 	rangeUses []rangeUse // for-range loops, resolved after solve
+
+	// monomorphization: each call instantiates a fresh copy of the callee, so a
+	// function is specialized per concrete call-site type (deduped at codegen).
+	instFn      map[string]*FuncDecl              // instance name -> source function
+	instStack   map[string]string                // source name -> instance being generated (recursion)
+	instOrder   []string                         // instances in creation order
+	instCounter int                              // unique instance ids
+	callInst    map[string]map[*Call]string       // enclosing instance -> call node -> callee instance
+	closureInst map[string]map[*MakeClosure]string // enclosing instance -> closure node -> lambda instance
+	cnameOf     map[string]string                 // instance -> C function name (deduped)
+	reps        []string                          // representative instances (one C function each)
 }
 
 // rangeUse defers a for-range: once base resolves, key/val are bound to the
@@ -480,6 +491,53 @@ func returnArity(body []Stmt) int {
 	return 0
 }
 
+// instantiate creates a fresh specialization of a function (new parameter,
+// return, and local slots) and generates its body's constraints. A recursive
+// call reuses the in-progress instance (monomorphic recursion). The caller
+// unifies the call arguments with the instance's parameters.
+func (c *Checker) instantiate(name string) (string, error) {
+	if cur, ok := c.instStack[name]; ok {
+		return cur, nil
+	}
+	fn := c.funcs[name]
+	inst := fmt.Sprintf("%s$%d", name, c.instCounter)
+	c.instCounter++
+	c.instFn[inst] = fn
+	c.instOrder = append(c.instOrder, inst)
+
+	params := make([]int, len(fn.Params))
+	env := map[string]int{}
+	for i, p := range fn.Params {
+		params[i] = newSlot(c, KVar)
+		env[p] = params[i]
+	}
+	c.funcParam[inst] = params
+	rets := make([]int, returnArity(fn.Body))
+	for i := range rets {
+		rets[i] = newSlot(c, KVar)
+	}
+	c.funcRets[inst] = rets
+	c.vars[inst] = env
+	c.nodeSlot[inst] = map[Node]int{}
+	c.callInst[inst] = map[*Call]string{}
+	c.closureInst[inst] = map[*MakeClosure]string{}
+
+	prev, had := c.instStack[name]
+	c.instStack[name] = inst
+	syn := &FuncDecl{Name: inst, Params: fn.Params, Body: fn.Body, IsLambda: fn.IsLambda, NumCaptures: fn.NumCaptures}
+	for _, s := range fn.Body {
+		if err := c.genStmt(syn, s); err != nil {
+			return "", err
+		}
+	}
+	if had {
+		c.instStack[name] = prev
+	} else {
+		delete(c.instStack, name)
+	}
+	return inst, nil
+}
+
 // Check infers types for the program, returning an error on a type clash.
 func Check(p *Program) (*Checker, error) {
 	c := &Checker{
@@ -488,8 +546,12 @@ func Check(p *Program) (*Checker, error) {
 		funcRets:   map[string][]int{},
 		vars:       map[string]map[string]int{},
 		localOrder: map[string][]string{},
-		nodeSlot:   map[Node]int{},
+		nodeSlot:   map[string]map[Node]int{},
 		structs:    map[string]*TypeDecl{},
+		instFn:     map[string]*FuncDecl{},
+		instStack:  map[string]string{},
+		callInst:   map[string]map[*Call]string{},
+		closureInst: map[string]map[*MakeClosure]string{},
 	}
 	c.cBool = newSlot(c, KBool)
 	c.cString = newSlot(c, KString)
@@ -511,30 +573,17 @@ func Check(p *Program) (*Checker, error) {
 		}
 	}
 
-	// 1. signatures
+	// 1. register functions
 	for _, fn := range p.Funcs {
 		c.funcs[fn.Name] = fn
-		params := make([]int, len(fn.Params))
-		env := map[string]int{}
-		for i, p := range fn.Params {
-			params[i] = newSlot(c, KVar)
-			env[p] = params[i]
-		}
-		c.funcParam[fn.Name] = params
-		rets := make([]int, returnArity(fn.Body))
-		for i := range rets {
-			rets[i] = newSlot(c, KVar)
-		}
-		c.funcRets[fn.Name] = rets
-		c.vars[fn.Name] = env
 	}
-	// 2. constraints
-	for _, fn := range p.Funcs {
-		for _, s := range fn.Body {
-			if err := c.genStmt(fn, s); err != nil {
-				return nil, err
-			}
-		}
+	if _, ok := c.funcs["main"]; !ok {
+		return nil, fmt.Errorf("no main function defined")
+	}
+	// 2. instantiate from main; every reachable function is specialized per
+	//    concrete call-site type (monomorphization).
+	if _, err := c.instantiate("main"); err != nil {
+		return nil, err
 	}
 	// 3. solve
 	if err := c.solve(); err != nil {
@@ -558,7 +607,55 @@ func Check(p *Program) (*Checker, error) {
 			return nil, fmt.Errorf("len: argument must be a string, slice, or map, got %s", k)
 		}
 	}
+	// 6. dedup instances by concrete signature and assign C names
+	c.finalizeMono()
 	return c, nil
+}
+
+// finalizeMono deduplicates instances that have identical concrete signatures
+// (so a function used twice at the same type yields one C function) and assigns
+// each unique instance a C name.
+func (c *Checker) finalizeMono() {
+	c.cnameOf = map[string]string{}
+	repByKey := map[string]string{}
+	perSrc := map[string]int{}
+	for _, inst := range c.instOrder {
+		key := c.instFn[inst].Name + "|" + c.sigString(inst)
+		if rep, ok := repByKey[key]; ok {
+			c.cnameOf[inst] = c.cnameOf[rep]
+			continue
+		}
+		repByKey[key] = inst
+		c.reps = append(c.reps, inst)
+		src := c.instFn[inst].Name
+		if src == "main" {
+			c.cnameOf[inst] = "mfl_main"
+		} else {
+			c.cnameOf[inst] = fmt.Sprintf("mfl_%s_%d", src, perSrc[src])
+			perSrc[src]++
+		}
+	}
+}
+
+// sigString is an instance's canonical concrete signature (for dedup).
+func (c *Checker) sigString(inst string) string {
+	var b strings.Builder
+	b.WriteByte('(')
+	for i, p := range c.funcParam[inst] {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(c.typeStringSlot(p))
+	}
+	b.WriteString(")->(")
+	for i, r := range c.funcRets[inst] {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(c.typeStringSlot(r))
+	}
+	b.WriteByte(')')
+	return b.String()
 }
 
 func (c *Checker) addPair(a, b int) { c.pairs = append(c.pairs, a, b) }
@@ -934,14 +1031,15 @@ func (c *Checker) genStmt(fn *FuncDecl, s Stmt) error {
 }
 
 func (c *Checker) genExpr(fn *FuncDecl, e Expr) (int, error) {
-	if s, ok := c.nodeSlot[e]; ok {
+	ns := c.nodeSlot[fn.Name]
+	if s, ok := ns[e]; ok {
 		return s, nil
 	}
 	slot, err := c.genExprInner(fn, e)
 	if err != nil {
 		return 0, err
 	}
-	c.nodeSlot[e] = slot
+	ns[e] = slot
 	return slot, nil
 }
 
@@ -1014,7 +1112,11 @@ func (c *Checker) genExprInner(fn *FuncDecl, e Expr) (int, error) {
 		}
 		return newMapSlot(c, ks, vs), nil
 	case *MakeClosure:
-		params := c.funcParam[ex.FuncName]
+		inst, err := c.instantiate(ex.FuncName)
+		if err != nil {
+			return 0, err
+		}
+		params := c.funcParam[inst]
 		nc := len(ex.Captures)
 		env := c.vars[fn.Name]
 		for i, capName := range ex.Captures {
@@ -1025,7 +1127,7 @@ func (c *Checker) genExprInner(fn *FuncDecl, e Expr) (int, error) {
 			c.addPair(params[i], capSlot)
 		}
 		ret := c.cVoid
-		switch rets := c.funcRets[ex.FuncName]; len(rets) {
+		switch rets := c.funcRets[inst]; len(rets) {
 		case 0:
 			ret = c.cVoid
 		case 1:
@@ -1033,6 +1135,7 @@ func (c *Checker) genExprInner(fn *FuncDecl, e Expr) (int, error) {
 		default:
 			return 0, fmt.Errorf("a function value cannot return multiple values")
 		}
+		c.closureInst[fn.Name][ex] = inst
 		return newFuncSlot(c, &funcSig{params: params[nc:], ret: ret}), nil
 	case *CallValue:
 		fs, err := c.genExpr(fn, ex.Fn)
@@ -1135,20 +1238,30 @@ func (c *Checker) genMultiAssign(fn *FuncDecl, st *MultiAssign) error {
 	if len(st.Rhs) == 1 {
 		// a single call returning multiple values destructures across the names
 		if call, ok := st.Rhs[0].(*Call); ok {
-			if rets, isUser := c.funcRets[call.Callee]; isUser && len(rets) >= 2 {
-				if len(rets) != len(st.Names) {
-					return fmt.Errorf("%s returns %d values but %d are assigned", call.Callee, len(rets), len(st.Names))
-				}
-				params := c.funcParam[call.Callee]
-				if len(params) != len(call.Args) {
-					return fmt.Errorf("%s: expected %d args, got %d", call.Callee, len(params), len(call.Args))
-				}
+			if srcFn, isUser := c.funcs[call.Callee]; isUser && returnArity(srcFn.Body) >= 2 {
+				argSlots := make([]int, len(call.Args))
 				for i, a := range call.Args {
 					as, err := c.genExpr(fn, a)
 					if err != nil {
 						return err
 					}
-					c.addPair(params[i], as)
+					argSlots[i] = as
+				}
+				inst, err := c.instantiate(call.Callee)
+				if err != nil {
+					return err
+				}
+				params := c.funcParam[inst]
+				if len(params) != len(call.Args) {
+					return fmt.Errorf("%s: expected %d args, got %d", call.Callee, len(params), len(call.Args))
+				}
+				for i := range params {
+					c.addPair(params[i], argSlots[i])
+				}
+				c.callInst[fn.Name][call] = inst
+				rets := c.funcRets[inst]
+				if len(rets) != len(st.Names) {
+					return fmt.Errorf("%s returns %d values but %d are assigned", call.Callee, len(rets), len(st.Names))
 				}
 				for i := range rets {
 					c.addPair(nameSlots[i], rets[i])
@@ -1394,8 +1507,7 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		c.addPair(argSlots[0], c.cInt)
 		return c.cVoid, nil
 	}
-	params, ok := c.funcParam[ex.Callee]
-	if !ok {
+	if _, isFunc := c.funcs[ex.Callee]; !isFunc {
 		// not a top-level function — maybe a function-valued local variable
 		if slot, isVar := c.vars[fn.Name][ex.Callee]; isVar {
 			sig, err := c.funcOf(slot, len(argSlots))
@@ -1409,13 +1521,20 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		}
 		return 0, fmt.Errorf("%s: call to undefined function %q", fn.Name, ex.Callee)
 	}
+	// instantiate a fresh specialization of the callee for this call site
+	inst, err := c.instantiate(ex.Callee)
+	if err != nil {
+		return 0, err
+	}
+	params := c.funcParam[inst]
 	if len(params) != len(argSlots) {
 		return 0, fmt.Errorf("%s: expected %d args, got %d", ex.Callee, len(params), len(argSlots))
 	}
 	for i := range params {
 		c.addPair(params[i], argSlots[i])
 	}
-	rets := c.funcRets[ex.Callee]
+	c.callInst[fn.Name][ex] = inst
+	rets := c.funcRets[inst]
 	switch len(rets) {
 	case 0:
 		return c.cVoid, nil
@@ -1434,12 +1553,16 @@ func (c *Checker) ParamKind(fn string, i int) Kind {
 	return c.kindOf(c.funcParam[fn][i])
 }
 func (c *Checker) VarKind(fn, name string) Kind { return c.kindOf(c.vars[fn][name]) }
-func (c *Checker) NodeKind(n Node) Kind         { return c.kindOf(c.nodeSlot[n]) }
 func (c *Checker) Locals(fn string) []string    { return c.localOrder[fn] }
 
+// slotOf returns the slot an expression node was assigned in a given instance.
+func (c *Checker) slotOf(inst string, n Node) int { return c.nodeSlot[inst][n] }
+
+func (c *Checker) NodeKind(inst string, n Node) Kind { return c.kindOf(c.slotOf(inst, n)) }
+
 // ElemKindOf returns the element kind of a slice- or channel-typed node.
-func (c *Checker) ElemKindOf(n Node) Kind {
-	r := c.find(c.nodeSlot[n])
+func (c *Checker) ElemKindOf(inst string, n Node) Kind {
+	r := c.find(c.slotOf(inst, n))
 	if (c.kind[r] == KSlice || c.kind[r] == KChan) && c.elem[r] >= 0 {
 		return c.kindOf(c.elem[r])
 	}
@@ -1474,12 +1597,12 @@ func (c *Checker) ctypeSlot(slot int) string {
 
 func (c *Checker) RetCTypeAt(fn string, i int) string { return c.ctypeSlot(c.funcRets[fn][i]) }
 func (c *Checker) ParamCType(fn string, i int) string { return c.ctypeSlot(c.funcParam[fn][i]) }
-func (c *Checker) VarCType(fn, name string) string { return c.ctypeSlot(c.vars[fn][name]) }
-func (c *Checker) NodeCType(n Node) string         { return c.ctypeSlot(c.nodeSlot[n]) }
+func (c *Checker) VarCType(fn, name string) string  { return c.ctypeSlot(c.vars[fn][name]) }
+func (c *Checker) NodeCType(inst string, n Node) string { return c.ctypeSlot(c.slotOf(inst, n)) }
 
 // ElemCType renders the C type of a slice- or channel-node's element.
-func (c *Checker) ElemCType(n Node) string {
-	r := c.find(c.nodeSlot[n])
+func (c *Checker) ElemCType(inst string, n Node) string {
+	r := c.find(c.slotOf(inst, n))
 	if (c.kind[r] == KSlice || c.kind[r] == KChan) && c.elem[r] >= 0 {
 		return c.ctypeSlot(c.elem[r])
 	}
@@ -1491,6 +1614,37 @@ func (c *Checker) StructTypes() map[string]*TypeDecl { return c.structs }
 
 // IsTopFunc reports whether name is a top-level function (vs a closure value).
 func (c *Checker) IsTopFunc(name string) bool { _, ok := c.funcs[name]; return ok }
+
+// ---- monomorphization queries for codegen ----
+
+// Reps returns the representative instances — one C function is emitted per one.
+func (c *Checker) Reps() []string { return c.reps }
+
+// CName is an instance's C function name.
+func (c *Checker) CName(inst string) string { return c.cnameOf[inst] }
+
+// SrcFunc returns the source function an instance specializes.
+func (c *Checker) SrcFunc(inst string) *FuncDecl { return c.instFn[inst] }
+
+// CalleeInst is the callee instance for a call node inside an enclosing instance.
+func (c *Checker) CalleeInst(encl string, call *Call) string {
+	return c.callInst[encl][call]
+}
+
+// CalleeCName is the C name to call for a call node inside an enclosing instance.
+func (c *Checker) CalleeCName(encl string, call *Call) string {
+	return c.cnameOf[c.callInst[encl][call]]
+}
+
+// ClosureCName is the C name of the lambda a MakeClosure builds, in context.
+func (c *Checker) ClosureCName(encl string, mc *MakeClosure) string {
+	return c.cnameOf[c.closureInst[encl][mc]]
+}
+
+// ClosureInst returns the lambda instance a MakeClosure builds, in context.
+func (c *Checker) ClosureInst(encl string, mc *MakeClosure) string {
+	return c.closureInst[encl][mc]
+}
 
 // sigCTypes returns the parameter and return C types of a function-valued slot.
 func (c *Checker) sigCTypes(slot int) ([]string, string) {
@@ -1506,12 +1660,12 @@ func (c *Checker) sigCTypes(slot int) ([]string, string) {
 	return nil, "int64_t"
 }
 
-func (c *Checker) NodeFuncSig(n Node) ([]string, string)        { return c.sigCTypes(c.nodeSlot[n]) }
-func (c *Checker) VarFuncSig(fn, name string) ([]string, string) { return c.sigCTypes(c.vars[fn][name]) }
+func (c *Checker) NodeFuncSig(inst string, n Node) ([]string, string) { return c.sigCTypes(c.slotOf(inst, n)) }
+func (c *Checker) VarFuncSig(fn, name string) ([]string, string)      { return c.sigCTypes(c.vars[fn][name]) }
 
 // TypeString renders a node's resolved type as a canonical string (int, float,
 // bool, string, a struct name, []T, map[K]V) — used to key JSON serializers.
-func (c *Checker) TypeString(n Node) string { return c.typeStringSlot(c.nodeSlot[n]) }
+func (c *Checker) TypeString(inst string, n Node) string { return c.typeStringSlot(c.slotOf(inst, n)) }
 
 func (c *Checker) typeStringSlot(slot int) string {
 	r := c.find(slot)
@@ -1537,12 +1691,12 @@ func (c *Checker) typeStringSlot(slot int) string {
 }
 
 // map key/value accessors for a map-typed node (used by codegen).
-func (c *Checker) MapKeyKind(n Node) Kind  { return c.mapPart(n, true, true).(Kind) }
-func (c *Checker) MapValCType(n Node) string { return c.mapPart(n, false, false).(string) }
-func (c *Checker) MapKeyCType(n Node) string { return c.mapPart(n, true, false).(string) }
+func (c *Checker) MapKeyKind(inst string, n Node) Kind    { return c.mapPart(inst, n, true, true).(Kind) }
+func (c *Checker) MapValCType(inst string, n Node) string { return c.mapPart(inst, n, false, false).(string) }
+func (c *Checker) MapKeyCType(inst string, n Node) string { return c.mapPart(inst, n, true, false).(string) }
 
-func (c *Checker) mapPart(n Node, key bool, asKind bool) interface{} {
-	r := c.find(c.nodeSlot[n])
+func (c *Checker) mapPart(inst string, n Node, key bool, asKind bool) interface{} {
+	r := c.find(c.slotOf(inst, n))
 	slot := -1
 	if c.kind[r] == KMap {
 		if key {

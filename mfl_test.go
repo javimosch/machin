@@ -251,6 +251,36 @@ func TestStringRouteParse(t *testing.T) {
 	}
 }
 
+func TestGenericIdentity(t *testing.T) {
+	// one source function specialized at int, string, and float
+	got := runProg(t,
+		`func id(x) { return x }`,
+		`func main() { println(id(7), id("hi"), id(2.5)) }`)
+	if got != "7 hi 2.5\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestGenericContainer(t *testing.T) {
+	got := runProg(t,
+		`func third(xs) { return xs[2] }`,
+		`func main() { println(third([]int{1, 2, 3}), third([]string{"a", "b", "c"})) }`)
+	if got != "3 c\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestGenericHigherOrder(t *testing.T) {
+	// a generic map over slices, used at two element types
+	got := runProg(t,
+		`func mapped(xs, f) { out := []int{} for _, v := range xs { out = append(out, f(v)) } return out }`,
+		`func sumlen(xs) { s := 0 for _, v := range xs { s = s + v } return s }`,
+		`func main() { a := mapped([]int{1, 2, 3}, func(x) { return x * 10 }) println(a[0], a[2]) }`)
+	if got != "10 30\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
 func TestClosureCapture(t *testing.T) {
 	got := runProg(t,
 		`func adder(n) { return func(x) { return x + n } }`,

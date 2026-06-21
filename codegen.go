@@ -363,9 +363,10 @@ func cZero(k Kind) string {
 }
 
 func (g *cgen) program(p *Program) (string, error) {
-	// emit function bodies first (this also fills g.tramp via any go statements)
-	for _, fn := range p.Funcs {
-		if err := g.function(fn); err != nil {
+	// emit one function body per instance (monomorphization); this also fills
+	// g.tramp via any go statements.
+	for _, inst := range g.c.Reps() {
+		if err := g.function(inst); err != nil {
 			return "", err
 		}
 	}
@@ -380,28 +381,23 @@ func (g *cgen) program(p *Program) (string, error) {
 		}
 		fmt.Fprintf(&out, " } mfl_%s;\n", td.Name)
 	}
-	// closure environment structs (one per capturing lambda)
-	for _, fn := range p.Funcs {
-		if !fn.IsLambda || fn.NumCaptures == 0 {
-			continue
+	// closure environment + multi-return result structs (one per instance)
+	for _, inst := range g.c.Reps() {
+		src := g.c.SrcFunc(inst)
+		if src.IsLambda && src.NumCaptures > 0 {
+			fmt.Fprintf(&out, "typedef struct {")
+			for i := 0; i < src.NumCaptures; i++ {
+				fmt.Fprintf(&out, " %s f%d;", g.c.ParamCType(inst, i), i)
+			}
+			fmt.Fprintf(&out, " } %s_env;\n", g.c.CName(inst))
 		}
-		fmt.Fprintf(&out, "typedef struct {")
-		for i := 0; i < fn.NumCaptures; i++ {
-			fmt.Fprintf(&out, " %s f%d;", g.c.ParamCType(fn.Name, i), i)
+		if n := g.c.RetArity(inst); n >= 2 {
+			fmt.Fprintf(&out, "typedef struct {")
+			for i := 0; i < n; i++ {
+				fmt.Fprintf(&out, " %s r%d;", g.c.RetCTypeAt(inst, i), i)
+			}
+			fmt.Fprintf(&out, " } %s_ret;\n", g.c.CName(inst))
 		}
-		fmt.Fprintf(&out, " } mfl_env_%s;\n", fn.Name)
-	}
-	// result structs for functions returning multiple values
-	for _, fn := range p.Funcs {
-		n := g.c.RetArity(fn.Name)
-		if n < 2 {
-			continue
-		}
-		fmt.Fprintf(&out, "typedef struct {")
-		for i := 0; i < n; i++ {
-			fmt.Fprintf(&out, " %s r%d;", g.c.RetCTypeAt(fn.Name, i), i)
-		}
-		fmt.Fprintf(&out, " } mfl_ret_%s;\n", fn.Name)
 	}
 	if len(p.Types) > 0 {
 		out.WriteByte('\n')
@@ -411,8 +407,8 @@ func (g *cgen) program(p *Program) (string, error) {
 		out.WriteString(g.jsonFns.String())
 		out.WriteByte('\n')
 	}
-	for _, fn := range p.Funcs {
-		out.WriteString(g.signature(fn) + ";\n")
+	for _, inst := range g.c.Reps() {
+		out.WriteString(g.signature(inst) + ";\n")
 	}
 	out.WriteByte('\n')
 	out.WriteString(g.tramp.String())
@@ -423,44 +419,47 @@ func (g *cgen) program(p *Program) (string, error) {
 
 // retType is a function's C return type: void, the single value's type, or a
 // generated result struct for multiple returns.
-func (g *cgen) retType(name string) string {
-	switch g.c.RetArity(name) {
+func (g *cgen) retType(inst string) string {
+	switch g.c.RetArity(inst) {
 	case 0:
 		return "void"
 	case 1:
-		return g.c.RetCTypeAt(name, 0)
+		return g.c.RetCTypeAt(inst, 0)
 	default:
-		return "mfl_ret_" + name
+		return g.c.CName(inst) + "_ret"
 	}
 }
 
-func (g *cgen) signature(fn *FuncDecl) string {
+func (g *cgen) signature(inst string) string {
+	fn := g.c.SrcFunc(inst)
 	var parts []string
 	if fn.IsLambda {
 		parts = append(parts, "void* _env") // captures arrive via the environment
 	}
 	for i := fn.NumCaptures; i < len(fn.Params); i++ {
-		parts = append(parts, g.c.ParamCType(fn.Name, i)+" v_"+fn.Params[i])
+		parts = append(parts, g.c.ParamCType(inst, i)+" v_"+fn.Params[i])
 	}
 	params := strings.Join(parts, ", ")
 	if params == "" {
 		params = "void"
 	}
-	return fmt.Sprintf("%s mfl_%s(%s)", g.retType(fn.Name), fn.Name, params)
+	return fmt.Sprintf("%s %s(%s)", g.retType(inst), g.c.CName(inst), params)
 }
 
-func (g *cgen) function(fn *FuncDecl) error {
-	g.curFn = fn.Name
-	g.buf.WriteString(g.signature(fn) + " {\n")
+func (g *cgen) function(inst string) error {
+	fn := g.c.SrcFunc(inst)
+	g.curFn = inst
+	g.buf.WriteString(g.signature(inst) + " {\n")
 	// unpack captured variables from the closure environment
 	if fn.IsLambda && fn.NumCaptures > 0 {
-		fmt.Fprintf(&g.buf, "    mfl_env_%s* _e = (mfl_env_%s*)_env;\n", fn.Name, fn.Name)
+		env := g.c.CName(inst) + "_env"
+		fmt.Fprintf(&g.buf, "    %s* _e = (%s*)_env;\n", env, env)
 		for i := 0; i < fn.NumCaptures; i++ {
-			fmt.Fprintf(&g.buf, "    %s v_%s = _e->f%d;\n", g.c.ParamCType(fn.Name, i), fn.Params[i], i)
+			fmt.Fprintf(&g.buf, "    %s v_%s = _e->f%d;\n", g.c.ParamCType(inst, i), fn.Params[i], i)
 		}
 	}
-	for _, name := range g.c.Locals(fn.Name) {
-		fmt.Fprintf(&g.buf, "    %s v_%s = %s;\n", g.c.VarCType(fn.Name, name), name, cZero(g.c.VarKind(fn.Name, name)))
+	for _, name := range g.c.Locals(inst) {
+		fmt.Fprintf(&g.buf, "    %s v_%s = %s;\n", g.c.VarCType(inst, name), name, cZero(g.c.VarKind(inst, name)))
 	}
 	for _, s := range fn.Body {
 		if err := g.stmt(s, 1); err != nil {
@@ -511,7 +510,7 @@ func (g *cgen) stmt(s Stmt, depth int) error {
 		if len(exprs) == 1 {
 			g.buf.WriteString("return " + exprs[0] + ";\n")
 		} else {
-			fmt.Fprintf(&g.buf, "return (mfl_ret_%s){ %s };\n", g.curFn, strings.Join(exprs, ", "))
+			fmt.Fprintf(&g.buf, "return (%s_ret){ %s };\n", g.c.CName(g.curFn), strings.Join(exprs, ", "))
 		}
 	case *MultiAssign:
 		return g.multiAssign(st, depth)
@@ -563,12 +562,12 @@ func (g *cgen) stmt(s Stmt, depth int) error {
 		if err != nil {
 			return err
 		}
-		if g.c.NodeKind(st.Target.X) == KMap {
+		if g.c.NodeKind(g.curFn, st.Target.X) == KMap {
 			ik, sk := g.mapKeyArgs(st.Target.X, idx)
-			vt := g.c.MapValCType(st.Target.X)
+			vt := g.c.MapValCType(g.curFn, st.Target.X)
 			fmt.Fprintf(&g.buf, "mfl_map_set(%s, %s, %s, &((%s[1]){%s})[0]);\n", x, ik, sk, vt, val)
 		} else {
-			fmt.Fprintf(&g.buf, "((%s*)(%s).data)[%s] = %s;\n", g.c.ElemCType(st.Target.X), x, idx, val)
+			fmt.Fprintf(&g.buf, "((%s*)(%s).data)[%s] = %s;\n", g.c.ElemCType(g.curFn, st.Target.X), x, idx, val)
 		}
 	case *FieldAssign:
 		x, err := g.expr(st.Target.X)
@@ -589,7 +588,7 @@ func (g *cgen) stmt(s Stmt, depth int) error {
 		if err != nil {
 			return err
 		}
-		ct := g.c.ElemCType(st.Ch)
+		ct := g.c.ElemCType(g.curFn, st.Ch)
 		fmt.Fprintf(&g.buf, "mfl_chan_send(%s, &((%s[1]){%s})[0]);\n", ch, ct, val)
 	case *RangeStmt:
 		return g.rangeStmt(st, depth)
@@ -614,7 +613,8 @@ func (g *cgen) multiAssign(st *MultiAssign, depth int) error {
 	}
 
 	if len(st.Rhs) == 1 {
-		if call, ok := st.Rhs[0].(*Call); ok && g.c.RetArity(call.Callee) >= 2 {
+		call, isCall := st.Rhs[0].(*Call)
+		if isCall && g.c.CalleeInst(g.curFn, call) != "" && g.c.RetArity(g.c.CalleeInst(g.curFn, call)) >= 2 {
 			args := make([]string, len(call.Args))
 			for i, a := range call.Args {
 				e, err := g.expr(a)
@@ -625,9 +625,10 @@ func (g *cgen) multiAssign(st *MultiAssign, depth int) error {
 			}
 			id := g.tmpID
 			g.tmpID++
+			cn := g.c.CalleeCName(g.curFn, call)
 			g.buf.WriteString("{\n")
 			indentC(&g.buf, depth+1)
-			fmt.Fprintf(&g.buf, "mfl_ret_%s _t%d = mfl_%s(%s);\n", call.Callee, id, call.Callee, strings.Join(args, ", "))
+			fmt.Fprintf(&g.buf, "%s_ret _t%d = %s(%s);\n", cn, id, cn, strings.Join(args, ", "))
 			for i, name := range st.Names {
 				assign(name, fmt.Sprintf("_t%d.r%d", id, i))
 			}
@@ -654,7 +655,7 @@ func (g *cgen) multiAssign(st *MultiAssign, depth int) error {
 			return err
 		}
 		indentC(&g.buf, depth+1)
-		fmt.Fprintf(&g.buf, "%s _t%d_%d = %s;\n", g.c.NodeCType(e), id, i, ce)
+		fmt.Fprintf(&g.buf, "%s _t%d_%d = %s;\n", g.c.NodeCType(g.curFn, e), id, i, ce)
 	}
 	for i, name := range st.Names {
 		assign(name, fmt.Sprintf("_t%d_%d", id, i))
@@ -687,9 +688,9 @@ func (g *cgen) rangeStmt(st *RangeStmt, depth int) error {
 	}
 
 	g.buf.WriteString("{\n")
-	switch g.c.NodeKind(st.X) {
+	switch g.c.NodeKind(g.curFn, st.X) {
 	case KSlice:
-		ect := g.c.ElemCType(st.X)
+		ect := g.c.ElemCType(g.curFn, st.X)
 		indentC(&g.buf, depth+1)
 		fmt.Fprintf(&g.buf, "mfl_slice _r%d = %s;\n", id, x)
 		indentC(&g.buf, depth+1)
@@ -716,9 +717,9 @@ func (g *cgen) rangeStmt(st *RangeStmt, depth int) error {
 			fmt.Fprintf(&g.buf, "v_%s = mfl_charat(_s%d, _i%d);\n", st.Val, id, id)
 		}
 	case KMap:
-		kct, vct := g.c.MapKeyCType(st.X), g.c.MapValCType(st.X)
+		kct, vct := g.c.MapKeyCType(g.curFn, st.X), g.c.MapValCType(g.curFn, st.X)
 		ik, sk := "_k"+fmt.Sprint(id), "NULL"
-		if g.c.MapKeyKind(st.X) == KString {
+		if g.c.MapKeyKind(g.curFn, st.X) == KString {
 			ik, sk = "0", "_k"+fmt.Sprint(id)
 		}
 		indentC(&g.buf, depth+1)
@@ -738,7 +739,7 @@ func (g *cgen) rangeStmt(st *RangeStmt, depth int) error {
 			fmt.Fprintf(&g.buf, "%s _v%d; mfl_map_get(_m%d, %s, %s, &_v%d); v_%s = _v%d;\n", vct, id, id, ik, sk, id, st.Val, id)
 		}
 	default:
-		return fmt.Errorf("codegen: cannot range over %s", g.c.NodeKind(st.X))
+		return fmt.Errorf("codegen: cannot range over %s", g.c.NodeKind(g.curFn, st.X))
 	}
 	if err := emitBody(); err != nil {
 		return err
@@ -755,17 +756,18 @@ func (g *cgen) rangeStmt(st *RangeStmt, depth int) error {
 func (g *cgen) goStmt(st *GoStmt) error {
 	id := g.goID
 	g.goID++
-	callee := st.Call.Callee
+	inst := g.c.CalleeInst(g.curFn, st.Call)
+	cname := g.c.CName(inst)
 	n := len(st.Call.Args)
 
 	// arg struct + trampoline (a leading dummy field avoids an empty struct)
 	fmt.Fprintf(&g.tramp, "struct mfl_go_%d { char _;", id)
 	for i := 0; i < n; i++ {
-		fmt.Fprintf(&g.tramp, " %s a%d;", g.c.ParamCType(callee, i), i)
+		fmt.Fprintf(&g.tramp, " %s a%d;", g.c.ParamCType(inst, i), i)
 	}
 	g.tramp.WriteString(" };\n")
-	fmt.Fprintf(&g.tramp, "static void* mfl_go_run_%d(void* p) { struct mfl_go_%d* s = (struct mfl_go_%d*)p; mfl_%s(",
-		id, id, id, callee)
+	fmt.Fprintf(&g.tramp, "static void* mfl_go_run_%d(void* p) { struct mfl_go_%d* s = (struct mfl_go_%d*)p; %s(",
+		id, id, id, cname)
 	for i := 0; i < n; i++ {
 		if i > 0 {
 			g.tramp.WriteString(", ")
@@ -800,7 +802,7 @@ func (g *cgen) printCall(call *Call, depth int) error {
 		if err != nil {
 			return err
 		}
-		switch g.c.NodeKind(a) {
+		switch g.c.NodeKind(g.curFn, a) {
 		case KInt:
 			fmt.Fprintf(&g.buf, "printf(\"%%lld\", (long long)(%s));", e)
 		case KFloat:
@@ -810,7 +812,7 @@ func (g *cgen) printCall(call *Call, depth int) error {
 		case KString:
 			fmt.Fprintf(&g.buf, "{ const char* _s = (%s); fputs(_s ? _s : \"\", stdout); }", e)
 		case KSlice, KStruct, KChan, KMap:
-			return fmt.Errorf("cannot print a %s value", g.c.NodeKind(a))
+			return fmt.Errorf("cannot print a %s value", g.c.NodeKind(g.curFn, a))
 		default:
 			fmt.Fprintf(&g.buf, "printf(\"%%lld\", (long long)(%s));", e)
 		}
@@ -873,16 +875,16 @@ func (g *cgen) expr(e Expr) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		if g.c.NodeKind(ex.X) == KMap {
+		if g.c.NodeKind(g.curFn, ex.X) == KMap {
 			ik, sk := g.mapKeyArgs(ex.X, idx)
 			// a missing string value zero-fills to NULL; surface it as ""
 			tail := "_g;"
-			if g.c.NodeKind(ex) == KString {
+			if g.c.NodeKind(g.curFn, ex) == KString {
 				tail = "_g ? _g : \"\";"
 			}
-			return fmt.Sprintf("({ %s _g; mfl_map_get(%s, %s, %s, &_g); %s })", g.c.NodeCType(ex), x, ik, sk, tail), nil
+			return fmt.Sprintf("({ %s _g; mfl_map_get(%s, %s, %s, &_g); %s })", g.c.NodeCType(g.curFn, ex), x, ik, sk, tail), nil
 		}
-		return fmt.Sprintf("((%s*)(%s).data)[%s]", g.c.ElemCType(ex.X), x, idx), nil
+		return fmt.Sprintf("((%s*)(%s).data)[%s]", g.c.ElemCType(g.curFn, ex.X), x, idx), nil
 	case *StructLit:
 		return g.structLit(ex)
 	case *FieldAccess:
@@ -892,18 +894,18 @@ func (g *cgen) expr(e Expr) (string, error) {
 		}
 		return fmt.Sprintf("(%s).f_%s", x, ex.Name), nil
 	case *MakeClosure:
-		name := ex.FuncName
+		name := g.c.ClosureCName(g.curFn, ex)
 		if len(ex.Captures) == 0 {
-			return fmt.Sprintf("(mfl_closure){ (void*)mfl_%s, NULL }", name), nil
+			return fmt.Sprintf("(mfl_closure){ (void*)%s, NULL }", name), nil
 		}
 		id := g.tmpID
 		g.tmpID++
 		var b strings.Builder
-		fmt.Fprintf(&b, "({ mfl_env_%s* _e%d = malloc(sizeof(mfl_env_%s));", name, id, name)
+		fmt.Fprintf(&b, "({ %s_env* _e%d = malloc(sizeof(%s_env));", name, id, name)
 		for i, cap := range ex.Captures {
 			fmt.Fprintf(&b, " _e%d->f%d = v_%s;", id, i, cap)
 		}
-		fmt.Fprintf(&b, " (mfl_closure){ (void*)mfl_%s, _e%d }; })", name, id)
+		fmt.Fprintf(&b, " (mfl_closure){ (void*)%s, _e%d }; })", name, id)
 		return b.String(), nil
 	case *CallValue:
 		clos, err := g.expr(ex.Fn)
@@ -918,23 +920,23 @@ func (g *cgen) expr(e Expr) (string, error) {
 			}
 			args[i] = e
 		}
-		params, ret := g.c.NodeFuncSig(ex.Fn)
+		params, ret := g.c.NodeFuncSig(g.curFn, ex.Fn)
 		return g.closureCall(clos, params, ret, args), nil
 	case *MakeChan:
-		return fmt.Sprintf("mfl_make_chan(sizeof(%s))", g.c.ElemCType(ex)), nil
+		return fmt.Sprintf("mfl_make_chan(sizeof(%s))", g.c.ElemCType(g.curFn, ex)), nil
 	case *MakeMap:
 		keyIsStr := 0
-		if g.c.MapKeyKind(ex) == KString {
+		if g.c.MapKeyKind(g.curFn, ex) == KString {
 			keyIsStr = 1
 		}
-		return fmt.Sprintf("mfl_make_map(%d, sizeof(%s))", keyIsStr, g.c.MapValCType(ex)), nil
+		return fmt.Sprintf("mfl_make_map(%d, sizeof(%s))", keyIsStr, g.c.MapValCType(g.curFn, ex)), nil
 	case *Recv:
 		ch, err := g.expr(ex.Ch)
 		if err != nil {
 			return "", err
 		}
 		// statement-expression yields the received value (gcc/clang)
-		return fmt.Sprintf("({ %s _r; mfl_chan_recv(%s, &_r); _r; })", g.c.NodeCType(ex), ch), nil
+		return fmt.Sprintf("({ %s _r; mfl_chan_recv(%s, &_r); _r; })", g.c.NodeCType(g.curFn, ex), ch), nil
 	}
 	return "", fmt.Errorf("codegen: unknown expression %T", e)
 }
@@ -948,12 +950,12 @@ func (g *cgen) binary(ex *Binary) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if ex.Op == "+" && g.c.NodeKind(ex) == KString {
+	if ex.Op == "+" && g.c.NodeKind(g.curFn, ex) == KString {
 		return fmt.Sprintf("mfl_cat(%s, %s)", l, r), nil
 	}
 	// Compare strings by value, not by pointer. C's == on char* compares
 	// addresses, so equal-but-distinct strings would wrongly differ.
-	if (ex.Op == "==" || ex.Op == "!=") && g.c.NodeKind(ex.L) == KString {
+	if (ex.Op == "==" || ex.Op == "!=") && g.c.NodeKind(g.curFn, ex.L) == KString {
 		return fmt.Sprintf("(strcmp(%s, %s) %s 0)", l, r, ex.Op), nil
 	}
 	return fmt.Sprintf("(%s %s %s)", l, ex.Op, r), nil
@@ -963,7 +965,7 @@ func (g *cgen) sliceLit(ex *SliceLit) (string, error) {
 	if len(ex.Elems) == 0 {
 		return "(mfl_slice){0}", nil
 	}
-	ek := g.c.ElemKindOf(ex)
+	ek := g.c.ElemKindOf(g.curFn, ex)
 	var builder, cast string
 	switch ek {
 	case KFloat:
@@ -1011,7 +1013,7 @@ func (g *cgen) structLit(ex *StructLit) (string, error) {
 // mapKeyArgs returns the (int-key, string-key) C arguments for a map op: a
 // string-keyed map passes (0, key); an int-keyed map passes (key, NULL).
 func (g *cgen) mapKeyArgs(mapNode Node, keyExpr string) (string, string) {
-	if g.c.MapKeyKind(mapNode) == KString {
+	if g.c.MapKeyKind(g.curFn, mapNode) == KString {
 		return "0", keyExpr
 	}
 	return keyExpr, "NULL"
@@ -1234,7 +1236,7 @@ func (g *cgen) call(ex *Call) (string, error) {
 	}
 	switch ex.Callee {
 	case "len":
-		switch g.c.NodeKind(ex.Args[0]) {
+		switch g.c.NodeKind(g.curFn, ex.Args[0]) {
 		case KSlice:
 			return fmt.Sprintf("((%s).len)", args[0]), nil
 		case KMap:
@@ -1250,14 +1252,14 @@ func (g *cgen) call(ex *Call) (string, error) {
 	case "keys":
 		return fmt.Sprintf("mfl_map_keys(%s)", args[0]), nil
 	case "json":
-		name, err := g.jsonSerializer(g.c.TypeString(ex.Args[0]))
+		name, err := g.jsonSerializer(g.c.TypeString(g.curFn, ex.Args[0]))
 		if err != nil {
 			return "", err
 		}
 		return fmt.Sprintf("%s(%s)", name, args[0]), nil
 	case "parse":
 		// the witness (Args[1]) supplies the target type; its value is unused
-		name, err := g.jsonParser(g.c.TypeString(ex.Args[1]))
+		name, err := g.jsonParser(g.c.TypeString(g.curFn, ex.Args[1]))
 		if err != nil {
 			return "", err
 		}
@@ -1291,12 +1293,12 @@ func (g *cgen) call(ex *Call) (string, error) {
 	case "append":
 		// &((T[1]){v})[0] yields a T* for any element type, including structs
 		// (a plain &(T){v} would mis-init an aggregate field-by-field).
-		ct := g.c.ElemCType(ex.Args[0])
+		ct := g.c.ElemCType(g.curFn, ex.Args[0])
 		return fmt.Sprintf("mfl_append(%s, &((%s[1]){%s})[0], sizeof(%s))", args[0], ct, args[1], ct), nil
 	case "sleep":
 		return fmt.Sprintf("mfl_sleep(%s)", args[0]), nil
 	case "str":
-		if g.c.NodeKind(ex.Args[0]) == KFloat {
+		if g.c.NodeKind(g.curFn, ex.Args[0]) == KFloat {
 			return fmt.Sprintf("mfl_str_d(%s)", args[0]), nil
 		}
 		return fmt.Sprintf("mfl_str_i(%s)", args[0]), nil
@@ -1320,7 +1322,7 @@ func (g *cgen) call(ex *Call) (string, error) {
 		params, ret := g.c.VarFuncSig(g.curFn, ex.Callee)
 		return g.closureCall("v_"+ex.Callee, params, ret, args), nil
 	}
-	return fmt.Sprintf("mfl_%s(%s)", ex.Callee, strings.Join(args, ", ")), nil
+	return fmt.Sprintf("%s(%s)", g.c.CalleeCName(g.curFn, ex), strings.Join(args, ", ")), nil
 }
 
 // closureCall invokes a function value: cast its fn pointer to the right
