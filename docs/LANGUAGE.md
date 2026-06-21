@@ -138,6 +138,25 @@ for i < len(ks) {
 
 ---
 
+## Strings
+
+Strings concatenate with `+` and have a `len`. A set of builtins covers the
+common text operations — enough to parse an HTTP request line and route on it:
+
+```go
+line := "GET /users/42 HTTP/1.1"
+f := split(line, " ")          // ["GET", "/users/42", "HTTP/1.1"]
+method := f[0]                 // "GET"
+seg := split(f[1], "/")        // ["", "users", "42"]
+if has_prefix(f[1], "/users/") {
+    id := substr(f[1], 7, len(f[1]))
+}
+```
+
+See `examples/complex/strings.mfl` and the HTTP router `examples/complex/router_api.mfl`.
+
+---
+
 ## Structs
 
 A struct type is its own top-level declaration — on disk, its own base64 line:
@@ -185,6 +204,15 @@ first := users[0]                                // value copy
 | `json(x)`                   | serialize any value to a JSON string         |
 | `parse(s, T{})`             | parse a JSON string into a value of `T`'s type |
 | `http_body(req)`            | the body of an HTTP message (after the blank line) |
+| `substr(s, i, j)`           | the substring `s[i:j]` (bounds-clamped)      |
+| `index(s, sub)`             | first index of `sub` in `s`, or `-1`         |
+| `contains/has_prefix/has_suffix(s, x)` | substring / prefix / suffix tests |
+| `charat(s, i)`              | the 1-character string at index `i`          |
+| `to_upper(s)` / `to_lower(s)` | case conversion                            |
+| `trim(s)`                   | strip leading/trailing whitespace            |
+| `replace(s, old, new)`      | replace all occurrences                      |
+| `split(s, sep)`             | split into a `[]string`                      |
+| `join(xs, sep)`             | join a `[]string` with `sep`                 |
 | `str(n)`                    | convert an `int` or `float` to its `string`  |
 | `int(n)`                    | convert a numeric value to `int` (truncates) |
 | `sleep(ms)`                 | suspend the current goroutine (milliseconds) |

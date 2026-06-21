@@ -226,6 +226,31 @@ func TestHTTPBody(t *testing.T) {
 	}
 }
 
+func TestStringOps(t *testing.T) {
+	got := runProg(t,
+		`func main() { s := "Hello, World" println(to_upper(s), substr(s, 7, 12), index(s, "World"), contains(s, "lo"), has_prefix(s, "He"), has_suffix(s, "ld")) }`)
+	if got != "HELLO, WORLD World 7 true true true\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestStringSplitJoinReplaceTrim(t *testing.T) {
+	got := runProg(t,
+		`func main() { p := split("a,b,c", ",") println(len(p), p[1], join(p, "-"), replace("a.b.c", ".", "/"), trim("  hi  ")) }`)
+	if got != "3 b a-b-c a/b/c hi\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestStringRouteParse(t *testing.T) {
+	// the request-routing pattern: split a request line, extract a path segment
+	got := runProg(t,
+		`func main() { f := split("GET /users/42 HTTP/1.1", " ") seg := split(f[1], "/") println(f[0], seg[1], seg[2]) }`)
+	if got != "GET users 42\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
 func TestChannelSendRecv(t *testing.T) {
 	got := runProg(t,
 		`func send(c) { c <- 42 }`,

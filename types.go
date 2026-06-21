@@ -991,6 +991,63 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		}
 		c.addPair(argSlots[0], c.cString)
 		return c.cString, nil
+	case "to_upper", "to_lower", "trim":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("%s: 1 arg", ex.Callee)
+		}
+		c.addPair(argSlots[0], c.cString)
+		return c.cString, nil
+	case "contains", "has_prefix", "has_suffix":
+		if len(argSlots) != 2 {
+			return 0, fmt.Errorf("%s: 2 args", ex.Callee)
+		}
+		c.addPair(argSlots[0], c.cString)
+		c.addPair(argSlots[1], c.cString)
+		return c.cBool, nil
+	case "index":
+		if len(argSlots) != 2 {
+			return 0, fmt.Errorf("index: 2 args")
+		}
+		c.addPair(argSlots[0], c.cString)
+		c.addPair(argSlots[1], c.cString)
+		return c.cInt, nil
+	case "substr":
+		if len(argSlots) != 3 {
+			return 0, fmt.Errorf("substr: 3 args (string, start, end)")
+		}
+		c.addPair(argSlots[0], c.cString)
+		c.addPair(argSlots[1], c.cInt)
+		c.addPair(argSlots[2], c.cInt)
+		return c.cString, nil
+	case "charat":
+		if len(argSlots) != 2 {
+			return 0, fmt.Errorf("charat: 2 args (string, index)")
+		}
+		c.addPair(argSlots[0], c.cString)
+		c.addPair(argSlots[1], c.cInt)
+		return c.cString, nil
+	case "replace":
+		if len(argSlots) != 3 {
+			return 0, fmt.Errorf("replace: 3 args (string, old, new)")
+		}
+		for _, s := range argSlots {
+			c.addPair(s, c.cString)
+		}
+		return c.cString, nil
+	case "split":
+		if len(argSlots) != 2 {
+			return 0, fmt.Errorf("split: 2 args (string, sep)")
+		}
+		c.addPair(argSlots[0], c.cString)
+		c.addPair(argSlots[1], c.cString)
+		return newSliceSlot(c, c.cString), nil
+	case "join":
+		if len(argSlots) != 2 {
+			return 0, fmt.Errorf("join: 2 args ([]string, sep)")
+		}
+		c.addPair(argSlots[0], newSliceSlot(c, c.cString))
+		c.addPair(argSlots[1], c.cString)
+		return c.cString, nil
 	case "str":
 		if len(argSlots) != 1 {
 			return 0, fmt.Errorf("str: 1 arg")

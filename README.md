@@ -147,6 +147,7 @@ func main() {
 | **Concurrency** | `go f(args)`, channels `make(chan T)` / `ch <- v` / `<-ch`, `sleep(ms)` |
 | **Operators** | `+ - * / %`, `== != < <= > >=`, `&& \|\| !`; `+` concatenates strings |
 | **Builtins** | `print`, `println`, `len`, `str`, `int`, `append`, `sleep`, `has`, `delete`, `keys`, `json`, `parse`, `http_body` |
+| **String ops** | `substr`, `index`, `contains`, `has_prefix`, `has_suffix`, `charat`, `to_upper`, `to_lower`, `trim`, `replace`, `split`, `join` |
 | **JSON** | `json(x)` serializes any value to JSON; `parse(s, T{})` parses JSON into a value of `T` |
 | **Networking** | `listen`, `accept`, `read`, `write`, `close` |
 
@@ -198,6 +199,8 @@ per-call-site arg struct + trampoline driven by `pthread_create`.
 | `complex/json_api` | JSON-over-HTTP API — returns JSON-serialized structs |
 | `complex/json_parse` | `parse(s, T{})` — JSON → struct/slice/map/scalar round-trips |
 | `complex/json_echo_api` | POST JSON → parse into a struct → echo it back as JSON |
+| `complex/strings` | string ops: `split`/`join`/`substr`/`index`/`replace`/… + request parsing |
+| `complex/router_api` | HTTP router — dispatch by method+path, extract path params |
 | `bench/fib` | `fib(40)` benchmark |
 
 ```bash
@@ -271,11 +274,12 @@ make install      # install to $(PREFIX)/bin  (default /usr/local)
 | Maps (`make(map[K]V)`, index, `has`/`delete`/`keys`) | ✅ done |
 | JSON serialization (`json(x)`) + JSON-over-HTTP example | ✅ done |
 | JSON parsing (`parse(s, T{})`) + POST echo API | ✅ done |
+| String ops (`split`/`join`/`substr`/`index`/…) + HTTP router | ✅ done |
 | Control flow (`if`, `for`, `while`) | ✅ done |
 | Goroutines (`go`) + `sleep` | ✅ done |
 | Networking (`listen`/`accept`/`read`/`write`/`close`) | ✅ done |
 | Concurrent HTTP server example | ✅ done |
-| String ops (index/substring/split), `range` loops, comma-ok | ⬜ planned |
+| `range` loops, comma-ok `v, ok := m[k]`, multiple returns | ⬜ planned |
 | Bounds / overflow checks (`--safe`) | ⬜ planned |
 
 ---
