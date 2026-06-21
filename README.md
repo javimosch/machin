@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.1.0-blue" alt="Version">
+  <img src="https://img.shields.io/badge/version-0.2.0-blue" alt="Version">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
   <img src="https://img.shields.io/badge/go-1.22-00ADD8" alt="Go">
   <img src="https://img.shields.io/badge/backend-C%20%E2%86%92%20native-orange" alt="Native">
@@ -17,6 +17,8 @@
 ## ⚡ TL;DR
 
 > A statically-typed language whose on-disk form is base64 — one function per line, blank line between functions. It compiles to native machine code through C.
+
+📖 Full reference: [`SPEC.md`](SPEC.md) · language tour: [`docs/LANGUAGE.md`](docs/LANGUAGE.md)
 
 ```bash
 # A program IS base64 — one function per line:
