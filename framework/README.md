@@ -1,0 +1,71 @@
+# machweb — a tiny backend framework for MFL
+
+`machweb` is a minimal web framework **written in MFL**. You compose it ahead of
+your app and compile the result to a native binary — your backend is a single
+self-contained executable with no runtime dependencies.
+
+## Hello, server
+
+`app.src`:
+
+```go
+func main() {
+    serve(48080, func(req) {
+        if req.path == "/" {
+            return ok_text("hello from machweb")
+        }
+        return not_found()
+    })
+}
+```
+
+Compose with the framework, compile, run:
+
+```sh
+machin encode framework/machweb.src app.src > app.mfl
+machin run app.mfl
+# or: ./framework/run.sh app.src
+```
+
+`machin encode` accepts multiple source files and concatenates them, so the
+framework's functions and yours end up in one program.
+
+## API
+
+A handler is a closure `func(Request) Response`. `serve(port, handler)` runs the
+server, dispatching every request to it in its own goroutine (whose memory is
+reclaimed when the response is sent).
+
+**Request** — `req.method`, `req.path`, `req.body`.
+
+**Response builders:**
+
+| Builder | Status / type |
+|---------|---------------|
+| `ok_text(body)` | 200, `text/plain` |
+| `ok_html(body)` | 200, `text/html` |
+| `ok_json(body)` | 200, `application/json` |
+| `created(body)` | 201, `application/json` |
+| `bad_request(msg)` | 400, `text/plain` |
+| `not_found()` | 404, `text/plain` |
+
+**Helpers:**
+
+- `param(path, prefix)` — the path segment after a prefix, e.g.
+  `param("/users/42", "/users/") == "42"`.
+- `json(x)` / `parse(s, T{})` — serialize / parse JSON (built into machin).
+
+## Example
+
+`example.src` is a small JSON todo API. Run it:
+
+```sh
+./framework/run.sh framework/example.src
+curl localhost:48080/
+curl localhost:48080/api/todos
+curl localhost:48080/hello/machine
+curl -X POST -d '{"id":9,"title":"posted","done":true}' localhost:48080/api/echo
+```
+
+Because the whole thing compiles to native code, the request path is just C: no
+interpreter, no allocations beyond the per-request arena.

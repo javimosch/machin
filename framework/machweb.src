@@ -1,0 +1,79 @@
+// machweb — a tiny web framework for MFL.
+//
+// Compose it ahead of your app and compile:
+//   machin encode framework/machweb.src yourapp.src > app.mfl
+//   machin run app.mfl
+//
+// Your app provides a `main` that calls serve(port, handler), where handler is
+// a closure  func(Request) Response.  Every request is dispatched to it in its
+// own goroutine; the goroutine's memory is reclaimed when the response is sent.
+
+type Request struct {
+    method string
+    path   string
+    body   string
+}
+
+type Response struct {
+    status string
+    ctype  string
+    body   string
+}
+
+// ---- response builders ----
+
+func response(status, ctype, body) (r) {
+    r = Response{status: status, ctype: ctype, body: body}
+}
+
+func ok_text(body) (r) { r = response("200 OK", "text/plain; charset=utf-8", body) }
+func ok_html(body) (r) { r = response("200 OK", "text/html; charset=utf-8", body) }
+func ok_json(body) (r) { r = response("200 OK", "application/json", body) }
+func created(body) (r) { r = response("201 Created", "application/json", body) }
+func bad_request(msg) (r) { r = response("400 Bad Request", "text/plain", msg) }
+func not_found() (r) { r = response("404 Not Found", "text/plain", "not found") }
+
+// ---- request helpers ----
+
+// parse_request extracts the method, path, and body from a raw HTTP request.
+func parse_request(raw) (req) {
+    nl := index(raw, "\r\n")
+    line := substr(raw, 0, nl)
+    parts := split(line, " ")
+    m := ""
+    p := "/"
+    if len(parts) >= 2 {
+        m = parts[0]
+        p = parts[1]
+    }
+    req = Request{method: m, path: p, body: http_body(raw)}
+}
+
+// param returns the path segment after a prefix:
+//   param("/users/42", "/users/") == "42"
+func param(path, prefix) (v) {
+    if has_prefix(path, prefix) {
+        v = substr(path, len(prefix), len(path))
+    }
+}
+
+// ---- server ----
+
+func machweb_handle(conn, handler) {
+    raw := read(conn)
+    req := parse_request(raw)
+    res := handler(req)
+    out := "HTTP/1.1 " + res.status + "\r\nContent-Type: " + res.ctype + "\r\nContent-Length: " + str(len(res.body)) + "\r\nConnection: close\r\n\r\n" + res.body
+    write(conn, out)
+    close(conn)
+}
+
+// serve runs the HTTP server. Each connection is handled in its own goroutine.
+func serve(port, handler) {
+    server := listen(port)
+    println("machweb on http://localhost:" + str(port))
+    for {
+        conn := accept(server)
+        go machweb_handle(conn, handler)
+    }
+}
