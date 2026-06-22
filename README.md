@@ -43,7 +43,7 @@ bin/machin pack   app.mfl                # dense base64 form (distribution)
 - **Flow**: `if`/`for`/`while`/`range`, `break`/`continue`, multiple & named returns, comma-ok, variadics, closures (by-reference), implicit generics (monomorphized)
 - **Concurrency**: goroutines (`go`), channels; per-goroutine arena GC + scoped `arena{}`; `--safe` checks
 - **Networking**: `dial` (client) + `listen`/`accept`/`read`/`write`/`close` (server); native TLS — `https_get`/`https_post` and a `wss_*` WebSocket client (OpenSSL, linked only when used)
-- **I/O & data**: `read_file`/`write_file`/`list_dir`/`mkdir`, `input`, `json`/`parse`, `args`/`env`/`now`/`now_ms`/`parse_int`/`exit`, string ops
+- **I/O & data**: `read_file`/`write_file`/`list_dir`/`mkdir`, `input`, `json`/`parse`/`json_get` (jq-style path), `args`/`env`/`now`/`now_ms`/`parse_int`/`exit`, string ops
 - **Error handling**: `http_get` returns `(status, body, err)` — the `v, err :=` idiom at the builtin layer (a 404, a 503, and an unreachable host are distinguishable)
 - **C FFI**: `extern` blocks — scalars, by-value structs (`cstruct`), opaque `ptr` handles, multi-`link` (drove a real raylib **GUI**)
 - **machweb**: a web framework written in MFL ([`framework/`](framework/))

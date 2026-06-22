@@ -228,6 +228,7 @@ throughout the function body).
 | `keys` | `(map[K]V) -> []K` | a map's keys |
 | `json` | `(any) -> string` | serialize to JSON |
 | `parse` | `(string, T{}) -> T` | parse JSON into `T`'s type (witness) |
+| `json_get` | `(string, string) -> (string, string)` | value at a jq-style path → `(value, err)`; `value` is raw JSON text, `err` is `""`/`"notfound"`/`"path"`/`"parse"`. Multi-assign only. |
 | `http_body` | `(string) -> string` | body of an HTTP message |
 | `substr` | `(string, int, int) -> string` | substring |
 | `index` | `(string, string) -> int` | first index, or `-1` |

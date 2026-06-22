@@ -458,6 +458,131 @@ static int64_t mfl_mkdir(const char* path) {
     if (r < 0 && errno == EEXIST) return 0;
     return r;
 }
+
+/* copy n bytes into a fresh NUL-terminated arena string */
+static char* mfl_dup_arena(const char* s, size_t n) {
+    char* r = (char*)mfl_alloc(n + 1);
+    if (n) memcpy(r, s, n);
+    r[n] = 0;
+    return r;
+}
+
+/* ---- JSON path query (json_get) ----
+   A non-allocating scanner: it walks the document following a jq-style path
+   (.key, [index], chained) and returns the located value's raw JSON text. No
+   tree is built — values not on the path are skipped, respecting nesting and
+   string escapes (unlike naive substring search). */
+typedef struct { char* value; char* err; } mfl_json_result;
+
+static const char* mfl_jq_ws(const char* p) {
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+    return p;
+}
+static const char* mfl_jq_str(const char* p) { /* p at opening quote -> past closing */
+    if (*p != '"') return NULL;
+    p++;
+    while (*p) {
+        if (*p == '\\') { p++; if (!*p) return NULL; p++; continue; }
+        if (*p == '"') return p + 1;
+        p++;
+    }
+    return NULL;
+}
+static const char* mfl_jq_val(const char* p) { /* skip one value -> just past it */
+    p = mfl_jq_ws(p);
+    if (*p == '"') return mfl_jq_str(p);
+    if (*p == '{' || *p == '[') {
+        char open = *p, close = open == '{' ? '}' : ']';
+        p = mfl_jq_ws(p + 1);
+        if (*p == close) return p + 1;
+        for (;;) {
+            if (open == '{') {
+                p = mfl_jq_ws(p);
+                p = mfl_jq_str(p); if (!p) return NULL;
+                p = mfl_jq_ws(p);
+                if (*p != ':') return NULL;
+                p++;
+            }
+            p = mfl_jq_val(p); if (!p) return NULL;
+            p = mfl_jq_ws(p);
+            if (*p == ',') { p++; continue; }
+            if (*p == close) return p + 1;
+            return NULL;
+        }
+    }
+    if (*p == ',' || *p == '}' || *p == ']' || *p == 0) return NULL;
+    while (*p && *p != ',' && *p != '}' && *p != ']' && *p != ' ' && *p != '\t' && *p != '\n' && *p != '\r') p++;
+    return p;
+}
+static const char* mfl_jq_member(const char* p, const char* key, size_t keylen) {
+    p = mfl_jq_ws(p);
+    if (*p != '{') return NULL;
+    p = mfl_jq_ws(p + 1);
+    if (*p == '}') return NULL;
+    for (;;) {
+        p = mfl_jq_ws(p);
+        if (*p != '"') return NULL;
+        const char* ks = p + 1;
+        const char* ke = mfl_jq_str(p); if (!ke) return NULL;
+        size_t klen = (size_t)((ke - 1) - ks);
+        p = mfl_jq_ws(ke);
+        if (*p != ':') return NULL;
+        const char* vs = mfl_jq_ws(p + 1);
+        if (klen == keylen && memcmp(ks, key, keylen) == 0) return vs;
+        const char* ve = mfl_jq_val(vs); if (!ve) return NULL;
+        p = mfl_jq_ws(ve);
+        if (*p == ',') { p++; continue; }
+        return NULL;
+    }
+}
+static const char* mfl_jq_elem(const char* p, long n) {
+    p = mfl_jq_ws(p);
+    if (*p != '[') return NULL;
+    p = mfl_jq_ws(p + 1);
+    if (*p == ']') return NULL;
+    long i = 0;
+    for (;;) {
+        const char* vs = mfl_jq_ws(p);
+        if (i == n) return vs;
+        const char* ve = mfl_jq_val(vs); if (!ve) return NULL;
+        p = mfl_jq_ws(ve);
+        if (*p == ',') { p++; i++; continue; }
+        return NULL;
+    }
+}
+static mfl_json_result mfl_json_get(const char* json, const char* path) {
+    mfl_json_result R;
+    R.value = mfl_dup_arena("", 0);
+    R.err = mfl_dup_arena("", 0);
+    const char* cur = mfl_jq_ws(json);
+    const char* p = path;
+    while (*p) {
+        if (*p == '.') {
+            p++;
+            const char* ks = p;
+            while (*p && *p != '.' && *p != '[') p++;
+            size_t klen = (size_t)(p - ks);
+            if (klen == 0) continue;
+            cur = mfl_jq_member(cur, ks, klen);
+            if (!cur) { R.err = mfl_dup_arena("notfound", 8); return R; }
+        } else if (*p == '[') {
+            p++;
+            char* endp;
+            long idx = strtol(p, &endp, 10);
+            if (endp == p || *endp != ']') { R.err = mfl_dup_arena("path", 4); return R; }
+            p = endp + 1;
+            cur = mfl_jq_elem(cur, idx);
+            if (!cur) { R.err = mfl_dup_arena("notfound", 8); return R; }
+        } else {
+            R.err = mfl_dup_arena("path", 4);
+            return R;
+        }
+    }
+    const char* end = mfl_jq_val(cur);
+    if (!end) { R.err = mfl_dup_arena("parse", 5); return R; }
+    R.value = mfl_dup_arena(cur, (size_t)(end - cur));
+    return R;
+}
 `
 
 // tlsCoreRuntime holds the shared OpenSSL plumbing (a verified TLS dial) used by
@@ -468,13 +593,6 @@ static int64_t mfl_mkdir(const char* path) {
 const tlsCoreRuntime = `#include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <openssl/rand.h>
-
-static char* mfl_dup_arena(const char* s, size_t n) {
-    char* r = (char*)mfl_alloc(n + 1);
-    if (n) memcpy(r, s, n);
-    r[n] = 0;
-    return r;
-}
 
 static SSL_CTX* mfl_ssl_ctx(void) {
     static SSL_CTX* ctx = NULL;
@@ -1321,6 +1439,18 @@ func (g *cgen) stmt(s Stmt, depth int) error {
 // multiAssign emits `a, b := rhs`: destructure a multi-return call via its
 // result struct, or evaluate parallel RHS expressions into temps first (so
 // `a, b = b, a` works) and then assign.
+// multiRetBuiltinC maps a multi-return builtin to its C function, result struct
+// type, the struct field names (in return order), and whether it needs OpenSSL.
+func multiRetBuiltinC(name string) (cfn, ctype string, fields []string, needsTLS, ok bool) {
+	switch name {
+	case "http_get":
+		return "mfl_http_get", "mfl_http_result", []string{"status", "body", "err"}, true, true
+	case "json_get":
+		return "mfl_json_get", "mfl_json_result", []string{"value", "err"}, false, true
+	}
+	return "", "", nil, false, false
+}
+
 func (g *cgen) multiAssign(st *MultiAssign, depth int) error {
 	assign := func(name, val string) {
 		if name == "_" {
@@ -1331,24 +1461,33 @@ func (g *cgen) multiAssign(st *MultiAssign, depth int) error {
 	}
 
 	if len(st.Rhs) == 1 {
-		// multi-return builtin: http_get -> (status, body, err)
-		if call, isCall := st.Rhs[0].(*Call); isCall && call.Callee == "http_get" {
-			g.usesTLS = true
-			arg, err := g.expr(call.Args[0])
-			if err != nil {
-				return err
+		// multi-return builtin (the `v, err :=` idiom): emit the result struct
+		// and destructure its fields across the assigned names.
+		if call, isCall := st.Rhs[0].(*Call); isCall {
+			if cfn, ctype, fields, needsTLS, ok := multiRetBuiltinC(call.Callee); ok {
+				if needsTLS {
+					g.usesTLS = true
+				}
+				args := make([]string, len(call.Args))
+				for i, a := range call.Args {
+					e, err := g.expr(a)
+					if err != nil {
+						return err
+					}
+					args[i] = e
+				}
+				id := g.tmpID
+				g.tmpID++
+				g.buf.WriteString("{\n")
+				indentC(&g.buf, depth+1)
+				fmt.Fprintf(&g.buf, "%s _t%d = %s(%s);\n", ctype, id, cfn, strings.Join(args, ", "))
+				for i, name := range st.Names {
+					assign(name, fmt.Sprintf("_t%d.%s", id, fields[i]))
+				}
+				indentC(&g.buf, depth)
+				g.buf.WriteString("}\n")
+				return nil
 			}
-			id := g.tmpID
-			g.tmpID++
-			g.buf.WriteString("{\n")
-			indentC(&g.buf, depth+1)
-			fmt.Fprintf(&g.buf, "mfl_http_result _t%d = mfl_http_get(%s);\n", id, arg)
-			assign(st.Names[0], fmt.Sprintf("_t%d.status", id))
-			assign(st.Names[1], fmt.Sprintf("_t%d.body", id))
-			assign(st.Names[2], fmt.Sprintf("_t%d.err", id))
-			indentC(&g.buf, depth)
-			g.buf.WriteString("}\n")
-			return nil
 		}
 		call, isCall := st.Rhs[0].(*Call)
 		if isCall && g.c.CalleeInst(g.curFn, call) != "" && g.c.RetArity(g.c.CalleeInst(g.curFn, call)) >= 2 {
