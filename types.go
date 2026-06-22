@@ -1616,6 +1616,17 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 			return 0, fmt.Errorf("now: no args")
 		}
 		return c.cInt, nil
+	case "now_ms":
+		if len(argSlots) != 0 {
+			return 0, fmt.Errorf("now_ms: no args")
+		}
+		return c.cInt, nil
+	case "parse_int":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("parse_int: 1 arg (string)")
+		}
+		c.addPair(argSlots[0], c.cString)
+		return c.cInt, nil
 	case "write":
 		if len(argSlots) != 2 {
 			return 0, fmt.Errorf("write: 2 args")

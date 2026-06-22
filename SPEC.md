@@ -212,6 +212,8 @@ throughout the function body).
 | `args` | `() -> []string` | command-line arguments (`args()[0]` is the program path) |
 | `env` | `(string) -> string` | environment variable (`""` if unset) |
 | `now` | `() -> int` | wall-clock time in Unix seconds |
+| `now_ms` | `() -> int` | wall-clock time in milliseconds (for latency) |
+| `parse_int` | `(string) -> int` | parse an integer (0 if not numeric) |
 | `len` | `(string\|slice\|map) -> int` | length |
 | `str` | `(int\|float) -> string` | format a number |
 | `int` | `(number) -> int` | truncate to int |
