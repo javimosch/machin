@@ -246,9 +246,11 @@ type GoStmt struct{ Call *Call }
 //   }
 // The first ready case runs; with no default and nothing ready, it blocks.
 type SelectCase struct {
-	// receive case: RecvCh set; Name is the binding ("" / "_" to discard)
+	// receive case: RecvCh set; Name is the binding ("" / "_" to discard);
+	// OkName is the optional comma-ok variable (case v, ok := <-ch)
 	RecvCh Expr
 	Name   string
+	OkName string
 	// send case: SendCh + SendVal set (RecvCh nil)
 	SendCh  Expr
 	SendVal Expr

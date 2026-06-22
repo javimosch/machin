@@ -198,6 +198,10 @@ throughout the function body).
     value), or string (index, 1-char). Either variable may be `_`.
   - `for v := range ch { ... }` over a channel: receives each value until the
     channel is closed and drained, then ends. One variable (the element).
+  - `v, ok := <-ch` (comma-ok receive): `ok` is `false` once the channel is
+    closed and drained (`v` is then the zero value). Works standalone and as a
+    `select` case (`case v, ok := <-ch:`); a closed channel makes its select case
+    ready, firing with `ok == false`.
   - `break` exits the innermost loop; `continue` skips to its next iteration.
 - `return`, `return e`, `return e1, e2`.
 - `x[i] = v`, `x.f = v`.
@@ -409,7 +413,7 @@ Return      = "return" [ exprList ] .
 Send        = Expr "<-" Expr .
 Go          = "go" Call .
 Select      = "select" "{" { "case" Comm ":" { Stmt } } [ "default" ":" { Stmt } ] "}" .
-Comm        = ident ":=" "<-" Expr | "<-" Expr | Expr "<-" Expr .
+Comm        = ident [ "," ident ] ":=" "<-" Expr | "<-" Expr | Expr "<-" Expr .
 Expr        = ... operators, calls, indexing, field access, literals,
               FuncLit, make, "<-" Expr ... .
 FuncLit     = "func" "(" [ identList ] ")" Block .
