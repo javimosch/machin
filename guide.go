@@ -151,12 +151,27 @@ func main() { ch := make(chan int)  go prod(ch)
 	println(str(status) + " " + str(len(body))) }`},
 			{"json-path", `func main() { body := https_get("https://api.github.com/repos/javimosch/machin")
 	full, err := json_get(body, ".full_name")  if len(err) == 0 { println(full) } }`},
+			{"variadic", `func sum(nums...) (t) { t = 0  for _, n := range nums { t = t + n } }
+func main() { println(str(sum(1, 2, 3))) }`},
+			{"named-returns", `func divmod(a, b) (q, r) { q = a / b  r = a % b  return }
+func main() { q, r := divmod(17, 5)  println(str(q) + " " + str(r)) }`},
+			{"closure", `func adder() (f) { n := 0  f = func(x) { n = n + x  return n } }
+func main() { a := adder()  println(str(a(2)))  println(str(a(5))) }`},
+			{"generic", `func id(x) (v) { v = x }
+func main() { println(str(id(42)) + " " + id("hi")) }`},
+			{"scoped-arena", `func main() { total := 0  n := 0
+	while n < 3 { arena { s := "row-" + str(n)  total = total + len(s) }  n = n + 1 }
+	println(str(total)) }`},
 			{"ffi-extern", `extern "m" { cflags "-lm" header "math.h" fn sqrt(float) float }
 func main() { println(str(sqrt(2.0))) }`},
 		},
 		Gotchas: []guideNote{
 			{"build", "Author loose Go-like .src, then `machin encode a.src > a.mfl` and `machin build a.mfl -o app`. The .mfl is canonical plain text (one decl/line)."},
+			{"struct-value-semantics", "Structs are VALUE types: passing or assigning one copies it, so a function cannot mutate a caller's struct (and a builder must return the updated struct). For shared mutable state use a map — a reference type, so m[k]=v survives the holder being passed by value (see framework/flags.src)."},
+			{"map-comma-ok", "There is no map comma-ok: `v, ok := m[k]` does NOT compile. A read of an absent key returns the value type's zero value; use has(m, k) to test presence. (comma-ok is for channel receives: `v, ok := <-ch`.)"},
+			{"parse-witness", "parse(s, T{}) needs a value of T as a type witness, e.g. `u := parse(body, User{})`. For schemaless extraction use json_get(s, path); json(x) serializes any value."},
 			{"multi-assign-only", "http_get and json_get return multiple values; use `a, b, c := http_get(u)`. Calling them as a single value is a compile error."},
+			{"eval-order", "Operand and argument evaluation order is UNSPECIFIED (it inherits C; often right-to-left), unlike Go's left-to-right. Don't rely on it for side-effecting calls: `f() + g()` may run g() first. Sequence side effects into separate statements."},
 			{"composite-literal", "T{...} literals need T to be a known struct type at parse time. `machin encode` registers all `type` decls first, so this just works in normal builds."},
 			{"stdout-buffering", "libc fully buffers stdout when it's a pipe; a streaming program must call flush() after a write to appear promptly downstream. A TTY is line-buffered."},
 			{"channels-cross-goroutine", "Values sent over a channel are deep-copied across the goroutine/arena boundary (strings fast; slices/maps/structs via JSON), so they survive the sender goroutine. Channels of closures/funcs are not deep-copied."},
