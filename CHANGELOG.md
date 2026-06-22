@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.14.0
 
 - **Channel `close` + range-over-channel.** Channels could be made and used but
   never closed, so a consumer had no clean "no more data" signal — pools stopped
