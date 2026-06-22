@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.17.0
 
 - **Comma-ok receive — `v, ok := <-ch`.** A receive now optionally reports
   whether the channel is still open: `ok` is `false` once it's closed and
