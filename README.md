@@ -155,7 +155,7 @@ func main() {
 | **Generics** | functions are implicitly generic — specialized per concrete call-site type (monomorphization), no annotations |
 | **Concurrency** | `go f(args)`, channels `make(chan T)` / `ch <- v` / `<-ch`, `sleep(ms)` |
 | **Operators** | `+ - * / %`, `== != < <= > >=`, `&& \|\| !`; `+` concatenates strings |
-| **Builtins** | `print`, `println`, `len`, `str`, `int`, `append`, `sleep`, `has`, `delete`, `keys`, `json`, `parse`, `http_body` |
+| **Builtins** | `print`, `println`, `input`, `len`, `str`, `int`, `append`, `sleep`, `has`, `delete`, `keys`, `json`, `parse`, `http_body` |
 | **String ops** | `substr`, `index`, `contains`, `has_prefix`, `has_suffix`, `charat`, `to_upper`, `to_lower`, `trim`, `replace`, `split`, `join` |
 | **JSON** | `json(x)` serializes any value to JSON; `parse(s, T{})` parses JSON into a value of `T` |
 | **Networking** | `listen`, `accept`, `read`, `write`, `close` |
@@ -208,6 +208,7 @@ per-call-site arg struct + trampoline driven by `pthread_create`.
 | `complex/closures` | capturing lambdas, higher-order functions, IIFE |
 | `complex/counter` | by-reference capture: mutable closures sharing a cell |
 | `complex/arena` | scoped `arena { }`: flat memory across a long-lived loop |
+| `complex/game_menu` | native desktop CLI: a Start/Settings/Exit loop reading `input()` |
 | `complex/generics` | one source function specialized at int / string / float |
 | `complex/goroutines` | `go` spawns concurrent workers; `sleep` waits |
 | `complex/channels` | fan-in worker pool — goroutines communicate over a channel |

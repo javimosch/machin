@@ -1527,6 +1527,11 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		}
 		c.addPair(argSlots[0], c.cInt)
 		return c.cString, nil
+	case "input":
+		if len(argSlots) != 0 {
+			return 0, fmt.Errorf("input: no args")
+		}
+		return c.cString, nil
 	case "write":
 		if len(argSlots) != 2 {
 			return 0, fmt.Errorf("write: 2 args")
