@@ -1097,6 +1097,15 @@ func (c *Checker) genStmt(fn *FuncDecl, s Stmt) error {
 					}
 					c.addPair(slot, eslot)
 				}
+				if sc.OkName != "" && sc.OkName != "_" {
+					slot, ok := env[sc.OkName]
+					if !ok {
+						slot = newSlot(c, KVar)
+						env[sc.OkName] = slot
+						c.localOrder[fn.Name] = append(c.localOrder[fn.Name], sc.OkName)
+					}
+					c.addPair(slot, c.cBool)
+				}
 			} else {
 				cs, err := c.genExpr(fn, sc.SendCh)
 				if err != nil {
@@ -1390,6 +1399,23 @@ func (c *Checker) genMultiAssign(fn *FuncDecl, st *MultiAssign) error {
 	}
 
 	if len(st.Rhs) == 1 {
+		// comma-ok receive: v, ok := <-ch
+		if recv, ok := st.Rhs[0].(*Recv); ok {
+			if len(st.Names) != 2 {
+				return fmt.Errorf("comma-ok receive needs exactly 2 variables: v, ok := <-ch")
+			}
+			cs, err := c.genExpr(fn, recv.Ch)
+			if err != nil {
+				return err
+			}
+			eslot, err := c.chanElem(cs)
+			if err != nil {
+				return err
+			}
+			c.addPair(nameSlots[0], eslot)
+			c.addPair(nameSlots[1], c.cBool)
+			return nil
+		}
 		// a multi-return builtin (e.g. http_get -> status, body, err)
 		if call, ok := st.Rhs[0].(*Call); ok {
 			if aks, rks, isMRB := c.multiRetBuiltin(call.Callee); isMRB {

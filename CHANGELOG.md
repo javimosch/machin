@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **Comma-ok receive — `v, ok := <-ch`.** A receive now optionally reports
+  whether the channel is still open: `ok` is `false` once it's closed and
+  drained (and `v` is the zero value). Works standalone and as a `select` case
+  (`case v, ok := <-ch:`). Relatedly, **`select` now treats a closed channel as
+  ready** — its receive case fires (with `ok == false` if bound) instead of
+  spinning — so a `select` loop can detect a source closing. Built on the
+  existing `mfl_chan_recv2` plus a new `mfl_chan_tryrecv2`. Surfaced building a
+  stream batcher that flushes on size, on a timer, or when the input ends.
+
 ## v0.16.0
 
 - **Channels deep-copy slices and maps too.** v0.15.0 made channels safe for

@@ -266,16 +266,18 @@ static int mfl_chan_recv2(mfl_chan* c, void* out) {
 static void mfl_chan_recv(mfl_chan* c, void* out) {
     if (!mfl_chan_recv2(c, out)) memset(out, 0, c->es);
 }
-/* non-blocking receive: 1 and fills out if an element was ready, else 0. The
-   primitive behind select's poll over multiple channels. */
-static int mfl_chan_tryrecv(mfl_chan* c, void* out) {
+/* non-blocking receive for select: returns 1 if the case is ready — either a
+   value arrived (*ok = 1, out filled) or the channel is closed and drained
+   (*ok = 0, out zeroed). Returns 0 if not ready (open and empty). */
+static int mfl_chan_tryrecv2(mfl_chan* c, void* out, int* ok) {
     pthread_mutex_lock(&c->mu);
     mfl_cnode* n = c->head;
     if (n) { c->head = n->next; if (!c->head) c->tail = NULL; }
+    int closed = c->closed;
     pthread_mutex_unlock(&c->mu);
-    if (!n) return 0;
-    mfl_chan_deliver(c, n, out);
-    return 1;
+    if (n) { mfl_chan_deliver(c, n, out); *ok = 1; return 1; }
+    if (closed) { memset(out, 0, c->es); *ok = 0; return 1; }
+    return 0;
 }
 
 /* maps: a chained hash table keyed by int64 or string, fixed-size values */
@@ -1556,7 +1558,7 @@ func (g *cgen) selectStmt(st *SelectStmt, depth int) error {
 				return err
 			}
 			et := g.c.ElemCType(g.curFn, sc.RecvCh)
-			fmt.Fprintf(&g.buf, "mfl_chan* _sc%d_%d = %s; %s _sv%d_%d;\n", id, i, ch, et, id, i)
+			fmt.Fprintf(&g.buf, "mfl_chan* _sc%d_%d = %s; %s _sv%d_%d; int _sok%d_%d = 0;\n", id, i, ch, et, id, i, id, i)
 		} else {
 			ch, err := g.expr(sc.SendCh)
 			if err != nil {
@@ -1578,7 +1580,7 @@ func (g *cgen) selectStmt(st *SelectStmt, depth int) error {
 		sc := &st.Cases[i]
 		indentC(&g.buf, depth+2)
 		if sc.RecvCh != nil {
-			fmt.Fprintf(&g.buf, "if (mfl_chan_tryrecv(_sc%d_%d, &_sv%d_%d)) { _sel%d = %d; break; }\n", id, i, id, i, id, i)
+			fmt.Fprintf(&g.buf, "if (mfl_chan_tryrecv2(_sc%d_%d, &_sv%d_%d, &_sok%d_%d)) { _sel%d = %d; break; }\n", id, i, id, i, id, i, id, i)
 		} else {
 			fmt.Fprintf(&g.buf, "{ mfl_chan_send(_sc%d_%d, &_sv%d_%d); _sel%d = %d; break; }\n", id, i, id, i, id, i)
 		}
@@ -1598,6 +1600,10 @@ func (g *cgen) selectStmt(st *SelectStmt, depth int) error {
 		if sc.RecvCh != nil && sc.Name != "" && sc.Name != "_" {
 			indentC(&g.buf, depth+2)
 			fmt.Fprintf(&g.buf, "%s = _sv%d_%d;\n", g.varRef(sc.Name), id, i)
+		}
+		if sc.RecvCh != nil && sc.OkName != "" && sc.OkName != "_" {
+			indentC(&g.buf, depth+2)
+			fmt.Fprintf(&g.buf, "%s = _sok%d_%d;\n", g.varRef(sc.OkName), id, i)
 		}
 		for _, s := range sc.Body {
 			if err := g.stmt(s, depth+2); err != nil {
@@ -1633,6 +1639,26 @@ func (g *cgen) multiAssign(st *MultiAssign, depth int) error {
 	}
 
 	if len(st.Rhs) == 1 {
+		// comma-ok receive: v, ok := <-ch  (ok is false when closed and drained)
+		if recv, isRecv := st.Rhs[0].(*Recv); isRecv {
+			ch, err := g.expr(recv.Ch)
+			if err != nil {
+				return err
+			}
+			et := g.c.ElemCType(g.curFn, recv.Ch)
+			id := g.tmpID
+			g.tmpID++
+			g.buf.WriteString("{\n")
+			indentC(&g.buf, depth+1)
+			fmt.Fprintf(&g.buf, "%s _rv%d; int _rok%d = mfl_chan_recv2(%s, &_rv%d);\n", et, id, id, ch, id)
+			indentC(&g.buf, depth+1)
+			fmt.Fprintf(&g.buf, "if (!_rok%d) memset(&_rv%d, 0, sizeof(_rv%d));\n", id, id, id)
+			assign(st.Names[0], fmt.Sprintf("_rv%d", id))
+			assign(st.Names[1], fmt.Sprintf("_rok%d", id))
+			indentC(&g.buf, depth)
+			g.buf.WriteString("}\n")
+			return nil
+		}
 		// multi-return builtin (the `v, err :=` idiom): emit the result struct
 		// and destructure its fields across the assigned names.
 		if call, isCall := st.Rhs[0].(*Call); isCall {

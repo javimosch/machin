@@ -41,7 +41,7 @@ bin/machin pack   app.mfl                # dense base64 form (distribution)
 
 - **Types** (all inferred, unboxed): `int` `float` `bool` `string`, slices `[]T`, maps `map[K]V`, structs, `func` values
 - **Flow**: `if`/`for`/`while`/`range`, `break`/`continue`, multiple & named returns, comma-ok, variadics, closures (by-reference), implicit generics (monomorphized)
-- **Concurrency**: goroutines (`go`), channels (`close` + `for v := range ch`), `select` (multi-way + `default` + timeouts); per-goroutine arena GC + scoped `arena{}`; `--safe` checks
+- **Concurrency**: goroutines (`go`), channels (`close`, `for v := range ch`, `v, ok := <-ch`), `select` (multi-way + `default` + timeouts); per-goroutine arena GC + scoped `arena{}`; `--safe` checks
 - **Networking**: `dial` (client) + `listen`/`accept`/`read`/`write`/`close` (server); native TLS — `https_get`/`https_post` and a `wss_*` WebSocket client (OpenSSL, linked only when used)
 - **I/O & data**: `read_file`/`write_file`/`list_dir`/`mkdir`, `input`, `json`/`parse`/`json_get` (jq-style path), `args`/`env`/`now`/`now_ms`/`parse_int`/`exit`, string ops
 - **Error handling**: `http_get` returns `(status, body, err)` — the `v, err :=` idiom at the builtin layer (a 404, a 503, and an unreachable host are distinguishable)

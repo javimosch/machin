@@ -605,10 +605,21 @@ func (p *Parser) parseSelect() (Stmt, error) {
 			}
 			sc.RecvCh = ch
 			sc.Name = "_"
-		} else if p.peek().Kind == TIdent && p.toks[p.pos+1].Val == ":=" {
-			// case v := <-ch:
+		} else if p.peek().Kind == TIdent && (p.toks[p.pos+1].Val == ":=" || p.toks[p.pos+1].Val == ",") {
+			// case v := <-ch:   or   case v, ok := <-ch:
 			name := p.next().Val
-			p.next() // :=
+			okName := ""
+			if p.peek().Val == "," {
+				p.next() // ,
+				ok2, e := p.expect(TIdent, "")
+				if e != nil {
+					return nil, e
+				}
+				okName = ok2.Val
+			}
+			if _, err := p.expect(TOp, ":="); err != nil {
+				return nil, err
+			}
 			if _, err := p.expect(TOp, "<-"); err != nil {
 				return nil, err
 			}
@@ -618,6 +629,7 @@ func (p *Parser) parseSelect() (Stmt, error) {
 			}
 			sc.RecvCh = ch
 			sc.Name = name
+			sc.OkName = okName
 		} else {
 			// case ch <- v:  (send)
 			ch, err := p.parseExpr()

@@ -643,6 +643,24 @@ func TestChannelClose(t *testing.T) {
 	}
 }
 
+// comma-ok receive (v, ok := <-ch) reports false once a channel is closed and
+// drained — both standalone and inside a select case (which fires on close).
+func TestCommaOkReceive(t *testing.T) {
+	prod := `func prod(ch) { i := 0 for i < 3 { ch <- i * 2 i = i + 1 } close(ch) }`
+	// standalone comma-ok loop
+	standalone := `func main() { ch := make(chan int) go prod(ch) sleep(30) sum := 0 for { v, ok := <- ch if ok == false { break } sum = sum + v } println(str(sum)) }`
+	out, _ := buildRun(t, standalone, prod)
+	if out != "6\n" {
+		t.Fatalf("standalone comma-ok: got %q, want %q", out, "6\n")
+	}
+	// comma-ok inside select: fires on close with ok == false
+	sel := `func main() { ch := make(chan int) go prod(ch) sleep(30) sum := 0 done := false for done == false { select { case v, ok := <- ch: if ok == false { done = true } if ok { sum = sum + v } } } println(str(sum)) }`
+	out2, _ := buildRun(t, sel, prod)
+	if out2 != "6\n" {
+		t.Fatalf("select comma-ok: got %q, want %q", out2, "6\n")
+	}
+}
+
 // select waits on multiple channels: it takes a ready receive, falls to default
 // when nothing is ready, and supports the timer/result timeout pattern.
 func TestSelect(t *testing.T) {
