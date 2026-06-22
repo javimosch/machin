@@ -36,6 +36,8 @@ func main() {
 		err = cmdEncode(os.Args[2:])
 	case "pack":
 		err = cmdPack(os.Args[2:])
+	case "guide":
+		err = cmdGuide(os.Args[2:])
 	case "help", "-h", "--help":
 		usage()
 	default:
@@ -59,6 +61,10 @@ usage:
   machin build|run <file.mfl> --safe  insert bounds / div-zero / overflow checks
   machin encode <src>                mint canonical MFL from loose Go-like text
   machin pack  <file.mfl>            emit the dense base64 form (distribution)
+  machin guide                       full feature catalog as JSON (--text for prose)
+
+Agents: run "machin guide" for the complete, version-exact feature surface —
+keywords, every builtin with signature, idioms, and gotchas — in one call.
 
 A .mfl program is canonical plain text: one normalized function per line, a
 blank line between functions. `+"`machin run`"+` also reads the packed base64 form.

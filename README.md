@@ -13,6 +13,8 @@ A Go-flavored **backend language shaped for agents**: terse, type-inferred, one 
 
 > This README is deliberately terse — machin is machine-first, and so are its docs. Depth lives in [`SPEC.md`](SPEC.md) and [`AGENTS.md`](AGENTS.md).
 
+> **Agents: run `machin guide`** for the complete, version-exact feature surface in one call — every keyword, every builtin with its signature, the core idioms, and the gotchas, as JSON (`--text` for dense prose). It's emitted from the compiler's own catalog, so it can't drift from the implementation.
+
 ## The form
 
 `.mfl` is plain canonical text: one normalized declaration per line, whitespace tightened. Greppable, diffable, no type annotations.
