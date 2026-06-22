@@ -15,7 +15,7 @@ func CompileToC(p *Program, safe bool) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	g := &cgen{c: c, safe: safe, jsonMemo: map[string]string{}, parseMemo: map[string]string{}}
+	g := &cgen{c: c, safe: safe, jsonMemo: map[string]string{}, parseMemo: map[string]string{}, chanJSONMemo: map[string][2]string{}}
 	return g.program(p)
 }
 
@@ -54,6 +54,7 @@ type cgen struct {
 	jsonFns   strings.Builder   // generated per-type JSON serializers + parsers
 	jsonMemo  map[string]string // type string -> serializer function name
 	parseMemo map[string]string // type string -> parser function name
+	chanJSONMemo map[string][2]string // type string -> {serWrapper, desWrapper}
 	jsonID    int
 	rangeID   int    // unique temp names for for-range loops
 	tmpID     int    // unique temp names for multi-assignment
@@ -164,23 +165,30 @@ static void mfl_sleep(int64_t ms) {
     nanosleep(&ts, NULL);
 }
 
-/* channels: a mutex + condvar FIFO carrying fixed-size elements.
-   stroff[] holds the byte offsets of every string (char*) inside an element, so
-   a sent value's strings can be deep-copied out of the (possibly short-lived)
-   sender arena on send and adopted into the receiver arena on receive. Without
-   this, the channel copies only the char*, dangling once the sender's goroutine
-   arena is reclaimed. */
+/* channels: a mutex + condvar FIFO. An element's heap data lives in the sending
+   goroutine's arena, which is reclaimed when that goroutine finishes — so the
+   channel must copy it somewhere stable on send and into the receiver's arena on
+   receive. Two marshaling modes (chosen by codegen from the element type):
+     - string mode (stroff[]): byte offsets of every string (char*) reachable by
+       value in the element; send deep-copies them, receive adopts them.
+     - json mode (ser/des): for elements containing a slice or map, the whole
+       value is serialized to JSON on send and parsed back on receive — a general
+       deep copy that handles arbitrary nesting (slices, maps, structs).
+   Scalar elements need neither and are a plain memcpy. */
 static char* mfl_dup_arena(const char* s, size_t n); /* defined later in the runtime */
 typedef struct mfl_cnode { struct mfl_cnode* next; void* data; } mfl_cnode;
 typedef struct {
     pthread_mutex_t mu; pthread_cond_t cnd;
     mfl_cnode *head, *tail; int64_t es; int closed;
     int nstr; int* stroff;
+    char* (*ser)(const void*);          /* json mode: element -> arena JSON */
+    void (*des)(const char*, void*);    /* json mode: JSON -> *out (arena) */
 } mfl_chan;
-static mfl_chan* mfl_make_chan(int64_t es, int nstr, ...) {
+static mfl_chan* mfl_make_chan(int64_t es, char* (*ser)(const void*), void (*des)(const char*, void*), int nstr, ...) {
     mfl_chan* c = malloc(sizeof(mfl_chan));
     pthread_mutex_init(&c->mu, NULL); pthread_cond_init(&c->cnd, NULL);
     c->head = c->tail = NULL; c->es = es; c->closed = 0;
+    c->ser = ser; c->des = des;
     c->nstr = nstr; c->stroff = NULL;
     if (nstr > 0) {
         c->stroff = (int*)malloc((size_t)nstr * sizeof(int));
@@ -216,14 +224,30 @@ static void mfl_chan_close(mfl_chan* c) {
 }
 static void mfl_chan_send(mfl_chan* c, const void* v) {
     mfl_cnode* n = malloc(sizeof(mfl_cnode));
-    n->data = malloc(c->es); memcpy(n->data, v, c->es);
-    mfl_chan_freeze(c, n->data);
+    if (c->ser) {
+        char* j = c->ser(v);                 /* arena JSON of the whole value */
+        size_t L = strlen(j);
+        n->data = malloc(L + 1); memcpy(n->data, j, L + 1);
+    } else {
+        n->data = malloc(c->es); memcpy(n->data, v, c->es);
+        mfl_chan_freeze(c, n->data);
+    }
     n->next = NULL;
     pthread_mutex_lock(&c->mu);
     if (c->tail) c->tail->next = n; else c->head = n;
     c->tail = n;
     pthread_cond_signal(&c->cnd);
     pthread_mutex_unlock(&c->mu);
+}
+/* deliver node n's payload into out (receiver arena), then free the node. */
+static void mfl_chan_deliver(mfl_chan* c, mfl_cnode* n, void* out) {
+    if (c->des) {
+        c->des((const char*)n->data, out);
+    } else {
+        memcpy(out, n->data, c->es);
+        mfl_chan_thaw(c, out);
+    }
+    free(n->data); free(n);
 }
 /* blocking receive with ok: 1 and fills out if a value arrived; 0 if the channel
    is closed and drained (out left untouched). The primitive behind range-over-
@@ -236,9 +260,7 @@ static int mfl_chan_recv2(mfl_chan* c, void* out) {
     c->head = n->next;
     if (!c->head) c->tail = NULL;
     pthread_mutex_unlock(&c->mu);
-    memcpy(out, n->data, c->es);
-    mfl_chan_thaw(c, out);
-    free(n->data); free(n);
+    mfl_chan_deliver(c, n, out);
     return 1;
 }
 static void mfl_chan_recv(mfl_chan* c, void* out) {
@@ -252,9 +274,7 @@ static int mfl_chan_tryrecv(mfl_chan* c, void* out) {
     if (n) { c->head = n->next; if (!c->head) c->tail = NULL; }
     pthread_mutex_unlock(&c->mu);
     if (!n) return 0;
-    memcpy(out, n->data, c->es);
-    mfl_chan_thaw(c, out);
-    free(n->data); free(n);
+    mfl_chan_deliver(c, n, out);
     return 1;
 }
 
@@ -1964,15 +1984,25 @@ func (g *cgen) expr(e Expr) (string, error) {
 		return g.closureCall(clos, params, ret, args), nil
 	case *MakeChan:
 		ect := g.c.ElemCType(g.curFn, ex)
-		offs := g.chanStrOffsets(g.c.ElemTypeString(g.curFn, ex), "")
+		et := g.c.ElemTypeString(g.curFn, ex)
+		// elements with a slice or map are deep-copied via JSON round-trip; plain
+		// strings via the fast offset path; scalars need nothing.
+		if g.chanNeedsJSON(et) {
+			ser, des, err := g.chanJSONFns(et)
+			if err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("mfl_make_chan(sizeof(%s), %s, %s, 0)", ect, ser, des), nil
+		}
+		offs := g.chanStrOffsets(et, "")
 		if len(offs) == 0 {
-			return fmt.Sprintf("mfl_make_chan(sizeof(%s), 0)", ect), nil
+			return fmt.Sprintf("mfl_make_chan(sizeof(%s), 0, 0, 0)", ect), nil
 		}
 		casted := make([]string, len(offs))
 		for i, o := range offs {
 			casted[i] = "(int)(" + o + ")"
 		}
-		return fmt.Sprintf("mfl_make_chan(sizeof(%s), %d, %s)", ect, len(offs), strings.Join(casted, ", ")), nil
+		return fmt.Sprintf("mfl_make_chan(sizeof(%s), 0, 0, %d, %s)", ect, len(offs), strings.Join(casted, ", ")), nil
 	case *MakeMap:
 		keyIsStr := 0
 		if g.c.MapKeyKind(g.curFn, ex) == KString {
@@ -2131,6 +2161,49 @@ func (g *cgen) chanStrOffsets(typeStr, base string) []string {
 		}
 	}
 	return offs
+}
+
+// chanNeedsJSON reports whether a channel element of this type contains a slice
+// or map (reachable by value), which the flat string-offset path can't deep-copy
+// — those elements go through a JSON serialize/parse round-trip instead.
+func (g *cgen) chanNeedsJSON(typeStr string) bool {
+	if strings.HasPrefix(typeStr, "[]") || strings.HasPrefix(typeStr, "map[") {
+		return true
+	}
+	if td, ok := g.c.StructTypes()[typeStr]; ok {
+		for _, f := range td.Fields {
+			if g.chanNeedsJSON(f.Type) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// chanJSONFns emits (once per type) the serialize/parse wrappers a JSON-mode
+// channel calls, returning their names. The wrappers adapt the generated
+// per-type JSON serializer/parser to the channel's void* calling convention.
+func (g *cgen) chanJSONFns(typeStr string) (string, string, error) {
+	if n, ok := g.chanJSONMemo[typeStr]; ok {
+		return n[0], n[1], nil
+	}
+	ser, err := g.jsonSerializer(typeStr)
+	if err != nil {
+		return "", "", err
+	}
+	des, err := g.jsonParser(typeStr)
+	if err != nil {
+		return "", "", err
+	}
+	ct := cTypeName(typeStr)
+	id := g.jsonID
+	g.jsonID++
+	sName := fmt.Sprintf("mfl_chanser_%d", id)
+	dName := fmt.Sprintf("mfl_chandes_%d", id)
+	fmt.Fprintf(&g.jsonFns, "static char* %s(const void* _e) { return %s(*(const %s*)_e); }\n", sName, ser, ct)
+	fmt.Fprintf(&g.jsonFns, "static void %s(const char* _j, void* _o) { const char* _p = _j; *(%s*)_o = %s(&_p); }\n", dName, ct, des)
+	g.chanJSONMemo[typeStr] = [2]string{sName, dName}
+	return sName, dName, nil
 }
 
 // jsonSerializer ensures a C function exists that serializes a value of the

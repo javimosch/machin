@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **Channels deep-copy slices and maps too.** v0.15.0 made channels safe for
+  strings; now slices, maps, and structs containing them (nested arbitrarily)
+  are deep-copied across the goroutine boundary as well, so a `chan []string`,
+  `chan map[string]int`, or `chan SomeStruct{…[]T…}` value sent from a short-
+  lived goroutine survives that goroutine's arena being reclaimed. Plain strings
+  keep the fast offset-copy path; elements containing a slice or map round-trip
+  through the per-type JSON serializer/parser (a general deep copy reused from
+  `json`/`parse`). Scalars are still a plain memcpy.
+
 ## v0.15.0
 
 - **Fix: strings sent over a channel survive the sender goroutine.** A channel
