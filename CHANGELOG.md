@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.15.0
 
 - **Fix: strings sent over a channel survive the sender goroutine.** A channel
   copied only the element bytes — for a string, just the `char*` — so a string
