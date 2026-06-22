@@ -390,7 +390,10 @@ extern "m" { header "math.h" link "m" fn sqrt(float) float fn pow(float, float) 
 - `"m"` — an informational library name.
 - `header "h.h"` — emits `#include <h.h>` so the real C prototype is in scope.
   If omitted, machin emits a prototype from the declared signature instead.
-- `link "l"` — passes `-l<l>` to the C compiler.
+- `link "l"` — passes `-l<l>` to the C compiler. May be repeated; the libraries
+  are emitted in declaration order (e.g. `link "raylib" link "GL" link "m"` for a
+  library with transitive dependencies). `link ":libname.a"` forces a static
+  archive over a shared `.so`.
 - `cflags "..."` — passes extra flags (e.g. `-I`/`-L` paths) to the C compiler.
 - `cstruct Name { field ctype ... }` — declares a C struct's layout (Phase 2).
   machin synthesizes a matching MFL struct `Name` (so MFL can construct and

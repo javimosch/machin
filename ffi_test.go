@@ -109,3 +109,15 @@ func TestFFIPointerHandle(t *testing.T) {
 		t.Fatalf("opaque handle round-trip: file has %q", got)
 	}
 }
+
+// TestFFIMultipleLink parses several `link` directives, in order — needed for a
+// real library like raylib (-lraylib -lGL -lm -lpthread -ldl -lrt -lX11).
+func TestFFIMultipleLink(t *testing.T) {
+	ed, err := ParseExtern(`extern "rl" { link "raylib" link "GL" link "m" fn f() }`)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got := strings.Join(ed.Links, ","); got != "raylib,GL,m" {
+		t.Fatalf("links: got %q, want \"raylib,GL,m\"", got)
+	}
+}

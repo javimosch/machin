@@ -1,0 +1,10 @@
+extern "raylib"{header "raylib.h" link "raylib" link "GL" link "m" link "pthread" link "dl" link "rt" link "X11" cstruct Color{r u8 g u8 b u8 a u8}fn InitWindow(i32,i32,string)fn SetTargetFPS(i32)fn WindowShouldClose()bool fn BeginDrawing()fn EndDrawing()fn ClearBackground(Color)fn DrawText(string,i32,i32,i32,Color)fn DrawRectangle(i32,i32,i32,i32,Color)fn GetMouseX()i32 fn GetMouseY()i32 fn IsMouseButtonPressed(i32)bool fn CloseWindow()}
+
+func col(r,g,b){return Color{r,g,b,255}}
+
+func in_rect(mx,my,x,y,w,h){return mx>=x&&mx<x+w&&my>=y&&my<y+h}
+
+func button(label,y,mx,my){x:=300 w:=200 h:=56 hover:=in_rect(mx,my,x,y,w,h)bg:=col(58,58,70)if hover{bg=col(90,120,210)}DrawRectangle(x,y,w,h,bg)DrawText(label,x+24,y+18,22,col(238,238,238))return hover&&IsMouseButtonPressed(0)}
+
+func main(){InitWindow(800,600,"machin - MFL game menu")SetTargetFPS(60)bg:=col(22,22,28)running:=true while running{if WindowShouldClose(){running=false}mx:=GetMouseX()my:=GetMouseY()BeginDrawing()ClearBackground(bg)DrawText("MFL GAME MENU",250,120,32,col(120,220,170))if button("Start",230,mx,my){println("Start clicked")}if button("Settings",300,mx,my){println("Settings clicked")}if button("Exit",370,mx,my){println("Exit clicked")running=false}EndDrawing()}CloseWindow()}
+

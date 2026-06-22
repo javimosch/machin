@@ -15,10 +15,10 @@ type Program struct {
 // Calls to the declared names compile to direct C calls; the header supplies the
 // real prototype and `link`/`cflags` are threaded into the cc invocation.
 type ExternDecl struct {
-	Lib     string // informational name after `extern`
-	Header  string // #include <Header> ("" if none)
-	Link    string // -l<Link> ("" if none)
-	CFlags  string // extra cc flags ("" if none)
+	Lib     string   // informational name after `extern`
+	Header  string   // #include <Header> ("" if none)
+	Links   []string // each becomes -l<Link>, in declaration order
+	CFlags  string   // extra cc flags ("" if none)
 	Structs []ExternStruct
 	Funcs   []ExternFunc
 }
