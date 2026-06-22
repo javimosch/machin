@@ -78,6 +78,18 @@ func ParseProgram(decls []string) (*Program, error) {
 			funcSrcs = append(funcSrcs, src)
 		}
 	}
+	// a cstruct is also a first-class MFL struct (int/float fields); synthesize
+	// its TypeDecl so MFL code can construct and field-access it.
+	for _, ed := range prog.Externs {
+		for _, cs := range ed.Structs {
+			fields := make([]Field, len(cs.Fields))
+			for i, f := range cs.Fields {
+				fields[i] = Field{Name: f.Name, Type: ffiMFLType(f.CType)}
+			}
+			prog.Types = append(prog.Types, &TypeDecl{Name: cs.Name, Fields: fields})
+			structs[cs.Name] = true
+		}
+	}
 	for _, src := range funcSrcs {
 		fn, err := ParseFuncWith(src, structs)
 		if err != nil {
@@ -106,8 +118,10 @@ func ParseExtern(src string) (*ExternDecl, error) {
 	return ed, nil
 }
 
-func isFFIType(s string) bool {
-	return s == "int" || s == "float" || s == "bool" || s == "string"
+// isExternDirective reports whether a word starts an extern-block directive
+// (and so cannot be a function's return type).
+func isExternDirective(s string) bool {
+	return s == "header" || s == "link" || s == "cflags" || s == "fn" || s == "cstruct"
 }
 
 // parseExternDecl parses:
@@ -147,6 +161,33 @@ func (p *Parser) parseExternDecl() (*ExternDecl, error) {
 			if err := str(&ed.CFlags); err != nil {
 				return nil, err
 			}
+		case "cstruct":
+			name, err := p.expect(TIdent, "")
+			if err != nil {
+				return nil, err
+			}
+			if _, err := p.expect(TPunct, "{"); err != nil {
+				return nil, err
+			}
+			var fields []ExternField
+			for p.peek().Val != "}" && p.peek().Kind != TEOF {
+				fname, err := p.expect(TIdent, "") // field name, then its C type
+				if err != nil {
+					return nil, err
+				}
+				ct := p.next()
+				if ct.Kind != TIdent {
+					return nil, fmt.Errorf("cstruct %s: expected a C type for field %s, got %q", name.Val, fname.Val, ct.Val)
+				}
+				fields = append(fields, ExternField{Name: fname.Val, CType: ct.Val})
+				for p.peek().Val == "," || p.peek().Val == ";" {
+					p.next()
+				}
+			}
+			if _, err := p.expect(TPunct, "}"); err != nil {
+				return nil, err
+			}
+			ed.Structs = append(ed.Structs, ExternStruct{Name: name.Val, Fields: fields})
 		case "fn":
 			name, err := p.expect(TIdent, "")
 			if err != nil {
@@ -157,9 +198,9 @@ func (p *Parser) parseExternDecl() (*ExternDecl, error) {
 			}
 			var params []string
 			for p.peek().Val != ")" && p.peek().Kind != TEOF {
-				t := p.next()
-				if !isFFIType(t.Val) {
-					return nil, fmt.Errorf("extern fn %s: unsupported parameter type %q (use int/float/bool/string)", name.Val, t.Val)
+				t := p.next() // a scalar FFI type or a cstruct name; validated by the checker
+				if t.Kind != TIdent {
+					return nil, fmt.Errorf("extern fn %s: expected a parameter type, got %q", name.Val, t.Val)
 				}
 				params = append(params, t.Val)
 				for p.peek().Val == "," {
@@ -170,12 +211,12 @@ func (p *Parser) parseExternDecl() (*ExternDecl, error) {
 				return nil, err
 			}
 			ret := ""
-			if isFFIType(p.peek().Val) {
+			if p.peek().Kind == TIdent && !isExternDirective(p.peek().Val) {
 				ret = p.next().Val // an explicit return type; absence means void
 			}
 			ed.Funcs = append(ed.Funcs, ExternFunc{Name: name.Val, Params: params, Ret: ret})
 		default:
-			return nil, fmt.Errorf("extern: expected header/link/cflags/fn, got %q", kw.Val)
+			return nil, fmt.Errorf("extern: expected header/link/cflags/cstruct/fn, got %q", kw.Val)
 		}
 	}
 	if _, err := p.expect(TPunct, "}"); err != nil {

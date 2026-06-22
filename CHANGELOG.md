@@ -2,12 +2,15 @@
 
 ## Unreleased
 
-- **C FFI (Phase 1).** An `extern "lib" { header "..." link "..." cflags "..."
-  fn name(types) ret }` declaration names foreign C functions; calls compile to
-  direct C calls and the `header`/`link`/`cflags` are threaded into `cc`. Scalar
-  types only (int, float, bool, string). Example: `extern "m" { header "math.h"
-  link "m" fn sqrt(float) float }` then `sqrt(2.0)`. New
-  `examples/complex/ffi_math.mfl`; the path to the C ecosystem (and a future GUI).
+- **C FFI (Phases 1–2).** An `extern "lib" { header "..." link "..." cflags "..."
+  cstruct T { f ctype ... } fn name(types) ret }` declaration names foreign C
+  functions; calls compile to direct C calls and `header`/`link`/`cflags` are
+  threaded into `cc`. **Phase 1:** scalar types — `int`/`float`/`bool`/`string`
+  plus sized `i8…u64`/`f32`/`f64` (sizes matter for ABI: raylib takes 32-bit
+  `int`/`float`). **Phase 2:** `cstruct` declares a C struct's layout; machin
+  synthesizes a matching MFL struct and marshals it by value across the boundary
+  (pass and return). New `examples/complex/ffi_math.mfl` and `ffi_struct.mfl`;
+  the path to the C ecosystem and a future GUI.
 - **Tightened canonical form (token-minimization).** The canonical `.mfl` now
   drops whitespace adjacent to operators/punctuation (`fib(n - 1)` →
   `fib(n-1)`), keeping only the spaces the lexer needs between word tokens. Zero
