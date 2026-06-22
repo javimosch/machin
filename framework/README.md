@@ -88,3 +88,27 @@ curl -X POST -d '{"id":9,"title":"posted","done":true}' localhost:48080/api/echo
 
 Because the whole thing compiles to native code, the request path is just C: no
 interpreter, no allocations beyond the per-request arena.
+
+---
+
+## Also here: `flags.src` — a CLI flag parser
+
+[`flags.src`](flags.src) is a small command-line flag parser, composed the same
+way (`machin encode framework/flags.src yourtool.src > app.mfl`). It handles
+short/long flags, the `=` and space value forms, bool flags, defaults,
+positionals, and an auto `--help`:
+
+```go
+fs := new_flags("mytool")
+fs = flag_str(fs, "out", "o", "-", "output file")
+fs = flag_int(fs, "count", "c", "1", "how many")
+fs = flag_bool(fs, "verbose", "v", "chatty output")
+fs = parse_flags(fs, args())
+if flag_on(fs, "help") { println(flag_usage(fs))  return }
+n := flag_int_val(fs, "count")   // typed getters
+rest := flag_args(fs)            // positionals
+```
+
+The value store uses maps (reference types) so updates survive the `Flags`
+struct being passed by value. The
+[machin-http](https://github.com/javimosch/machin-http) tool is built on it.

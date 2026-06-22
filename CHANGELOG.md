@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **`framework/flags.src` — a CLI flag parser (MFL module).** Every machin tool
+  hand-rolled its argument parsing; this is a reusable parser composed like
+  `machweb` (`machin encode framework/flags.src yourtool.src`). Short/long flags,
+  the `=` and space value forms, bool flags, defaults, positionals, typed getters,
+  and an auto `--help`. Its value store uses maps (reference types) so updates
+  survive the `Flags` struct being passed by value — no compiler change. Drove
+  [machin-http](https://github.com/javimosch/machin-http) (get/post/head). Closes #138.
+
 ## v0.19.0
 
 - **`machin guide` — self-describing feature catalog for agents.** One command
