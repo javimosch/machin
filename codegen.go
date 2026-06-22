@@ -1405,18 +1405,22 @@ func (g *cgen) stmt(s Stmt, depth int) error {
 			g.emitNamedReturn(g.curFn)
 			return nil
 		}
-		exprs := make([]string, len(st.Vals))
-		for i, v := range st.Vals {
-			e, err := g.expr(v)
+		if len(st.Vals) == 1 {
+			e, err := g.expr(st.Vals[0])
 			if err != nil {
 				return err
 			}
-			exprs[i] = "(" + e + ")"
-		}
-		if len(exprs) == 1 {
-			g.buf.WriteString("return " + exprs[0] + ";\n")
+			g.buf.WriteString("return (" + e + ");\n")
 		} else {
-			fmt.Fprintf(&g.buf, "return (%s_ret){ %s };\n", g.c.CName(g.curFn), strings.Join(exprs, ", "))
+			// multiple return values: sequence them left-to-right (a C aggregate
+			// initializer's elements are otherwise unordered).
+			ret, err := g.seqExprs(st.Vals, func(names []string) (string, error) {
+				return fmt.Sprintf("(%s_ret){ %s }", g.c.CName(g.curFn), strings.Join(names, ", ")), nil
+			})
+			if err != nil {
+				return err
+			}
+			g.buf.WriteString("return " + ret + ";\n")
 		}
 	case *BreakStmt:
 		g.buf.WriteString("break;\n")
@@ -2047,39 +2051,105 @@ func (g *cgen) expr(e Expr) (string, error) {
 	return "", fmt.Errorf("codegen: unknown expression %T", e)
 }
 
+// exprHasSideEffect reports whether evaluating e could have an observable side
+// effect (or observe one) — i.e. it contains a call or a channel receive. Used
+// to decide when operand evaluation order is significant.
+func exprHasSideEffect(e Expr) bool {
+	switch x := e.(type) {
+	case *Call, *CallValue, *Recv:
+		return true
+	case *Unary:
+		return exprHasSideEffect(x.X)
+	case *Binary:
+		return exprHasSideEffect(x.L) || exprHasSideEffect(x.R)
+	case *Index:
+		return exprHasSideEffect(x.X) || exprHasSideEffect(x.Idx)
+	case *FieldAccess:
+		return exprHasSideEffect(x.X)
+	case *SliceLit:
+		for _, el := range x.Elems {
+			if exprHasSideEffect(el) {
+				return true
+			}
+		}
+	case *StructLit:
+		for _, v := range x.Vals {
+			if exprHasSideEffect(v) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// seqExprs evaluates exprs in source order and passes their C strings to build.
+// C leaves operand/argument evaluation order unspecified, but Go (and MFL) fixes
+// it left-to-right; so when any sub-expression has a side effect and there is
+// more than one, the values are hoisted into temporaries inside a GNU statement-
+// expression (whose declarations are sequenced) before being combined.
+func (g *cgen) seqExprs(exprs []Expr, build func([]string) (string, error)) (string, error) {
+	strs := make([]string, len(exprs))
+	impure := false
+	for i, e := range exprs {
+		s, err := g.expr(e)
+		if err != nil {
+			return "", err
+		}
+		strs[i] = s
+		if exprHasSideEffect(e) {
+			impure = true
+		}
+	}
+	if !impure || len(exprs) < 2 {
+		return build(strs)
+	}
+	id := g.tmpID
+	g.tmpID++
+	var decls strings.Builder
+	names := make([]string, len(exprs))
+	for i, e := range exprs {
+		n := fmt.Sprintf("_sq%d_%d", id, i)
+		names[i] = n
+		fmt.Fprintf(&decls, "%s %s = %s; ", g.c.NodeCType(g.curFn, e), n, strs[i])
+	}
+	body, err := build(names)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("({ %s%s; })", decls.String(), body), nil
+}
+
 func (g *cgen) binary(ex *Binary) (string, error) {
-	l, err := g.expr(ex.L)
-	if err != nil {
-		return "", err
-	}
-	r, err := g.expr(ex.R)
-	if err != nil {
-		return "", err
-	}
+	return g.seqExprs([]Expr{ex.L, ex.R}, func(n []string) (string, error) {
+		return g.binaryCombine(ex, n[0], n[1]), nil
+	})
+}
+
+func (g *cgen) binaryCombine(ex *Binary, l, r string) string {
 	if ex.Op == "+" && g.c.NodeKind(g.curFn, ex) == KString {
-		return fmt.Sprintf("mfl_cat(%s, %s)", l, r), nil
+		return fmt.Sprintf("mfl_cat(%s, %s)", l, r)
 	}
 	// Compare strings by value, not by pointer. C's == on char* compares
 	// addresses, so equal-but-distinct strings would wrongly differ.
 	if (ex.Op == "==" || ex.Op == "!=") && g.c.NodeKind(g.curFn, ex.L) == KString {
-		return fmt.Sprintf("(strcmp(%s, %s) %s 0)", l, r, ex.Op), nil
+		return fmt.Sprintf("(strcmp(%s, %s) %s 0)", l, r, ex.Op)
 	}
 	// --safe: checked integer arithmetic (overflow) and division (by zero)
 	if g.safe && g.c.NodeKind(g.curFn, ex) == KInt {
 		switch ex.Op {
 		case "+":
-			return fmt.Sprintf("mfl_iadd(%s, %s)", l, r), nil
+			return fmt.Sprintf("mfl_iadd(%s, %s)", l, r)
 		case "-":
-			return fmt.Sprintf("mfl_isub(%s, %s)", l, r), nil
+			return fmt.Sprintf("mfl_isub(%s, %s)", l, r)
 		case "*":
-			return fmt.Sprintf("mfl_imul(%s, %s)", l, r), nil
+			return fmt.Sprintf("mfl_imul(%s, %s)", l, r)
 		case "/":
-			return fmt.Sprintf("mfl_idiv(%s, %s)", l, r), nil
+			return fmt.Sprintf("mfl_idiv(%s, %s)", l, r)
 		case "%":
-			return fmt.Sprintf("mfl_imod(%s, %s)", l, r), nil
+			return fmt.Sprintf("mfl_imod(%s, %s)", l, r)
 		}
 	}
-	return fmt.Sprintf("(%s %s %s)", l, ex.Op, r), nil
+	return fmt.Sprintf("(%s %s %s)", l, ex.Op, r)
 }
 
 // isBoxed reports whether a variable in the current instance is captured by a
@@ -2124,36 +2194,32 @@ func (g *cgen) sliceLit(ex *SliceLit) (string, error) {
 		// struct / nested-slice elements: build empty + append in source instead
 		return "", fmt.Errorf("non-empty []%s literals are not supported; build with append", ek)
 	}
-	parts := []string{strconv.Itoa(len(ex.Elems))}
-	for _, el := range ex.Elems {
-		e, err := g.expr(el)
-		if err != nil {
-			return "", err
+	return g.seqExprs(ex.Elems, func(names []string) (string, error) {
+		parts := []string{strconv.Itoa(len(ex.Elems))}
+		for _, n := range names {
+			parts = append(parts, fmt.Sprintf("(%s)(%s)", cast, n))
 		}
-		parts = append(parts, fmt.Sprintf("(%s)(%s)", cast, e))
-	}
-	return builder + "(" + strings.Join(parts, ", ") + ")", nil
+		return builder + "(" + strings.Join(parts, ", ") + ")", nil
+	})
 }
 
 // structLit emits a C compound literal: (mfl_Point){ .f_x = (1), .f_y = (2) }
 // for keyed literals, or positional (mfl_Point){ (1), (2) }.
 func (g *cgen) structLit(ex *StructLit) (string, error) {
-	parts := make([]string, len(ex.Vals))
-	for i, v := range ex.Vals {
-		e, err := g.expr(v)
-		if err != nil {
-			return "", err
+	return g.seqExprs(ex.Vals, func(names []string) (string, error) {
+		if len(names) == 0 {
+			return fmt.Sprintf("(mfl_%s){0}", ex.Type), nil
 		}
-		if len(ex.FieldNames) > 0 {
-			parts[i] = fmt.Sprintf(".f_%s = (%s)", ex.FieldNames[i], e)
-		} else {
-			parts[i] = "(" + e + ")"
+		parts := make([]string, len(names))
+		for i, n := range names {
+			if len(ex.FieldNames) > 0 {
+				parts[i] = fmt.Sprintf(".f_%s = (%s)", ex.FieldNames[i], n)
+			} else {
+				parts[i] = "(" + n + ")"
+			}
 		}
-	}
-	if len(parts) == 0 {
-		return fmt.Sprintf("(mfl_%s){0}", ex.Type), nil
-	}
-	return fmt.Sprintf("(mfl_%s){%s}", ex.Type, strings.Join(parts, ", ")), nil
+		return fmt.Sprintf("(mfl_%s){%s}", ex.Type, strings.Join(parts, ", ")), nil
+	})
 }
 
 // mapKeyArgs returns the (int-key, string-key) C arguments for a map op: a
@@ -2438,14 +2504,12 @@ func (g *cgen) jsonParser(typeStr string) (string, error) {
 }
 
 func (g *cgen) call(ex *Call) (string, error) {
-	args := make([]string, len(ex.Args))
-	for i, a := range ex.Args {
-		s, err := g.expr(a)
-		if err != nil {
-			return "", err
-		}
-		args[i] = s
-	}
+	return g.seqExprs(ex.Args, func(args []string) (string, error) {
+		return g.callBody(ex, args)
+	})
+}
+
+func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 	switch ex.Callee {
 	case "len":
 		switch g.c.NodeKind(g.curFn, ex.Args[0]) {

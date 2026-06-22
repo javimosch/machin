@@ -660,6 +660,22 @@ func TestFlush(t *testing.T) {
 	}
 }
 
+// Operands and arguments evaluate left-to-right (Go semantics), even when they
+// have side effects — `g() + g()` on a counter yields 1 then 2, not 2 then 1.
+func TestEvalOrderLeftToRight(t *testing.T) {
+	mk := `func mk() (f) { n := 0  f = func() { n = n + 1  return n } }`
+	two := `func two(a, b) (s) { s = str(a) + "," + str(b) }`
+	main := `func main() {
+	g := mk()  println(str(g()) + " " + str(g()))
+	h := mk()  println(two(h(), h()))
+	k := mk()  xs := []int{k(), k(), k()}  println(str(xs[0]) + str(xs[1]) + str(xs[2]))
+}`
+	out, _ := buildRun(t, main, mk, two)
+	if out != "1 2\n1,2\n123\n" {
+		t.Fatalf("eval order: got %q, want %q", out, "1 2\n1,2\n123\n")
+	}
+}
+
 // comma-ok receive (v, ok := <-ch) reports false once a channel is closed and
 // drained — both standalone and inside a select case (which fires on close).
 func TestCommaOkReceive(t *testing.T) {

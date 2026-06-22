@@ -1,6 +1,6 @@
 # The MFL Language Specification
 
-Version 0.20.0
+Version 0.21.0
 
 MFL (Machine-First Language) is a statically-typed, Go-flavored backend language
 **shaped for machine authoring**: minimal syntax, no type annotations, one
@@ -184,6 +184,10 @@ throughout the function body).
 - **Field access** `x.f` and assignment `x.f = v`.
 - **Calls** `f(args)`; a function value may also be called: `g()(x)`, `fs[i](x)`.
 - **Receive** `<-ch`.
+- **Evaluation order** is **left-to-right** (as in Go): the operands of a binary
+  operator, the arguments of a call, the elements of a slice/struct literal, and
+  the values of a multi-return `return` are evaluated in source order, so their
+  side effects are sequenced predictably.
 
 ---
 
