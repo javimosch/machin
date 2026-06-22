@@ -1805,6 +1805,35 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 			return 0, fmt.Errorf("flush: no args")
 		}
 		return c.cInt, nil
+	case "regex_match":
+		if len(argSlots) != 2 {
+			return 0, fmt.Errorf("regex_match: 2 args (s, pattern)")
+		}
+		c.addPair(argSlots[0], c.cString)
+		c.addPair(argSlots[1], c.cString)
+		return c.cBool, nil
+	case "regex_find":
+		if len(argSlots) != 2 {
+			return 0, fmt.Errorf("regex_find: 2 args (s, pattern)")
+		}
+		c.addPair(argSlots[0], c.cString)
+		c.addPair(argSlots[1], c.cString)
+		return c.cString, nil
+	case "regex_replace":
+		if len(argSlots) != 3 {
+			return 0, fmt.Errorf("regex_replace: 3 args (s, pattern, repl)")
+		}
+		c.addPair(argSlots[0], c.cString)
+		c.addPair(argSlots[1], c.cString)
+		c.addPair(argSlots[2], c.cString)
+		return c.cString, nil
+	case "regex_groups":
+		if len(argSlots) != 2 {
+			return 0, fmt.Errorf("regex_groups: 2 args (s, pattern)")
+		}
+		c.addPair(argSlots[0], c.cString)
+		c.addPair(argSlots[1], c.cString)
+		return newSliceSlot(c, c.cString), nil
 	case "http_get":
 		return 0, fmt.Errorf("http_get returns 3 values; use: status, body, err := http_get(url)")
 	case "json_get":
