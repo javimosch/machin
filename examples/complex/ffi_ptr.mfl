@@ -1,0 +1,4 @@
+extern "c"{header "stdio.h" fn fopen(string,string)ptr fn fputs(string,ptr)i32 fn fclose(ptr)i32}
+
+func main(){f:=fopen("/tmp/machin_ffi_ptr.txt","w")if f==0{println("could not open file")}else{fputs("written by C through an MFL opaque handle\n",f)fclose(f)println("wrote /tmp/machin_ffi_ptr.txt")}}
+

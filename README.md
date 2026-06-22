@@ -166,7 +166,7 @@ func main() {
 | **JSON** | `json(x)` serializes any value to JSON; `parse(s, T{})` parses JSON into a value of `T` |
 | **Networking** | `listen`, `accept`, `read`, `write`, `close` |
 | **I/O** | `print`, `println`, `input` (read a line from stdin) |
-| **C FFI** | `extern "lib" { header "..." link "..." cstruct T {...} fn name(types) ret }` — call foreign C functions; scalar + by-value struct types |
+| **C FFI** | `extern "lib" { header "..." link "..." cstruct T {...} fn name(types) ret }` — foreign C calls; scalars, by-value structs, opaque `ptr` handles |
 
 ---
 
@@ -219,6 +219,7 @@ per-call-site arg struct + trampoline driven by `pthread_create`.
 | `complex/game_menu` | native desktop CLI: a Start/Settings/Exit loop reading `input()` |
 | `complex/ffi_math` | C FFI: call `sqrt`/`pow` from libm via an `extern` block |
 | `complex/ffi_struct` | C FFI: marshal a C struct by value (`div_t` from libc) |
+| `complex/ffi_ptr` | C FFI: hold an opaque handle (`FILE*`) as a `ptr` |
 | `complex/generics` | one source function specialized at int / string / float |
 | `complex/goroutines` | `go` spawns concurrent workers; `sleep` waits |
 | `complex/channels` | fan-in worker pool — goroutines communicate over a channel |
@@ -320,8 +321,8 @@ make install      # install to $(PREFIX)/bin  (default /usr/local)
 | By-reference closure capture (mutable captured state, Go semantics) | ✅ done |
 | Bounds / div-zero / overflow checks (`--safe`) | ✅ done |
 | Scoped arenas (`arena { }`) — bound a long-lived loop's memory | ✅ done |
-| C FFI — `extern` blocks: scalars + linking (Phase 1), by-value structs (Phase 2) | ✅ done |
-| C FFI phases 3–4 (opaque handles, callbacks) | ⬜ planned |
+| C FFI — scalars + linking (P1), by-value structs (P2), opaque `ptr` handles (P3) | ✅ done |
+| C FFI callbacks (MFL closures as C function pointers) | ⬜ planned |
 | Automatic tracing GC | ⬜ planned |
 
 ---

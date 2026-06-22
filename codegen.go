@@ -388,17 +388,25 @@ static char* mfl_input(void) {
 // isFFIScalar reports whether t is an FFI scalar type name (vs a cstruct name).
 func isFFIScalar(t string) bool {
 	switch t {
-	case "int", "float", "bool", "string",
+	case "int", "float", "bool", "string", "ptr",
 		"i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64":
 		return true
 	}
 	return false
 }
 
+// isFFINumeric reports whether t is a numeric scalar usable as a cstruct field
+// (excludes string and the opaque ptr, which aren't laid out as plain numbers).
+func isFFINumeric(t string) bool {
+	return isFFIScalar(t) && t != "string" && t != "ptr"
+}
+
 // ffiCType maps an FFI scalar type name to its C type (for headerless prototypes
 // and struct-field casts). Returns "void" for "" or anything non-scalar.
 func ffiCType(t string) string {
 	switch t {
+	case "ptr":
+		return "void*"
 	case "int", "i64":
 		return "int64_t"
 	case "i32":
@@ -443,6 +451,8 @@ func externCType(t string) string {
 // struct field: every integer width is MFL int; f32/f64/float are float.
 func ffiMFLType(t string) string {
 	switch t {
+	case "ptr":
+		return "int" // an opaque handle, held as an int
 	case "f32", "f64", "float":
 		return "float"
 	case "bool":
@@ -1592,14 +1602,20 @@ func (g *cgen) call(ex *Call) (string, error) {
 		// struct args into the C layout; marshal a struct return back to MFL.
 		parts := make([]string, len(args))
 		for i, a := range args {
-			if pt := ef.Params[i]; isFFIScalar(pt) {
+			switch pt := ef.Params[i]; {
+			case pt == "ptr": // MFL int -> opaque void*
+				parts[i] = fmt.Sprintf("(void*)(intptr_t)(%s)", a)
+			case isFFIScalar(pt):
 				parts[i] = fmt.Sprintf("(%s)(%s)", ffiCType(pt), a)
-			} else {
+			default: // a cstruct, marshaled into the C layout
 				parts[i] = fmt.Sprintf("mfl_to_%s(%s)", pt, a)
 			}
 		}
 		call := fmt.Sprintf("%s(%s)", ef.Name, strings.Join(parts, ", "))
-		if ef.Ret != "" && !isFFIScalar(ef.Ret) {
+		switch {
+		case ef.Ret == "ptr": // void* -> MFL int
+			return fmt.Sprintf("(int64_t)(intptr_t)(%s)", call), nil
+		case ef.Ret != "" && !isFFIScalar(ef.Ret):
 			return fmt.Sprintf("mfl_from_%s(%s)", ef.Ret, call), nil
 		}
 		return call, nil

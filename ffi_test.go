@@ -86,3 +86,26 @@ static Pt pt_make(int x, int y){ Pt p; p.x = x; p.y = y; return p; }
 		t.Fatalf("struct pass: got %q, want \"7\\n30\\n\"", out)
 	}
 }
+
+// TestFFIPointerHandle round-trips an opaque C handle (a FILE*) through MFL as a
+// `ptr`: open, write, close — then Go verifies the file C actually wrote.
+func TestFFIPointerHandle(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "out.txt")
+	prog, err := ParseProgram([]string{
+		`extern "c" { header "stdio.h" fn fopen(string, string) ptr fn fputs(string, ptr) i32 fn fclose(ptr) i32 }`,
+		`func main(){ f := fopen("` + path + `", "w") fputs("via void* handle", f) fclose(f) }`,
+	})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if _, err := RunCaptured(prog); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if string(got) != "via void* handle" {
+		t.Fatalf("opaque handle round-trip: file has %q", got)
+	}
+}

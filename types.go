@@ -619,8 +619,8 @@ func Check(p *Program) (*Checker, error) {
 	for _, ed := range p.Externs {
 		for _, cs := range ed.Structs {
 			for _, f := range cs.Fields {
-				if !isFFIScalar(f.CType) {
-					return nil, fmt.Errorf("cstruct %s field %s: %q is not a scalar C type", cs.Name, f.Name, f.CType)
+				if !isFFINumeric(f.CType) {
+					return nil, fmt.Errorf("cstruct %s field %s: %q is not a numeric C type", cs.Name, f.Name, f.CType)
 				}
 			}
 		}
