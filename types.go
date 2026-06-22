@@ -1970,6 +1970,16 @@ func (c *Checker) ElemCType(inst string, n Node) string {
 	return "int64_t"
 }
 
+// ElemTypeString is the MFL type string of a slice/channel element (e.g.
+// "string", "int", a struct name) — used to compute channel string offsets.
+func (c *Checker) ElemTypeString(inst string, n Node) string {
+	r := c.find(c.slotOf(inst, n))
+	if (c.kind[r] == KSlice || c.kind[r] == KChan) && c.elem[r] >= 0 {
+		return c.typeStringSlot(c.elem[r])
+	}
+	return "int"
+}
+
 // Types returns the declared struct types (codegen emits a C typedef per type).
 func (c *Checker) StructTypes() map[string]*TypeDecl { return c.structs }
 

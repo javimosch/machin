@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- **Fix: strings sent over a channel survive the sender goroutine.** A channel
+  copied only the element bytes — for a string, just the `char*` — so a string
+  allocated inside a short-lived goroutine and sent over a channel dangled once
+  that goroutine's arena was reclaimed (garbled/corrupt reads on the far side).
+  Channels are now string-aware: `make(chan T)` records the byte offsets of every
+  string reachable by value in `T` (a bare `string`, or a struct's string fields,
+  recursing into nested structs); send **deep-copies** those strings into stable
+  storage, and receive **adopts** them into the receiver's arena (freeing the
+  intermediate — no leak). Scalars are unaffected; slice/map backings inside an
+  element are still shared (documented). Surfaced by machin-pipe, which had to
+  work around it by keeping inputs in main's arena.
+
 ## v0.14.0
 
 - **Channel `close` + range-over-channel.** Channels could be made and used but

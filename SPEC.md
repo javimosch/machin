@@ -341,10 +341,15 @@ id(42); id("hi"); id(3.14)   // → three native functions
   goroutine's arena lives for the whole program. This bounds the memory of a
   long-running concurrent server — each request handler runs in its own
   goroutine and frees everything it allocated on return.
-  - *Caveat:* a value allocated in one goroutine and shared with another (e.g.
-    a heap pointer sent over a channel, or stored in a map outliving the
-    sender) may be reclaimed while still referenced. Pass such values by copy or
-    keep them in the receiver's scope.
+  - **Channels deep-copy strings across this boundary:** a `string` (or a
+    struct's string fields, recursively) sent over a channel is copied out of the
+    sender's arena on send and adopted into the receiver's arena on receive, so it
+    stays valid even after the sender goroutine finishes. (Slice/map backings
+    inside a channel element are *not* deep-copied — keep those in a scope that
+    outlives the receiver.)
+  - *Caveat:* a value allocated in one goroutine and shared with another by other
+    means (stored in a map outliving the sender, captured by a closure) may be
+    reclaimed while still referenced. Keep such values in the receiver's scope.
 - A **scoped arena** block, `arena { ... }`, installs a fresh arena for the
   duration of the block and frees everything allocated inside it when the block
   ends. This bounds the memory of a *single* long-lived goroutine that allocates
