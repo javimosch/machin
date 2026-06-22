@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.5.0
 
 - **Plain text is the source of truth.** The `.mfl` form is now canonical plain
   text — one normalized function per line — instead of base64. The reason is the
