@@ -329,6 +329,18 @@ make install      # install to $(PREFIX)/bin  (default /usr/local)
 
 ---
 
+## Ecosystem
+
+Things built with machin live in **[awesome-machin](https://github.com/javimosch/awesome-machin)** — the curated list. Highlights:
+
+- **[boilerplate-cli-ui-machin](https://github.com/javimosch/boilerplate-cli-ui-machin)** — single-binary CLI + embedded React web UI + daemon (via FFI)
+- **[machin-healthcheck](https://github.com/javimosch/machin-healthcheck)** — concurrent HTTP status/latency checker
+- **[machin-ssg](https://github.com/javimosch/machin-ssg)** — static-site generator (markdown → HTML)
+
+Each is its own native binary. Built something? Add it to [awesome-machin](https://github.com/javimosch/awesome-machin).
+
+---
+
 ## License
 
 MIT — <a href="https://www.linkedin.com/in/arancibiajav/" target="_blank">Javier Leandro Arancibia</a>
