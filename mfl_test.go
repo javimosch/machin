@@ -534,3 +534,17 @@ func TestSplitFunctions(t *testing.T) {
 		t.Fatalf("expected 2 funcs, got %d", len(fns))
 	}
 }
+
+// Braces inside string literals (e.g. a function that builds JSON) and after
+// // comments must not be counted as block delimiters when splitting.
+func TestSplitFunctionsBracesInStrings(t *testing.T) {
+	src := "func j(v) (s) { s = \"{\\\"x\\\":\" + v + \"}\" }\n\n" +
+		"func k() (s) { s = index(b, \"}\") // trailing } in a comment\n}\n"
+	fns, err := splitFunctions(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fns) != 2 {
+		t.Fatalf("expected 2 funcs, got %d: %v", len(fns), fns)
+	}
+}

@@ -348,8 +348,26 @@ func splitFunctions(src string) ([]string, error) {
 		}
 		cur.WriteString(line)
 		cur.WriteByte('\n')
-		for _, c := range line {
+		// Count braces, but skip those inside string literals or after a // comment
+		// (a JSON-building function has "{"/"}" in strings — they are not blocks).
+		inStr := false
+		for i := 0; i < len(line); i++ {
+			c := line[i]
+			if inStr {
+				if c == '\\' {
+					i++
+				} else if c == '"' {
+					inStr = false
+				}
+				continue
+			}
 			switch c {
+			case '"':
+				inStr = true
+			case '/':
+				if i+1 < len(line) && line[i+1] == '/' {
+					i = len(line) // rest of the line is a comment
+				}
 			case '{':
 				depth++
 			case '}':
