@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.4.2
+
+- **Windows binaries.** Releases now also ship `machin-<tag>-windows-amd64.exe`,
+  alongside linux/macOS × amd64/arm64. Five prebuilt binaries per release.
+
 ## v0.4.1
 
 - **Release automation.** Pushing a `v*` tag now cross-compiles machin for
