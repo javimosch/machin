@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.12.0
 
 - **JSON path queries — `json_get(json, path)`.** Every machin tool used to dig
   into JSON with fragile substring search. `json_get` walks a jq-style path
