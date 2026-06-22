@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.10.0
 
 - **Native WebSocket — `wss_open`, `wss_send`, `wss_recv`, `wss_close`.** A
   `wss://` client (RFC 6455) over real TLS, no subprocess. `wss_open(url)` does
