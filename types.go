@@ -1627,6 +1627,31 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		}
 		c.addPair(argSlots[0], c.cString)
 		return c.cInt, nil
+	case "read_file":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("read_file: 1 arg (path)")
+		}
+		c.addPair(argSlots[0], c.cString)
+		return c.cString, nil
+	case "write_file":
+		if len(argSlots) != 2 {
+			return 0, fmt.Errorf("write_file: 2 args (path, content)")
+		}
+		c.addPair(argSlots[0], c.cString)
+		c.addPair(argSlots[1], c.cString)
+		return c.cInt, nil
+	case "list_dir":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("list_dir: 1 arg (path)")
+		}
+		c.addPair(argSlots[0], c.cString)
+		return newSliceSlot(c, c.cString), nil
+	case "mkdir":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("mkdir: 1 arg (path)")
+		}
+		c.addPair(argSlots[0], c.cString)
+		return c.cInt, nil
 	case "write":
 		if len(argSlots) != 2 {
 			return 0, fmt.Errorf("write: 2 args")

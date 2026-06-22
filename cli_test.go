@@ -40,3 +40,14 @@ func TestParseIntAndNowMs(t *testing.T) {
 		t.Fatalf("parse_int/now_ms: got %q, want %q", got, want)
 	}
 }
+
+// TestFileIO covers write_file/read_file/list_dir/mkdir — surfaced building a
+// static-site generator.
+func TestFileIO(t *testing.T) {
+	dir := t.TempDir()
+	src := `func main(){ mkdir("` + dir + `/sub") write_file("` + dir + `/sub/a.txt", "hi there") println(read_file("` + dir + `/sub/a.txt")) println(len(list_dir("` + dir + `/sub"))) println(read_file("` + dir + `/missing")) }`
+	got := runNative(t, src)
+	if want := "hi there\n1\n\n"; got != want {
+		t.Fatalf("file I/O: got %q, want %q", got, want)
+	}
+}

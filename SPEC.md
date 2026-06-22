@@ -214,6 +214,10 @@ throughout the function body).
 | `now` | `() -> int` | wall-clock time in Unix seconds |
 | `now_ms` | `() -> int` | wall-clock time in milliseconds (for latency) |
 | `parse_int` | `(string) -> int` | parse an integer (0 if not numeric) |
+| `read_file` | `(string) -> string` | read a whole file ("" on error) |
+| `write_file` | `(string, string) -> int` | write a file (bytes written; -1 on error) |
+| `list_dir` | `(string) -> []string` | directory entries (excludes `.`/`..`) |
+| `mkdir` | `(string) -> int` | create a directory (0 ok; -1 on error) |
 | `len` | `(string\|slice\|map) -> int` | length |
 | `str` | `(int\|float) -> string` | format a number |
 | `int` | `(number) -> int` | truncate to int |

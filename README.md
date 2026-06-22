@@ -161,7 +161,7 @@ func main() {
 | **Generics** | functions are implicitly generic — specialized per concrete call-site type (monomorphization), no annotations |
 | **Concurrency** | `go f(args)`, channels `make(chan T)` / `ch <- v` / `<-ch`, `sleep(ms)` |
 | **Operators** | `+ - * / %`, `== != < <= > >=`, `&& \|\| !`; `+` concatenates strings |
-| **Builtins** | `print`, `println`, `input`, `args`, `env`, `now`, `now_ms`, `parse_int`, `len`, `str`, `int`, `append`, `sleep`, `has`, `delete`, `keys`, `json`, `parse`, `http_body` |
+| **Builtins** | `print`, `println`, `input`, `args`, `env`, `now`, `now_ms`, `parse_int`, `read_file`, `write_file`, `list_dir`, `mkdir`, `len`, `str`, `int`, `append`, `sleep`, `has`, `delete`, `keys`, `json`, `parse`, `http_body` |
 | **String ops** | `substr`, `index`, `contains`, `has_prefix`, `has_suffix`, `charat`, `to_upper`, `to_lower`, `trim`, `replace`, `split`, `join` |
 | **JSON** | `json(x)` serializes any value to JSON; `parse(s, T{})` parses JSON into a value of `T` |
 | **Networking** | `dial` (outbound), `listen`, `accept`, `read`, `write`, `close` |
