@@ -598,6 +598,29 @@ func TestChannelStringArena(t *testing.T) {
 	}
 }
 
+// Slices and maps sent over a channel from a short-lived goroutine are deep-
+// copied (via a JSON round-trip), so their backings survive the sender's arena.
+func TestChannelSliceMap(t *testing.T) {
+	prodS := `func prodS(jobs) { i := 0 for i < 3 { jobs <- []string{"a" + str(i), "b" + str(i)} i = i + 1 } close(jobs) }`
+	prodM := `func prodM(jobs) { i := 0 for i < 2 { m := make(map[string]int) m["k"] = i * 7 jobs <- m i = i + 1 } close(jobs) }`
+	main := `func main() {
+	sj := make(chan []string)
+	go prodS(sj)
+	acc := ""
+	for s := range sj { for _, e := range s { acc = acc + e } acc = acc + " " }
+	println(acc)
+	mj := make(chan map[string]int)
+	go prodM(mj)
+	macc := ""
+	for m := range mj { macc = macc + str(m["k"]) + " " }
+	println(macc)
+}`
+	out, _ := buildRun(t, main, prodS, prodM)
+	if out != "a0b0 a1b1 a2b2 \n0 7 \n" {
+		t.Fatalf("channel slice/map: got %q", out)
+	}
+}
+
 // close(ch) ends a range-over-channel: workers draining a closed jobs channel
 // stop cleanly, and a closed buffered channel is drained before the range ends.
 func TestChannelClose(t *testing.T) {
