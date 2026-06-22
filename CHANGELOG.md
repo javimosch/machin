@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.6.0
 
 - **C FFI (Phases 1–3).** An `extern "lib" { header "..." link "..." cflags "..."
   cstruct T { f ctype ... } fn name(types) ret }` declaration names foreign C
