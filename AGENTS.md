@@ -3,6 +3,17 @@
 Orientation for agents working on **machin** (the toolchain) / **MFL** (the
 language). Humans state intent; the machine reads and writes the code.
 
+## Current direction: dogfood
+
+The POC goal is met; machin is now grown by **building real things** and letting
+real use surface the gaps, which then get filled in the language. Recent
+examples: a concurrent HTTP health checker added `dial`/`now_ms`/`parse_int`; a
+static-site generator added native file I/O (`read_file`/`write_file`/`list_dir`/
+`mkdir`) and a parser fix. **When you ship a real app/tool built with machin,
+add it to [awesome-machin](https://github.com/javimosch/awesome-machin)** (the
+curated ecosystem list). Each app is its own public repo under `javimosch` with
+a `build.sh` (`machin encode src/*.src > app.mfl && machin build app.mfl`).
+
 ## What this is
 
 machin compiles MFL to native code through C:
