@@ -41,6 +41,16 @@ func TestParseIntAndNowMs(t *testing.T) {
 	}
 }
 
+// TestStringLiteralPunct guards against a parser bug surfaced building the SSG:
+// a string literal whose value is a structural token (")", "}", ",") was
+// mistaken for that token, terminating an argument/element list early.
+func TestStringLiteralPunct(t *testing.T) {
+	got := runNative(t, `func main(){ println(index("a)b", ")")) xs := []string{"}", ","} println(len(xs)) println(xs[0]) }`)
+	if want := "1\n2\n}\n"; got != want {
+		t.Fatalf("string-literal punct: got %q, want %q", got, want)
+	}
+}
+
 // TestFileIO covers write_file/read_file/list_dir/mkdir — surfaced building a
 // static-site generator.
 func TestFileIO(t *testing.T) {

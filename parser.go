@@ -568,7 +568,7 @@ func (p *Parser) parseExprList() ([]Expr, error) {
 			return nil, err
 		}
 		list = append(list, e)
-		if p.peek().Val != "," {
+		if !p.atPunct(",") {
 			break
 		}
 		p.next()
@@ -870,7 +870,7 @@ func (p *Parser) parseStructLit(typeName string) (Expr, error) {
 		return nil, err
 	}
 	lit := &StructLit{Type: typeName}
-	for p.peek().Val != "}" && p.peek().Kind != TEOF {
+	for !p.atPunct("}") && p.peek().Kind != TEOF {
 		// keyed?  ident ':' expr
 		if p.peek().Kind == TIdent && p.toks[p.pos+1].Val == ":" {
 			name := p.next().Val
@@ -888,7 +888,7 @@ func (p *Parser) parseStructLit(typeName string) (Expr, error) {
 			}
 			lit.Vals = append(lit.Vals, val)
 		}
-		if p.peek().Val == "," {
+		if p.atPunct(",") {
 			p.next()
 		} else {
 			break
@@ -919,13 +919,13 @@ func (p *Parser) parseSliceLit() (Expr, error) {
 		return nil, err
 	}
 	var elems []Expr
-	for p.peek().Val != "}" {
+	for !p.atPunct("}") && p.peek().Kind != TEOF {
 		e, err := p.parseExpr()
 		if err != nil {
 			return nil, err
 		}
 		elems = append(elems, e)
-		if p.peek().Val == "," {
+		if p.atPunct(",") {
 			p.next()
 		} else {
 			break
@@ -947,24 +947,31 @@ func (p *Parser) parseCall(callee string) (Expr, error) {
 
 // parseCallArgs parses a parenthesized argument list, reporting whether the
 // final argument is spread (`expr...`).
+// atPunct reports whether the next token is the given punctuation/operator —
+// distinct from a string literal that merely has the same value (e.g. ")").
+func (p *Parser) atPunct(val string) bool {
+	t := p.peek()
+	return (t.Kind == TPunct || t.Kind == TOp) && t.Val == val
+}
+
 func (p *Parser) parseCallArgs() ([]Expr, bool, error) {
 	if _, err := p.expect(TPunct, "("); err != nil {
 		return nil, false, err
 	}
 	var args []Expr
 	spread := false
-	for p.peek().Val != ")" {
+	for !p.atPunct(")") && p.peek().Kind != TEOF {
 		a, err := p.parseExpr()
 		if err != nil {
 			return nil, false, err
 		}
 		args = append(args, a)
-		if p.peek().Val == "..." { // spread: must be the last argument
+		if p.atPunct("...") { // spread: must be the last argument
 			p.next()
 			spread = true
 			break
 		}
-		if p.peek().Val == "," {
+		if p.atPunct(",") {
 			p.next()
 		} else {
 			break
