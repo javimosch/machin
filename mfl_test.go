@@ -643,6 +643,23 @@ func TestChannelClose(t *testing.T) {
 	}
 }
 
+// flush() forces buffered stdout out; it compiles to fflush and is a no-op on
+// captured output (which sees everything anyway), so just assert it runs.
+func TestFlush(t *testing.T) {
+	prog := &Program{Funcs: parseFuncs(t, `func main() { print("a") flush() print("b") flush() }`)}
+	c, err := CompileToC(prog, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(c, "mfl_flush()") {
+		t.Fatal("flush() must compile to mfl_flush()")
+	}
+	out, _ := buildRun(t, `func main() { print("a") flush() print("b") flush() }`)
+	if out != "ab" {
+		t.Fatalf("flush: got %q, want %q", out, "ab")
+	}
+}
+
 // comma-ok receive (v, ok := <-ch) reports false once a channel is closed and
 // drained — both standalone and inside a select case (which fires on close).
 func TestCommaOkReceive(t *testing.T) {

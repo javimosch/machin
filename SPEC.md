@@ -227,6 +227,7 @@ throughout the function body).
 | `now_ms` | `() -> int` | wall-clock time in milliseconds (for latency) |
 | `parse_int` | `(string) -> int` | parse an integer (0 if not numeric) |
 | `exit` | `(int) -> ` | terminate the process with a status code |
+| `flush` | `() -> ` | flush buffered stdout (for prompt output through a pipe) |
 | `read_file` | `(string) -> string` | read a whole file ("" on error) |
 | `write_file` | `(string, string) -> int` | write a file (bytes written; -1 on error) |
 | `list_dir` | `(string) -> []string` | directory entries (excludes `.`/`..`) |

@@ -160,6 +160,7 @@ static mfl_slice mfl_lit_str(int64_t n, ...) {
     va_end(ap); return s;
 }
 static int64_t mfl_exit(int64_t code) { exit((int)code); return 0; }
+static int64_t mfl_flush(void) { fflush(stdout); return 0; }
 static void mfl_sleep(int64_t ms) {
     struct timespec ts = { ms / 1000, (ms % 1000) * 1000000L };
     nanosleep(&ts, NULL);
@@ -2510,6 +2511,8 @@ func (g *cgen) call(ex *Call) (string, error) {
 		return fmt.Sprintf("mfl_sleep(%s)", args[0]), nil
 	case "exit":
 		return fmt.Sprintf("mfl_exit(%s)", args[0]), nil
+	case "flush":
+		return "mfl_flush()", nil
 	case "str":
 		if g.c.NodeKind(g.curFn, ex.Args[0]) == KFloat {
 			return fmt.Sprintf("mfl_str_d(%s)", args[0]), nil
