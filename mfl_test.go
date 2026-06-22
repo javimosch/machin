@@ -557,6 +557,31 @@ func TestHTTPSRuntimeGating(t *testing.T) {
 	}
 }
 
+// The WebSocket runtime is emitted only when a program calls wss_*; it shares
+// the TLS core (mfl_tls_dial) with HTTPS but pulls in the WS framing separately.
+func TestWSSRuntimeGating(t *testing.T) {
+	ws := &Program{Funcs: parseFuncs(t, `func main() { c := wss_open("wss://x") println(wss_recv(c)) }`)}
+	c, err := CompileToC(ws, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(c, "mfl_wss_open") || !strings.Contains(c, "mfl_tls_dial") || !strings.Contains(c, "openssl/ssl.h") {
+		t.Fatal("a program using wss_* must emit the WebSocket runtime atop the TLS core")
+	}
+	// HTTPS-only must NOT pull in the WSS framing.
+	https := &Program{Funcs: parseFuncs(t, `func main() { println(https_get("https://x")) }`)}
+	c2, err := CompileToC(https, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(c2, "mfl_wss_") {
+		t.Fatal("an HTTPS-only program must not emit the WebSocket runtime")
+	}
+	if !strings.Contains(c2, "mfl_tls_dial") {
+		t.Fatal("HTTPS must build on the shared TLS core (mfl_tls_dial)")
+	}
+}
+
 // break exits the nearest loop; continue skips to the next iteration — in
 // bare for{}, condition for-loops, and range loops.
 func TestBreakContinue(t *testing.T) {

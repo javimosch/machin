@@ -243,6 +243,10 @@ throughout the function body).
 | `close` | `(int) -> ` | close a socket/fd |
 | `https_get` | `(string) -> string` | HTTPS GET over TLS; response body ("" on error) |
 | `https_post` | `(string, string) -> string` | HTTPS POST (JSON body) over TLS; response body |
+| `wss_open` | `(string) -> int` | open a `wss://` WebSocket; a connection handle, or 0 on failure |
+| `wss_send` | `(int, string) -> int` | send a text message on a WebSocket |
+| `wss_recv` | `(int) -> string` | next message (blocks); `""` on close (auto ping/pong) |
+| `wss_close` | `(int) -> int` | send close and tear down the connection |
 
 ---
 
@@ -363,8 +367,10 @@ id(42); id("hi"); id(3.14)   // → three native functions
   instances.
 - **Codegen** emits one C function per instance with unboxed value types, plus a
   small C runtime (slices, maps, channels, closures, sockets, JSON, strings).
-  `https_get`/`https_post` additionally emit a TLS runtime and link OpenSSL
-  (`-lssl -lcrypto`) — but only when used, so TLS-free programs stay libc-only.
+  `https_get`/`https_post` and `wss_open`/`wss_send`/`wss_recv`/`wss_close`
+  additionally emit a TLS runtime (HTTPS and/or RFC 6455 WebSocket framing over a
+  shared TLS core) and link OpenSSL (`-lssl -lcrypto`) — but only when used, so
+  programs that touch neither stay libc-only.
 
 ---
 

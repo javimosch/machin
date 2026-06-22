@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- **Native WebSocket — `wss_open`, `wss_send`, `wss_recv`, `wss_close`.** A
+  `wss://` client (RFC 6455) over real TLS, no subprocess. `wss_open(url)` does
+  the HTTP/1.1 Upgrade handshake and returns a connection handle; `wss_send`
+  masks and writes a text frame; `wss_recv` blocks for the next message,
+  reassembling fragments and transparently answering pings and handling close;
+  `wss_close` tears down. Built on a shared TLS core refactored out of the HTTPS
+  client (one process-global `SSL_CTX`), emitted and linked (`-lssl -lcrypto`)
+  only when used. Surfaced dogfooding a streaming scraper that had to shell out
+  to `websocat` — this retires that crutch too: a Polymarket CLOB stream now runs
+  fully native (`https_get` to resolve the token, `wss_*` to stream).
+
 ## v0.9.0
 
 - **Native TLS — `https_get` and `https_post`.** machin's biggest networking

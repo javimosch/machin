@@ -42,7 +42,7 @@ bin/machin pack   app.mfl                # dense base64 form (distribution)
 - **Types** (all inferred, unboxed): `int` `float` `bool` `string`, slices `[]T`, maps `map[K]V`, structs, `func` values
 - **Flow**: `if`/`for`/`while`/`range`, `break`/`continue`, multiple & named returns, comma-ok, variadics, closures (by-reference), implicit generics (monomorphized)
 - **Concurrency**: goroutines (`go`), channels; per-goroutine arena GC + scoped `arena{}`; `--safe` checks
-- **Networking**: `dial` (client) + `listen`/`accept`/`read`/`write`/`close` (server); native TLS `https_get`/`https_post` (OpenSSL, linked only when used)
+- **Networking**: `dial` (client) + `listen`/`accept`/`read`/`write`/`close` (server); native TLS — `https_get`/`https_post` and a `wss_*` WebSocket client (OpenSSL, linked only when used)
 - **I/O & data**: `read_file`/`write_file`/`list_dir`/`mkdir`, `input`, `json`/`parse`, `args`/`env`/`now`/`now_ms`/`parse_int`, string ops
 - **C FFI**: `extern` blocks — scalars, by-value structs (`cstruct`), opaque `ptr` handles, multi-`link` (drove a real raylib **GUI**)
 - **machweb**: a web framework written in MFL ([`framework/`](framework/))
