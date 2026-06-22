@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.9.0
 
 - **Native TLS — `https_get` and `https_post`.** machin's biggest networking
   gap is closed: an HTTPS client over real TLS (OpenSSL), no subprocess. `https_get(url)`
