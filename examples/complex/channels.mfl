@@ -1,4 +1,3 @@
-func worker(id, jobs, results) { total := 0 i := 1 for i <= jobs { total = total + id * i i = i + 1 } results <- total }
+func worker(id,jobs,results){total:=0 i:=1 for i<=jobs{total=total+id*i i=i+1}results<-total}
 
-func main() { workers := 4 jobs := 100 results := make(chan int) id := 1 for id <= workers { go worker(id, jobs, results) id = id + 1 } sum := 0 received := 0 for received < workers { sum = sum + <-results received = received + 1 } println("workers:", workers, "combined total:", sum) }
-
+func main(){workers:=4 jobs:=100 results:=make(chan int)id:=1 for id<=workers{go worker(id,jobs,results)id=id+1}sum:=0 received:=0 for received<workers{sum=sum+<-results received=received+1}println("workers:",workers,"combined total:",sum)}

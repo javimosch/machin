@@ -1,6 +1,5 @@
-func counter() { n := 0 return func() { n = n + 1 return n } }
+func counter(){n:=0 return func(){n=n+1 return n}}
 
-func account(balance) { deposit := func(x) { balance = balance + x } withdraw := func(x) { balance = balance - x } report := func() { return balance } deposit(100) deposit(50) withdraw(30) return report() }
+func account(balance){deposit:=func(x){balance=balance+x}withdraw:=func(x){balance=balance-x}report:=func(){return balance}deposit(100)deposit(50)withdraw(30)return report()}
 
-func main() { c := counter() d := counter() println("c:", c(), c(), c()) println("d:", d()) println("c again:", c()) println("account:", account(0)) }
-
+func main(){c:=counter()d:=counter()println("c:",c(),c(),c())println("d:",d())println("c again:",c())println("account:",account(0))}

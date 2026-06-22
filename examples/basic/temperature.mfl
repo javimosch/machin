@@ -1,6 +1,5 @@
-func c_to_f(c) { return c * 9.0 / 5.0 + 32.0 }
+func c_to_f(c){return c*9.0/5.0+32.0}
 
-func f_to_c(f) { return (f - 32.0) * 5.0 / 9.0 }
+func f_to_c(f){return(f-32.0)*5.0/9.0}
 
-func main() { println("100C =", c_to_f(100), "F") println("32F  =", f_to_c(32), "C") println("37C  =", c_to_f(37), "F") }
-
+func main(){println("100C =",c_to_f(100),"F")println("32F  =",f_to_c(32),"C")println("37C  =",c_to_f(37),"F")}

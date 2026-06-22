@@ -1,2 +1,1 @@
-func main() { println("hello, machine") }
-
+func main(){println("hello, machine")}

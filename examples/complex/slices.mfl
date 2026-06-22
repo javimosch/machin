@@ -1,10 +1,9 @@
-func sum(xs) { total := 0 i := 0 for i < len(xs) { total = total + xs[i] i = i + 1 } return total }
+func sum(xs){total:=0 i:=0 for i<len(xs){total=total+xs[i]i=i+1}return total}
 
-func max(xs) { m := xs[0] i := 1 for i < len(xs) { if xs[i] > m { m = xs[i] } i = i + 1 } return m }
+func max(xs){m:=xs[0]i:=1 for i<len(xs){if xs[i]>m{m=xs[i]}i=i+1}return m}
 
-func squares(n) { xs := []int{} i := 1 for i <= n { xs = append(xs, i * i) i = i + 1 } return xs }
+func squares(n){xs:=[]int{}i:=1 for i<=n{xs=append(xs,i*i)i=i+1}return xs}
 
-func reverse(xs) { i := 0 j := len(xs) - 1 for i < j { t := xs[i] xs[i] = xs[j] xs[j] = t i = i + 1 j = j - 1 } return xs }
+func reverse(xs){i:=0 j:=len(xs)-1 for i<j{t:=xs[i]xs[i]=xs[j]xs[j]=t i=i+1 j=j-1}return xs}
 
-func main() { nums := []int{5, 3, 8, 1, 9, 2} println("nums len:", len(nums)) println("sum:", sum(nums)) println("max:", max(nums)) sq := squares(6) print("squares 1..6: ") i := 0 for i < len(sq) { print(sq[i], "") i = i + 1 } println("") reverse(nums) print("reversed:    ") i = 0 for i < len(nums) { print(nums[i], "") i = i + 1 } println("") }
-
+func main(){nums:=[]int{5,3,8,1,9,2}println("nums len:",len(nums))println("sum:",sum(nums))println("max:",max(nums))sq:=squares(6)print("squares 1..6: ")i:=0 for i<len(sq){print(sq[i],"")i=i+1}println("")reverse(nums)print("reversed:    ")i=0 for i<len(nums){print(nums[i],"")i=i+1}println("")}

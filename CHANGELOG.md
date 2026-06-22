@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **Tightened canonical form (token-minimization).** The canonical `.mfl` now
+  drops whitespace adjacent to operators/punctuation (`fib(n - 1)` →
+  `fib(n-1)`), keeping only the spaces the lexer needs between word tokens. Zero
+  semantic change; ~13% fewer agent tokens to write/edit the corpus, measured
+  with the new `tools/tokmin.py`. The same harness showed the *intuitive*
+  minimizations are dead ends — `func`→`fn` saves **0** tokens (both are single
+  tokens already) and `println`→`pln` is *worse* (abbreviations fragment) — so
+  whitespace is where the win is.
+
 ## v0.5.0
 
 - **Plain text is the source of truth.** The `.mfl` form is now canonical plain

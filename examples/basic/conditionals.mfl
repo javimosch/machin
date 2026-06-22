@@ -1,4 +1,3 @@
-func classify(n) { if n < 0 { return "negative" } else if n == 0 { return "zero" } else if n < 10 { return "small" } else { return "large" } }
+func classify(n){if n<0{return "negative"}else if n==0{return "zero"}else if n<10{return "small"}else{return "large"}}
 
-func main() { println(-4, "->", classify(-4)) println(0, "->", classify(0)) println(7, "->", classify(7)) println(42, "->", classify(42)) }
-
+func main(){println(-4,"->",classify(-4))println(0,"->",classify(0))println(7,"->",classify(7))println(42,"->",classify(42))}

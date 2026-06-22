@@ -1,4 +1,3 @@
-func collatz_len(n) { steps := 0 while n != 1 { if n % 2 == 0 { n = n / 2 } else { n = 3 * n + 1 } steps = steps + 1 } return steps }
+func collatz_len(n){steps:=0 while n!=1{if n%2==0{n=n/2}else{n=3*n+1}steps=steps+1}return steps}
 
-func main() { println("collatz length of 27 =", collatz_len(27)) best := 0 best_n := 0 i := 1 while i < 100 { l := collatz_len(i) if l > best { best = l best_n = i } i = i + 1 } println("longest under 100:", best_n, "with", best, "steps") }
-
+func main(){println("collatz length of 27 =",collatz_len(27))best:=0 best_n:=0 i:=1 while i<100{l:=collatz_len(i)if l>best{best=l best_n=i}i=i+1}println("longest under 100:",best_n,"with",best,"steps")}

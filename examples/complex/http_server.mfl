@@ -1,8 +1,7 @@
-func page() { return "<!doctype html><html><head><title>MFL server</title></head><body><h1>Hello from MFL</h1><p>Served concurrently by a machine-first program compiled to native code.</p></body></html>" }
+func page(){return "<!doctype html><html><head><title>MFL server</title></head><body><h1>Hello from MFL</h1><p>Served concurrently by a machine-first program compiled to native code.</p></body></html>"}
 
-func response() { body := page() return "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: " + str(len(body)) + "\r\nConnection: close\r\n\r\n" + body }
+func response(){body:=page()return "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: "+str(len(body))+"\r\nConnection: close\r\n\r\n"+body}
 
-func handle(conn) { read(conn) write(conn, response()) close(conn) }
+func handle(conn){read(conn)write(conn,response())close(conn)}
 
-func main() { server := listen(48080) println("MFL http server on http://localhost:48080") for { conn := accept(server) go handle(conn) } }
-
+func main(){server:=listen(48080)println("MFL http server on http://localhost:48080")for{conn:=accept(server)go handle(conn)}}

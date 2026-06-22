@@ -1,4 +1,3 @@
-type Todo struct { id    int title string done  bool }
+type Todo struct{id    int title string done  bool}
 
-func main() { t := Todo{id: 7, title: "round \"trip\"", done: true} s := json(t) println("json:", s) back := parse(s, Todo{}) println("back:", back.id, back.title, back.done) arr := parse("[{\"id\":1,\"title\":\"a\",\"done\":true},{\"id\":2,\"title\":\"b\",\"done\":false}]", []Todo{}) println("count:", len(arr), "second:", arr[1].id, arr[1].title) m := parse("{\"x\":10,\"y\":20}", make(map[string]int)) println("m[x]:", m["x"], "m[y]:", m["y"], "len:", len(m)) println("int:", parse("42", 0), "bool:", parse("true", false)) }
-
+func main(){t:=Todo{id:7,title:"round \"trip\"",done:true}s:=json(t)println("json:",s)back:=parse(s,Todo{})println("back:",back.id,back.title,back.done)arr:=parse("[{\"id\":1,\"title\":\"a\",\"done\":true},{\"id\":2,\"title\":\"b\",\"done\":false}]",[]Todo{})println("count:",len(arr),"second:",arr[1].id,arr[1].title)m:=parse("{\"x\":10,\"y\":20}",make(map[string]int))println("m[x]:",m["x"],"m[y]:",m["y"],"len:",len(m))println("int:",parse("42",0),"bool:",parse("true",false))}
