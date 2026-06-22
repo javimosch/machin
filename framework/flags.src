@@ -1,0 +1,147 @@
+// flags — a tiny command-line flag parser for MFL.
+//
+// Compose it ahead of your app and compile:
+//   machin encode framework/flags.src yourapp.src > app.mfl
+//
+// Declare flags, parse argv, then read typed values. Short and long forms,
+// `=` and space forms, bool flags, defaults, positionals, and an auto --help.
+//
+//   fs := new_flags("mytool")
+//   fs = flag_str(fs, "out", "o", "-", "output file")
+//   fs = flag_int(fs, "count", "c", "1", "how many")
+//   fs = flag_bool(fs, "verbose", "v", "chatty output")
+//   fs = parse_flags(fs, args())
+//   if flag_on(fs, "help") { println(flag_usage(fs))  return }
+//   n := flag_int_val(fs, "count")   rest := flag_args(fs)
+//
+// The value store is a set of maps (reference types), so updates survive the
+// struct being passed by value; slice fields (declaration order, positionals)
+// are returned and reassigned.
+
+type Flags struct {
+    prog   string
+    names  []string            // long names, in declaration order (for --help)
+    short  map[string]string   // long -> short
+    help   map[string]string   // long -> help text
+    isbool map[string]string   // long -> "1" for bool flags
+    val    map[string]string   // long -> current value (starts at default)
+    rest   []string            // positional args
+}
+
+func new_flags(prog) (fs) {
+    fs = Flags{prog: prog, names: []string{}, short: make(map[string]string), help: make(map[string]string), isbool: make(map[string]string), val: make(map[string]string), rest: []string{}}
+    // every flag set understands -h / --help
+    fs = flag_bool(fs, "help", "h", "show this help")
+}
+
+func flag_str(fs, name, short, def, help) (out) {
+    out = fs
+    out.names = append(out.names, name)
+    out.short[name] = short
+    out.help[name] = help
+    out.isbool[name] = "0"
+    out.val[name] = def
+}
+
+func flag_int(fs, name, short, def, help) (out) {
+    out = flag_str(fs, name, short, def, help)
+}
+
+func flag_bool(fs, name, short, help) (out) {
+    out = fs
+    out.names = append(out.names, name)
+    out.short[name] = short
+    out.help[name] = help
+    out.isbool[name] = "1"
+    out.val[name] = "false"
+}
+
+// flag_resolve maps a key (long name or short letter) to its long name, or "".
+func flag_resolve(fs, key) (long) {
+    long = ""
+    i := 0
+    n := len(fs.names)
+    for i < n {
+        nm := fs.names[i]
+        if nm == key { long = nm }
+        if fs.short[nm] == key { long = nm }
+        i = i + 1
+    }
+}
+
+// parse_flags consumes argv (args()), setting flag values and collecting
+// positionals into rest. Unknown flags are ignored. Forms handled:
+//   --name val   --name=val   --name(bool)   -s val   -s=val   -s(bool)
+func parse_flags(fs, argv) (out) {
+    out = fs
+    n := len(argv)
+    i := 1
+    for i < n {
+        a := argv[i]
+        if has_prefix(a, "-") == false {
+            out.rest = append(out.rest, a)
+            i = i + 1
+            continue
+        }
+        // strip leading dashes
+        body := a
+        if has_prefix(a, "--") { body = substr(a, 2, len(a)) }
+        if has_prefix(a, "--") == false { body = substr(a, 1, len(a)) }
+        // split name=value if present
+        key := body
+        inlineval := ""
+        hasinline := false
+        eq := index(body, "=")
+        if eq >= 0 {
+            key = substr(body, 0, eq)
+            inlineval = substr(body, eq + 1, len(body))
+            hasinline = true
+        }
+        long := flag_resolve(out, key)
+        if len(long) == 0 {
+            // unknown flag: skip it (and its value if it looks like one)
+            i = i + 1
+            continue
+        }
+        if out.isbool[long] == "1" {
+            out.val[long] = "true"
+            i = i + 1
+            continue
+        }
+        if hasinline {
+            out.val[long] = inlineval
+            i = i + 1
+            continue
+        }
+        // value is the next argument
+        if i + 1 < n {
+            out.val[long] = argv[i+1]
+            i = i + 2
+            continue
+        }
+        i = i + 1
+    }
+}
+
+func flag_get(fs, name) (v) { v = fs.val[name] }
+func flag_int_val(fs, name) (v) { v = parse_int(fs.val[name]) }
+func flag_on(fs, name) (b) { b = fs.val[name] == "true" }
+func flag_args(fs) (a) { a = fs.rest }
+
+// flag_usage renders --help from the declared flags.
+func flag_usage(fs) (s) {
+    s = "usage: " + fs.prog + " [flags] [args]"
+    s = s + "\n\nflags:"
+    i := 0
+    n := len(fs.names)
+    for i < n {
+        nm := fs.names[i]
+        line := "\n  -" + fs.short[nm] + ", --" + nm
+        if fs.isbool[nm] == "0" {
+            line = line + " <value>  (default: " + fs.val[nm] + ")"
+        }
+        line = line + "\n      " + fs.help[nm]
+        s = s + line
+        i = i + 1
+    }
+}
