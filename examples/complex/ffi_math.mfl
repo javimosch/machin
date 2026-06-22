@@ -1,0 +1,4 @@
+extern "m"{header "math.h" link "m" fn sqrt(float)float fn pow(float,float)float}
+
+func main(){println("sqrt(2) =",sqrt(2.0))println("2^10 =",pow(2.0,10.0))println("hypot(3,4) =",sqrt(pow(3.0,2.0)+pow(4.0,2.0)))}
+

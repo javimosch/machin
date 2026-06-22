@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **C FFI (Phase 1).** An `extern "lib" { header "..." link "..." cflags "..."
+  fn name(types) ret }` declaration names foreign C functions; calls compile to
+  direct C calls and the `header`/`link`/`cflags` are threaded into `cc`. Scalar
+  types only (int, float, bool, string). Example: `extern "m" { header "math.h"
+  link "m" fn sqrt(float) float }` then `sqrt(2.0)`. New
+  `examples/complex/ffi_math.mfl`; the path to the C ecosystem (and a future GUI).
 - **Tightened canonical form (token-minimization).** The canonical `.mfl` now
   drops whitespace adjacent to operators/punctuation (`fib(n - 1)` →
   `fib(n-1)`), keeping only the spaces the lexer needs between word tokens. Zero
