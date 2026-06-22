@@ -62,7 +62,8 @@ type cgen struct {
 	safe      bool   // emit runtime bounds / div-by-zero / overflow checks
 }
 
-const cRuntime = `#include <stdio.h>
+const cRuntime = `#define _GNU_SOURCE
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
@@ -73,6 +74,7 @@ const cRuntime = `#include <stdio.h>
 #include <pthread.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <netdb.h>
 
 /* slices: a Go-style header over an unboxed backing array */
 typedef struct { void* data; int64_t len; int64_t cap; } mfl_slice;
@@ -361,6 +363,24 @@ static int64_t mfl_listen(int64_t port) {
     return fd;
 }
 static int64_t mfl_accept(int64_t fd) { return accept((int)fd, NULL, NULL); }
+/* dial: connect a TCP socket to host:port, returning an fd (-1 on failure).
+   The fd is used with the same read/write/close as an accepted connection. */
+static int64_t mfl_dial(const char* host, int64_t port) {
+    struct addrinfo hints, *res, *rp;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC; hints.ai_socktype = SOCK_STREAM;
+    char ps[16]; snprintf(ps, sizeof(ps), "%lld", (long long)port);
+    if (getaddrinfo(host, ps, &hints, &res) != 0) return -1;
+    int fd = -1;
+    for (rp = res; rp; rp = rp->ai_next) {
+        fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+        if (fd < 0) continue;
+        if (connect(fd, rp->ai_addr, rp->ai_addrlen) == 0) break;
+        close(fd); fd = -1;
+    }
+    freeaddrinfo(res);
+    return fd;
+}
 static char* mfl_read(int64_t fd) {
     char* buf = mfl_alloc(65536);
     ssize_t n = read((int)fd, buf, 65535);
@@ -1593,6 +1613,8 @@ func (g *cgen) call(ex *Call) (string, error) {
 		return fmt.Sprintf("mfl_str_i(%s)", args[0]), nil
 	case "int":
 		return fmt.Sprintf("((int64_t)(%s))", args[0]), nil
+	case "dial":
+		return fmt.Sprintf("mfl_dial(%s, %s)", args[0], args[1]), nil
 	case "listen":
 		return fmt.Sprintf("mfl_listen(%s)", args[0]), nil
 	case "accept":

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Outbound networking — `dial(host, port)`.** Connect a TCP socket to a remote
+  host (DNS-resolved via `getaddrinfo`), returning an fd used with the existing
+  `read`/`write`/`close`. machin was server-only (`listen`/`accept`); `dial` makes
+  it a client too — HTTP clients, health checkers, anything that reaches out.
+  Surfaced and filled while building a real tool (the "build real things" goal).
+
 - **CLI builtins — `args()`, `env()`, `now()`.** `args()` returns the
   command-line arguments (`[]string`; `args()[0]` is the program path) — the
   generated `main` now takes `argc`/`argv`. `env(name)` reads an environment

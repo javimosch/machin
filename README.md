@@ -108,7 +108,7 @@ override with `$CC`) on PATH at compile time.
 - 🏎️ **Native codegen** — `.mfl → parse → infer types → emit C → cc -O2 → binary`
 - 🧮 **Inferred static types** — `int`, `float`, `bool`, `string`, slices `[]T` — unified, no boxing
 - 🧵 **Concurrency** — `go f(args)` spawns a pthread-backed goroutine; channels (`make(chan T)`, `<-`) for communication
-- 🌐 **Networking** — `listen / accept / read / write / close`, the low-level shape of Go's `net`
+- 🌐 **Networking** — `dial` (client) + `listen / accept / read / write / close` (server) — Go's `net`, low-level
 - 🧹 **Memory** — per-goroutine arena, plus scoped `arena { }` blocks to keep a long-lived loop's memory flat
 - ✅ **Compile-time type errors** — a type clash is a build failure, not a runtime surprise
 
@@ -164,7 +164,7 @@ func main() {
 | **Builtins** | `print`, `println`, `input`, `args`, `env`, `now`, `len`, `str`, `int`, `append`, `sleep`, `has`, `delete`, `keys`, `json`, `parse`, `http_body` |
 | **String ops** | `substr`, `index`, `contains`, `has_prefix`, `has_suffix`, `charat`, `to_upper`, `to_lower`, `trim`, `replace`, `split`, `join` |
 | **JSON** | `json(x)` serializes any value to JSON; `parse(s, T{})` parses JSON into a value of `T` |
-| **Networking** | `listen`, `accept`, `read`, `write`, `close` |
+| **Networking** | `dial` (outbound), `listen`, `accept`, `read`, `write`, `close` |
 | **I/O** | `print`, `println`, `input` (read a line from stdin) |
 | **C FFI** | `extern "lib" { header "..." link "..." cstruct T {...} fn name(types) ret }` — foreign C calls; scalars, by-value structs, opaque `ptr` handles |
 
@@ -317,7 +317,7 @@ make install      # install to $(PREFIX)/bin  (default /usr/local)
 | Arena memory management (per-goroutine; bounds servers) | ✅ done |
 | Scoped arenas (`arena { }`; bounds long-lived loops) | ✅ done |
 | Goroutines (`go`) + `sleep` | ✅ done |
-| Networking (`listen`/`accept`/`read`/`write`/`close`) | ✅ done |
+| Networking — `dial` (client) + `listen`/`accept`/`read`/`write`/`close` (server) | ✅ done |
 | Concurrent HTTP server example | ✅ done |
 | By-reference closure capture (mutable captured state, Go semantics) | ✅ done |
 | Bounds / div-zero / overflow checks (`--safe`) | ✅ done |

@@ -1582,6 +1582,13 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		}
 		c.addPair(argSlots[0], c.cInt)
 		return c.cInt, nil
+	case "dial":
+		if len(argSlots) != 2 {
+			return 0, fmt.Errorf("dial: 2 args (host string, port int)")
+		}
+		c.addPair(argSlots[0], c.cString)
+		c.addPair(argSlots[1], c.cInt)
+		return c.cInt, nil
 	case "read":
 		if len(argSlots) != 1 {
 			return 0, fmt.Errorf("read: 1 arg")
