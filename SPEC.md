@@ -241,6 +241,8 @@ throughout the function body).
 | `listen`, `accept` | `(int) -> int` | open / accept on a TCP socket |
 | `read`, `write` | `(int[, string]) -> string\|int` | socket/fd I/O |
 | `close` | `(int) -> ` | close a socket/fd |
+| `https_get` | `(string) -> string` | HTTPS GET over TLS; response body ("" on error) |
+| `https_post` | `(string, string) -> string` | HTTPS POST (JSON body) over TLS; response body |
 
 ---
 
@@ -361,6 +363,8 @@ id(42); id("hi"); id(3.14)   // → three native functions
   instances.
 - **Codegen** emits one C function per instance with unboxed value types, plus a
   small C runtime (slices, maps, channels, closures, sockets, JSON, strings).
+  `https_get`/`https_post` additionally emit a TLS runtime and link OpenSSL
+  (`-lssl -lcrypto`) — but only when used, so TLS-free programs stay libc-only.
 
 ---
 

@@ -60,6 +60,7 @@ type cgen struct {
 	arenaID   int    // unique temp names for scoped-arena blocks
 	curFn     string // name of the function currently being emitted
 	safe      bool   // emit runtime bounds / div-by-zero / overflow checks
+	usesTLS   bool   // program calls https_get/https_post -> emit + link OpenSSL
 }
 
 const cRuntime = `#define _GNU_SOURCE
@@ -457,6 +458,184 @@ static int64_t mfl_mkdir(const char* path) {
 }
 `
 
+// tlsRuntime is a minimal HTTPS/1.1 client over real TLS (OpenSSL). It is
+// appended to the C output and linked against -lssl -lcrypto only when a
+// program calls https_get/https_post, so TLS-free binaries stay libc-only.
+// Handles cert verification (SNI + hostname), Content-Length, chunked
+// transfer-encoding, and redirect following. Returns the response body ("" on
+// any error). machin's first native TLS — retires the popen("curl") crutch.
+const tlsRuntime = `#include <openssl/ssl.h>
+#include <openssl/err.h>
+
+static char* mfl_dup_arena(const char* s, size_t n) {
+    char* r = (char*)mfl_alloc(n + 1);
+    if (n) memcpy(r, s, n);
+    r[n] = 0;
+    return r;
+}
+
+/* read the whole TLS stream into a malloc'd buffer (caller frees); NUL-terminated */
+static char* mfl_tls_readall(SSL* ssl, size_t* outlen) {
+    size_t cap = 16384, len = 0;
+    char* buf = (char*)malloc(cap);
+    for (;;) {
+        if (len + 8192 > cap) { cap *= 2; buf = (char*)realloc(buf, cap); }
+        int n = SSL_read(ssl, buf + len, 8192);
+        if (n <= 0) break;
+        len += (size_t)n;
+    }
+    buf[len] = 0;
+    *outlen = len;
+    return buf;
+}
+
+/* decode HTTP/1.1 chunked transfer-encoding (caller frees) */
+static char* mfl_chunk_decode(const char* body, size_t blen, size_t* outlen) {
+    char* out = (char*)malloc(blen + 1);
+    size_t o = 0;
+    const char* p = body;
+    const char* end = body + blen;
+    while (p < end) {
+        char* nl;
+        long sz = strtol(p, &nl, 16);
+        if (nl == p) break;
+        while (nl < end && *nl != '\n') nl++;
+        if (nl < end) nl++;
+        p = nl;
+        if (sz <= 0) break;
+        if (p + sz > end) sz = end - p;
+        memcpy(out + o, p, (size_t)sz);
+        o += (size_t)sz;
+        p += sz;
+        while (p < end && (*p == '\r' || *p == '\n')) p++;
+    }
+    out[o] = 0;
+    *outlen = o;
+    return out;
+}
+
+static char* mfl_https_request(const char* method, const char* url, const char* reqbody, const char* ctype, int redirects);
+
+static char* mfl_https_request(const char* method, const char* url, const char* reqbody, const char* ctype, int redirects) {
+    char host[256] = {0}, path[2048] = {0};
+    int port = 443;
+    const char* p = url;
+    if (strncmp(p, "https://", 8) == 0) p += 8;
+    else if (strncmp(p, "http://", 7) == 0) { p += 7; port = 80; }
+    int i = 0;
+    while (*p && *p != '/' && *p != ':' && i < 255) host[i++] = *p++;
+    host[i] = 0;
+    if (*p == ':') { p++; port = atoi(p); while (*p && *p != '/') p++; }
+    if (*p == '/') strncpy(path, p, sizeof(path) - 1);
+    else { path[0] = '/'; path[1] = 0; }
+    if (port != 443 && strncmp(url, "http://", 7) == 0) return mfl_dup_arena("", 0); /* TLS only */
+
+    struct addrinfo hints, *res = NULL;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    char ports[16];
+    snprintf(ports, sizeof(ports), "%d", port);
+    if (getaddrinfo(host, ports, &hints, &res) != 0) return mfl_dup_arena("", 0);
+    int fd = -1;
+    for (struct addrinfo* a = res; a; a = a->ai_next) {
+        fd = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
+        if (fd < 0) continue;
+        if (connect(fd, a->ai_addr, a->ai_addrlen) == 0) break;
+        close(fd);
+        fd = -1;
+    }
+    freeaddrinfo(res);
+    if (fd < 0) return mfl_dup_arena("", 0);
+
+    SSL_CTX* ctx = SSL_CTX_new(TLS_client_method());
+    if (!ctx) { close(fd); return mfl_dup_arena("", 0); }
+    SSL_CTX_set_default_verify_paths(ctx);
+    SSL* ssl = SSL_new(ctx);
+    SSL_set_fd(ssl, fd);
+    SSL_set_tlsext_host_name(ssl, host);
+    SSL_set1_host(ssl, host);
+    SSL_set_verify(ssl, SSL_VERIFY_PEER, NULL);
+    if (SSL_connect(ssl) != 1) { SSL_free(ssl); SSL_CTX_free(ctx); close(fd); return mfl_dup_arena("", 0); }
+
+    size_t blen = reqbody ? strlen(reqbody) : 0;
+    size_t reqcap = blen + strlen(path) + strlen(host) + 256 + (ctype ? strlen(ctype) : 0);
+    char* req = (char*)malloc(reqcap);
+    int rl;
+    if (blen > 0) {
+        rl = snprintf(req, reqcap,
+            "%s %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: machin/0.8\r\nAccept: */*\r\nContent-Type: %s\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n",
+            method, path, host, ctype ? ctype : "application/octet-stream", blen);
+        memcpy(req + rl, reqbody, blen);
+        rl += (int)blen;
+    } else {
+        rl = snprintf(req, reqcap,
+            "%s %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: machin/0.8\r\nAccept: */*\r\nConnection: close\r\n\r\n",
+            method, path, host);
+    }
+    SSL_write(ssl, req, rl);
+    free(req);
+
+    size_t rlen;
+    char* raw = mfl_tls_readall(ssl, &rlen);
+    SSL_shutdown(ssl);
+    SSL_free(ssl);
+    SSL_CTX_free(ctx);
+    close(fd);
+
+    int status = 0;
+    { const char* sp = strchr(raw, ' '); if (sp) status = atoi(sp + 1); }
+    char* hb = strstr(raw, "\r\n\r\n");
+    if (!hb) { char* r = mfl_dup_arena(raw, rlen); free(raw); return r; }
+    size_t hdrlen = (size_t)(hb - raw);
+    char* body = hb + 4;
+    size_t bodylen = rlen - (size_t)(body - raw);
+
+    if (redirects > 0 && (status == 301 || status == 302 || status == 303 || status == 307 || status == 308)) {
+        char* hdrs = mfl_dup_arena(raw, hdrlen);
+        char* loc = strcasestr(hdrs, "\nlocation:");
+        if (loc) {
+            loc += strlen("\nlocation:");
+            while (*loc == ' ' || *loc == '\t') loc++;
+            char* e = loc;
+            while (*e && *e != '\r' && *e != '\n') e++;
+            char locurl[2048];
+            size_t ll = (size_t)(e - loc);
+            if (ll > sizeof(locurl) - 1) ll = sizeof(locurl) - 1;
+            memcpy(locurl, loc, ll);
+            locurl[ll] = 0;
+            if (strncmp(locurl, "http", 4) == 0) {
+                free(raw);
+                const char* m = (status == 307 || status == 308) ? method : "GET";
+                const char* rb = (status == 307 || status == 308) ? reqbody : NULL;
+                return mfl_https_request(m, locurl, rb, ctype, redirects - 1);
+            }
+        }
+    }
+
+    char* hdrs = mfl_dup_arena(raw, hdrlen);
+    char* result;
+    if (strcasestr(hdrs, "transfer-encoding: chunked") || strcasestr(hdrs, "transfer-encoding:chunked")) {
+        size_t dl;
+        char* dec = mfl_chunk_decode(body, bodylen, &dl);
+        result = mfl_dup_arena(dec, dl);
+        free(dec);
+    } else {
+        char* cl = strcasestr(hdrs, "content-length:");
+        if (cl) {
+            size_t want = (size_t)strtoul(cl + strlen("content-length:"), NULL, 10);
+            if (want < bodylen) bodylen = want;
+        }
+        result = mfl_dup_arena(body, bodylen);
+    }
+    free(raw);
+    return result;
+}
+
+static char* mfl_https_get(const char* url) { return mfl_https_request("GET", url, NULL, NULL, 5); }
+static char* mfl_https_post(const char* url, const char* body) { return mfl_https_request("POST", url, body, "application/json", 5); }
+`
+
 // isFFIScalar reports whether t is an FFI scalar type name (vs a cstruct name).
 func isFFIScalar(t string) bool {
 	switch t {
@@ -583,6 +762,12 @@ func (g *cgen) program(p *Program) (string, error) {
 	var out strings.Builder
 	out.WriteString(cRuntime)
 	out.WriteByte('\n')
+	if g.usesTLS {
+		// Emitted (and linked against OpenSSL) only when a program calls
+		// https_get/https_post, so TLS-free programs stay libc-only.
+		out.WriteString(tlsRuntime)
+		out.WriteByte('\n')
+	}
 	// foreign (extern) declarations. With a header, its prototypes + C structs are
 	// in scope. Without one, emit C struct typedefs and function prototypes from
 	// the declared signatures.
@@ -1690,6 +1875,12 @@ func (g *cgen) call(ex *Call) (string, error) {
 		return fmt.Sprintf("mfl_list_dir(%s)", args[0]), nil
 	case "mkdir":
 		return fmt.Sprintf("mfl_mkdir(%s)", args[0]), nil
+	case "https_get":
+		g.usesTLS = true
+		return fmt.Sprintf("mfl_https_get(%s)", args[0]), nil
+	case "https_post":
+		g.usesTLS = true
+		return fmt.Sprintf("mfl_https_post(%s, %s)", args[0], args[1]), nil
 	case "print", "println":
 		return "", fmt.Errorf("print/println may only be used as a statement")
 	}
