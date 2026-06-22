@@ -576,6 +576,26 @@ func TestHTTPGetMultiReturn(t *testing.T) {
 	}
 }
 
+// select waits on multiple channels: it takes a ready receive, falls to default
+// when nothing is ready, and supports the timer/result timeout pattern.
+func TestSelect(t *testing.T) {
+	prod := `func prod(ch, v) { ch <- v }`
+	main := `func main() {
+	a := make(chan int) b := make(chan int)
+	go prod(a, 100)
+	sleep(20)
+	r := 0
+	select { case x := <-a: r = x  case y := <-b: r = y }
+	println("got " + str(r))
+	e := make(chan int)
+	select { case z := <-e: println(str(z))  default: println("default") }
+}`
+	out, _ := buildRun(t, main, prod)
+	if out != "got 100\ndefault\n" {
+		t.Fatalf("select: got %q, want %q", out, "got 100\ndefault\n")
+	}
+}
+
 // json_get(json, path) navigates a jq-style path and returns (value, err) — the
 // second multi-return builtin, runnable end-to-end (no network).
 func TestJSONGet(t *testing.T) {

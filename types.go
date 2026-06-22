@@ -1061,6 +1061,55 @@ func (c *Checker) genStmt(fn *FuncDecl, s Stmt) error {
 		}
 		c.addPair(vs, eslot)
 		return nil
+	case *SelectStmt:
+		env := c.vars[fn.Name]
+		for i := range st.Cases {
+			sc := &st.Cases[i]
+			if sc.RecvCh != nil {
+				cs, err := c.genExpr(fn, sc.RecvCh)
+				if err != nil {
+					return err
+				}
+				eslot, err := c.chanElem(cs)
+				if err != nil {
+					return err
+				}
+				if sc.Name != "" && sc.Name != "_" {
+					slot, ok := env[sc.Name]
+					if !ok {
+						slot = newSlot(c, KVar)
+						env[sc.Name] = slot
+						c.localOrder[fn.Name] = append(c.localOrder[fn.Name], sc.Name)
+					}
+					c.addPair(slot, eslot)
+				}
+			} else {
+				cs, err := c.genExpr(fn, sc.SendCh)
+				if err != nil {
+					return err
+				}
+				eslot, err := c.chanElem(cs)
+				if err != nil {
+					return err
+				}
+				vs, err := c.genExpr(fn, sc.SendVal)
+				if err != nil {
+					return err
+				}
+				c.addPair(vs, eslot)
+			}
+			for _, s := range sc.Body {
+				if err := c.genStmt(fn, s); err != nil {
+					return err
+				}
+			}
+		}
+		for _, s := range st.Default {
+			if err := c.genStmt(fn, s); err != nil {
+				return err
+			}
+		}
+		return nil
 	case *RangeStmt:
 		xs, err := c.genExpr(fn, st.X)
 		if err != nil {
