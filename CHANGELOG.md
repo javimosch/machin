@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.13.0
 
 - **`select` — wait on multiple channels.** machin had goroutines and channels
   but no way to wait on more than one at a time, so timeouts, cancellation, and
