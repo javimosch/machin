@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **Native TLS — `https_get` and `https_post`.** machin's biggest networking
+  gap is closed: an HTTPS client over real TLS (OpenSSL), no subprocess. `https_get(url)`
+  and `https_post(url, jsonBody)` return the response body, handling cert
+  verification (SNI + hostname), `Content-Length`, chunked transfer-encoding, and
+  redirects. The OpenSSL runtime is emitted and linked (`-lssl -lcrypto`) **only
+  when used**, so TLS-free programs keep their libc-only footprint. Surfaced
+  building a Polymarket scraper that had to shell out to `curl`/`websocat` because
+  machin couldn't open a TLS socket — this retires the `curl` crutch for REST.
+
 ## v0.8.0
 
 More dogfooding: building a streaming WebSocket scraper drove these in.

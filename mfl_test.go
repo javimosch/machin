@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/base64"
+	"strings"
 	"testing"
 )
 
@@ -532,6 +533,27 @@ func TestSplitFunctions(t *testing.T) {
 	}
 	if len(fns) != 2 {
 		t.Fatalf("expected 2 funcs, got %d", len(fns))
+	}
+}
+
+// The OpenSSL/TLS runtime is emitted only when a program calls https_get/
+// https_post; TLS-free programs must stay libc-only (no OpenSSL pulled in).
+func TestHTTPSRuntimeGating(t *testing.T) {
+	tls := &Program{Funcs: parseFuncs(t, `func main() { println(https_get("https://example.com")) }`)}
+	c, err := CompileToC(tls, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(c, "mfl_https_request") || !strings.Contains(c, "openssl/ssl.h") {
+		t.Fatal("a program using https_get must emit the OpenSSL TLS runtime")
+	}
+	plain := &Program{Funcs: parseFuncs(t, `func main() { println("hi") }`)}
+	c2, err := CompileToC(plain, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(c2, "mfl_https_") || strings.Contains(c2, "openssl") {
+		t.Fatal("a TLS-free program must stay libc-only (no OpenSSL emitted)")
 	}
 }
 

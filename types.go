@@ -1656,6 +1656,19 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		}
 		c.addPair(argSlots[0], c.cString)
 		return c.cInt, nil
+	case "https_get":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("https_get: 1 arg (url string)")
+		}
+		c.addPair(argSlots[0], c.cString)
+		return c.cString, nil
+	case "https_post":
+		if len(argSlots) != 2 {
+			return 0, fmt.Errorf("https_post: 2 args (url string, body string)")
+		}
+		c.addPair(argSlots[0], c.cString)
+		c.addPair(argSlots[1], c.cString)
+		return c.cString, nil
 	case "write":
 		if len(argSlots) != 2 {
 			return 0, fmt.Errorf("write: 2 args")

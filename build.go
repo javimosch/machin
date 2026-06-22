@@ -44,6 +44,11 @@ func BuildBinary(prog *Program, outPath string, safe bool) error {
 			libs = append(libs, "-l"+l)
 		}
 	}
+	// native TLS (https_get/https_post) links OpenSSL — only when actually used,
+	// so TLS-free programs keep machin's libc-only footprint.
+	if strings.Contains(csrc, "mfl_https_") {
+		libs = append(libs, "-lssl", "-lcrypto")
+	}
 	args = append(args, "-o", outPath, tmp.Name())
 	args = append(args, libs...)
 
