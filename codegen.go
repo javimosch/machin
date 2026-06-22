@@ -71,6 +71,7 @@ const cRuntime = `#define _GNU_SOURCE
 #include <ctype.h>
 #include <unistd.h>
 #include <time.h>
+#include <sys/time.h>
 #include <pthread.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -414,6 +415,8 @@ static mfl_slice mfl_args(void) {
 }
 static char* mfl_env(const char* k) { char* v = getenv(k); return v ? v : ""; }
 static int64_t mfl_now(void) { return (int64_t)time(NULL); }
+static int64_t mfl_now_ms(void) { struct timeval tv; gettimeofday(&tv, NULL); return (int64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000; }
+static int64_t mfl_parse_int(const char* s) { return (int64_t)strtoll(s, NULL, 10); }
 `
 
 // isFFIScalar reports whether t is an FFI scalar type name (vs a cstruct name).
@@ -1633,6 +1636,10 @@ func (g *cgen) call(ex *Call) (string, error) {
 		return fmt.Sprintf("mfl_env(%s)", args[0]), nil
 	case "now":
 		return "mfl_now()", nil
+	case "now_ms":
+		return "mfl_now_ms()", nil
+	case "parse_int":
+		return fmt.Sprintf("mfl_parse_int(%s)", args[0]), nil
 	case "print", "println":
 		return "", fmt.Errorf("print/println may only be used as a statement")
 	}

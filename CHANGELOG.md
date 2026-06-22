@@ -7,6 +7,9 @@
   `read`/`write`/`close`. machin was server-only (`listen`/`accept`); `dial` makes
   it a client too — HTTP clients, health checkers, anything that reaches out.
   Surfaced and filled while building a real tool (the "build real things" goal).
+- **`now_ms()` and `parse_int()`.** Wall-clock milliseconds (for measuring
+  latency) and string→int parsing (`0` on non-numeric). Both surfaced building
+  the same tool — a concurrent HTTP health checker.
 
 - **CLI builtins — `args()`, `env()`, `now()`.** `args()` returns the
   command-line arguments (`[]string`; `args()[0]` is the program path) — the
