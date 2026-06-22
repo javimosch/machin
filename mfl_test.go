@@ -576,6 +576,16 @@ func TestHTTPGetMultiReturn(t *testing.T) {
 	}
 }
 
+// json_get(json, path) navigates a jq-style path and returns (value, err) — the
+// second multi-return builtin, runnable end-to-end (no network).
+func TestJSONGet(t *testing.T) {
+	main := `func main() { j := "{\"a\":{\"b\":[10,20,30]},\"n\":\"hi\"}" v, e := json_get(j, ".a.b[1]") println(v + "|" + e) v2, e2 := json_get(j, ".n") println(v2 + "|" + e2) v3, e3 := json_get(j, ".missing") println(v3 + "|" + e3) }`
+	out, _ := buildRun(t, main)
+	if !strings.Contains(out, "20|\n") || !strings.Contains(out, "\"hi\"|\n") || !strings.Contains(out, "|notfound\n") {
+		t.Fatalf("json_get output unexpected: %q", out)
+	}
+}
+
 // The WebSocket runtime is emitted only when a program calls wss_*; it shares
 // the TLS core (mfl_tls_dial) with HTTPS but pulls in the WS framing separately.
 func TestWSSRuntimeGating(t *testing.T) {

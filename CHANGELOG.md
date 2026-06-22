@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **JSON path queries — `json_get(json, path)`.** Every machin tool used to dig
+  into JSON with fragile substring search. `json_get` walks a jq-style path
+  (`.key`, `[index]`, chained — `.a.b[0].c`, `.` for the whole document) and
+  returns `(value, err)`: `value` is the located value's raw JSON text, `err`
+  is `""`/`"notfound"`/`"path"`/`"parse"`. It's a non-allocating scanner that
+  respects nesting and string escapes (no tree built), and the second builtin to
+  use the `value, err :=` convention. Surfaced building a `jq`-style query CLI.
+
 ## v0.11.0
 
 - **Error handling reaches the builtins — `http_get` returns `(status, body, err)`.**
