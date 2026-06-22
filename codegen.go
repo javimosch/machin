@@ -70,6 +70,7 @@ const cRuntime = `#define _GNU_SOURCE
 #include <string.h>
 #include <stdint.h>
 #include <stdarg.h>
+#include <stddef.h>
 #include <ctype.h>
 #include <unistd.h>
 #include <time.h>
@@ -163,17 +164,47 @@ static void mfl_sleep(int64_t ms) {
     nanosleep(&ts, NULL);
 }
 
-/* channels: a mutex + condvar FIFO carrying fixed-size elements */
+/* channels: a mutex + condvar FIFO carrying fixed-size elements.
+   stroff[] holds the byte offsets of every string (char*) inside an element, so
+   a sent value's strings can be deep-copied out of the (possibly short-lived)
+   sender arena on send and adopted into the receiver arena on receive. Without
+   this, the channel copies only the char*, dangling once the sender's goroutine
+   arena is reclaimed. */
+static char* mfl_dup_arena(const char* s, size_t n); /* defined later in the runtime */
 typedef struct mfl_cnode { struct mfl_cnode* next; void* data; } mfl_cnode;
 typedef struct {
     pthread_mutex_t mu; pthread_cond_t cnd;
     mfl_cnode *head, *tail; int64_t es; int closed;
+    int nstr; int* stroff;
 } mfl_chan;
-static mfl_chan* mfl_make_chan(int64_t es) {
+static mfl_chan* mfl_make_chan(int64_t es, int nstr, ...) {
     mfl_chan* c = malloc(sizeof(mfl_chan));
     pthread_mutex_init(&c->mu, NULL); pthread_cond_init(&c->cnd, NULL);
     c->head = c->tail = NULL; c->es = es; c->closed = 0;
+    c->nstr = nstr; c->stroff = NULL;
+    if (nstr > 0) {
+        c->stroff = (int*)malloc((size_t)nstr * sizeof(int));
+        va_list ap; va_start(ap, nstr);
+        for (int i = 0; i < nstr; i++) c->stroff[i] = va_arg(ap, int);
+        va_end(ap);
+    }
     return c;
+}
+/* freeze: replace each string field with a stable malloc'd copy (the value is
+   being handed off to the channel, away from the sender's arena). */
+static void mfl_chan_freeze(mfl_chan* c, void* elem) {
+    for (int i = 0; i < c->nstr; i++) {
+        char** p = (char**)((char*)elem + c->stroff[i]);
+        if (*p) { size_t n = strlen(*p); char* d = (char*)malloc(n + 1); memcpy(d, *p, n + 1); *p = d; }
+    }
+}
+/* thaw: move each frozen string into the receiver's arena, freeing the malloc'd
+   copy. After this the value's strings live exactly as long as the receiver. */
+static void mfl_chan_thaw(mfl_chan* c, void* elem) {
+    for (int i = 0; i < c->nstr; i++) {
+        char** p = (char**)((char*)elem + c->stroff[i]);
+        if (*p) { char* a = mfl_dup_arena(*p, strlen(*p)); free(*p); *p = a; }
+    }
 }
 /* close a channel: receivers drain the buffer then get "not ok". Wakes every
    blocked receiver so range/recv stop instead of hanging forever. */
@@ -185,7 +216,9 @@ static void mfl_chan_close(mfl_chan* c) {
 }
 static void mfl_chan_send(mfl_chan* c, const void* v) {
     mfl_cnode* n = malloc(sizeof(mfl_cnode));
-    n->data = malloc(c->es); memcpy(n->data, v, c->es); n->next = NULL;
+    n->data = malloc(c->es); memcpy(n->data, v, c->es);
+    mfl_chan_freeze(c, n->data);
+    n->next = NULL;
     pthread_mutex_lock(&c->mu);
     if (c->tail) c->tail->next = n; else c->head = n;
     c->tail = n;
@@ -204,6 +237,7 @@ static int mfl_chan_recv2(mfl_chan* c, void* out) {
     if (!c->head) c->tail = NULL;
     pthread_mutex_unlock(&c->mu);
     memcpy(out, n->data, c->es);
+    mfl_chan_thaw(c, out);
     free(n->data); free(n);
     return 1;
 }
@@ -219,6 +253,7 @@ static int mfl_chan_tryrecv(mfl_chan* c, void* out) {
     pthread_mutex_unlock(&c->mu);
     if (!n) return 0;
     memcpy(out, n->data, c->es);
+    mfl_chan_thaw(c, out);
     free(n->data); free(n);
     return 1;
 }
@@ -1928,7 +1963,16 @@ func (g *cgen) expr(e Expr) (string, error) {
 		params, ret := g.c.NodeFuncSig(g.curFn, ex.Fn)
 		return g.closureCall(clos, params, ret, args), nil
 	case *MakeChan:
-		return fmt.Sprintf("mfl_make_chan(sizeof(%s))", g.c.ElemCType(g.curFn, ex)), nil
+		ect := g.c.ElemCType(g.curFn, ex)
+		offs := g.chanStrOffsets(g.c.ElemTypeString(g.curFn, ex), "")
+		if len(offs) == 0 {
+			return fmt.Sprintf("mfl_make_chan(sizeof(%s), 0)", ect), nil
+		}
+		casted := make([]string, len(offs))
+		for i, o := range offs {
+			casted[i] = "(int)(" + o + ")"
+		}
+		return fmt.Sprintf("mfl_make_chan(sizeof(%s), %d, %s)", ect, len(offs), strings.Join(casted, ", ")), nil
 	case *MakeMap:
 		keyIsStr := 0
 		if g.c.MapKeyKind(g.curFn, ex) == KString {
@@ -2062,6 +2106,31 @@ func (g *cgen) mapKeyArgs(mapNode Node, keyExpr string) (string, string) {
 		return "0", keyExpr
 	}
 	return keyExpr, "NULL"
+}
+
+// chanStrOffsets returns C offset expressions for every string (char*) reachable
+// by value inside a channel element of the given MFL type — a bare `string`
+// (offset 0) or each string field of a struct (recursing into nested structs).
+// Slices/maps inside an element are not deep-copied (their backing stays shared).
+func (g *cgen) chanStrOffsets(typeStr, base string) []string {
+	if typeStr == "string" {
+		return []string{base + "0"}
+	}
+	td, ok := g.c.StructTypes()[typeStr]
+	if !ok {
+		return nil
+	}
+	cs := "mfl_" + typeStr
+	var offs []string
+	for _, f := range td.Fields {
+		fo := base + fmt.Sprintf("offsetof(%s, f_%s)", cs, f.Name)
+		if f.Type == "string" {
+			offs = append(offs, fo)
+		} else if _, isStruct := g.c.StructTypes()[f.Type]; isStruct {
+			offs = append(offs, g.chanStrOffsets(f.Type, fo+" + ")...)
+		}
+	}
+	return offs
 }
 
 // jsonSerializer ensures a C function exists that serializes a value of the

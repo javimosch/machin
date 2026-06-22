@@ -576,6 +576,28 @@ func TestHTTPGetMultiReturn(t *testing.T) {
 	}
 }
 
+// A string (or a struct's string fields) allocated in a short-lived goroutine
+// and sent over a channel must survive that goroutine's arena being reclaimed —
+// the channel deep-copies strings on send and adopts them on receive.
+func TestChannelStringArena(t *testing.T) {
+	// prod allocates each string in its own goroutine arena, sends it, then
+	// returns (arena reclaimed) — work and main must still see valid strings.
+	prod := `func prod(jobs) { i := 0 for i < 4 { jobs <- "u-" + str(i) i = i + 1 } close(jobs) }`
+	work := `func work(jobs, out) { for u := range jobs { out <- u + "!" } close(out) }`
+	main := `func main() {
+	jobs := make(chan string) out := make(chan string)
+	go work(jobs, out)
+	go prod(jobs)
+	acc := ""
+	for v := range out { acc = acc + v + " " }
+	println(acc)
+}`
+	out, _ := buildRun(t, main, prod, work)
+	if out != "u-0! u-1! u-2! u-3! \n" {
+		t.Fatalf("channel string arena: got %q", out)
+	}
+}
+
 // close(ch) ends a range-over-channel: workers draining a closed jobs channel
 // stop cleanly, and a closed buffered channel is drained before the range ends.
 func TestChannelClose(t *testing.T) {
