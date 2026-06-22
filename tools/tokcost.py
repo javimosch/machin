@@ -32,18 +32,25 @@ ENCODINGS = ["o200k_base", "cl100k_base"]
 
 
 def decode_funcs(path):
-    """Each non-blank line of a .mfl is base64 of one function; return (b64, text)."""
+    """Yield (b64, text) for each declaration, deriving both forms from whichever
+    the .mfl uses: canonical plain text always contains whitespace; a packed
+    (base64) line never does. Works whether the repo stores text or base64."""
     out = []
     with open(path) as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
-            try:
-                text = base64.b64decode(line).decode()
-            except Exception:
-                continue
-            out.append((line, text))
+            if any(c.isspace() for c in line):
+                text = line  # plain canonical text
+                b64 = base64.b64encode(text.encode()).decode()
+            else:
+                try:
+                    text = base64.b64decode(line).decode()  # packed form
+                except Exception:
+                    continue
+                b64 = line
+            out.append((b64, text))
     return out
 
 
