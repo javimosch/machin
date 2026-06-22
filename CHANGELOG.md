@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- **CLI builtins — `args()`, `env()`, `now()`.** `args()` returns the
+  command-line arguments (`[]string`; `args()[0]` is the program path) — the
+  generated `main` now takes `argc`/`argv`. `env(name)` reads an environment
+  variable (`""` if unset). `now()` returns Unix seconds. Together these let MFL
+  programs be real CLIs (subcommands, flags, `$PORT`, uptime) — the basis for a
+  machin-based CLI/server boilerplate.
+
 ## v0.6.0
 
 - **C FFI (Phases 1–3).** An `extern "lib" { header "..." link "..." cflags "..."

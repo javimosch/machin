@@ -383,6 +383,17 @@ static char* mfl_input(void) {
     buf[len] = 0;
     return buf;
 }
+
+/* command-line arguments, environment, and wall-clock time */
+static int mfl_argc = 0;
+static char** mfl_argv = NULL;
+static mfl_slice mfl_args(void) {
+    mfl_slice s = { mfl_argc ? mfl_alloc(mfl_argc * sizeof(char*)) : NULL, mfl_argc, mfl_argc };
+    for (int i = 0; i < mfl_argc; i++) ((char**)s.data)[i] = mfl_argv[i];
+    return s;
+}
+static char* mfl_env(const char* k) { char* v = getenv(k); return v ? v : ""; }
+static int64_t mfl_now(void) { return (int64_t)time(NULL); }
 `
 
 // isFFIScalar reports whether t is an FFI scalar type name (vs a cstruct name).
@@ -596,7 +607,7 @@ func (g *cgen) program(p *Program) (string, error) {
 	out.WriteByte('\n')
 	out.WriteString(g.tramp.String())
 	out.WriteString(g.buf.String())
-	out.WriteString("int main(void) { mfl_main(); return 0; }\n")
+	out.WriteString("int main(int argc, char** argv) { mfl_argc = argc; mfl_argv = argv; mfl_main(); return 0; }\n")
 	return out.String(), nil
 }
 
@@ -1594,6 +1605,12 @@ func (g *cgen) call(ex *Call) (string, error) {
 		return fmt.Sprintf("mfl_close(%s)", args[0]), nil
 	case "input":
 		return "mfl_input()", nil
+	case "args":
+		return "mfl_args()", nil
+	case "env":
+		return fmt.Sprintf("mfl_env(%s)", args[0]), nil
+	case "now":
+		return "mfl_now()", nil
 	case "print", "println":
 		return "", fmt.Errorf("print/println may only be used as a statement")
 	}
