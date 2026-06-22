@@ -1,6 +1,5 @@
-func isqrt(n) { if n < 2 { return n } x := n y := (x + 1) / 2 while y < x { x = y y = (x + n / x) / 2 } return x }
+func isqrt(n){if n<2{return n}x:=n y:=(x+1)/2 while y<x{x=y y=(x+n/x)/2}return x}
 
-func is_square(n) { r := isqrt(n) return r * r == n }
+func is_square(n){r:=isqrt(n)return r*r==n}
 
-func main() { i := 0 while i <= 17 { s := isqrt(i) if is_square(i) { println(i, "-> isqrt", s, "(perfect square)") } else { println(i, "-> isqrt", s) } i = i + 1 } }
-
+func main(){i:=0 while i<=17{s:=isqrt(i)if is_square(i){println(i,"-> isqrt",s,"(perfect square)")}else{println(i,"-> isqrt",s)}i=i+1}}

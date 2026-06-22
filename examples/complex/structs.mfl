@@ -1,6 +1,5 @@
-type User struct { name   string age    int active bool }
+type User struct{name   string age    int active bool}
 
-func greet(u) { return "Hi " + u.name }
+func greet(u){return "Hi "+u.name}
 
-func main() { users := []User{} users = append(users, User{name: "Ada", age: 36, active: true}) users = append(users, User{name: "Linus", age: 54, active: false}) users = append(users, User{name: "Grace", age: 85, active: true}) i := 0 active := 0 total := 0 for i < len(users) { u := users[i] println(greet(u), "-- age", u.age, "active", u.active) if u.active { active = active + 1 } total = total + u.age i = i + 1 } println("users:", len(users), "active:", active, "avg age:", total / len(users)) }
-
+func main(){users:=[]User{}users=append(users,User{name:"Ada",age:36,active:true})users=append(users,User{name:"Linus",age:54,active:false})users=append(users,User{name:"Grace",age:85,active:true})i:=0 active:=0 total:=0 for i<len(users){u:=users[i]println(greet(u),"-- age",u.age,"active",u.active)if u.active{active=active+1}total=total+u.age i=i+1}println("users:",len(users),"active:",active,"avg age:",total/len(users))}

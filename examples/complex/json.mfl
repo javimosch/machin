@@ -1,4 +1,3 @@
-type Todo struct { id    int title string done  bool }
+type Todo struct{id    int title string done  bool}
 
-func main() { println(json(42)) println(json("he said \"hi\"")) println(json(true)) println(json([]int{1, 2, 3})) t := Todo{id: 1, title: "ship it", done: false} println(json(t)) list := []Todo{} list = append(list, Todo{id: 1, title: "a", done: true}) list = append(list, Todo{id: 2, title: "b", done: false}) println(json(list)) m := make(map[string]int) m["x"] = 10 println(json(m)) }
-
+func main(){println(json(42))println(json("he said \"hi\""))println(json(true))println(json([]int{1,2,3}))t:=Todo{id:1,title:"ship it",done:false}println(json(t))list:=[]Todo{}list=append(list,Todo{id:1,title:"a",done:true})list=append(list,Todo{id:2,title:"b",done:false})println(json(list))m:=make(map[string]int)m["x"]=10 println(json(m))}

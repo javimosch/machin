@@ -1,8 +1,7 @@
-func id(x) { return x }
+func id(x){return x}
 
-func third(xs) { return xs[2] }
+func third(xs){return xs[2]}
 
-func member(xs, target) { for _, v := range xs { if v == target { return true } } return false }
+func member(xs,target){for _,v:=range xs{if v==target{return true}}return false}
 
-func main() { println(id(42), id("hello"), id(3.14)) println(third([]int{10, 20, 30}), third([]string{"a", "b", "c"})) println(member([]int{1, 2, 3}, 2), member([]string{"x", "y"}, "z")) }
-
+func main(){println(id(42),id("hello"),id(3.14))println(third([]int{10,20,30}),third([]string{"a","b","c"}))println(member([]int{1,2,3},2),member([]string{"x","y"},"z"))}

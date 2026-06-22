@@ -1,8 +1,7 @@
-type Todo struct { id    int title string done  bool }
+type Todo struct{id    int title string done  bool}
 
-func todos() { list := []Todo{} list = append(list, Todo{id: 1, title: "write a compiler", done: true}) list = append(list, Todo{id: 2, title: "add structs, maps, channels", done: true}) list = append(list, Todo{id: 3, title: "speak JSON over HTTP", done: false}) return list }
+func todos(){list:=[]Todo{}list=append(list,Todo{id:1,title:"write a compiler",done:true})list=append(list,Todo{id:2,title:"add structs, maps, channels",done:true})list=append(list,Todo{id:3,title:"speak JSON over HTTP",done:false})return list}
 
-func handle(conn) { read(conn) body := json(todos()) resp := "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + str(len(body)) + "\r\nConnection: close\r\n\r\n" + body write(conn, resp) close(conn) }
+func handle(conn){read(conn)body:=json(todos())resp:="HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "+str(len(body))+"\r\nConnection: close\r\n\r\n"+body write(conn,resp)close(conn)}
 
-func main() { server := listen(48080) println("JSON API on http://localhost:48080") for { conn := accept(server) go handle(conn) } }
-
+func main(){server:=listen(48080)println("JSON API on http://localhost:48080")for{conn:=accept(server)go handle(conn)}}

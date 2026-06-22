@@ -21,11 +21,12 @@
 📖 [Landing page](https://javimosch.github.io/machin/) · full reference: [`SPEC.md`](SPEC.md) · language tour: [`docs/LANGUAGE.md`](docs/LANGUAGE.md) · web framework: [`framework/`](framework/) · self-hosted server: [`selfhost/`](selfhost/)
 
 ```bash
-# A program is one normalized function per line of plain text:
+# A program is one normalized function per line of plain text (whitespace
+# tightened to the machine-minimal form — still greppable, ~13% fewer tokens):
 cat examples/demo.mfl
-#   func fib(n) { if n < 2 { return n } return fib(n - 1) + fib(n - 2) }
+#   func fib(n){if n<2{return n}return fib(n-1)+fib(n-2)}
 #
-#   func main() { println(fib(10)) }
+#   func main(){println(fib(10))}
 
 # Compile to native + run
 machin run examples/demo.mfl

@@ -1,4 +1,3 @@
-func sieve(n) { flags := []int{} i := 0 for i <= n { flags = append(flags, 0) i = i + 1 } count := 0 p := 2 for p <= n { if flags[p] == 0 { count = count + 1 m := p * p for m <= n { flags[m] = 1 m = m + p } } p = p + 1 } return count }
+func sieve(n){flags:=[]int{}i:=0 for i<=n{flags=append(flags,0)i=i+1}count:=0 p:=2 for p<=n{if flags[p]==0{count=count+1 m:=p*p for m<=n{flags[m]=1 m=m+p}}p=p+1}return count}
 
-func main() { println("Sieve of Eratosthenes") println("primes <= 30 :", sieve(30)) println("primes <= 100:", sieve(100)) println("primes <= 1000:", sieve(1000)) }
-
+func main(){println("Sieve of Eratosthenes")println("primes <= 30 :",sieve(30))println("primes <= 100:",sieve(100))println("primes <= 1000:",sieve(1000))}

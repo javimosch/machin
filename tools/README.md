@@ -28,3 +28,23 @@ but the *ratio* (base64 fragments ~2.5×) is universal across BPE tokenizers.
 
 This is also the instrument for the real moat work: measuring whether a
 syntax change actually lowers machine write/edit cost, rather than assuming it.
+
+## tokmin.py
+
+Finds *where* MFL spends tokens and measures what minimizations would save,
+split by risk:
+
+- **Class A — canonical whitespace** (zero risk): tightening `fib(n - 1)` →
+  `fib(n-1)`. Measured ~13% corpus savings; now the canonical form (see
+  `tighten` in `main.go`).
+- **Class B — keyword/builtin renames** (weigh vs reliability): measured to be a
+  dead end — `func`→`fn` saves 0 tokens (both are already single tokens) and
+  `println`→`pln` is *worse* (abbreviations fragment in the tokenizer).
+
+```bash
+python3 tools/tokmin.py examples
+```
+
+The lesson it encodes: minimize tokens by removing what the tokenizer charges
+for (whitespace), not by shortening what it already packs into one token
+(common keywords).

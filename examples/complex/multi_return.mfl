@@ -1,8 +1,7 @@
-func divmod(a, b) { return a / b, a % b }
+func divmod(a,b){return a/b,a%b}
 
-func minmax(xs) { lo := xs[0] hi := xs[0] for _, v := range xs { if v < lo { lo = v } if v > hi { hi = v } } return lo, hi }
+func minmax(xs){lo:=xs[0]hi:=xs[0]for _,v:=range xs{if v<lo{lo=v}if v>hi{hi=v}}return lo,hi}
 
-func lookup(m, k) { return m[k], has(m, k) }
+func lookup(m,k){return m[k],has(m,k)}
 
-func main() { q, r := divmod(17, 5) println("17 / 5 =", q, "rem", r) lo, hi := minmax([]int{4, 9, 1, 7, 3}) println("min", lo, "max", hi) m := make(map[string]int) m["x"] = 42 v, ok := lookup(m, "x") println("x:", v, "found:", ok) v2, ok2 := lookup(m, "y") println("y:", v2, "found:", ok2) _, rem := divmod(20, 6) println("20 mod 6 =", rem) a := 1 b := 2 a, b = b, a println("swapped:", a, b) }
-
+func main(){q,r:=divmod(17,5)println("17 / 5 =",q,"rem",r)lo,hi:=minmax([]int{4,9,1,7,3})println("min",lo,"max",hi)m:=make(map[string]int)m["x"]=42 v,ok:=lookup(m,"x")println("x:",v,"found:",ok)v2,ok2:=lookup(m,"y")println("y:",v2,"found:",ok2)_,rem:=divmod(20,6)println("20 mod 6 =",rem)a:=1 b:=2 a,b=b,a println("swapped:",a,b)}

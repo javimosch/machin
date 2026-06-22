@@ -33,19 +33,25 @@ implemented by the `machin` toolchain.
 ## 2. Program structure
 
 A `.mfl` file is a sequence of **declarations**, one normalized declaration per
-non-blank line, a blank line between them:
+non-blank line, a blank line between them. The canonical form is *tightened*:
+whitespace adjacent to an operator or punctuation token is dropped (it only
+remains where the lexer needs it, between two word tokens), which lowers the
+token cost of writing and editing without changing meaning:
 
 ```
-func fib(n) { if n < 2 { return n } return fib(n - 1) + fib(n - 2) }
+func fib(n){if n<2{return n}return fib(n-1)+fib(n-2)}
 
-func main() { println(fib(10)) }
+func main(){println(fib(10))}
 ```
 
 Each line is exactly one top-level declaration: a **function** (`func ...`) or a
 **struct type** (`type ...`), in the grammar described in the rest of this
 document. Whitespace within a declaration is insignificant except as a token
-separator. A line that contains no whitespace is treated as a base64-**packed**
-declaration and decoded first, so `machin pack` output (§14) also loads.
+separator, so spaced-out input is accepted and `encode` produces the tight
+canonical form. A line that contains no whitespace is treated as a
+base64-**packed** declaration and decoded first, so `machin pack` output also
+loads. (The grammar examples below are shown spaced for readability; both forms
+parse identically.)
 
 A program must define a function named `main` with no parameters and no return
 value; it is the entry point.

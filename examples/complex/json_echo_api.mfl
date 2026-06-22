@@ -1,6 +1,5 @@
-type Todo struct { id    int title string done  bool }
+type Todo struct{id    int title string done  bool}
 
-func handle(conn) { req := read(conn) t := parse(http_body(req), Todo{}) out := json(t) resp := "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + str(len(out)) + "\r\nConnection: close\r\n\r\n" + out write(conn, resp) close(conn) }
+func handle(conn){req:=read(conn)t:=parse(http_body(req),Todo{})out:=json(t)resp:="HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "+str(len(out))+"\r\nConnection: close\r\n\r\n"+out write(conn,resp)close(conn)}
 
-func main() { server := listen(48080) println("JSON echo API on http://localhost:48080  (POST a Todo)") for { conn := accept(server) go handle(conn) } }
-
+func main(){server:=listen(48080)println("JSON echo API on http://localhost:48080  (POST a Todo)")for{conn:=accept(server)go handle(conn)}}

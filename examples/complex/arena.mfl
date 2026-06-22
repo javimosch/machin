@@ -1,4 +1,3 @@
-func render(i) { row := "row-" + str(i) row = row + " squared=" + str(i * i) return len(row) }
+func render(i){row:="row-"+str(i)row=row+" squared="+str(i*i)return len(row)}
 
-func main() { checksum := 0 n := 0 while n < 100000 { arena { checksum = checksum + render(n) } n = n + 1 } println("checksum:", checksum) }
-
+func main(){checksum:=0 n:=0 while n<100000{arena{checksum=checksum+render(n)}n=n+1}println("checksum:",checksum)}

@@ -1,6 +1,5 @@
-func reply(conn, status, body) { resp := status + "\r\nContent-Type: text/plain\r\nContent-Length: " + str(len(body)) + "\r\nConnection: close\r\n\r\n" + body write(conn, resp) close(conn) }
+func reply(conn,status,body){resp:=status+"\r\nContent-Type: text/plain\r\nContent-Length: "+str(len(body))+"\r\nConnection: close\r\n\r\n"+body write(conn,resp)close(conn)}
 
-func handle(conn) { req := read(conn) line := substr(req, 0, index(req, "\r\n")) parts := split(line, " ") method := parts[0] path := parts[1] if method == "GET" && path == "/" { reply(conn, "HTTP/1.1 200 OK", "welcome to MFL") } else if method == "GET" && has_prefix(path, "/hello/") { name := substr(path, 7, len(path)) reply(conn, "HTTP/1.1 200 OK", "hello, " + name) } else if method == "GET" && path == "/upper" { reply(conn, "HTTP/1.1 200 OK", to_upper("shout")) } else { reply(conn, "HTTP/1.1 404 Not Found", "no route for " + method + " " + path) } }
+func handle(conn){req:=read(conn)line:=substr(req,0,index(req,"\r\n"))parts:=split(line," ")method:=parts[0]path:=parts[1]if method=="GET"&&path=="/"{reply(conn,"HTTP/1.1 200 OK","welcome to MFL")}else if method=="GET"&&has_prefix(path,"/hello/"){name:=substr(path,7,len(path))reply(conn,"HTTP/1.1 200 OK","hello, "+name)}else if method=="GET"&&path=="/upper"{reply(conn,"HTTP/1.1 200 OK",to_upper("shout"))}else{reply(conn,"HTTP/1.1 404 Not Found","no route for "+method+" "+path)}}
 
-func main() { server := listen(48080) println("router on http://localhost:48080") for { conn := accept(server) go handle(conn) } }
-
+func main(){server:=listen(48080)println("router on http://localhost:48080")for{conn:=accept(server)go handle(conn)}}

@@ -1,8 +1,7 @@
-func fib(n) { if n < 2 { return n } return fib(n - 1) + fib(n - 2) }
+func fib(n){if n<2{return n}return fib(n-1)+fib(n-2)}
 
-func fact(n) { acc := 1 i := 2 while i <= n { acc = acc * i i = i + 1 } return acc }
+func fact(n){acc:=1 i:=2 while i<=n{acc=acc*i i=i+1}return acc}
 
-func fizzbuzz(n) { i := 1 while i <= n { if i % 15 == 0 { println("FizzBuzz") } else if i % 3 == 0 { println("Fizz") } else if i % 5 == 0 { println("Buzz") } else { println(i) } i = i + 1 } }
+func fizzbuzz(n){i:=1 while i<=n{if i%15==0{println("FizzBuzz")}else if i%3==0{println("Fizz")}else if i%5==0{println("Buzz")}else{println(i)}i=i+1}}
 
-func main() { println("fib(10) =", fib(10)) println("fact(6) =", fact(6)) println("greeting: " + "hello, machine") println("--- fizzbuzz 1..15 ---") fizzbuzz(15) }
-
+func main(){println("fib(10) =",fib(10))println("fact(6) =",fact(6))println("greeting: "+"hello, machine")println("--- fizzbuzz 1..15 ---")fizzbuzz(15)}

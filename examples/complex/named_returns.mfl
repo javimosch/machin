@@ -1,8 +1,7 @@
-func divmod(a, b) (q, r) { q = a / b r = a % b return }
+func divmod(a,b)(q,r){q=a/b r=a%b return}
 
-func split_name(full) (first, rest) { i := index(full, " ") if i < 0 { first = full } else { first = substr(full, 0, i) rest = substr(full, i + 1, len(full)) } }
+func split_name(full)(first,rest){i:=index(full," ")if i<0{first=full}else{first=substr(full,0,i)rest=substr(full,i+1,len(full))}}
 
-func clamp(x, lo, hi) (y) { y = x if x < lo { return lo } if x > hi { return hi } return }
+func clamp(x,lo,hi)(y){y=x if x<lo{return lo}if x>hi{return hi}return}
 
-func main() { q, r := divmod(17, 5) println("17/5 =", q, "rem", r) fn, rest := split_name("Ada Lovelace") println("first:", fn, "rest:", rest) println("clamp(5,0,10):", clamp(5, 0, 10), "clamp(-3,0,10):", clamp(-3, 0, 10), "clamp(99,0,10):", clamp(99, 0, 10)) }
-
+func main(){q,r:=divmod(17,5)println("17/5 =",q,"rem",r)fn,rest:=split_name("Ada Lovelace")println("first:",fn,"rest:",rest)println("clamp(5,0,10):",clamp(5,0,10),"clamp(-3,0,10):",clamp(-3,0,10),"clamp(99,0,10):",clamp(99,0,10))}

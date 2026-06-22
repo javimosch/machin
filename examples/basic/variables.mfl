@@ -1,2 +1,1 @@
-func main() { x := 10 var y = 5 x = x + y name := "machin" flag := x > y && y > 0 println("x =", x) println("y =", y) println("name =", name, "len =", len(name)) println("flag =", flag) }
-
+func main(){x:=10 var y=5 x=x+y name:="machin" flag:=x>y&&y>0 println("x =",x)println("y =",y)println("name =",name,"len =",len(name))println("flag =",flag)}

@@ -1,6 +1,5 @@
-func adder(n) { return func(x) { return x + n } }
+func adder(n){return func(x){return x+n}}
 
-func map_slice(xs, f) { out := []int{} for _, v := range xs { out = append(out, f(v)) } return out }
+func map_slice(xs,f){out:=[]int{}for _,v:=range xs{out=append(out,f(v))}return out}
 
-func main() { inc := adder(1) add10 := adder(10) println("inc(5) =", inc(5), "add10(5) =", add10(5)) doubled := map_slice([]int{1, 2, 3, 4}, func(x) { return x * 2 }) for _, v := range doubled { print(v, "") } println("") factor := 3 scaled := map_slice([]int{1, 2, 3}, func(x) { return x * factor }) for _, v := range scaled { print(v, "") } println("") println("iife:", func(a, b) { return a * b }(6, 7)) }
-
+func main(){inc:=adder(1)add10:=adder(10)println("inc(5) =",inc(5),"add10(5) =",add10(5))doubled:=map_slice([]int{1,2,3,4},func(x){return x*2})for _,v:=range doubled{print(v,"")}println("")factor:=3 scaled:=map_slice([]int{1,2,3},func(x){return x*factor})for _,v:=range scaled{print(v,"")}println("")println("iife:",func(a,b){return a*b}(6,7))}
