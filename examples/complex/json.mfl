@@ -1,4 +1,4 @@
-dHlwZSBUb2RvIHN0cnVjdCB7IGlkICAgIGludCB0aXRsZSBzdHJpbmcgZG9uZSAgYm9vbCB9
+type Todo struct { id    int title string done  bool }
 
-ZnVuYyBtYWluKCkgeyBwcmludGxuKGpzb24oNDIpKSBwcmludGxuKGpzb24oImhlIHNhaWQgXCJoaVwiIikpIHByaW50bG4oanNvbih0cnVlKSkgcHJpbnRsbihqc29uKFtdaW50ezEsIDIsIDN9KSkgdCA6PSBUb2Rve2lkOiAxLCB0aXRsZTogInNoaXAgaXQiLCBkb25lOiBmYWxzZX0gcHJpbnRsbihqc29uKHQpKSBsaXN0IDo9IFtdVG9kb3t9IGxpc3QgPSBhcHBlbmQobGlzdCwgVG9kb3tpZDogMSwgdGl0bGU6ICJhIiwgZG9uZTogdHJ1ZX0pIGxpc3QgPSBhcHBlbmQobGlzdCwgVG9kb3tpZDogMiwgdGl0bGU6ICJiIiwgZG9uZTogZmFsc2V9KSBwcmludGxuKGpzb24obGlzdCkpIG0gOj0gbWFrZShtYXBbc3RyaW5nXWludCkgbVsieCJdID0gMTAgcHJpbnRsbihqc29uKG0pKSB9
+func main() { println(json(42)) println(json("he said \"hi\"")) println(json(true)) println(json([]int{1, 2, 3})) t := Todo{id: 1, title: "ship it", done: false} println(json(t)) list := []Todo{} list = append(list, Todo{id: 1, title: "a", done: true}) list = append(list, Todo{id: 2, title: "b", done: false}) println(json(list)) m := make(map[string]int) m["x"] = 10 println(json(m)) }
 

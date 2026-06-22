@@ -1,4 +1,4 @@
-ZnVuYyByZW5kZXIoaSkgeyByb3cgOj0gInJvdy0iICsgc3RyKGkpIHJvdyA9IHJvdyArICIgc3F1YXJlZD0iICsgc3RyKGkgKiBpKSByZXR1cm4gbGVuKHJvdykgfQ==
+func render(i) { row := "row-" + str(i) row = row + " squared=" + str(i * i) return len(row) }
 
-ZnVuYyBtYWluKCkgeyBjaGVja3N1bSA6PSAwIG4gOj0gMCB3aGlsZSBuIDwgMTAwMDAwIHsgYXJlbmEgeyBjaGVja3N1bSA9IGNoZWNrc3VtICsgcmVuZGVyKG4pIH0gbiA9IG4gKyAxIH0gcHJpbnRsbigiY2hlY2tzdW06IiwgY2hlY2tzdW0pIH0=
+func main() { checksum := 0 n := 0 while n < 100000 { arena { checksum = checksum + render(n) } n = n + 1 } println("checksum:", checksum) }
 

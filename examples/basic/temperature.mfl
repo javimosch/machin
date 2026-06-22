@@ -1,5 +1,6 @@
-ZnVuYyBjX3RvX2YoYykgeyByZXR1cm4gYyAqIDkuMCAvIDUuMCArIDMyLjAgfQ==
+func c_to_f(c) { return c * 9.0 / 5.0 + 32.0 }
 
-ZnVuYyBmX3RvX2MoZikgeyByZXR1cm4gKGYgLSAzMi4wKSAqIDUuMCAvIDkuMCB9
+func f_to_c(f) { return (f - 32.0) * 5.0 / 9.0 }
 
-ZnVuYyBtYWluKCkgeyBwcmludGxuKCIxMDBDID0iLCBjX3RvX2YoMTAwKSwgIkYiKSBwcmludGxuKCIzMkYgID0iLCBmX3RvX2MoMzIpLCAiQyIpIHByaW50bG4oIjM3QyAgPSIsIGNfdG9fZigzNyksICJGIikgfQ==
+func main() { println("100C =", c_to_f(100), "F") println("32F  =", f_to_c(32), "C") println("37C  =", c_to_f(37), "F") }
+

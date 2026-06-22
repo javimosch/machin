@@ -1,4 +1,4 @@
-dHlwZSBUb2RvIHN0cnVjdCB7IGlkICAgIGludCB0aXRsZSBzdHJpbmcgZG9uZSAgYm9vbCB9
+type Todo struct { id    int title string done  bool }
 
-ZnVuYyBtYWluKCkgeyB0IDo9IFRvZG97aWQ6IDcsIHRpdGxlOiAicm91bmQgXCJ0cmlwXCIiLCBkb25lOiB0cnVlfSBzIDo9IGpzb24odCkgcHJpbnRsbigianNvbjoiLCBzKSBiYWNrIDo9IHBhcnNlKHMsIFRvZG97fSkgcHJpbnRsbigiYmFjazoiLCBiYWNrLmlkLCBiYWNrLnRpdGxlLCBiYWNrLmRvbmUpIGFyciA6PSBwYXJzZSgiW3tcImlkXCI6MSxcInRpdGxlXCI6XCJhXCIsXCJkb25lXCI6dHJ1ZX0se1wiaWRcIjoyLFwidGl0bGVcIjpcImJcIixcImRvbmVcIjpmYWxzZX1dIiwgW11Ub2Rve30pIHByaW50bG4oImNvdW50OiIsIGxlbihhcnIpLCAic2Vjb25kOiIsIGFyclsxXS5pZCwgYXJyWzFdLnRpdGxlKSBtIDo9IHBhcnNlKCJ7XCJ4XCI6MTAsXCJ5XCI6MjB9IiwgbWFrZShtYXBbc3RyaW5nXWludCkpIHByaW50bG4oIm1beF06IiwgbVsieCJdLCAibVt5XToiLCBtWyJ5Il0sICJsZW46IiwgbGVuKG0pKSBwcmludGxuKCJpbnQ6IiwgcGFyc2UoIjQyIiwgMCksICJib29sOiIsIHBhcnNlKCJ0cnVlIiwgZmFsc2UpKSB9
+func main() { t := Todo{id: 7, title: "round \"trip\"", done: true} s := json(t) println("json:", s) back := parse(s, Todo{}) println("back:", back.id, back.title, back.done) arr := parse("[{\"id\":1,\"title\":\"a\",\"done\":true},{\"id\":2,\"title\":\"b\",\"done\":false}]", []Todo{}) println("count:", len(arr), "second:", arr[1].id, arr[1].title) m := parse("{\"x\":10,\"y\":20}", make(map[string]int)) println("m[x]:", m["x"], "m[y]:", m["y"], "len:", len(m)) println("int:", parse("42", 0), "bool:", parse("true", false)) }
 

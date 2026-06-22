@@ -1,6 +1,6 @@
-ZnVuYyBhZGRlcihuKSB7IHJldHVybiBmdW5jKHgpIHsgcmV0dXJuIHggKyBuIH0gfQ==
+func adder(n) { return func(x) { return x + n } }
 
-ZnVuYyBtYXBfc2xpY2UoeHMsIGYpIHsgb3V0IDo9IFtdaW50e30gZm9yIF8sIHYgOj0gcmFuZ2UgeHMgeyBvdXQgPSBhcHBlbmQob3V0LCBmKHYpKSB9IHJldHVybiBvdXQgfQ==
+func map_slice(xs, f) { out := []int{} for _, v := range xs { out = append(out, f(v)) } return out }
 
-ZnVuYyBtYWluKCkgeyBpbmMgOj0gYWRkZXIoMSkgYWRkMTAgOj0gYWRkZXIoMTApIHByaW50bG4oImluYyg1KSA9IiwgaW5jKDUpLCAiYWRkMTAoNSkgPSIsIGFkZDEwKDUpKSBkb3VibGVkIDo9IG1hcF9zbGljZShbXWludHsxLCAyLCAzLCA0fSwgZnVuYyh4KSB7IHJldHVybiB4ICogMiB9KSBmb3IgXywgdiA6PSByYW5nZSBkb3VibGVkIHsgcHJpbnQodiwgIiIpIH0gcHJpbnRsbigiIikgZmFjdG9yIDo9IDMgc2NhbGVkIDo9IG1hcF9zbGljZShbXWludHsxLCAyLCAzfSwgZnVuYyh4KSB7IHJldHVybiB4ICogZmFjdG9yIH0pIGZvciBfLCB2IDo9IHJhbmdlIHNjYWxlZCB7IHByaW50KHYsICIiKSB9IHByaW50bG4oIiIpIHByaW50bG4oImlpZmU6IiwgZnVuYyhhLCBiKSB7IHJldHVybiBhICogYiB9KDYsIDcpKSB9
+func main() { inc := adder(1) add10 := adder(10) println("inc(5) =", inc(5), "add10(5) =", add10(5)) doubled := map_slice([]int{1, 2, 3, 4}, func(x) { return x * 2 }) for _, v := range doubled { print(v, "") } println("") factor := 3 scaled := map_slice([]int{1, 2, 3}, func(x) { return x * factor }) for _, v := range scaled { print(v, "") } println("") println("iife:", func(a, b) { return a * b }(6, 7)) }
 

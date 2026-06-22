@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- **Plain text is the source of truth.** The `.mfl` form is now canonical plain
+  text — one normalized function per line — instead of base64. The reason is the
+  language's own north star: measured with `tools/tokcost.py`, base64 costs an
+  agent ~2.5× the output tokens to write/edit (and ~9× for a one-character edit),
+  taxing the very machine-speed it was meant to signal. Text is greppable,
+  diffable, and editable in place. `machin run` still reads the base64 form, now
+  produced on demand by **`machin pack`** for distribution. Machine-first now
+  means *shaped for machine authoring* (terse, inferred, canonical,
+  function-addressable), not *encoded*.
+- **`input()` builtin** — read a line from stdin (`() -> string`), enabling
+  interactive / native desktop CLI programs. New `examples/complex/game_menu.mfl`.
+- **`tools/tokcost.py`** — a tiktoken harness that measures the agent write/edit
+  token cost of a source form; the instrument behind the plain-text decision.
+
 ## v0.4.2
 
 - **Windows binaries.** Releases now also ship `machin-<tag>-windows-amd64.exe`,

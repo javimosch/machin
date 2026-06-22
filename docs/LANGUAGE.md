@@ -1,26 +1,33 @@
 # MFL Language Reference
 
-MFL (Machine-First Language) is a statically-typed, Go-flavored language whose
-on-disk form is **base64** — one function per line, a blank line between
-functions. It compiles to native code through C (`cc -O2`).
+MFL (Machine-First Language) is a statically-typed, Go-flavored language shaped
+for machine authoring: minimal syntax, no type annotations, one canonical
+function per line. Its on-disk form is plain canonical text. It compiles to
+native code through C (`cc -O2`).
 
-This document describes the *decoded* surface syntax. Remember: on disk, each
-function below is a single base64 line (see [Encoding](#encoding)).
+This document describes the surface syntax — which is exactly what a `.mfl` file
+contains, one normalized declaration per line.
 
 ---
 
-## Encoding
+## Source form
 
-A `.mfl` file is a sequence of base64-encoded function definitions:
+A `.mfl` file is a sequence of declarations:
 
-- **One function per line.** Each line is the base64 of exactly one `func ...`.
-- **A blank line separates functions.**
-- There is no human-readable source of truth — the base64 *is* the program.
+- **One function (or type) per line.** Each non-blank line is one `func ...` or
+  `type ...`, normalized to a single line.
+- **A blank line separates declarations.**
+- The source is plain canonical text — greppable and diffable. You author intent
+  and let agents write the code; nothing is hidden behind an encoding.
 
 ```bash
-# Decode a program to inspect it:
-while read -r line; do [ -n "$line" ] && echo "$line" | base64 -d && echo; done < examples/demo.mfl
+# It is just text — read or grep it directly:
+cat examples/demo.mfl
+grep -l fizzbuzz examples/*.mfl
 ```
+
+A dense base64 "packed" form is available for distribution via `machin pack`;
+`machin run` reads either form.
 
 ---
 
@@ -268,7 +275,7 @@ See `examples/complex/strings.mfl` and the HTTP router `examples/complex/router_
 
 ## Structs
 
-A struct type is its own top-level declaration — on disk, its own base64 line:
+A struct type is its own top-level declaration — on disk, its own line:
 
 ```go
 type User struct {

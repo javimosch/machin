@@ -1,8 +1,8 @@
-ZnVuYyBwYWdlKCkgeyByZXR1cm4gIjwhZG9jdHlwZSBodG1sPjxodG1sPjxoZWFkPjx0aXRsZT5NRkwgc2VydmVyPC90aXRsZT48L2hlYWQ+PGJvZHk+PGgxPkhlbGxvIGZyb20gTUZMPC9oMT48cD5TZXJ2ZWQgY29uY3VycmVudGx5IGJ5IGEgbWFjaGluZS1maXJzdCBwcm9ncmFtIGNvbXBpbGVkIHRvIG5hdGl2ZSBjb2RlLjwvcD48L2JvZHk+PC9odG1sPiIgfQ==
+func page() { return "<!doctype html><html><head><title>MFL server</title></head><body><h1>Hello from MFL</h1><p>Served concurrently by a machine-first program compiled to native code.</p></body></html>" }
 
-ZnVuYyByZXNwb25zZSgpIHsgYm9keSA6PSBwYWdlKCkgcmV0dXJuICJIVFRQLzEuMSAyMDAgT0tcclxuQ29udGVudC1UeXBlOiB0ZXh0L2h0bWw7IGNoYXJzZXQ9dXRmLThcclxuQ29udGVudC1MZW5ndGg6ICIgKyBzdHIobGVuKGJvZHkpKSArICJcclxuQ29ubmVjdGlvbjogY2xvc2VcclxuXHJcbiIgKyBib2R5IH0=
+func response() { body := page() return "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: " + str(len(body)) + "\r\nConnection: close\r\n\r\n" + body }
 
-ZnVuYyBoYW5kbGUoY29ubikgeyByZWFkKGNvbm4pIHdyaXRlKGNvbm4sIHJlc3BvbnNlKCkpIGNsb3NlKGNvbm4pIH0=
+func handle(conn) { read(conn) write(conn, response()) close(conn) }
 
-ZnVuYyBtYWluKCkgeyBzZXJ2ZXIgOj0gbGlzdGVuKDQ4MDgwKSBwcmludGxuKCJNRkwgaHR0cCBzZXJ2ZXIgb24gaHR0cDovL2xvY2FsaG9zdDo0ODA4MCIpIGZvciB7IGNvbm4gOj0gYWNjZXB0KHNlcnZlcikgZ28gaGFuZGxlKGNvbm4pIH0gfQ==
+func main() { server := listen(48080) println("MFL http server on http://localhost:48080") for { conn := accept(server) go handle(conn) } }
 

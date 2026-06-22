@@ -1,8 +1,8 @@
-ZnVuYyBzcXVhcmUoeCkgeyByZXR1cm4geCAqIHggfQ==
+func square(x) { return x * x }
 
-ZnVuYyBzdW1fb2Zfc3F1YXJlcyhhLCBiKSB7IHJldHVybiBzcXVhcmUoYSkgKyBzcXVhcmUoYikgfQ==
+func sum_of_squares(a, b) { return square(a) + square(b) }
 
-ZnVuYyBtYXgoYSwgYikgeyBpZiBhID4gYiB7IHJldHVybiBhIH0gcmV0dXJuIGIgfQ==
+func max(a, b) { if a > b { return a } return b }
 
-ZnVuYyBtYWluKCkgeyBwcmludGxuKCJzcXVhcmUoNSkgPSIsIHNxdWFyZSg1KSkgcHJpbnRsbigic3VtX29mX3NxdWFyZXMoMywgNCkgPSIsIHN1bV9vZl9zcXVhcmVzKDMsIDQpKSBwcmludGxuKCJtYXgoOCwgMykgPSIsIG1heCg4LCAzKSkgcHJpbnRsbigibWF4KHNxdWFyZSgyKSwgc3VtX29mX3NxdWFyZXMoMSwgMikpID0iLCBtYXgoc3F1YXJlKDIpLCBzdW1fb2Zfc3F1YXJlcygxLCAyKSkpIH0=
+func main() { println("square(5) =", square(5)) println("sum_of_squares(3, 4) =", sum_of_squares(3, 4)) println("max(8, 3) =", max(8, 3)) println("max(square(2), sum_of_squares(1, 2)) =", max(square(2), sum_of_squares(1, 2))) }
 

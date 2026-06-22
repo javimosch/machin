@@ -1,9 +1,12 @@
 // machin — the MFL (Machine-First Language) compiler.
 //
-// MFL is a backend language based on Go but machine-first: a program IS base64,
-// one function per line, a blank line between functions. The human states
-// intent; the machine reads and writes the code. There is no readable source of
-// truth and no "decode" — the .mfl is the program. MFL is statically typed (by
+// MFL is a backend language based on Go but machine-first: minimal syntax, no
+// type annotations (types are inferred), one canonical function per line. The
+// human states intent; agents read and write the code. The .mfl source of truth
+// is plain canonical text — one normalized function per line, a blank line
+// between functions — so it stays greppable, diffable, and cheap for an agent
+// to edit. A dense base64 "packed" form is available via `machin pack` for
+// distribution, and `machin run` reads either form. MFL is statically typed (by
 // inference) and compiles to native code through C, so it runs at C/Rust/Zig
 // speed for scalar work.
 package main
@@ -30,6 +33,8 @@ func main() {
 		err = cmdBuild(os.Args[2:])
 	case "encode":
 		err = cmdEncode(os.Args[2:])
+	case "pack":
+		err = cmdPack(os.Args[2:])
 	case "help", "-h", "--help":
 		usage()
 	default:
@@ -51,14 +56,17 @@ usage:
   machin build <file.mfl> [-o out]   compile to a native binary
   machin build <file.mfl> --emit-c   print the generated C and stop
   machin build|run <file.mfl> --safe  insert bounds / div-zero / overflow checks
-  machin encode <src>                mint MFL from loose Go-like text (machine tool)
+  machin encode <src>                mint canonical MFL from loose Go-like text
+  machin pack  <file.mfl>            emit the dense base64 form (distribution)
 
-A .mfl program is base64, one function per line, blank line between functions.
+A .mfl program is canonical plain text: one normalized function per line, a
+blank line between functions. `+"`machin run`"+` also reads the packed base64 form.
 `)
 }
 
-// loadMFL reads a .mfl file, base64-decodes each non-blank line, and parses the
-// decoded declarations into a Program (struct types + functions).
+// loadMFL reads a .mfl file — one declaration per non-blank line — and parses
+// it into a Program (struct types + functions). The canonical form is plain
+// text; packed (base64) lines are accepted too (see declFromLine).
 func loadMFL(path string) (*Program, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -70,11 +78,11 @@ func loadMFL(path string) (*Program, error) {
 		if line == "" {
 			continue
 		}
-		raw, err := base64.StdEncoding.DecodeString(line)
+		decl, err := declFromLine(line)
 		if err != nil {
-			return nil, fmt.Errorf("line %d: base64 decode: %w", n+1, err)
+			return nil, fmt.Errorf("%s line %d: %w", path, n+1, err)
 		}
-		decls = append(decls, string(raw))
+		decls = append(decls, decl)
 	}
 	prog, err := ParseProgram(decls)
 	if err != nil {
@@ -84,6 +92,21 @@ func loadMFL(path string) (*Program, error) {
 		return nil, fmt.Errorf("%s: no functions", path)
 	}
 	return prog, nil
+}
+
+// declFromLine yields one declaration from a .mfl line. Canonical MFL is plain
+// text — one normalized function per line — which always contains whitespace.
+// A line with no whitespace is a packed (base64) declaration, accepted for the
+// distribution form produced by `machin pack`.
+func declFromLine(line string) (string, error) {
+	if strings.ContainsAny(line, " \t") {
+		return line, nil // plain canonical text
+	}
+	raw, err := base64.StdEncoding.DecodeString(line)
+	if err != nil {
+		return "", fmt.Errorf("line is neither plain MFL nor base64: %w", err)
+	}
+	return string(raw), nil
 }
 
 func cmdRun(args []string) error {
@@ -167,8 +190,9 @@ func cmdBuild(args []string) error {
 	return nil
 }
 
-// cmdEncode lifts loose Go-like text into canonical MFL. Multiple source files
-// are concatenated in order, so a framework can be composed with an app:
+// cmdEncode lifts loose Go-like text into canonical MFL: one normalized function
+// per line, a blank line between functions. Multiple source files are
+// concatenated in order, so a framework can be composed with an app:
 //   machin encode framework/machweb.src myapp.src > app.mfl
 func cmdEncode(args []string) error {
 	if len(args) < 1 {
@@ -192,7 +216,7 @@ func cmdEncode(args []string) error {
 	for _, b := range blocks {
 		n := normalize(b)
 		decls = append(decls, n)
-		out.WriteString(base64.StdEncoding.EncodeToString([]byte(n)))
+		out.WriteString(n)
 		out.WriteString("\n\n")
 	}
 	prog, err := ParseProgram(decls)
@@ -201,6 +225,34 @@ func cmdEncode(args []string) error {
 	}
 	if _, err := Check(prog); err != nil {
 		return fmt.Errorf("typecheck: %w", err)
+	}
+	fmt.Print(out.String())
+	return nil
+}
+
+// cmdPack emits the dense base64 "packed" form of a .mfl: one base64 line per
+// declaration. The plain-text .mfl is the source of truth; pack is only for a
+// compact wire/distribution artifact. `machin run` reads either form.
+func cmdPack(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("pack: need one .mfl file")
+	}
+	data, err := os.ReadFile(args[0])
+	if err != nil {
+		return err
+	}
+	var out strings.Builder
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		decl, err := declFromLine(line) // tolerate already-packed input
+		if err != nil {
+			return err
+		}
+		out.WriteString(base64.StdEncoding.EncodeToString([]byte(decl)))
+		out.WriteString("\n\n")
 	}
 	fmt.Print(out.String())
 	return nil

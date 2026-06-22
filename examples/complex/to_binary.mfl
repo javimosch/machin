@@ -1,6 +1,6 @@
-ZnVuYyB0b19iYXNlKG4sIGIpIHsgaWYgbiA9PSAwIHsgcmV0dXJuICIwIiB9IGlmIG4gPCBiIHsgcmV0dXJuIGRpZ2l0KG4pIH0gcmV0dXJuIHRvX2Jhc2UobiAvIGIsIGIpICsgZGlnaXQobiAlIGIpIH0=
+func to_base(n, b) { if n == 0 { return "0" } if n < b { return digit(n) } return to_base(n / b, b) + digit(n % b) }
 
-ZnVuYyBkaWdpdChkKSB7IGlmIGQgPCAxMCB7IHJldHVybiBzdHIoZCkgfSBpZiBkID09IDEwIHsgcmV0dXJuICJhIiB9IGlmIGQgPT0gMTEgeyByZXR1cm4gImIiIH0gaWYgZCA9PSAxMiB7IHJldHVybiAiYyIgfSBpZiBkID09IDEzIHsgcmV0dXJuICJkIiB9IGlmIGQgPT0gMTQgeyByZXR1cm4gImUiIH0gcmV0dXJuICJmIiB9
+func digit(d) { if d < 10 { return str(d) } if d == 10 { return "a" } if d == 11 { return "b" } if d == 12 { return "c" } if d == 13 { return "d" } if d == 14 { return "e" } return "f" }
 
-ZnVuYyBtYWluKCkgeyBpIDo9IDAgd2hpbGUgaSA8PSAxNiB7IHByaW50bG4oaSwgIj0gYmluIiwgdG9fYmFzZShpLCAyKSwgInwgaGV4IiwgdG9fYmFzZShpLCAxNikpIGkgPSBpICsgMSB9IHByaW50bG4oMjU1LCAiPSBoZXgiLCB0b19iYXNlKDI1NSwgMTYpKSB9
+func main() { i := 0 while i <= 16 { println(i, "= bin", to_base(i, 2), "| hex", to_base(i, 16)) i = i + 1 } println(255, "= hex", to_base(255, 16)) }
 

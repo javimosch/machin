@@ -1,8 +1,8 @@
-ZnVuYyBzdW0obnVtcy4uLikgeyB0b3RhbCA6PSAwIGZvciBfLCBuIDo9IHJhbmdlIG51bXMgeyB0b3RhbCA9IHRvdGFsICsgbiB9IHJldHVybiB0b3RhbCB9
+func sum(nums...) { total := 0 for _, n := range nums { total = total + n } return total }
 
-ZnVuYyBsYWJlbGVkKGxhYmVsLCB2YWxzLi4uKSB7IG91dCA6PSBsYWJlbCArICI6IiBmb3IgXywgdiA6PSByYW5nZSB2YWxzIHsgb3V0ID0gb3V0ICsgIiAiICsgc3RyKHYpIH0gcmV0dXJuIG91dCB9
+func labeled(label, vals...) { out := label + ":" for _, v := range vals { out = out + " " + str(v) } return out }
 
-ZnVuYyBtYWluKCkgeyBwcmludGxuKCJzdW0oKSA9Iiwgc3VtKCkpIHByaW50bG4oInN1bSgxLDIsMykgPSIsIHN1bSgxLCAyLCAzKSkgcHJpbnRsbigic3VtKDEwLDIwLDMwLDQwKSA9Iiwgc3VtKDEwLCAyMCwgMzAsIDQwKSkgeHMgOj0gW11pbnR7NSwgNiwgN30gcHJpbnRsbigic3VtKHhzLi4uKSA9Iiwgc3VtKHhzLi4uKSkgcHJpbnRsbihsYWJlbGVkKCJudW1zIiwgMSwgMiwgMykpIHByaW50bG4obGFiZWxlZCgiZW1wdHkiKSkgcHJpbnRsbihzdW1fc3RyaW5ncygiYSIsICJiIiwgImMiKSkgfQ==
+func main() { println("sum() =", sum()) println("sum(1,2,3) =", sum(1, 2, 3)) println("sum(10,20,30,40) =", sum(10, 20, 30, 40)) xs := []int{5, 6, 7} println("sum(xs...) =", sum(xs...)) println(labeled("nums", 1, 2, 3)) println(labeled("empty")) println(sum_strings("a", "b", "c")) }
 
-ZnVuYyBzdW1fc3RyaW5ncyhwYXJ0cy4uLikgeyBzIDo9ICIiIGZvciBfLCBwIDo9IHJhbmdlIHBhcnRzIHsgcyA9IHMgKyBwIH0gcmV0dXJuIHMgfQ==
+func sum_strings(parts...) { s := "" for _, p := range parts { s = s + p } return s }
 

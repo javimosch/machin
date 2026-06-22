@@ -1,3 +1,4 @@
-ZnVuYyBmaWIobikgeyBpZiBuIDwgMiB7IHJldHVybiBuIH0gcmV0dXJuIGZpYihuIC0gMSkgKyBmaWIobiAtIDIpIH0=
+func fib(n) { if n < 2 { return n } return fib(n - 1) + fib(n - 2) }
 
-ZnVuYyBtYWluKCkgeyBwcmludGxuKGZpYig0MCkpIH0=
+func main() { println(fib(40)) }
+

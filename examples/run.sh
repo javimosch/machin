@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Run every MFL program. The .mfl base64 files ARE the source of truth;
-# there is no human-readable source to compile from.
+# Run every MFL program. The .mfl files are the source of truth — canonical
+# plain text, one normalized function per line.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 go build -o machin .

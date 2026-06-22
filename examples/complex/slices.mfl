@@ -1,10 +1,10 @@
-ZnVuYyBzdW0oeHMpIHsgdG90YWwgOj0gMCBpIDo9IDAgZm9yIGkgPCBsZW4oeHMpIHsgdG90YWwgPSB0b3RhbCArIHhzW2ldIGkgPSBpICsgMSB9IHJldHVybiB0b3RhbCB9
+func sum(xs) { total := 0 i := 0 for i < len(xs) { total = total + xs[i] i = i + 1 } return total }
 
-ZnVuYyBtYXgoeHMpIHsgbSA6PSB4c1swXSBpIDo9IDEgZm9yIGkgPCBsZW4oeHMpIHsgaWYgeHNbaV0gPiBtIHsgbSA9IHhzW2ldIH0gaSA9IGkgKyAxIH0gcmV0dXJuIG0gfQ==
+func max(xs) { m := xs[0] i := 1 for i < len(xs) { if xs[i] > m { m = xs[i] } i = i + 1 } return m }
 
-ZnVuYyBzcXVhcmVzKG4pIHsgeHMgOj0gW11pbnR7fSBpIDo9IDEgZm9yIGkgPD0gbiB7IHhzID0gYXBwZW5kKHhzLCBpICogaSkgaSA9IGkgKyAxIH0gcmV0dXJuIHhzIH0=
+func squares(n) { xs := []int{} i := 1 for i <= n { xs = append(xs, i * i) i = i + 1 } return xs }
 
-ZnVuYyByZXZlcnNlKHhzKSB7IGkgOj0gMCBqIDo9IGxlbih4cykgLSAxIGZvciBpIDwgaiB7IHQgOj0geHNbaV0geHNbaV0gPSB4c1tqXSB4c1tqXSA9IHQgaSA9IGkgKyAxIGogPSBqIC0gMSB9IHJldHVybiB4cyB9
+func reverse(xs) { i := 0 j := len(xs) - 1 for i < j { t := xs[i] xs[i] = xs[j] xs[j] = t i = i + 1 j = j - 1 } return xs }
 
-ZnVuYyBtYWluKCkgeyBudW1zIDo9IFtdaW50ezUsIDMsIDgsIDEsIDksIDJ9IHByaW50bG4oIm51bXMgbGVuOiIsIGxlbihudW1zKSkgcHJpbnRsbigic3VtOiIsIHN1bShudW1zKSkgcHJpbnRsbigibWF4OiIsIG1heChudW1zKSkgc3EgOj0gc3F1YXJlcyg2KSBwcmludCgic3F1YXJlcyAxLi42OiAiKSBpIDo9IDAgZm9yIGkgPCBsZW4oc3EpIHsgcHJpbnQoc3FbaV0sICIiKSBpID0gaSArIDEgfSBwcmludGxuKCIiKSByZXZlcnNlKG51bXMpIHByaW50KCJyZXZlcnNlZDogICAgIikgaSA9IDAgZm9yIGkgPCBsZW4obnVtcykgeyBwcmludChudW1zW2ldLCAiIikgaSA9IGkgKyAxIH0gcHJpbnRsbigiIikgfQ==
+func main() { nums := []int{5, 3, 8, 1, 9, 2} println("nums len:", len(nums)) println("sum:", sum(nums)) println("max:", max(nums)) sq := squares(6) print("squares 1..6: ") i := 0 for i < len(sq) { print(sq[i], "") i = i + 1 } println("") reverse(nums) print("reversed:    ") i = 0 for i < len(nums) { print(nums[i], "") i = i + 1 } println("") }
 

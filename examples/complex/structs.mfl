@@ -1,6 +1,6 @@
-dHlwZSBVc2VyIHN0cnVjdCB7IG5hbWUgICBzdHJpbmcgYWdlICAgIGludCBhY3RpdmUgYm9vbCB9
+type User struct { name   string age    int active bool }
 
-ZnVuYyBncmVldCh1KSB7IHJldHVybiAiSGkgIiArIHUubmFtZSB9
+func greet(u) { return "Hi " + u.name }
 
-ZnVuYyBtYWluKCkgeyB1c2VycyA6PSBbXVVzZXJ7fSB1c2VycyA9IGFwcGVuZCh1c2VycywgVXNlcntuYW1lOiAiQWRhIiwgYWdlOiAzNiwgYWN0aXZlOiB0cnVlfSkgdXNlcnMgPSBhcHBlbmQodXNlcnMsIFVzZXJ7bmFtZTogIkxpbnVzIiwgYWdlOiA1NCwgYWN0aXZlOiBmYWxzZX0pIHVzZXJzID0gYXBwZW5kKHVzZXJzLCBVc2Vye25hbWU6ICJHcmFjZSIsIGFnZTogODUsIGFjdGl2ZTogdHJ1ZX0pIGkgOj0gMCBhY3RpdmUgOj0gMCB0b3RhbCA6PSAwIGZvciBpIDwgbGVuKHVzZXJzKSB7IHUgOj0gdXNlcnNbaV0gcHJpbnRsbihncmVldCh1KSwgIi0tIGFnZSIsIHUuYWdlLCAiYWN0aXZlIiwgdS5hY3RpdmUpIGlmIHUuYWN0aXZlIHsgYWN0aXZlID0gYWN0aXZlICsgMSB9IHRvdGFsID0gdG90YWwgKyB1LmFnZSBpID0gaSArIDEgfSBwcmludGxuKCJ1c2VyczoiLCBsZW4odXNlcnMpLCAiYWN0aXZlOiIsIGFjdGl2ZSwgImF2ZyBhZ2U6IiwgdG90YWwgLyBsZW4odXNlcnMpKSB9
+func main() { users := []User{} users = append(users, User{name: "Ada", age: 36, active: true}) users = append(users, User{name: "Linus", age: 54, active: false}) users = append(users, User{name: "Grace", age: 85, active: true}) i := 0 active := 0 total := 0 for i < len(users) { u := users[i] println(greet(u), "-- age", u.age, "active", u.active) if u.active { active = active + 1 } total = total + u.age i = i + 1 } println("users:", len(users), "active:", active, "avg age:", total / len(users)) }
 

@@ -1,6 +1,6 @@
-ZnVuYyBnY2QoYSwgYikgeyB3aGlsZSBiICE9IDAgeyB0IDo9IGIgYiA9IGEgJSBiIGEgPSB0IH0gcmV0dXJuIGEgfQ==
+func gcd(a, b) { while b != 0 { t := b b = a % b a = t } return a }
 
-ZnVuYyBsY20oYSwgYikgeyByZXR1cm4gYSAvIGdjZChhLCBiKSAqIGIgfQ==
+func lcm(a, b) { return a / gcd(a, b) * b }
 
-ZnVuYyBtYWluKCkgeyBwcmludGxuKCJnY2QoNDgsIDM2KSA9IiwgZ2NkKDQ4LCAzNikpIHByaW50bG4oImdjZCgxNywgNSkgPSIsIGdjZCgxNywgNSkpIHByaW50bG4oImxjbSg0LCA2KSA9IiwgbGNtKDQsIDYpKSBwcmludGxuKCJsY20oMjEsIDYpID0iLCBsY20oMjEsIDYpKSB9
+func main() { println("gcd(48, 36) =", gcd(48, 36)) println("gcd(17, 5) =", gcd(17, 5)) println("lcm(4, 6) =", lcm(4, 6)) println("lcm(21, 6) =", lcm(21, 6)) }
 

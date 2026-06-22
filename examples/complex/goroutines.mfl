@@ -1,4 +1,4 @@
-ZnVuYyB3b3JrKGlkLCBuKSB7IHN1bSA6PSAwIGkgOj0gMSBmb3IgaSA8PSBuIHsgc3VtID0gc3VtICsgaSBpID0gaSArIDEgfSBwcmludGxuKCJ3b3JrZXIiLCBpZCwgImNvbXB1dGVkIHN1bSAxLi4iLCBuLCAiPSIsIHN1bSkgfQ==
+func work(id, n) { sum := 0 i := 1 for i <= n { sum = sum + i i = i + 1 } println("worker", id, "computed sum 1..", n, "=", sum) }
 
-ZnVuYyBtYWluKCkgeyBwcmludGxuKCJzcGF3bmluZyA1IGdvcm91dGluZXMiKSBpIDo9IDEgZm9yIGkgPD0gNSB7IGdvIHdvcmsoaSwgaSAqIDEwMDApIGkgPSBpICsgMSB9IHNsZWVwKDIwMCkgcHJpbnRsbigiYWxsIGdvcm91dGluZXMgZmluaXNoZWQiKSB9
+func main() { println("spawning 5 goroutines") i := 1 for i <= 5 { go work(i, i * 1000) i = i + 1 } sleep(200) println("all goroutines finished") }
 

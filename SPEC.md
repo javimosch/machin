@@ -1,10 +1,12 @@
 # The MFL Language Specification
 
-Version 0.3.0
+Version 0.4.x
 
 MFL (Machine-First Language) is a statically-typed, Go-flavored backend language
-whose canonical on-disk form is **base64**. It is compiled to native code through
-C. This document specifies the language as implemented by the `machin` toolchain.
+**shaped for machine authoring**: minimal syntax, no type annotations, one
+canonical function per line. Its on-disk form is plain canonical text; it is
+compiled to native code through C. This document specifies the language as
+implemented by the `machin` toolchain.
 
 > This is a reference specification. For a gentler tour see
 > [`docs/LANGUAGE.md`](docs/LANGUAGE.md); for runnable programs see
@@ -14,10 +16,12 @@ C. This document specifies the language as implemented by the `machin` toolchain
 
 ## 1. Overview
 
-- **Machine-first.** A program *is* base64: one function (or type) declaration
-  per line, a blank line between declarations. The base64 is the source of
-  truth; the decoded text below is a projection humans never need to author by
-  hand. The human states intent; the machine reads and writes the code.
+- **Machine-first.** The language is shaped for agents to write and edit
+  cheaply: terse, type-inferred, and laid out one normalized declaration per
+  line (a blank line between declarations). The source is plain canonical text —
+  greppable and diffable — not a form humans would enjoy authoring, but one they
+  state intent toward and let agents produce. A dense base64 "packed" form is
+  available via `machin pack` for distribution; `machin run` reads either.
 - **Statically typed, no annotations.** Every value has a type known at compile
   time, inferred by unification. There is no type syntax except struct field
   types and the element types in `make`/composite literals.
@@ -26,21 +30,22 @@ C. This document specifies the language as implemented by the `machin` toolchain
 
 ---
 
-## 2. Program structure and encoding
+## 2. Program structure
 
-A `.mfl` file is a sequence of base64-encoded **declarations**, one per
-non-blank line:
+A `.mfl` file is a sequence of **declarations**, one normalized declaration per
+non-blank line, a blank line between them:
 
 ```
-<base64 of declaration 1>
+func fib(n) { if n < 2 { return n } return fib(n - 1) + fib(n - 2) }
 
-<base64 of declaration 2>
+func main() { println(fib(10)) }
 ```
 
-Each line base64-decodes to exactly one top-level declaration: a **function**
-(`func ...`) or a **struct type** (`type ...`). The decoded form is the grammar
-described in the rest of this document. Whitespace within a decoded declaration
-is insignificant except as a token separator.
+Each line is exactly one top-level declaration: a **function** (`func ...`) or a
+**struct type** (`type ...`), in the grammar described in the rest of this
+document. Whitespace within a declaration is insignificant except as a token
+separator. A line that contains no whitespace is treated as a base64-**packed**
+declaration and decoded first, so `machin pack` output (§14) also loads.
 
 A program must define a function named `main` with no parameters and no return
 value; it is the entry point.
@@ -329,7 +334,7 @@ id(42); id("hi"); id(3.14)   // → three native functions
 ## 13. Compilation model
 
 ```
-.mfl ──base64 decode──▶ parse ──▶ lambda-lift ──▶ infer + monomorphize ──▶ emit C ──▶ cc -O2 ──▶ native binary
+.mfl (canonical text) ──▶ parse ──▶ lambda-lift ──▶ infer + monomorphize ──▶ emit C ──▶ cc -O2 ──▶ native binary
 ```
 
 - **Inference** is unification over a union-find; deferred resolution handles

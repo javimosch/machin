@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MFL — the Machine-First Language</title>
-<meta name="description" content="A backend language whose source is base64. Written for machines, not humans. Statically typed by inference, compiled to native code.">
+<meta name="description" content="A backend language shaped for machines: minimal syntax, no type annotations, one canonical function per line. Statically typed by inference, compiled to native code.">
 <style>
   :root{
     --bg:#0a0c10; --panel:#12161d; --border:#222932; --fg:#e6edf3;
@@ -52,9 +52,9 @@
 </head>
 <body>
 <header><div class="wrap">
-  <div class="badge">v0.3.0 · compiled to native code</div>
+  <div class="badge">v0.4.2 · compiled to native code</div>
   <h1>machin ⎯ MFL</h1>
-  <p class="tag">A backend language whose source is <b>base64</b>.<br>Written for machines. You don't read the code — the machine does.</p>
+  <p class="tag">A backend language <b>shaped for machines</b>.<br>Minimal syntax, no type annotations, one canonical function per line — built so agents write code in the fewest tokens.</p>
   <div class="cta">
     <a class="primary" href="https://github.com/javimosch/machin">GitHub</a>
     <a href="https://github.com/javimosch/machin/blob/main/SPEC.md">Spec</a>
@@ -66,18 +66,18 @@
 
 <section>
   <h2>This is a program</h2>
-  <p class="lead">Not a representation of one — the program itself. A `.mfl` file is base64, one function per line. The machine emits it and consumes it; there is no readable source to author or maintain. The recursive Fibonacci below is complete and runs:</p>
-  <code class="b64">ZnVuYyBmaWIobikgeyBpZiBuIDwgMiB7IHJldHVybiBuIH0gcmV0dXJuIGZpYihuIC0gMSkgKyBmaWIobiAtIDIpIH0=</code>
-  <code class="b64">ZnVuYyBtYWluKCkgeyBwcmludGxuKGZpYigxMCkpIH0=</code>
-  <p class="cap">A blank line separates functions. Each line is independently addressable — tooling ships, caches, or rewrites one function without touching the rest.</p>
+  <p class="lead">A `.mfl` file is plain canonical text — one normalized function per line, a blank line between them. No annotations, no formatting choices, nothing an agent spends tokens on that it doesn't have to. The recursive Fibonacci below is complete and runs:</p>
+  <code class="b64">func fib(n) { if n < 2 { return n } return fib(n - 1) + fib(n - 2) }</code>
+  <code class="b64">func main() { println(fib(10)) }</code>
+  <p class="cap">Each line is independently addressable — tooling ships, caches, or rewrites one function without touching the rest — and because it is text, it stays greppable and diffable. (A dense base64 form is available via <code>machin pack</code> for distribution.)</p>
 </section>
 
 <section>
-  <h2>No human in the loop</h2>
-  <p class="lead">Readable syntax exists for people to scan; MFL drops it as overhead, because the entity writing and reading the code is a machine. You state intent — the machine produces the base64 and compiles it.</p>
+  <h2>Machine-first by design, not by encoding</h2>
+  <p class="lead">Human languages carry ceremony — annotations, boilerplate, formatting rules — that an agent pays for in output tokens on every edit. MFL strips it: types are inferred, the layout is canonical, the surface is minimal. You state intent; agents write the code. Measured, this costs an agent ~2.5× fewer tokens to write and edit than the same logic in a base64-encoded form.</p>
   <div class="pipe">
     <span>intent</span><span class="arrow">→</span>
-    <span>.mfl (base64)</span><span class="arrow">→</span>
+    <span>.mfl (canonical text)</span><span class="arrow">→</span>
     <span>infer + monomorphize</span><span class="arrow">→</span>
     <span>C</span><span class="arrow">→</span>
     <span>cc -O2</span><span class="arrow">→</span>
@@ -98,7 +98,7 @@
 
 <section>
   <h2>The whole Go-flavored core</h2>
-  <p class="lead">Everything below is expressed in the base64 form and compiled to native code.</p>
+  <p class="lead">Everything below is expressed in this canonical form and compiled to native code.</p>
   <div class="grid">
     <div class="card"><h3>Composite types</h3><p>slices, structs, maps — all unboxed.</p></div>
     <div class="card"><h3>Concurrency</h3><p>goroutines, channels, and a per-goroutine arena that keeps servers memory-bounded.</p></div>
@@ -111,8 +111,8 @@
 
 <section>
   <h2>A concurrent HTTP server — one line</h2>
-  <p class="lead">This base64 line is the entry point of a goroutine-per-connection web server (listen, accept loop, dispatch):</p>
-  <code class="b64">ZnVuYyBtYWluKCkgeyBzZXJ2ZXIgOj0gbGlzdGVuKDQ4MDgwKSBmb3IgeyBjb25uIDo9IGFjY2VwdChzZXJ2ZXIpIGdvIGhhbmRsZShjb25uKSB9IH0=</code>
+  <p class="lead">This single line is the entry point of a goroutine-per-connection web server (listen, accept loop, dispatch):</p>
+  <code class="b64">func main() { server := listen(48080) for { conn := accept(server) go handle(conn) } }</code>
   <p class="cap">The machweb framework — itself written in MFL — adds routing and JSON on top. You compose it with your app and compile:</p>
 <pre><span class="cm"># the machine composes the framework + your intent into one program</span>
 machin encode framework/machweb.src app.src &gt; app.mfl
