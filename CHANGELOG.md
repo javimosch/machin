@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.19.0
 
 - **`machin guide` — self-describing feature catalog for agents.** One command
   emits machin's complete, version-exact surface — keywords, types, every builtin
