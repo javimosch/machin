@@ -68,6 +68,12 @@ func ParseProgram(decls []string) (*Program, error) {
 			}
 			prog.Types = append(prog.Types, td)
 			structs[td.Name] = true
+		} else if toks[0].Kind == TKeyword && toks[0].Val == "extern" {
+			ed, err := ParseExtern(src)
+			if err != nil {
+				return nil, err
+			}
+			prog.Externs = append(prog.Externs, ed)
 		} else {
 			funcSrcs = append(funcSrcs, src)
 		}
@@ -81,6 +87,104 @@ func ParseProgram(decls []string) (*Program, error) {
 	}
 	liftClosures(prog) // closure conversion: lift function literals to top level
 	return prog, nil
+}
+
+// ParseExtern parses a single extern declaration (foreign C functions).
+func ParseExtern(src string) (*ExternDecl, error) {
+	toks, err := Lex(src)
+	if err != nil {
+		return nil, err
+	}
+	p := &Parser{toks: toks}
+	ed, err := p.parseExternDecl()
+	if err != nil {
+		return nil, err
+	}
+	if p.peek().Kind != TEOF {
+		return nil, fmt.Errorf("trailing tokens after extern: %q", p.peek().Val)
+	}
+	return ed, nil
+}
+
+func isFFIType(s string) bool {
+	return s == "int" || s == "float" || s == "bool" || s == "string"
+}
+
+// parseExternDecl parses:
+//   extern "lib" { header "h.h" link "l" cflags "..." fn Name(t, t) ret ... }
+func (p *Parser) parseExternDecl() (*ExternDecl, error) {
+	if _, err := p.expect(TKeyword, "extern"); err != nil {
+		return nil, err
+	}
+	lib, err := p.expect(TString, "")
+	if err != nil {
+		return nil, err
+	}
+	if _, err := p.expect(TPunct, "{"); err != nil {
+		return nil, err
+	}
+	ed := &ExternDecl{Lib: lib.Val}
+	str := func(dst *string) error {
+		s, err := p.expect(TString, "")
+		if err != nil {
+			return err
+		}
+		*dst = s.Val
+		return nil
+	}
+	for p.peek().Val != "}" && p.peek().Kind != TEOF {
+		kw := p.next()
+		switch kw.Val {
+		case "header":
+			if err := str(&ed.Header); err != nil {
+				return nil, err
+			}
+		case "link":
+			if err := str(&ed.Link); err != nil {
+				return nil, err
+			}
+		case "cflags":
+			if err := str(&ed.CFlags); err != nil {
+				return nil, err
+			}
+		case "fn":
+			name, err := p.expect(TIdent, "")
+			if err != nil {
+				return nil, err
+			}
+			if _, err := p.expect(TPunct, "("); err != nil {
+				return nil, err
+			}
+			var params []string
+			for p.peek().Val != ")" && p.peek().Kind != TEOF {
+				t := p.next()
+				if !isFFIType(t.Val) {
+					return nil, fmt.Errorf("extern fn %s: unsupported parameter type %q (use int/float/bool/string)", name.Val, t.Val)
+				}
+				params = append(params, t.Val)
+				for p.peek().Val == "," {
+					p.next()
+				}
+			}
+			if _, err := p.expect(TPunct, ")"); err != nil {
+				return nil, err
+			}
+			ret := ""
+			if isFFIType(p.peek().Val) {
+				ret = p.next().Val // an explicit return type; absence means void
+			}
+			ed.Funcs = append(ed.Funcs, ExternFunc{Name: name.Val, Params: params, Ret: ret})
+		default:
+			return nil, fmt.Errorf("extern: expected header/link/cflags/fn, got %q", kw.Val)
+		}
+	}
+	if _, err := p.expect(TPunct, "}"); err != nil {
+		return nil, err
+	}
+	if len(ed.Funcs) == 0 {
+		return nil, fmt.Errorf("extern %q: no fn declarations", ed.Lib)
+	}
+	return ed, nil
 }
 
 // ParseType parses a single decoded struct type declaration.

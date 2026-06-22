@@ -82,7 +82,9 @@ type Checker struct {
 	nodeSlot   map[string]map[Node]int // instance -> expr node -> slot
 
 	// shared concrete slots (no inner type vars, safe to share)
-	cBool, cString, cVoid, cInt int
+	cBool, cString, cVoid, cInt, cFloat int
+
+	externs map[string]*ExternFunc // foreign C functions, by name
 
 	pairs []int      // flattened pairs: pairs[2i], pairs[2i+1]
 	plus  []plusCons // overloaded '+' constraints, resolved by fixpoint
@@ -576,11 +578,13 @@ func Check(p *Program) (*Checker, error) {
 		instStack:  map[string]string{},
 		callInst:   map[string]map[*Call]string{},
 		closureInst: map[string]map[*MakeClosure]string{},
+		externs:    map[string]*ExternFunc{},
 	}
 	c.cBool = newSlot(c, KBool)
 	c.cString = newSlot(c, KString)
 	c.cVoid = newSlot(c, KVoid)
 	c.cInt = newSlot(c, KInt)
+	c.cFloat = newSlot(c, KFloat)
 
 	// 0. register struct types and validate their field types
 	for _, td := range p.Types {
@@ -603,6 +607,19 @@ func Check(p *Program) (*Checker, error) {
 	}
 	if _, ok := c.funcs["main"]; !ok {
 		return nil, fmt.Errorf("no main function defined")
+	}
+	// register foreign (extern) functions; their signatures are fixed, not inferred
+	for _, ed := range p.Externs {
+		for _, ef := range ed.Funcs {
+			f := ef
+			if _, dup := c.externs[f.Name]; dup {
+				return nil, fmt.Errorf("duplicate extern fn %q", f.Name)
+			}
+			if _, clash := c.funcs[f.Name]; clash {
+				return nil, fmt.Errorf("extern fn %q clashes with a function", f.Name)
+			}
+			c.externs[f.Name] = &f
+		}
 	}
 	// 2. instantiate from main; every reachable function is specialized per
 	//    concrete call-site type (monomorphization).
@@ -1368,6 +1385,24 @@ func (c *Checker) genStructLit(fn *FuncDecl, ex *StructLit) (int, error) {
 	return res, nil
 }
 
+// ffiSlot maps an FFI scalar type name to its concrete checker slot.
+func (c *Checker) ffiSlot(t string) int {
+	switch t {
+	case "int":
+		return c.cInt
+	case "float":
+		return c.cFloat
+	case "bool":
+		return c.cBool
+	case "string":
+		return c.cString
+	}
+	return c.cVoid // "" -> void
+}
+
+// ExternFn returns the foreign-function signature for name, or nil.
+func (c *Checker) ExternFn(name string) *ExternFunc { return c.externs[name] }
+
 func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 	argSlots := make([]int, len(ex.Args))
 	for i, a := range ex.Args {
@@ -1545,6 +1580,16 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		}
 		c.addPair(argSlots[0], c.cInt)
 		return c.cVoid, nil
+	}
+	if ef, ok := c.externs[ex.Callee]; ok {
+		// a foreign C function: fixed signature, compiled to a direct C call
+		if len(argSlots) != len(ef.Params) {
+			return 0, fmt.Errorf("%s: expected %d args, got %d", ef.Name, len(ef.Params), len(argSlots))
+		}
+		for i, pt := range ef.Params {
+			c.addPair(argSlots[i], c.ffiSlot(pt))
+		}
+		return c.ffiSlot(ef.Ret), nil
 	}
 	if _, isFunc := c.funcs[ex.Callee]; !isFunc {
 		// not a top-level function — maybe a function-valued local variable

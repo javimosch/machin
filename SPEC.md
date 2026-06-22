@@ -78,7 +78,7 @@ The decoded text of a declaration is tokenized as follows.
 - **Float literals.** digits with a `.`, e.g. `3.14`, `0.5`.
 - **String literals.** `"..."` with escapes `\n \t \r \" \\`.
 - **Keywords.** `func return if else while for range true false nil var go type
-  struct chan make map`.
+  struct chan make map arena extern`.
 - **Operators and punctuation.** `+ - * / % == != < <= > >= && || ! = := <- .
   : , ; ( ) { } [ ]`.
 
@@ -378,10 +378,41 @@ FuncLit     = "func" "(" [ identList ] ")" Block .
 
 ---
 
-## 15. Status and non-goals
+## 15. Foreign functions (C FFI)
+
+An `extern` declaration names foreign C functions and how to compile and link
+against them. It is a single top-level declaration (one line, like any other):
+
+```
+extern "m" { header "math.h" link "m" fn sqrt(float) float fn pow(float, float) float }
+```
+
+- `"m"` — an informational library name.
+- `header "h.h"` — emits `#include <h.h>` so the real C prototype is in scope.
+  If omitted, machin emits a prototype from the declared signature instead.
+- `link "l"` — passes `-l<l>` to the C compiler.
+- `cflags "..."` — passes extra flags (e.g. `-I`/`-L` paths) to the C compiler.
+- `fn Name(t, ...) ret` — a foreign function. Parameter and return types are the
+  FFI scalar types `int`, `float`, `bool`, `string`; a missing return type means
+  `void`.
+
+A call to a declared name compiles to a **direct C call**; its arguments and
+return value use the C representation of the FFI type (`int`→`int64_t`,
+`float`→`double`, `bool`→`int`, `string`→`const char*`). The call is type-checked
+against the declared arity/types like any other.
+
+This is **Phase 1** (scalar types). Structs, opaque handles/pointers, and
+callbacks are future phases. The FFI boundary is unchecked C: a value an MFL
+string passes to C is arena-allocated, so a C function that retains the pointer
+past the arena's lifetime would dangle — pass copies or keep it in scope.
+
+---
+
+## 16. Status and non-goals
 
 Implemented: the entire surface above, including arena memory management with
 scoped `arena { }` blocks (§12), named return values (§9), variadic parameters
-(§5.2), by-reference closure capture (§11.1), and opt-in bounds/overflow checks
-(`--safe`). Not yet implemented: polymorphic recursion and an automatic tracing
-GC. These are refinements, not core gaps.
+(§5.2), by-reference closure capture (§11.1), opt-in bounds/overflow checks
+(`--safe`), and scalar C FFI (§15). Not yet implemented: polymorphic recursion,
+an automatic tracing GC, and FFI phases 2–4 (structs, handles, callbacks). These
+are refinements, not core gaps.

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 )
 
 // ccPath is the C compiler used to turn emitted C into a native binary.
@@ -32,7 +33,21 @@ func BuildBinary(prog *Program, outPath string, safe bool) error {
 	}
 	tmp.Close()
 
-	cmd := exec.Command(ccPath(), "-O2", "-std=c11", "-pthread", "-o", outPath, tmp.Name())
+	// foreign linkage: extern cflags go before the source; -l libs after it
+	args := []string{"-O2", "-std=c11", "-pthread"}
+	var libs []string
+	for _, ed := range prog.Externs {
+		if ed.CFlags != "" {
+			args = append(args, strings.Fields(ed.CFlags)...)
+		}
+		if ed.Link != "" {
+			libs = append(libs, "-l"+ed.Link)
+		}
+	}
+	args = append(args, "-o", outPath, tmp.Name())
+	args = append(args, libs...)
+
+	cmd := exec.Command(ccPath(), args...)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("%s failed: %v\n%s", ccPath(), err, out)
 	}

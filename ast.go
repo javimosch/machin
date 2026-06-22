@@ -5,9 +5,32 @@ type Node interface{ node() }
 
 // Program is a whole MFL program: struct type declarations plus functions.
 type Program struct {
-	Types []*TypeDecl
-	Funcs []*FuncDecl
+	Types   []*TypeDecl
+	Funcs   []*FuncDecl
+	Externs []*ExternDecl
 }
+
+// ExternDecl declares foreign C functions and how to compile/link against them:
+//   extern "m" { header "math.h" link "m" fn sqrt(float) float }
+// Calls to the declared names compile to direct C calls; the header supplies the
+// real prototype and `link`/`cflags` are threaded into the cc invocation.
+type ExternDecl struct {
+	Lib    string // informational name after `extern`
+	Header string // #include <Header> ("" if none)
+	Link   string // -l<Link> ("" if none)
+	CFlags string // extra cc flags ("" if none)
+	Funcs  []ExternFunc
+}
+
+// ExternFunc is one foreign function signature. Param/return types are the FFI
+// scalar type names: int, float, bool, string (Ret "" means void).
+type ExternFunc struct {
+	Name   string
+	Params []string
+	Ret    string
+}
+
+func (ExternDecl) node() {}
 
 // Field is one struct field with an explicit type (int, float, bool, string,
 // []elem, or another struct name).

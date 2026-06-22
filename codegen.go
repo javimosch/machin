@@ -385,6 +385,21 @@ static char* mfl_input(void) {
 }
 `
 
+// ffiCType maps an FFI scalar type name to its C type (for headerless prototypes).
+func ffiCType(t string) string {
+	switch t {
+	case "int":
+		return "int64_t"
+	case "float":
+		return "double"
+	case "bool":
+		return "int"
+	case "string":
+		return "const char*"
+	}
+	return "void"
+}
+
 func cType(k Kind) string {
 	switch k {
 	case KInt:
@@ -433,6 +448,25 @@ func (g *cgen) program(p *Program) (string, error) {
 	var out strings.Builder
 	out.WriteString(cRuntime)
 	out.WriteByte('\n')
+	// foreign (extern) declarations: include each header so the real C prototype
+	// is in scope; for headerless externs, emit a prototype from the signature.
+	for _, ed := range p.Externs {
+		if ed.Header != "" {
+			fmt.Fprintf(&out, "#include <%s>\n", ed.Header)
+			continue
+		}
+		for _, ef := range ed.Funcs {
+			params := make([]string, len(ef.Params))
+			for i, pt := range ef.Params {
+				params[i] = ffiCType(pt)
+			}
+			ps := strings.Join(params, ", ")
+			if ps == "" {
+				ps = "void"
+			}
+			fmt.Fprintf(&out, "extern %s %s(%s);\n", ffiCType(ef.Ret), ef.Name, ps)
+		}
+	}
 	// struct typedefs, in declaration order (a struct may reference earlier ones)
 	for _, td := range p.Types {
 		fmt.Fprintf(&out, "typedef struct {")
@@ -1475,6 +1509,10 @@ func (g *cgen) call(ex *Call) (string, error) {
 		return "mfl_input()", nil
 	case "print", "println":
 		return "", fmt.Errorf("print/println may only be used as a statement")
+	}
+	if ef := g.c.ExternFn(ex.Callee); ef != nil {
+		// a foreign C function: call it directly (the header gives the prototype)
+		return fmt.Sprintf("%s(%s)", ef.Name, strings.Join(args, ", ")), nil
 	}
 	if !g.c.IsTopFunc(ex.Callee) {
 		// a function-valued local variable, called by name
