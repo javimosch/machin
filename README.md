@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.7.0-blue" alt="Version">
+  <img src="https://img.shields.io/badge/version-0.8.0-blue" alt="Version">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
   <img src="https://img.shields.io/badge/go-1.22-00ADD8" alt="Go">
   <img src="https://img.shields.io/badge/backend-C%20%E2%86%92%20native-orange" alt="Native">
@@ -40,7 +40,7 @@ bin/machin pack   app.mfl                # dense base64 form (distribution)
 ## Capabilities
 
 - **Types** (all inferred, unboxed): `int` `float` `bool` `string`, slices `[]T`, maps `map[K]V`, structs, `func` values
-- **Flow**: `if`/`for`/`while`/`range`, multiple & named returns, comma-ok, variadics, closures (by-reference), implicit generics (monomorphized)
+- **Flow**: `if`/`for`/`while`/`range`, `break`/`continue`, multiple & named returns, comma-ok, variadics, closures (by-reference), implicit generics (monomorphized)
 - **Concurrency**: goroutines (`go`), channels; per-goroutine arena GC + scoped `arena{}`; `--safe` checks
 - **Networking**: `dial` (client) + `listen`/`accept`/`read`/`write`/`close` (server)
 - **I/O & data**: `read_file`/`write_file`/`list_dir`/`mkdir`, `input`, `json`/`parse`, `args`/`env`/`now`/`now_ms`/`parse_int`, string ops
