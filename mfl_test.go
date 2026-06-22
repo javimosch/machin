@@ -535,6 +535,18 @@ func TestSplitFunctions(t *testing.T) {
 	}
 }
 
+// break exits the nearest loop; continue skips to the next iteration — in
+// bare for{}, condition for-loops, and range loops.
+func TestBreakContinue(t *testing.T) {
+	sumUntil := `func sum_until(limit) (s) { s = 0 i := 0 for { if i >= 100 { break } i = i + 1 if i % 2 == 0 { continue } if i > limit { break } s = s + i } }`
+	firstEven := `func first_even(xs) (v) { v = -1 for _, x := range xs { if x % 2 == 1 { continue } v = x break } }`
+	main := `func main() { println(sum_until(10)) println(first_even([]int{3, 7, 4, 8})) }`
+	out, _ := buildRun(t, main, sumUntil, firstEven)
+	if out != "25\n4\n" {
+		t.Fatalf("break/continue: got %q, want %q", out, "25\n4\n")
+	}
+}
+
 // Braces inside string literals (e.g. a function that builds JSON) and after
 // // comments must not be counted as block delimiters when splitting.
 func TestSplitFunctionsBracesInStrings(t *testing.T) {

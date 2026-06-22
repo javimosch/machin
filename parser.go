@@ -430,6 +430,12 @@ func (p *Parser) parseStmt() (Stmt, error) {
 				return nil, err
 			}
 			return &ReturnStmt{Vals: vals}, nil
+		case "break":
+			p.next()
+			return &BreakStmt{}, nil
+		case "continue":
+			p.next()
+			return &ContinueStmt{}, nil
 		case "if":
 			return p.parseIf()
 		case "while":
