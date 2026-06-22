@@ -116,6 +116,31 @@ func TestSafeChecks(t *testing.T) {
 	}
 }
 
+// --- input(): read a line from stdin (interactive CLI / desktop programs). ---
+
+func TestInputBuiltin(t *testing.T) {
+	bin, err := os.CreateTemp("", "mfl-input-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin.Close()
+	defer os.Remove(bin.Name())
+	src := `func main() { print("? ") n := input() println("got", n, len(n)) }`
+	if err := BuildBinary(&Program{Funcs: parseFuncs(t, src)}, bin.Name(), false); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	cmd := exec.Command(bin.Name())
+	cmd.Stdin = strings.NewReader("hello\n")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// the trailing newline is stripped, so len is 5, not 6
+	if got, want := string(out), "? got hello 5\n"; got != want {
+		t.Fatalf("input(): got %q, want %q", got, want)
+	}
+}
+
 // --- By-reference closure capture: closures share mutable captured state. ---
 
 // A counter() returns a closure that mutates a captured local. Each call must

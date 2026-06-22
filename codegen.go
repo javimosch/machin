@@ -370,6 +370,19 @@ static char* mfl_read(int64_t fd) {
 }
 static int64_t mfl_write(int64_t fd, const char* s) { return (int64_t)write((int)fd, s, strlen(s)); }
 static void mfl_close(int64_t fd) { close((int)fd); }
+
+/* read one line from stdin (without the trailing newline); "" at EOF */
+static char* mfl_input(void) {
+    size_t cap = 128, len = 0;
+    char* buf = mfl_alloc(cap);
+    int c;
+    while ((c = getchar()) != EOF && c != '\n') {
+        if (len + 1 >= cap) { cap *= 2; buf = mfl_realloc(buf, cap); }
+        buf[len++] = (char)c;
+    }
+    buf[len] = 0;
+    return buf;
+}
 `
 
 func cType(k Kind) string {
@@ -1458,6 +1471,8 @@ func (g *cgen) call(ex *Call) (string, error) {
 		return fmt.Sprintf("mfl_write(%s, %s)", args[0], args[1]), nil
 	case "close":
 		return fmt.Sprintf("mfl_close(%s)", args[0]), nil
+	case "input":
+		return "mfl_input()", nil
 	case "print", "println":
 		return "", fmt.Errorf("print/println may only be used as a statement")
 	}

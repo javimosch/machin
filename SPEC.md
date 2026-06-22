@@ -197,6 +197,7 @@ throughout the function body).
 | Builtin | Signature | Purpose |
 |---------|-----------|---------|
 | `print`, `println` | `(...) -> ` | write arguments (no / trailing newline) |
+| `input` | `() -> string` | read one line from stdin (newline stripped; `""` at EOF) |
 | `len` | `(string\|slice\|map) -> int` | length |
 | `str` | `(int\|float) -> string` | format a number |
 | `int` | `(number) -> int` | truncate to int |
