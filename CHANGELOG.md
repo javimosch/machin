@@ -12,7 +12,14 @@
   (pass and return). **Phase 3:** the `ptr` type — an opaque C handle (`void*`,
   e.g. `FILE*` or a window/texture handle) held as an MFL `int` and passed back
   to C, never dereferenced. New `examples/complex/ffi_math.mfl`, `ffi_struct.mfl`,
-  and `ffi_ptr.mfl`; the path to the C ecosystem and a future GUI.
+  and `ffi_ptr.mfl`; the path to the C ecosystem and a native GUI.
+- **Native GUI demo — `examples/gui/game_menu.mfl`.** A clickable Start / Settings
+  / Exit menu drawn with [raylib](https://www.raylib.com) through the FFI: opens a
+  real OpenGL window, draws rectangles/text with a `Color` cstruct, and polls the
+  mouse each frame — proving Phases 1–2 are enough to drive a real graphics
+  library. `extern` blocks may now have multiple `link` directives, kept in order
+  (`-lraylib -lGL -lm -lpthread -ldl -lrt -lX11`). A GUI binary links the system
+  graphics stack and needs a display — not a no-deps binary, as with any native GUI.
 - **Tightened canonical form (token-minimization).** The canonical `.mfl` now
   drops whitespace adjacent to operators/punctuation (`fib(n - 1)` →
   `fib(n-1)`), keeping only the spaces the lexer needs between word tokens. Zero

@@ -154,9 +154,11 @@ func (p *Parser) parseExternDecl() (*ExternDecl, error) {
 				return nil, err
 			}
 		case "link":
-			if err := str(&ed.Link); err != nil {
+			var l string
+			if err := str(&l); err != nil {
 				return nil, err
 			}
+			ed.Links = append(ed.Links, l)
 		case "cflags":
 			if err := str(&ed.CFlags); err != nil {
 				return nil, err

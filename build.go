@@ -40,8 +40,8 @@ func BuildBinary(prog *Program, outPath string, safe bool) error {
 		if ed.CFlags != "" {
 			args = append(args, strings.Fields(ed.CFlags)...)
 		}
-		if ed.Link != "" {
-			libs = append(libs, "-l"+ed.Link)
+		for _, l := range ed.Links {
+			libs = append(libs, "-l"+l)
 		}
 	}
 	args = append(args, "-o", outPath, tmp.Name())

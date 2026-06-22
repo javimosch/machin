@@ -220,6 +220,7 @@ per-call-site arg struct + trampoline driven by `pthread_create`.
 | `complex/ffi_math` | C FFI: call `sqrt`/`pow` from libm via an `extern` block |
 | `complex/ffi_struct` | C FFI: marshal a C struct by value (`div_t` from libc) |
 | `complex/ffi_ptr` | C FFI: hold an opaque handle (`FILE*`) as a `ptr` |
+| `gui/game_menu` | **native GUI**: a clickable raylib Start/Settings/Exit window via FFI |
 | `complex/generics` | one source function specialized at int / string / float |
 | `complex/goroutines` | `go` spawns concurrent workers; `sleep` waits |
 | `complex/channels` | fan-in worker pool — goroutines communicate over a channel |
@@ -322,6 +323,7 @@ make install      # install to $(PREFIX)/bin  (default /usr/local)
 | Bounds / div-zero / overflow checks (`--safe`) | ✅ done |
 | Scoped arenas (`arena { }`) — bound a long-lived loop's memory | ✅ done |
 | C FFI — scalars + linking (P1), by-value structs (P2), opaque `ptr` handles (P3) | ✅ done |
+| Native GUI via FFI (raylib window — see `examples/gui/`) | ✅ done |
 | C FFI callbacks (MFL closures as C function pointers) | ⬜ planned |
 | Automatic tracing GC | ⬜ planned |
 
