@@ -237,6 +237,30 @@ type RangeStmt struct {
 // GoStmt spawns a goroutine: go f(args).
 type GoStmt struct{ Call *Call }
 
+// SelectStmt waits on multiple channel operations:
+//   select {
+//     case v := <-ch1: ...      // receive into a new var (Name); RecvCh = ch1
+//     case <-ch2: ...           // receive and discard (Name == "" / "_")
+//     case ch3 <- x: ...        // send (SendCh = ch3, SendVal = x)
+//     default: ...              // runs if no case is ready (HasDefault)
+//   }
+// The first ready case runs; with no default and nothing ready, it blocks.
+type SelectCase struct {
+	// receive case: RecvCh set; Name is the binding ("" / "_" to discard)
+	RecvCh Expr
+	Name   string
+	// send case: SendCh + SendVal set (RecvCh nil)
+	SendCh  Expr
+	SendVal Expr
+	Body    []Stmt
+}
+
+type SelectStmt struct {
+	Cases      []SelectCase
+	Default    []Stmt
+	HasDefault bool
+}
+
 // ArenaStmt is a scoped-arena block: arena { ... }. Allocations made inside the
 // block are reclaimed in bulk when the block ends, bounding the memory of a
 // long-lived loop. The contract is that nothing allocated inside escapes the
@@ -257,6 +281,7 @@ func (SendStmt) node()    {}
 func (RangeStmt) node()   {}
 func (GoStmt) node()      {}
 func (ArenaStmt) node()   {}
+func (SelectStmt) node()  {}
 
 // ---- Top level ----
 

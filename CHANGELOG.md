@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- **`select` — wait on multiple channels.** machin had goroutines and channels
+  but no way to wait on more than one at a time, so timeouts, cancellation, and
+  worker-pool collectors were impossible. `select { case v := <-ch: ... case ch
+  <- x: ... default: ... }` takes the first ready case (receives tried before
+  sends, in source order), runs `default` when nothing is ready, or blocks when
+  there's no default. Implemented as a poll over the cases using a new
+  non-blocking `mfl_chan_tryrecv` primitive; case bodies run outside the poll
+  loop so `break`/`continue`/`return` affect the enclosing scope. Surfaced
+  building a bounded worker pool that races results against a deadline.
+
 ## v0.12.0
 
 - **JSON path queries — `json_get(json, path)`.** Every machin tool used to dig

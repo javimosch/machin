@@ -193,6 +193,18 @@ static void mfl_chan_recv(mfl_chan* c, void* out) {
     memcpy(out, n->data, c->es);
     free(n->data); free(n);
 }
+/* non-blocking receive: 1 and fills out if an element was ready, else 0. The
+   primitive behind select's poll over multiple channels. */
+static int mfl_chan_tryrecv(mfl_chan* c, void* out) {
+    pthread_mutex_lock(&c->mu);
+    mfl_cnode* n = c->head;
+    if (n) { c->head = n->next; if (!c->head) c->tail = NULL; }
+    pthread_mutex_unlock(&c->mu);
+    if (!n) return 0;
+    memcpy(out, n->data, c->es);
+    free(n->data); free(n);
+    return 1;
+}
 
 /* maps: a chained hash table keyed by int64 or string, fixed-size values */
 typedef struct mfl_ment { struct mfl_ment* next; int64_t ik; char* sk; void* val; } mfl_ment;
@@ -1413,6 +1425,8 @@ func (g *cgen) stmt(s Stmt, depth int) error {
 		}
 		ct := g.c.ElemCType(g.curFn, st.Ch)
 		fmt.Fprintf(&g.buf, "mfl_chan_send(%s, &((%s[1]){%s})[0]);\n", ch, ct, val)
+	case *SelectStmt:
+		return g.selectStmt(st, depth)
 	case *RangeStmt:
 		return g.rangeStmt(st, depth)
 	case *ArenaStmt:
@@ -1449,6 +1463,92 @@ func multiRetBuiltinC(name string) (cfn, ctype string, fields []string, needsTLS
 		return "mfl_json_get", "mfl_json_result", []string{"value", "err"}, false, true
 	}
 	return "", "", nil, false, false
+}
+
+// selectStmt compiles a select to a poll over its cases. Channel operands and
+// send values are evaluated once up front (Go order); the loop tries each case
+// in source order (receives via non-blocking tryrecv, sends are always ready on
+// machin's unbounded channels) and takes the first ready one. With no ready case
+// and no default, it polls (1ms). The chosen body runs OUTSIDE the poll loop, so
+// break/continue/return inside a case affect the enclosing loop/function.
+func (g *cgen) selectStmt(st *SelectStmt, depth int) error {
+	id := g.tmpID
+	g.tmpID++
+	g.buf.WriteString("{\n")
+	for i := range st.Cases {
+		sc := &st.Cases[i]
+		indentC(&g.buf, depth+1)
+		if sc.RecvCh != nil {
+			ch, err := g.expr(sc.RecvCh)
+			if err != nil {
+				return err
+			}
+			et := g.c.ElemCType(g.curFn, sc.RecvCh)
+			fmt.Fprintf(&g.buf, "mfl_chan* _sc%d_%d = %s; %s _sv%d_%d;\n", id, i, ch, et, id, i)
+		} else {
+			ch, err := g.expr(sc.SendCh)
+			if err != nil {
+				return err
+			}
+			val, err := g.expr(sc.SendVal)
+			if err != nil {
+				return err
+			}
+			et := g.c.ElemCType(g.curFn, sc.SendCh)
+			fmt.Fprintf(&g.buf, "mfl_chan* _sc%d_%d = %s; %s _sv%d_%d = %s;\n", id, i, ch, et, id, i, val)
+		}
+	}
+	indentC(&g.buf, depth+1)
+	fmt.Fprintf(&g.buf, "int _sel%d = -1;\n", id)
+	indentC(&g.buf, depth+1)
+	g.buf.WriteString("for (;;) {\n")
+	for i := range st.Cases {
+		sc := &st.Cases[i]
+		indentC(&g.buf, depth+2)
+		if sc.RecvCh != nil {
+			fmt.Fprintf(&g.buf, "if (mfl_chan_tryrecv(_sc%d_%d, &_sv%d_%d)) { _sel%d = %d; break; }\n", id, i, id, i, id, i)
+		} else {
+			fmt.Fprintf(&g.buf, "{ mfl_chan_send(_sc%d_%d, &_sv%d_%d); _sel%d = %d; break; }\n", id, i, id, i, id, i)
+		}
+	}
+	indentC(&g.buf, depth+2)
+	if st.HasDefault {
+		fmt.Fprintf(&g.buf, "{ _sel%d = %d; break; }\n", id, len(st.Cases))
+	} else {
+		g.buf.WriteString("mfl_sleep(1);\n")
+	}
+	indentC(&g.buf, depth+1)
+	g.buf.WriteString("}\n")
+	for i := range st.Cases {
+		sc := &st.Cases[i]
+		indentC(&g.buf, depth+1)
+		fmt.Fprintf(&g.buf, "if (_sel%d == %d) {\n", id, i)
+		if sc.RecvCh != nil && sc.Name != "" && sc.Name != "_" {
+			indentC(&g.buf, depth+2)
+			fmt.Fprintf(&g.buf, "%s = _sv%d_%d;\n", g.varRef(sc.Name), id, i)
+		}
+		for _, s := range sc.Body {
+			if err := g.stmt(s, depth+2); err != nil {
+				return err
+			}
+		}
+		indentC(&g.buf, depth+1)
+		g.buf.WriteString("}\n")
+	}
+	if st.HasDefault {
+		indentC(&g.buf, depth+1)
+		fmt.Fprintf(&g.buf, "if (_sel%d == %d) {\n", id, len(st.Cases))
+		for _, s := range st.Default {
+			if err := g.stmt(s, depth+2); err != nil {
+				return err
+			}
+		}
+		indentC(&g.buf, depth+1)
+		g.buf.WriteString("}\n")
+	}
+	indentC(&g.buf, depth)
+	g.buf.WriteString("}\n")
+	return nil
 }
 
 func (g *cgen) multiAssign(st *MultiAssign, depth int) error {

@@ -460,6 +460,8 @@ func (p *Parser) parseStmt() (Stmt, error) {
 				return nil, fmt.Errorf("go requires a function call")
 			}
 			return &GoStmt{Call: c}, nil
+		case "select":
+			return p.parseSelect()
 		case "var":
 			p.next()
 			nameTok, err := p.expect(TIdent, "")
@@ -563,6 +565,110 @@ func (p *Parser) parseWhile() (Stmt, error) {
 		return nil, err
 	}
 	return &WhileStmt{Cond: cond, Body: body}, nil
+}
+
+// parseSelect parses: select { case <comm>: <stmts> ... [default: <stmts>] }
+// where <comm> is `v := <-ch`, `<-ch`, or `ch <- v`. `case`/`default` are matched
+// contextually (not reserved words).
+func (p *Parser) parseSelect() (Stmt, error) {
+	p.next() // select
+	if _, err := p.expect(TPunct, "{"); err != nil {
+		return nil, err
+	}
+	sel := &SelectStmt{}
+	for p.peek().Val != "}" && p.peek().Kind != TEOF {
+		kw := p.peek().Val
+		if kw == "default" {
+			p.next()
+			if _, err := p.expect(TPunct, ":"); err != nil {
+				return nil, err
+			}
+			body, err := p.parseSelectBody()
+			if err != nil {
+				return nil, err
+			}
+			sel.Default = body
+			sel.HasDefault = true
+			continue
+		}
+		if kw != "case" {
+			return nil, fmt.Errorf("select: expected 'case' or 'default', got %q", kw)
+		}
+		p.next() // case
+		var sc SelectCase
+		if p.peek().Val == "<-" {
+			// case <-ch:  (receive, discard)
+			p.next()
+			ch, err := p.parseExpr()
+			if err != nil {
+				return nil, err
+			}
+			sc.RecvCh = ch
+			sc.Name = "_"
+		} else if p.peek().Kind == TIdent && p.toks[p.pos+1].Val == ":=" {
+			// case v := <-ch:
+			name := p.next().Val
+			p.next() // :=
+			if _, err := p.expect(TOp, "<-"); err != nil {
+				return nil, err
+			}
+			ch, err := p.parseExpr()
+			if err != nil {
+				return nil, err
+			}
+			sc.RecvCh = ch
+			sc.Name = name
+		} else {
+			// case ch <- v:  (send)
+			ch, err := p.parseExpr()
+			if err != nil {
+				return nil, err
+			}
+			if _, err := p.expect(TOp, "<-"); err != nil {
+				return nil, err
+			}
+			val, err := p.parseExpr()
+			if err != nil {
+				return nil, err
+			}
+			sc.SendCh = ch
+			sc.SendVal = val
+		}
+		if _, err := p.expect(TPunct, ":"); err != nil {
+			return nil, err
+		}
+		body, err := p.parseSelectBody()
+		if err != nil {
+			return nil, err
+		}
+		sc.Body = body
+		sel.Cases = append(sel.Cases, sc)
+	}
+	if _, err := p.expect(TPunct, "}"); err != nil {
+		return nil, err
+	}
+	return sel, nil
+}
+
+// parseSelectBody parses the statements of one select case, up to the next
+// case/default or the closing brace.
+func (p *Parser) parseSelectBody() ([]Stmt, error) {
+	var stmts []Stmt
+	for {
+		v := p.peek().Val
+		if v == "case" || v == "default" || v == "}" || p.peek().Kind == TEOF {
+			break
+		}
+		s, err := p.parseStmt()
+		if err != nil {
+			return nil, err
+		}
+		stmts = append(stmts, s)
+		for p.peek().Val == ";" {
+			p.next()
+		}
+	}
+	return stmts, nil
 }
 
 // parseExprList parses one or more comma-separated expressions.

@@ -78,7 +78,7 @@ The decoded text of a declaration is tokenized as follows.
 - **Float literals.** digits with a `.`, e.g. `3.14`, `0.5`.
 - **String literals.** `"..."` with escapes `\n \t \r \" \\`.
 - **Keywords.** `func return if else while for range true false nil var go type
-  struct chan make map arena extern break continue`.
+  struct chan make map arena extern break continue select`.
 - **Operators and punctuation.** `+ - * / % == != < <= > >= && || ! = := <- .
   : , ; ( ) { } [ ]`.
 
@@ -201,6 +201,11 @@ throughout the function body).
 - `x[i] = v`, `x.f = v`.
 - `ch <- v` (send).
 - `go f(args)` (§10).
+- `select { case v := <-ch: ... case ch <- x: ... default: ... }` — waits on
+  multiple channel ops; the first ready case runs (receives are tried before
+  sends, in source order), `default` runs if none is ready, and with no default
+  and nothing ready it blocks. `break`/`continue` inside a case affect the
+  enclosing loop (not the select); use a flag to leave a `for`+`select`.
 
 ---
 
@@ -387,7 +392,7 @@ FuncDecl    = "func" ident "(" [ identList [ "..." ] ] ")" [ "(" identList ")" ]
 TypeName    = "int" | "float" | "bool" | "string" | ident
             | "[]" TypeName | "map" "[" TypeName "]" TypeName | "chan" TypeName .
 Block       = "{" { Stmt } "}" .
-Stmt        = Decl? | Assign | If | Loop | Return | Send | Go | ExprStmt
+Stmt        = Decl? | Assign | If | Loop | Return | Send | Go | Select | ExprStmt
             | "break" | "continue" .
 Assign      = identList ( ":=" | "=" ) exprList .
 If          = "if" Expr Block [ "else" ( If | Block ) ] .
@@ -396,6 +401,8 @@ Loop        = ( "while" | "for" ) [ Expr ] Block
 Return      = "return" [ exprList ] .
 Send        = Expr "<-" Expr .
 Go          = "go" Call .
+Select      = "select" "{" { "case" Comm ":" { Stmt } } [ "default" ":" { Stmt } ] "}" .
+Comm        = ident ":=" "<-" Expr | "<-" Expr | Expr "<-" Expr .
 Expr        = ... operators, calls, indexing, field access, literals,
               FuncLit, make, "<-" Expr ... .
 FuncLit     = "func" "(" [ identList ] ")" Block .
