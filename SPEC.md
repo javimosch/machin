@@ -392,19 +392,30 @@ extern "m" { header "math.h" link "m" fn sqrt(float) float fn pow(float, float) 
   If omitted, machin emits a prototype from the declared signature instead.
 - `link "l"` — passes `-l<l>` to the C compiler.
 - `cflags "..."` — passes extra flags (e.g. `-I`/`-L` paths) to the C compiler.
-- `fn Name(t, ...) ret` — a foreign function. Parameter and return types are the
-  FFI scalar types `int`, `float`, `bool`, `string`; a missing return type means
+- `cstruct Name { field ctype ... }` — declares a C struct's layout (Phase 2).
+  machin synthesizes a matching MFL struct `Name` (so MFL can construct and
+  field-access it) and marshals between the MFL value and the C struct by value
+  at the boundary. Field types are sized C scalars (below).
+- `fn Name(t, ...) ret` — a foreign function. Parameter and return types are FFI
+  scalar types, or the name of a declared `cstruct`; a missing return type means
   `void`.
 
-A call to a declared name compiles to a **direct C call**; its arguments and
-return value use the C representation of the FFI type (`int`→`int64_t`,
-`float`→`double`, `bool`→`int`, `string`→`const char*`). The call is type-checked
-against the declared arity/types like any other.
+**FFI scalar types** → C: `int`/`i64`→`int64_t`, `i32`→`int32_t`, `i16`→`int16_t`,
+`i8`→`int8_t`, `u64`→`uint64_t` … `u8`→`uint8_t`, `float`/`f64`→`double`,
+`f32`→`float`, `bool`→`int`, `string`→`const char*`. The sized types matter for
+ABI correctness (e.g. raylib takes 32-bit `float`/`int`). In MFL, every integer
+width is `int` and `f32`/`f64` are `float`.
 
-This is **Phase 1** (scalar types). Structs, opaque handles/pointers, and
-callbacks are future phases. The FFI boundary is unchecked C: a value an MFL
-string passes to C is arena-allocated, so a C function that retains the pointer
-past the arena's lifetime would dangle — pass copies or keep it in scope.
+A call to a declared name compiles to a **direct C call**: scalar arguments are
+cast to their C type and struct arguments are marshaled into the C layout (a
+struct return is marshaled back). The call is type-checked against the declared
+arity/types like any other.
+
+Phases 1–2 (scalars and **by-value structs**) are implemented. Opaque
+handles/pointers and callbacks are future phases. The FFI boundary is unchecked
+C: a value an MFL string passes to C is arena-allocated, so a C function that
+retains the pointer past the arena's lifetime would dangle — pass copies or keep
+it in scope.
 
 ---
 
@@ -413,6 +424,6 @@ past the arena's lifetime would dangle — pass copies or keep it in scope.
 Implemented: the entire surface above, including arena memory management with
 scoped `arena { }` blocks (§12), named return values (§9), variadic parameters
 (§5.2), by-reference closure capture (§11.1), opt-in bounds/overflow checks
-(`--safe`), and scalar C FFI (§15). Not yet implemented: polymorphic recursion,
-an automatic tracing GC, and FFI phases 2–4 (structs, handles, callbacks). These
-are refinements, not core gaps.
+(`--safe`), and C FFI scalars + by-value structs (§15). Not yet implemented:
+polymorphic recursion, an automatic tracing GC, and FFI phases 3–4 (opaque
+handles, callbacks). These are refinements, not core gaps.

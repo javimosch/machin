@@ -1,0 +1,4 @@
+extern "c"{header "stdlib.h" cstruct div_t{quot i32 rem i32}fn div(i32,i32)div_t}
+
+func main(){r:=div(17,5)println("17 / 5 =",r.quot,"remainder",r.rem)}
+

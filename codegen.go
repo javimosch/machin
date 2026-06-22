@@ -385,19 +385,72 @@ static char* mfl_input(void) {
 }
 `
 
-// ffiCType maps an FFI scalar type name to its C type (for headerless prototypes).
+// isFFIScalar reports whether t is an FFI scalar type name (vs a cstruct name).
+func isFFIScalar(t string) bool {
+	switch t {
+	case "int", "float", "bool", "string",
+		"i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64":
+		return true
+	}
+	return false
+}
+
+// ffiCType maps an FFI scalar type name to its C type (for headerless prototypes
+// and struct-field casts). Returns "void" for "" or anything non-scalar.
 func ffiCType(t string) string {
 	switch t {
-	case "int":
+	case "int", "i64":
 		return "int64_t"
-	case "float":
+	case "i32":
+		return "int32_t"
+	case "i16":
+		return "int16_t"
+	case "i8":
+		return "int8_t"
+	case "u64":
+		return "uint64_t"
+	case "u32":
+		return "uint32_t"
+	case "u16":
+		return "uint16_t"
+	case "u8":
+		return "uint8_t"
+	case "float", "f64":
 		return "double"
+	case "f32":
+		return "float"
 	case "bool":
 		return "int"
 	case "string":
 		return "const char*"
 	}
 	return "void"
+}
+
+// externCType is the C type used in a foreign prototype: a scalar's C type, the
+// cstruct's own C name, or void.
+func externCType(t string) string {
+	if t == "" {
+		return "void"
+	}
+	if isFFIScalar(t) {
+		return ffiCType(t)
+	}
+	return t // a cstruct: its C struct name
+}
+
+// ffiMFLType maps an FFI scalar type to the MFL type name used for the synthesized
+// struct field: every integer width is MFL int; f32/f64/float are float.
+func ffiMFLType(t string) string {
+	switch t {
+	case "f32", "f64", "float":
+		return "float"
+	case "bool":
+		return "bool"
+	case "string":
+		return "string"
+	}
+	return "int"
 }
 
 func cType(k Kind) string {
@@ -448,23 +501,31 @@ func (g *cgen) program(p *Program) (string, error) {
 	var out strings.Builder
 	out.WriteString(cRuntime)
 	out.WriteByte('\n')
-	// foreign (extern) declarations: include each header so the real C prototype
-	// is in scope; for headerless externs, emit a prototype from the signature.
+	// foreign (extern) declarations. With a header, its prototypes + C structs are
+	// in scope. Without one, emit C struct typedefs and function prototypes from
+	// the declared signatures.
 	for _, ed := range p.Externs {
 		if ed.Header != "" {
 			fmt.Fprintf(&out, "#include <%s>\n", ed.Header)
 			continue
 		}
+		for _, cs := range ed.Structs {
+			fmt.Fprintf(&out, "typedef struct {")
+			for _, f := range cs.Fields {
+				fmt.Fprintf(&out, " %s %s;", ffiCType(f.CType), f.Name)
+			}
+			fmt.Fprintf(&out, " } %s;\n", cs.Name)
+		}
 		for _, ef := range ed.Funcs {
 			params := make([]string, len(ef.Params))
 			for i, pt := range ef.Params {
-				params[i] = ffiCType(pt)
+				params[i] = externCType(pt)
 			}
 			ps := strings.Join(params, ", ")
 			if ps == "" {
 				ps = "void"
 			}
-			fmt.Fprintf(&out, "extern %s %s(%s);\n", ffiCType(ef.Ret), ef.Name, ps)
+			fmt.Fprintf(&out, "extern %s %s(%s);\n", externCType(ef.Ret), ef.Name, ps)
 		}
 	}
 	// struct typedefs, in declaration order (a struct may reference earlier ones)
@@ -474,6 +535,22 @@ func (g *cgen) program(p *Program) (string, error) {
 			fmt.Fprintf(&out, " %s f_%s;", cTypeName(f.Type), f.Name)
 		}
 		fmt.Fprintf(&out, " } mfl_%s;\n", td.Name)
+	}
+	// FFI struct marshaling: convert each cstruct between its MFL value (mfl_Name,
+	// with int64/double fields) and the C layout (Name) at the boundary.
+	for _, ed := range p.Externs {
+		for _, cs := range ed.Structs {
+			fmt.Fprintf(&out, "static mfl_%s mfl_from_%s(%s c) { return (mfl_%s){", cs.Name, cs.Name, cs.Name, cs.Name)
+			for _, f := range cs.Fields {
+				fmt.Fprintf(&out, " .f_%s = c.%s,", f.Name, f.Name)
+			}
+			out.WriteString(" }; }\n")
+			fmt.Fprintf(&out, "static %s mfl_to_%s(mfl_%s m) { return (%s){", cs.Name, cs.Name, cs.Name, cs.Name)
+			for _, f := range cs.Fields {
+				fmt.Fprintf(&out, " .%s = (%s)m.f_%s,", f.Name, ffiCType(f.CType), f.Name)
+			}
+			out.WriteString(" }; }\n")
+		}
 	}
 	// closure environment + multi-return result structs (one per instance)
 	for _, inst := range g.c.Reps() {
@@ -1511,8 +1588,21 @@ func (g *cgen) call(ex *Call) (string, error) {
 		return "", fmt.Errorf("print/println may only be used as a statement")
 	}
 	if ef := g.c.ExternFn(ex.Callee); ef != nil {
-		// a foreign C function: call it directly (the header gives the prototype)
-		return fmt.Sprintf("%s(%s)", ef.Name, strings.Join(args, ", ")), nil
+		// a foreign C function: cast scalar args to their C type and marshal
+		// struct args into the C layout; marshal a struct return back to MFL.
+		parts := make([]string, len(args))
+		for i, a := range args {
+			if pt := ef.Params[i]; isFFIScalar(pt) {
+				parts[i] = fmt.Sprintf("(%s)(%s)", ffiCType(pt), a)
+			} else {
+				parts[i] = fmt.Sprintf("mfl_to_%s(%s)", pt, a)
+			}
+		}
+		call := fmt.Sprintf("%s(%s)", ef.Name, strings.Join(parts, ", "))
+		if ef.Ret != "" && !isFFIScalar(ef.Ret) {
+			return fmt.Sprintf("mfl_from_%s(%s)", ef.Ret, call), nil
+		}
+		return call, nil
 	}
 	if !g.c.IsTopFunc(ex.Callee) {
 		// a function-valued local variable, called by name

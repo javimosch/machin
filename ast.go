@@ -15,15 +15,32 @@ type Program struct {
 // Calls to the declared names compile to direct C calls; the header supplies the
 // real prototype and `link`/`cflags` are threaded into the cc invocation.
 type ExternDecl struct {
-	Lib    string // informational name after `extern`
-	Header string // #include <Header> ("" if none)
-	Link   string // -l<Link> ("" if none)
-	CFlags string // extra cc flags ("" if none)
-	Funcs  []ExternFunc
+	Lib     string // informational name after `extern`
+	Header  string // #include <Header> ("" if none)
+	Link    string // -l<Link> ("" if none)
+	CFlags  string // extra cc flags ("" if none)
+	Structs []ExternStruct
+	Funcs   []ExternFunc
 }
 
-// ExternFunc is one foreign function signature. Param/return types are the FFI
-// scalar type names: int, float, bool, string (Ret "" means void).
+// ExternStruct declares a C struct's layout for by-value marshaling:
+//   cstruct Color { r u8  g u8  b u8  a u8 }
+// machin synthesizes a matching MFL struct (int/float fields) and marshals
+// between the MFL value and the C struct at the FFI boundary.
+type ExternStruct struct {
+	Name   string
+	Fields []ExternField
+}
+
+// ExternField is one C struct field with a sized C scalar type (i8..u64, f32, f64).
+type ExternField struct {
+	Name  string
+	CType string
+}
+
+// ExternFunc is one foreign function signature. Param/return types are FFI
+// scalar type names (int, float, bool, string, i8..u64, f32, f64) or the name of
+// a declared cstruct; Ret "" means void.
 type ExternFunc struct {
 	Name   string
 	Params []string

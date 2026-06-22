@@ -609,7 +609,21 @@ func Check(p *Program) (*Checker, error) {
 		return nil, fmt.Errorf("no main function defined")
 	}
 	// register foreign (extern) functions; their signatures are fixed, not inferred
+	ffiTypeOK := func(t string) bool {
+		if t == "" || isFFIScalar(t) {
+			return true
+		}
+		_, ok := c.structs[t]
+		return ok
+	}
 	for _, ed := range p.Externs {
+		for _, cs := range ed.Structs {
+			for _, f := range cs.Fields {
+				if !isFFIScalar(f.CType) {
+					return nil, fmt.Errorf("cstruct %s field %s: %q is not a scalar C type", cs.Name, f.Name, f.CType)
+				}
+			}
+		}
 		for _, ef := range ed.Funcs {
 			f := ef
 			if _, dup := c.externs[f.Name]; dup {
@@ -617,6 +631,14 @@ func Check(p *Program) (*Checker, error) {
 			}
 			if _, clash := c.funcs[f.Name]; clash {
 				return nil, fmt.Errorf("extern fn %q clashes with a function", f.Name)
+			}
+			for _, pt := range f.Params {
+				if !ffiTypeOK(pt) {
+					return nil, fmt.Errorf("extern fn %s: unknown parameter type %q", f.Name, pt)
+				}
+			}
+			if !ffiTypeOK(f.Ret) {
+				return nil, fmt.Errorf("extern fn %s: unknown return type %q", f.Name, f.Ret)
 			}
 			c.externs[f.Name] = &f
 		}
@@ -1385,19 +1407,23 @@ func (c *Checker) genStructLit(fn *FuncDecl, ex *StructLit) (int, error) {
 	return res, nil
 }
 
-// ffiSlot maps an FFI scalar type name to its concrete checker slot.
+// ffiSlot maps an FFI type name to its checker slot: a scalar's shared slot, a
+// fresh struct slot for a cstruct name, or void for "".
 func (c *Checker) ffiSlot(t string) int {
 	switch t {
-	case "int":
-		return c.cInt
-	case "float":
+	case "":
+		return c.cVoid
+	case "float", "f32", "f64":
 		return c.cFloat
 	case "bool":
 		return c.cBool
 	case "string":
 		return c.cString
 	}
-	return c.cVoid // "" -> void
+	if isFFIScalar(t) {
+		return c.cInt // every integer width is MFL int
+	}
+	return newStructSlot(c, t) // a cstruct value
 }
 
 // ExternFn returns the foreign-function signature for name, or nil.
