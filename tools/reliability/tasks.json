@@ -1,0 +1,15 @@
+[
+  {"id": "fib",       "spec": "Define fib(n) with fib(0)=0, fib(1)=1, fib(n)=fib(n-1)+fib(n-2). In main, print fib(10).", "expected": "55\n"},
+  {"id": "sumslice",  "spec": "In main, build the slice []int{1,2,3,4,5}, sum its elements, and print the sum.", "expected": "15\n"},
+  {"id": "fizzbuzz",  "spec": "In main, for i from 1 to 5 inclusive, print one value per line: \"Fizz\" if i is divisible by 3, \"Buzz\" if divisible by 5, otherwise the number i. (So the lines are: 1, 2, Fizz, 4, Buzz.)", "expected": "1\n2\nFizz\n4\nBuzz\n"},
+  {"id": "factorial", "spec": "Define fact(n) computing n! iteratively (fact(0)=1). In main, print fact(5).", "expected": "120\n"},
+  {"id": "vowels",    "spec": "Define count_vowels(s) returning how many characters of the string s are vowels (one of a,e,i,o,u, lowercase). In main, print count_vowels(\"machine\").", "expected": "3\n"},
+  {"id": "maxof",     "spec": "Define max_of(xs) returning the largest int in the slice xs. In main, print max_of([]int{3,7,2,9,4}).", "expected": "9\n"},
+  {"id": "point",     "spec": "Define a struct type Point with int fields x and y. Define sum_point(p) returning p.x + p.y. In main, print sum_point(Point{3,4}).", "expected": "7\n"},
+  {"id": "counter",   "spec": "Define make_counter() that returns a closure over an internal integer starting at 0; each call increments it and returns the new value (first call returns 1). In main, create one counter, call it three times, and print the value returned by the third call.", "expected": "3\n"},
+  {"id": "divmod",    "spec": "Define divmod(a, b) that returns TWO values: the quotient a/b and the remainder a%b. In main, do `q, r := divmod(17, 5)` and print q and r (so the line is `3 2`).", "expected": "3 2\n"},
+  {"id": "wordcount", "spec": "In main, given xs := []string{\"a\",\"b\",\"a\",\"c\",\"a\"}, build a map[string]int counting how many times each string occurs, then print the count for \"a\".", "expected": "3\n"},
+  {"id": "structslice", "spec": "Define a struct type Item with fields name (string) and qty (int). In main, build a slice of two Items, Item{\"pen\",3} and Item{\"cup\",5}, sum their qty fields, and print the total. (Note: non-empty struct-slice literals are not supported; start from []Item{} and append.)", "expected": "8\n"},
+  {"id": "haskey",    "spec": "In main, create a map[string]int and set key \"x\" to 10. Using the has(map, key) builtin, check whether key \"y\" is present: print its value if present, otherwise print \"missing\".", "expected": "missing\n"},
+  {"id": "reverse",   "spec": "Define reverse(s) returning the string s with its characters in reverse order. In main, print reverse(\"abc\").", "expected": "cba\n"}
+]
