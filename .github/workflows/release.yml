@@ -2,8 +2,8 @@ name: release
 
 # Cut a release by pushing a version tag:
 #   git tag v0.5.0 && git push origin v0.5.0
-# This cross-compiles machin for linux/macOS x amd64/arm64 and attaches the
-# binaries (plus SHA256SUMS.txt) to the GitHub release for that tag.
+# This cross-compiles machin for linux/macOS x amd64/arm64 and windows/amd64,
+# and attaches the binaries (plus SHA256SUMS.txt) to the release for that tag.
 
 on:
   push:
@@ -30,12 +30,13 @@ jobs:
           set -euo pipefail
           TAG="${GITHUB_REF_NAME}"
           mkdir -p dist
-          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
             os="${target%/*}"; arch="${target#*/}"
-            echo "building machin-${TAG}-${os}-${arch}"
+            ext=""; [ "$os" = "windows" ] && ext=".exe" # Windows binaries need .exe
+            echo "building machin-${TAG}-${os}-${arch}${ext}"
             GOOS="$os" GOARCH="$arch" \
               go build -trimpath -ldflags="-s -w" \
-              -o "dist/machin-${TAG}-${os}-${arch}" .
+              -o "dist/machin-${TAG}-${os}-${arch}${ext}" .
           done
           ( cd dist && sha256sum machin-* > SHA256SUMS.txt )
           ls -l dist
