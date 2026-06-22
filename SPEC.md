@@ -402,20 +402,24 @@ extern "m" { header "math.h" link "m" fn sqrt(float) float fn pow(float, float) 
 
 **FFI scalar types** → C: `int`/`i64`→`int64_t`, `i32`→`int32_t`, `i16`→`int16_t`,
 `i8`→`int8_t`, `u64`→`uint64_t` … `u8`→`uint8_t`, `float`/`f64`→`double`,
-`f32`→`float`, `bool`→`int`, `string`→`const char*`. The sized types matter for
-ABI correctness (e.g. raylib takes 32-bit `float`/`int`). In MFL, every integer
-width is `int` and `f32`/`f64` are `float`.
+`f32`→`float`, `bool`→`int`, `string`→`const char*`, `ptr`→`void*`. The sized
+types matter for ABI correctness (e.g. raylib takes 32-bit `float`/`int`). In
+MFL, every integer width is `int`, `f32`/`f64` are `float`, and **`ptr` is an
+opaque handle held as an `int`** (the pointer value, round-tripped through
+`intptr_t`) that MFL passes back to C but never dereferences — for `FILE*`,
+window/texture handles, etc. `ptr` and `string` may not be `cstruct` fields
+(only numeric scalars).
 
 A call to a declared name compiles to a **direct C call**: scalar arguments are
-cast to their C type and struct arguments are marshaled into the C layout (a
-struct return is marshaled back). The call is type-checked against the declared
-arity/types like any other.
+cast to their C type, `ptr` arguments to `void*`, and struct arguments are
+marshaled into the C layout (struct/`ptr` returns are converted back). The call
+is type-checked against the declared arity/types like any other.
 
-Phases 1–2 (scalars and **by-value structs**) are implemented. Opaque
-handles/pointers and callbacks are future phases. The FFI boundary is unchecked
-C: a value an MFL string passes to C is arena-allocated, so a C function that
-retains the pointer past the arena's lifetime would dangle — pass copies or keep
-it in scope.
+Phases 1–3 (scalars, **by-value structs**, **opaque handles/pointers**) are
+implemented. Callbacks (passing an MFL closure as a C function pointer) are a
+future phase. The FFI boundary is unchecked C: a value an MFL string passes to C
+is arena-allocated, so a C function that retains the pointer past the arena's
+lifetime would dangle — pass copies or keep it in scope.
 
 ---
 
@@ -424,6 +428,6 @@ it in scope.
 Implemented: the entire surface above, including arena memory management with
 scoped `arena { }` blocks (§12), named return values (§9), variadic parameters
 (§5.2), by-reference closure capture (§11.1), opt-in bounds/overflow checks
-(`--safe`), and C FFI scalars + by-value structs (§15). Not yet implemented:
-polymorphic recursion, an automatic tracing GC, and FFI phases 3–4 (opaque
-handles, callbacks). These are refinements, not core gaps.
+(`--safe`), and C FFI scalars + by-value structs + opaque handles (§15). Not yet
+implemented: polymorphic recursion, an automatic tracing GC, and FFI callbacks
+(MFL closures as C function pointers). These are refinements, not core gaps.
