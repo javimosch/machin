@@ -76,6 +76,9 @@ const cRuntime = `#define _GNU_SOURCE
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netdb.h>
+#include <dirent.h>
+#include <sys/stat.h>
+#include <errno.h>
 
 /* slices: a Go-style header over an unboxed backing array */
 typedef struct { void* data; int64_t len; int64_t cap; } mfl_slice;
@@ -417,6 +420,41 @@ static char* mfl_env(const char* k) { char* v = getenv(k); return v ? v : ""; }
 static int64_t mfl_now(void) { return (int64_t)time(NULL); }
 static int64_t mfl_now_ms(void) { struct timeval tv; gettimeofday(&tv, NULL); return (int64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000; }
 static int64_t mfl_parse_int(const char* s) { return (int64_t)strtoll(s, NULL, 10); }
+
+/* file system: read/write whole files, list a directory, make a directory */
+static char* mfl_read_file(const char* path) {
+    FILE* f = fopen(path, "rb");
+    if (!f) return mfl_dup("");
+    fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
+    if (n < 0) n = 0;
+    char* buf = mfl_alloc((size_t)n + 1);
+    size_t r = fread(buf, 1, (size_t)n, f); buf[r] = 0;
+    fclose(f); return buf;
+}
+static int64_t mfl_write_file(const char* path, const char* content) {
+    FILE* f = fopen(path, "wb");
+    if (!f) return -1;
+    size_t len = strlen(content);
+    size_t w = fwrite(content, 1, len, f);
+    fclose(f); return (int64_t)w;
+}
+static mfl_slice mfl_list_dir(const char* path) {
+    mfl_slice out = {0};
+    DIR* d = opendir(path);
+    if (!d) return out;
+    struct dirent* e;
+    while ((e = readdir(d))) {
+        if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
+        char* name = mfl_dup(e->d_name);
+        out = mfl_append(out, &name, sizeof(char*));
+    }
+    closedir(d); return out;
+}
+static int64_t mfl_mkdir(const char* path) {
+    int r = mkdir(path, 0755);
+    if (r < 0 && errno == EEXIST) return 0;
+    return r;
+}
 `
 
 // isFFIScalar reports whether t is an FFI scalar type name (vs a cstruct name).
@@ -1640,6 +1678,14 @@ func (g *cgen) call(ex *Call) (string, error) {
 		return "mfl_now_ms()", nil
 	case "parse_int":
 		return fmt.Sprintf("mfl_parse_int(%s)", args[0]), nil
+	case "read_file":
+		return fmt.Sprintf("mfl_read_file(%s)", args[0]), nil
+	case "write_file":
+		return fmt.Sprintf("mfl_write_file(%s, %s)", args[0], args[1]), nil
+	case "list_dir":
+		return fmt.Sprintf("mfl_list_dir(%s)", args[0]), nil
+	case "mkdir":
+		return fmt.Sprintf("mfl_mkdir(%s)", args[0]), nil
 	case "print", "println":
 		return "", fmt.Errorf("print/println may only be used as a statement")
 	}

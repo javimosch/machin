@@ -10,6 +10,9 @@
 - **`now_ms()` and `parse_int()`.** Wall-clock milliseconds (for measuring
   latency) and string→int parsing (`0` on non-numeric). Both surfaced building
   the same tool — a concurrent HTTP health checker.
+- **File I/O — `read_file`, `write_file`, `list_dir`, `mkdir`.** Read/write whole
+  files, list a directory (excludes `.`/`..`), make a directory. Native builtins
+  (no FFI), surfaced building a static-site generator.
 
 - **CLI builtins — `args()`, `env()`, `now()`.** `args()` returns the
   command-line arguments (`[]string`; `args()[0]` is the program path) — the
