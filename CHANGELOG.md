@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **`machin guide` — self-describing feature catalog for agents.** One command
+  emits machin's complete, version-exact surface — keywords, types, every builtin
+  with its signature + one-line semantics (grouped by category), the core idioms
+  as runnable snippets, and the gotchas — as **JSON by default** (`--text` for
+  dense prose). It's generated from a single in-binary source-of-truth catalog,
+  so an agent masters the language in one call and the reference can't drift from
+  the implementation: a test asserts every catalogued builtin is recognized by
+  the compiler, and that the catalog version matches the README badge.
+
 ## v0.18.0
 
 - **`flush()` builtin.** Forces buffered stdout out (`fflush`). libc fully buffers

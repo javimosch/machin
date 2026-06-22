@@ -3,6 +3,12 @@
 Orientation for agents working on **machin** (the toolchain) / **MFL** (the
 language). Humans state intent; the machine reads and writes the code.
 
+> **Start here to learn the language: run `machin guide`.** It emits the
+> complete, version-exact feature surface — keywords, every builtin with its
+> signature, idioms, and gotchas — as JSON (default) or `--text` (prose), from
+> the compiler's own source-of-truth catalog (so it never drifts). This file is
+> about *contributing to the toolchain*; `machin guide` is about *writing MFL*.
+
 ## Current direction: dogfood
 
 The POC goal is met; machin is now grown by **building real things** and letting
@@ -98,8 +104,10 @@ Releases are automated by [`.github/workflows/release.yml`](.github/workflows/re
 Pushing a `v*` tag cross-compiles machin and attaches the binaries to that tag's
 GitHub release. **To cut a release:**
 
-1. Update the version: bump the badge in `README.md` and add a section to the
-   top of `CHANGELOG.md` (newest first). Commit to `main`.
+1. Update the version: bump the badge in `README.md`, the `Version` line in
+   `SPEC.md`, **`machinVersion` in `guide.go`** (a test enforces it matches the
+   README badge), and add a section to the top of `CHANGELOG.md` (newest first).
+   Commit to `main`.
    ```
    release: vX.Y.Z (one-line summary)
    ```
