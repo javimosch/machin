@@ -1,6 +1,6 @@
-ZnVuYyBjb3VudGVyKCkgeyBuIDo9IDAgcmV0dXJuIGZ1bmMoKSB7IG4gPSBuICsgMSByZXR1cm4gbiB9IH0=
+func counter() { n := 0 return func() { n = n + 1 return n } }
 
-ZnVuYyBhY2NvdW50KGJhbGFuY2UpIHsgZGVwb3NpdCA6PSBmdW5jKHgpIHsgYmFsYW5jZSA9IGJhbGFuY2UgKyB4IH0gd2l0aGRyYXcgOj0gZnVuYyh4KSB7IGJhbGFuY2UgPSBiYWxhbmNlIC0geCB9IHJlcG9ydCA6PSBmdW5jKCkgeyByZXR1cm4gYmFsYW5jZSB9IGRlcG9zaXQoMTAwKSBkZXBvc2l0KDUwKSB3aXRoZHJhdygzMCkgcmV0dXJuIHJlcG9ydCgpIH0=
+func account(balance) { deposit := func(x) { balance = balance + x } withdraw := func(x) { balance = balance - x } report := func() { return balance } deposit(100) deposit(50) withdraw(30) return report() }
 
-ZnVuYyBtYWluKCkgeyBjIDo9IGNvdW50ZXIoKSBkIDo9IGNvdW50ZXIoKSBwcmludGxuKCJjOiIsIGMoKSwgYygpLCBjKCkpIHByaW50bG4oImQ6IiwgZCgpKSBwcmludGxuKCJjIGFnYWluOiIsIGMoKSkgcHJpbnRsbigiYWNjb3VudDoiLCBhY2NvdW50KDApKSB9
+func main() { c := counter() d := counter() println("c:", c(), c(), c()) println("d:", d()) println("c again:", c()) println("account:", account(0)) }
 

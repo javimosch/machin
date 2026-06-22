@@ -1,8 +1,8 @@
-dHlwZSBUb2RvIHN0cnVjdCB7IGlkICAgIGludCB0aXRsZSBzdHJpbmcgZG9uZSAgYm9vbCB9
+type Todo struct { id    int title string done  bool }
 
-ZnVuYyB0b2RvcygpIHsgbGlzdCA6PSBbXVRvZG97fSBsaXN0ID0gYXBwZW5kKGxpc3QsIFRvZG97aWQ6IDEsIHRpdGxlOiAid3JpdGUgYSBjb21waWxlciIsIGRvbmU6IHRydWV9KSBsaXN0ID0gYXBwZW5kKGxpc3QsIFRvZG97aWQ6IDIsIHRpdGxlOiAiYWRkIHN0cnVjdHMsIG1hcHMsIGNoYW5uZWxzIiwgZG9uZTogdHJ1ZX0pIGxpc3QgPSBhcHBlbmQobGlzdCwgVG9kb3tpZDogMywgdGl0bGU6ICJzcGVhayBKU09OIG92ZXIgSFRUUCIsIGRvbmU6IGZhbHNlfSkgcmV0dXJuIGxpc3QgfQ==
+func todos() { list := []Todo{} list = append(list, Todo{id: 1, title: "write a compiler", done: true}) list = append(list, Todo{id: 2, title: "add structs, maps, channels", done: true}) list = append(list, Todo{id: 3, title: "speak JSON over HTTP", done: false}) return list }
 
-ZnVuYyBoYW5kbGUoY29ubikgeyByZWFkKGNvbm4pIGJvZHkgOj0ganNvbih0b2RvcygpKSByZXNwIDo9ICJIVFRQLzEuMSAyMDAgT0tcclxuQ29udGVudC1UeXBlOiBhcHBsaWNhdGlvbi9qc29uXHJcbkNvbnRlbnQtTGVuZ3RoOiAiICsgc3RyKGxlbihib2R5KSkgKyAiXHJcbkNvbm5lY3Rpb246IGNsb3NlXHJcblxyXG4iICsgYm9keSB3cml0ZShjb25uLCByZXNwKSBjbG9zZShjb25uKSB9
+func handle(conn) { read(conn) body := json(todos()) resp := "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + str(len(body)) + "\r\nConnection: close\r\n\r\n" + body write(conn, resp) close(conn) }
 
-ZnVuYyBtYWluKCkgeyBzZXJ2ZXIgOj0gbGlzdGVuKDQ4MDgwKSBwcmludGxuKCJKU09OIEFQSSBvbiBodHRwOi8vbG9jYWxob3N0OjQ4MDgwIikgZm9yIHsgY29ubiA6PSBhY2NlcHQoc2VydmVyKSBnbyBoYW5kbGUoY29ubikgfSB9
+func main() { server := listen(48080) println("JSON API on http://localhost:48080") for { conn := accept(server) go handle(conn) } }
 

@@ -1,2 +1,2 @@
-ZnVuYyBtYWluKCkgeyB4IDo9IDEwIHZhciB5ID0gNSB4ID0geCArIHkgbmFtZSA6PSAibWFjaGluIiBmbGFnIDo9IHggPiB5ICYmIHkgPiAwIHByaW50bG4oInggPSIsIHgpIHByaW50bG4oInkgPSIsIHkpIHByaW50bG4oIm5hbWUgPSIsIG5hbWUsICJsZW4gPSIsIGxlbihuYW1lKSkgcHJpbnRsbigiZmxhZyA9IiwgZmxhZykgfQ==
+func main() { x := 10 var y = 5 x = x + y name := "machin" flag := x > y && y > 0 println("x =", x) println("y =", y) println("name =", name, "len =", len(name)) println("flag =", flag) }
 

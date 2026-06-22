@@ -1,4 +1,4 @@
-ZnVuYyB3b3JrZXIoaWQsIGpvYnMsIHJlc3VsdHMpIHsgdG90YWwgOj0gMCBpIDo9IDEgZm9yIGkgPD0gam9icyB7IHRvdGFsID0gdG90YWwgKyBpZCAqIGkgaSA9IGkgKyAxIH0gcmVzdWx0cyA8LSB0b3RhbCB9
+func worker(id, jobs, results) { total := 0 i := 1 for i <= jobs { total = total + id * i i = i + 1 } results <- total }
 
-ZnVuYyBtYWluKCkgeyB3b3JrZXJzIDo9IDQgam9icyA6PSAxMDAgcmVzdWx0cyA6PSBtYWtlKGNoYW4gaW50KSBpZCA6PSAxIGZvciBpZCA8PSB3b3JrZXJzIHsgZ28gd29ya2VyKGlkLCBqb2JzLCByZXN1bHRzKSBpZCA9IGlkICsgMSB9IHN1bSA6PSAwIHJlY2VpdmVkIDo9IDAgZm9yIHJlY2VpdmVkIDwgd29ya2VycyB7IHN1bSA9IHN1bSArIDwtcmVzdWx0cyByZWNlaXZlZCA9IHJlY2VpdmVkICsgMSB9IHByaW50bG4oIndvcmtlcnM6Iiwgd29ya2VycywgImNvbWJpbmVkIHRvdGFsOiIsIHN1bSkgfQ==
+func main() { workers := 4 jobs := 100 results := make(chan int) id := 1 for id <= workers { go worker(id, jobs, results) id = id + 1 } sum := 0 received := 0 for received < workers { sum = sum + <-results received = received + 1 } println("workers:", workers, "combined total:", sum) }
 

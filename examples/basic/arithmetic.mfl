@@ -1,2 +1,2 @@
-ZnVuYyBtYWluKCkgeyBwcmludGxuKCIyICsgMyAqIDQgPSIsIDIgKyAzICogNCkgcHJpbnRsbigiKDIgKyAzKSAqIDQgPSIsICgyICsgMykgKiA0KSBwcmludGxuKCIxNyAvIDUgPSIsIDE3IC8gNSkgcHJpbnRsbigiMTcgJSA1ID0iLCAxNyAlIDUpIHByaW50bG4oIjE3LjAgLyA1ID0iLCAxNy4wIC8gNSkgcHJpbnRsbigiLSgzIC0gOCkgPSIsIC0oMyAtIDgpKSB9
+func main() { println("2 + 3 * 4 =", 2 + 3 * 4) println("(2 + 3) * 4 =", (2 + 3) * 4) println("17 / 5 =", 17 / 5) println("17 % 5 =", 17 % 5) println("17.0 / 5 =", 17.0 / 5) println("-(3 - 8) =", -(3 - 8)) }
 

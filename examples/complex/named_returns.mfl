@@ -1,8 +1,8 @@
-ZnVuYyBkaXZtb2QoYSwgYikgKHEsIHIpIHsgcSA9IGEgLyBiIHIgPSBhICUgYiByZXR1cm4gfQ==
+func divmod(a, b) (q, r) { q = a / b r = a % b return }
 
-ZnVuYyBzcGxpdF9uYW1lKGZ1bGwpIChmaXJzdCwgcmVzdCkgeyBpIDo9IGluZGV4KGZ1bGwsICIgIikgaWYgaSA8IDAgeyBmaXJzdCA9IGZ1bGwgfSBlbHNlIHsgZmlyc3QgPSBzdWJzdHIoZnVsbCwgMCwgaSkgcmVzdCA9IHN1YnN0cihmdWxsLCBpICsgMSwgbGVuKGZ1bGwpKSB9IH0=
+func split_name(full) (first, rest) { i := index(full, " ") if i < 0 { first = full } else { first = substr(full, 0, i) rest = substr(full, i + 1, len(full)) } }
 
-ZnVuYyBjbGFtcCh4LCBsbywgaGkpICh5KSB7IHkgPSB4IGlmIHggPCBsbyB7IHJldHVybiBsbyB9IGlmIHggPiBoaSB7IHJldHVybiBoaSB9IHJldHVybiB9
+func clamp(x, lo, hi) (y) { y = x if x < lo { return lo } if x > hi { return hi } return }
 
-ZnVuYyBtYWluKCkgeyBxLCByIDo9IGRpdm1vZCgxNywgNSkgcHJpbnRsbigiMTcvNSA9IiwgcSwgInJlbSIsIHIpIGZuLCByZXN0IDo9IHNwbGl0X25hbWUoIkFkYSBMb3ZlbGFjZSIpIHByaW50bG4oImZpcnN0OiIsIGZuLCAicmVzdDoiLCByZXN0KSBwcmludGxuKCJjbGFtcCg1LDAsMTApOiIsIGNsYW1wKDUsIDAsIDEwKSwgImNsYW1wKC0zLDAsMTApOiIsIGNsYW1wKC0zLCAwLCAxMCksICJjbGFtcCg5OSwwLDEwKToiLCBjbGFtcCg5OSwgMCwgMTApKSB9
+func main() { q, r := divmod(17, 5) println("17/5 =", q, "rem", r) fn, rest := split_name("Ada Lovelace") println("first:", fn, "rest:", rest) println("clamp(5,0,10):", clamp(5, 0, 10), "clamp(-3,0,10):", clamp(-3, 0, 10), "clamp(99,0,10):", clamp(99, 0, 10)) }
 

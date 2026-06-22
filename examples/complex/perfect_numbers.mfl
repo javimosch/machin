@@ -1,4 +1,4 @@
-ZnVuYyBpc19wZXJmZWN0KG4pIHsgc3VtIDo9IDAgaSA6PSAxIHdoaWxlIGkgPCBuIHsgaWYgbiAlIGkgPT0gMCB7IHN1bSA9IHN1bSArIGkgfSBpID0gaSArIDEgfSByZXR1cm4gc3VtID09IG4gfQ==
+func is_perfect(n) { sum := 0 i := 1 while i < n { if n % i == 0 { sum = sum + i } i = i + 1 } return sum == n }
 
-ZnVuYyBtYWluKCkgeyBwcmludGxuKCJwZXJmZWN0IG51bWJlcnMgdXAgdG8gMTAwMDoiKSBuIDo9IDIgd2hpbGUgbiA8PSAxMDAwIHsgaWYgaXNfcGVyZmVjdChuKSB7IHByaW50bG4oIiAiLCBuKSB9IG4gPSBuICsgMSB9IH0=
+func main() { println("perfect numbers up to 1000:") n := 2 while n <= 1000 { if is_perfect(n) { println(" ", n) } n = n + 1 } }
 

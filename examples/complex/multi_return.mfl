@@ -1,8 +1,8 @@
-ZnVuYyBkaXZtb2QoYSwgYikgeyByZXR1cm4gYSAvIGIsIGEgJSBiIH0=
+func divmod(a, b) { return a / b, a % b }
 
-ZnVuYyBtaW5tYXgoeHMpIHsgbG8gOj0geHNbMF0gaGkgOj0geHNbMF0gZm9yIF8sIHYgOj0gcmFuZ2UgeHMgeyBpZiB2IDwgbG8geyBsbyA9IHYgfSBpZiB2ID4gaGkgeyBoaSA9IHYgfSB9IHJldHVybiBsbywgaGkgfQ==
+func minmax(xs) { lo := xs[0] hi := xs[0] for _, v := range xs { if v < lo { lo = v } if v > hi { hi = v } } return lo, hi }
 
-ZnVuYyBsb29rdXAobSwgaykgeyByZXR1cm4gbVtrXSwgaGFzKG0sIGspIH0=
+func lookup(m, k) { return m[k], has(m, k) }
 
-ZnVuYyBtYWluKCkgeyBxLCByIDo9IGRpdm1vZCgxNywgNSkgcHJpbnRsbigiMTcgLyA1ID0iLCBxLCAicmVtIiwgcikgbG8sIGhpIDo9IG1pbm1heChbXWludHs0LCA5LCAxLCA3LCAzfSkgcHJpbnRsbigibWluIiwgbG8sICJtYXgiLCBoaSkgbSA6PSBtYWtlKG1hcFtzdHJpbmddaW50KSBtWyJ4Il0gPSA0MiB2LCBvayA6PSBsb29rdXAobSwgIngiKSBwcmludGxuKCJ4OiIsIHYsICJmb3VuZDoiLCBvaykgdjIsIG9rMiA6PSBsb29rdXAobSwgInkiKSBwcmludGxuKCJ5OiIsIHYyLCAiZm91bmQ6Iiwgb2syKSBfLCByZW0gOj0gZGl2bW9kKDIwLCA2KSBwcmludGxuKCIyMCBtb2QgNiA9IiwgcmVtKSBhIDo9IDEgYiA6PSAyIGEsIGIgPSBiLCBhIHByaW50bG4oInN3YXBwZWQ6IiwgYSwgYikgfQ==
+func main() { q, r := divmod(17, 5) println("17 / 5 =", q, "rem", r) lo, hi := minmax([]int{4, 9, 1, 7, 3}) println("min", lo, "max", hi) m := make(map[string]int) m["x"] = 42 v, ok := lookup(m, "x") println("x:", v, "found:", ok) v2, ok2 := lookup(m, "y") println("y:", v2, "found:", ok2) _, rem := divmod(20, 6) println("20 mod 6 =", rem) a := 1 b := 2 a, b = b, a println("swapped:", a, b) }
 

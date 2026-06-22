@@ -1,6 +1,6 @@
-ZnVuYyBpc3FydChuKSB7IGlmIG4gPCAyIHsgcmV0dXJuIG4gfSB4IDo9IG4geSA6PSAoeCArIDEpIC8gMiB3aGlsZSB5IDwgeCB7IHggPSB5IHkgPSAoeCArIG4gLyB4KSAvIDIgfSByZXR1cm4geCB9
+func isqrt(n) { if n < 2 { return n } x := n y := (x + 1) / 2 while y < x { x = y y = (x + n / x) / 2 } return x }
 
-ZnVuYyBpc19zcXVhcmUobikgeyByIDo9IGlzcXJ0KG4pIHJldHVybiByICogciA9PSBuIH0=
+func is_square(n) { r := isqrt(n) return r * r == n }
 
-ZnVuYyBtYWluKCkgeyBpIDo9IDAgd2hpbGUgaSA8PSAxNyB7IHMgOj0gaXNxcnQoaSkgaWYgaXNfc3F1YXJlKGkpIHsgcHJpbnRsbihpLCAiLT4gaXNxcnQiLCBzLCAiKHBlcmZlY3Qgc3F1YXJlKSIpIH0gZWxzZSB7IHByaW50bG4oaSwgIi0+IGlzcXJ0IiwgcykgfSBpID0gaSArIDEgfSB9
+func main() { i := 0 while i <= 17 { s := isqrt(i) if is_square(i) { println(i, "-> isqrt", s, "(perfect square)") } else { println(i, "-> isqrt", s) } i = i + 1 } }
 

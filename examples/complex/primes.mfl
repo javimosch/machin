@@ -1,4 +1,4 @@
-ZnVuYyBpc19wcmltZShuKSB7IGlmIG4gPCAyIHsgcmV0dXJuIGZhbHNlIH0gaSA6PSAyIHdoaWxlIGkgKiBpIDw9IG4geyBpZiBuICUgaSA9PSAwIHsgcmV0dXJuIGZhbHNlIH0gaSA9IGkgKyAxIH0gcmV0dXJuIHRydWUgfQ==
+func is_prime(n) { if n < 2 { return false } i := 2 while i * i <= n { if n % i == 0 { return false } i = i + 1 } return true }
 
-ZnVuYyBtYWluKCkgeyBuIDo9IDYwIGNvdW50IDo9IDAgaSA6PSAyIHdoaWxlIGkgPD0gbiB7IGlmIGlzX3ByaW1lKGkpIHsgcHJpbnQoaSwgIiIpIGNvdW50ID0gY291bnQgKyAxIH0gaSA9IGkgKyAxIH0gcHJpbnRsbigiIikgcHJpbnRsbigicHJpbWVzIDw9IiwgbiwgIjoiLCBjb3VudCkgfQ==
+func main() { n := 60 count := 0 i := 2 while i <= n { if is_prime(i) { print(i, "") count = count + 1 } i = i + 1 } println("") println("primes <=", n, ":", count) }
 

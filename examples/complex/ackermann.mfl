@@ -1,4 +1,4 @@
-ZnVuYyBhY2sobSwgbikgeyBpZiBtID09IDAgeyByZXR1cm4gbiArIDEgfSBpZiBuID09IDAgeyByZXR1cm4gYWNrKG0gLSAxLCAxKSB9IHJldHVybiBhY2sobSAtIDEsIGFjayhtLCBuIC0gMSkpIH0=
+func ack(m, n) { if m == 0 { return n + 1 } if n == 0 { return ack(m - 1, 1) } return ack(m - 1, ack(m, n - 1)) }
 
-ZnVuYyBtYWluKCkgeyBwcmludGxuKCJhY2soMCwgMCkgPSIsIGFjaygwLCAwKSkgcHJpbnRsbigiYWNrKDIsIDMpID0iLCBhY2soMiwgMykpIHByaW50bG4oImFjaygzLCAzKSA9IiwgYWNrKDMsIDMpKSBwcmludGxuKCJhY2soMywgNCkgPSIsIGFjaygzLCA0KSkgfQ==
+func main() { println("ack(0, 0) =", ack(0, 0)) println("ack(2, 3) =", ack(2, 3)) println("ack(3, 3) =", ack(3, 3)) println("ack(3, 4) =", ack(3, 4)) }
 

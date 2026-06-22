@@ -8,7 +8,7 @@ language). Humans state intent; the machine reads and writes the code.
 machin compiles MFL to native code through C:
 
 ```
-.mfl ──base64 decode──▶ parse ──▶ infer types ──▶ emit C ──▶ cc -O2 ──▶ native binary
+.mfl (canonical text) ──▶ parse ──▶ infer types ──▶ emit C ──▶ cc -O2 ──▶ native binary
 ```
 
 | Stage | File |
@@ -24,15 +24,21 @@ The full language reference is [`SPEC.md`](SPEC.md).
 
 ## Standing constraints (do not violate)
 
-- **The `.mfl` base64 IS the source of truth.** One function per line, a blank
-  line between functions. There is no human-readable source form and no `decode`
-  command. Never present readable MFL as the authoring/reading surface, and
-  never make the public landing page show readable MFL — it shows base64.
-  (`machin build --emit-c` exists for inspecting what runs; that is the only
-  "peek".)
+- **The `.mfl` source of truth is canonical plain text.** One normalized
+  function (or type) per line, a blank line between declarations. It is
+  greppable, diffable, and editable in place — keep it that way. Machine-first
+  means the language is *shaped for machine authoring* (terse, no type
+  annotations, canonical one-line form, function-addressable), not that it is
+  encoded. A dense base64 "packed" form exists via `machin pack` for
+  distribution only; `machin run` reads either form, but the committed source is
+  text. (This replaced a base64-as-source design: measured with `tools/tokcost.py`,
+  base64 costs an agent ~2.5× the output tokens to write/edit — it taxed the very
+  machine-speed it was meant to signal. See PRs/issue history.)
 - **Machine-first / minimalism.** Prefer the smallest change that holds the
-  surface minimal. Target C/Rust/Zig-class performance — the default build has
-  no runtime overhead a C programmer wouldn't accept.
+  surface minimal. The north star is *low agent write/edit cost* (output tokens)
+  — measure syntax changes with `tools/tokcost.py`, don't guess. Target
+  C/Rust/Zig-class performance — the default build has no runtime overhead a C
+  programmer wouldn't accept.
 - Keep the working tree clean. Commit/push only the intended change.
 
 ## Dev workflow
