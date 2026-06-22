@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.18.0
 
 - **`flush()` builtin.** Forces buffered stdout out (`fflush`). libc fully buffers
   stdout when it's a pipe, so a streaming program's output otherwise only appears
