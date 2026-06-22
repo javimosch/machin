@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## v0.7.0
+
+Dogfooding: real tools drove these in. A health checker added networking +
+timing + parsing; a static-site generator added file I/O and caught a parser
+bug. See [awesome-machin](https://github.com/javimosch/awesome-machin).
 
 - **Outbound networking — `dial(host, port)`.** Connect a TCP socket to a remote
   host (DNS-resolved via `getaddrinfo`), returning an fd used with the existing
@@ -13,7 +17,9 @@
 - **File I/O — `read_file`, `write_file`, `list_dir`, `mkdir`.** Read/write whole
   files, list a directory (excludes `.`/`..`), make a directory. Native builtins
   (no FFI), surfaced building a static-site generator.
-
+- **Parser fix — string literals equal to a structural token.** A string like
+  `")"` was mistaken for the closing delimiter, so `index(s, ")")` failed to
+  parse; value-list loops are now punctuation-aware. Caught by the SSG.
 - **CLI builtins — `args()`, `env()`, `now()`.** `args()` returns the
   command-line arguments (`[]string`; `args()[0]` is the program path) — the
   generated `main` now takes `argc`/`argv`. `env(name)` reads an environment
