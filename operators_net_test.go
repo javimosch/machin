@@ -293,6 +293,46 @@ func TestNetworkingRoundTrip(t *testing.T) {
 	}
 }
 
+// TestDialOutbound exercises client networking: a Go server listens, an MFL
+// program dials it with dial(host, port), writes a request, reads the reply.
+func TestDialOutbound(t *testing.T) {
+	const port = 47656
+	ln, err := net.Listen("tcp", "127.0.0.1:"+itoa(port))
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		buf := make([]byte, 64)
+		c.Read(buf)
+		c.Write([]byte("pong-from-server"))
+		c.Close()
+	}()
+
+	fns := parseFuncs(t,
+		`func main() { fd := dial("127.0.0.1", `+itoa(port)+`) if fd < 0 { print("dial failed") return } write(fd, "ping") r := read(fd) close(fd) print(r) }`)
+	bin, err := os.CreateTemp("", "mfl-dial-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin.Close()
+	defer os.Remove(bin.Name())
+	if err := BuildBinary(&Program{Funcs: fns}, bin.Name(), false); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	out, err := exec.Command(bin.Name()).Output()
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := string(out); got != "pong-from-server" {
+		t.Fatalf("dial round trip: got %q, want \"pong-from-server\"", got)
+	}
+}
+
 // itoa is a tiny dependency-free int->string for embedding ports in MFL source.
 func itoa(n int) string {
 	if n == 0 {

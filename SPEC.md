@@ -230,9 +230,10 @@ throughout the function body).
 | `split` | `(string, string) -> []string` | split |
 | `join` | `([]string, string) -> string` | join |
 | `sleep` | `(int) -> ` | pause (milliseconds) |
+| `dial` | `(string, int) -> int` | connect to host:port; an fd, or -1 on failure |
 | `listen`, `accept` | `(int) -> int` | open / accept on a TCP socket |
-| `read`, `write` | `(int[, string]) -> string\|int` | socket I/O |
-| `close` | `(int) -> ` | close a socket |
+| `read`, `write` | `(int[, string]) -> string\|int` | socket/fd I/O |
+| `close` | `(int) -> ` | close a socket/fd |
 
 ---
 
