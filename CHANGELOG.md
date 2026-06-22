@@ -1,7 +1,15 @@
 # Changelog
 
-## Unreleased
+## v0.20.0
 
+- **`machin guide` completeness pass.** A fresh-eyes audit confirmed the builtin
+  (51) and keyword catalogs match the compiler exactly, and filled the gaps: new
+  idioms for the *functions* surface (`variadic`, `named-returns`, `closure`,
+  `generic`, `scoped-arena`) and new gotchas — struct **value semantics** (copied
+  on pass; use a map for shared mutable state), **no map comma-ok** (`v, ok :=
+  m[k]` doesn't compile), the `parse(s, T{})` **witness**, and **unspecified
+  evaluation order** (the review found `f() + g()` runs right-to-left, unlike Go;
+  tracked in #142). Now 14 idioms, 13 gotchas, all compiled by a test.
 - **`framework/flags.src` — a CLI flag parser (MFL module).** Every machin tool
   hand-rolled its argument parsing; this is a reusable parser composed like
   `machweb` (`machin encode framework/flags.src yourtool.src`). Short/long flags,
