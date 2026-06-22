@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.11.0
 
 - **Error handling reaches the builtins — `http_get` returns `(status, body, err)`.**
   machin's HTTP builtins collapsed every failure to `""`: a 404, a 503, an
