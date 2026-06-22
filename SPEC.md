@@ -209,6 +209,9 @@ throughout the function body).
 |---------|-----------|---------|
 | `print`, `println` | `(...) -> ` | write arguments (no / trailing newline) |
 | `input` | `() -> string` | read one line from stdin (newline stripped; `""` at EOF) |
+| `args` | `() -> []string` | command-line arguments (`args()[0]` is the program path) |
+| `env` | `(string) -> string` | environment variable (`""` if unset) |
+| `now` | `() -> int` | wall-clock time in Unix seconds |
 | `len` | `(string\|slice\|map) -> int` | length |
 | `str` | `(int\|float) -> string` | format a number |
 | `int` | `(number) -> int` | truncate to int |

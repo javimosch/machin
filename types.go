@@ -1593,6 +1593,22 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 			return 0, fmt.Errorf("input: no args")
 		}
 		return c.cString, nil
+	case "args":
+		if len(argSlots) != 0 {
+			return 0, fmt.Errorf("args: no args")
+		}
+		return newSliceSlot(c, c.cString), nil
+	case "env":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("env: 1 arg (variable name)")
+		}
+		c.addPair(argSlots[0], c.cString)
+		return c.cString, nil
+	case "now":
+		if len(argSlots) != 0 {
+			return 0, fmt.Errorf("now: no args")
+		}
+		return c.cInt, nil
 	case "write":
 		if len(argSlots) != 2 {
 			return 0, fmt.Errorf("write: 2 args")
