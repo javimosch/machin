@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.16.0
 
 - **Channels deep-copy slices and maps too.** v0.15.0 made channels safe for
   strings; now slices, maps, and structs containing them (nested arbitrarily)
