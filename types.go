@@ -985,6 +985,10 @@ func (c *Checker) genStmt(fn *FuncDecl, s Stmt) error {
 			c.addPair(rets[i], vs)
 		}
 		return nil
+	case *BreakStmt:
+		return nil
+	case *ContinueStmt:
+		return nil
 	case *MultiAssign:
 		return c.genMultiAssign(fn, st)
 	case *IfStmt:

@@ -182,6 +182,10 @@ type AssignStmt struct {
 
 type ReturnStmt struct{ Vals []Expr } // empty for a bare return
 
+type BreakStmt struct{}
+
+type ContinueStmt struct{}
+
 // MultiAssign is `a, b := rhs` / `a, b = rhs`, where rhs is either a single call
 // returning len(Names) values, or len(Names) parallel expressions.
 type MultiAssign struct {
@@ -243,6 +247,8 @@ func (ExprStmt) node()    {}
 func (AssignStmt) node()  {}
 func (MultiAssign) node() {}
 func (ReturnStmt) node()  {}
+func (BreakStmt) node()   {}
+func (ContinueStmt) node() {}
 func (IfStmt) node()      {}
 func (WhileStmt) node()   {}
 func (IndexAssign) node() {}

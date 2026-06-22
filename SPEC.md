@@ -78,7 +78,7 @@ The decoded text of a declaration is tokenized as follows.
 - **Float literals.** digits with a `.`, e.g. `3.14`, `0.5`.
 - **String literals.** `"..."` with escapes `\n \t \r \" \\`.
 - **Keywords.** `func return if else while for range true false nil var go type
-  struct chan make map arena extern`.
+  struct chan make map arena extern break continue`.
 - **Operators and punctuation.** `+ - * / % == != < <= > >= && || ! = := <- .
   : , ; ( ) { } [ ]`.
 
@@ -196,6 +196,7 @@ throughout the function body).
   - `for cond { ... }` and `for { ... }` (infinite)
   - `for k, v := range x { ... }` over a slice (index, element), map (key,
     value), or string (index, 1-char). Either variable may be `_`.
+  - `break` exits the innermost loop; `continue` skips to its next iteration.
 - `return`, `return e`, `return e1, e2`.
 - `x[i] = v`, `x.f = v`.
 - `ch <- v` (send).
@@ -373,7 +374,8 @@ FuncDecl    = "func" ident "(" [ identList [ "..." ] ] ")" [ "(" identList ")" ]
 TypeName    = "int" | "float" | "bool" | "string" | ident
             | "[]" TypeName | "map" "[" TypeName "]" TypeName | "chan" TypeName .
 Block       = "{" { Stmt } "}" .
-Stmt        = Decl? | Assign | If | Loop | Return | Send | Go | ExprStmt .
+Stmt        = Decl? | Assign | If | Loop | Return | Send | Go | ExprStmt
+            | "break" | "continue" .
 Assign      = identList ( ":=" | "=" ) exprList .
 If          = "if" Expr Block [ "else" ( If | Block ) ] .
 Loop        = ( "while" | "for" ) [ Expr ] Block

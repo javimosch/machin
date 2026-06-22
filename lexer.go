@@ -30,6 +30,7 @@ var keywords = map[string]bool{
 	"nil": true, "var": true, "go": true, "type": true, "struct": true,
 	"chan": true, "make": true, "map": true, "range": true,
 	"arena": true, "extern": true,
+	"break": true, "continue": true,
 }
 
 type Lexer struct {

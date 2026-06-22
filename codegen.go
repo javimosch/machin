@@ -811,6 +811,10 @@ func (g *cgen) stmt(s Stmt, depth int) error {
 		} else {
 			fmt.Fprintf(&g.buf, "return (%s_ret){ %s };\n", g.c.CName(g.curFn), strings.Join(exprs, ", "))
 		}
+	case *BreakStmt:
+		g.buf.WriteString("break;\n")
+	case *ContinueStmt:
+		g.buf.WriteString("continue;\n")
 	case *MultiAssign:
 		return g.multiAssign(st, depth)
 	case *IfStmt:

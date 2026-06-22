@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+More dogfooding: building a streaming WebSocket scraper drove these in.
+
+- **`break` and `continue`.** Loop control was missing entirely — the only way
+  out of a `for`/`while` was a flag variable. `break` exits the innermost loop,
+  `continue` skips to its next iteration; both work in `for cond`, `for {}`, and
+  `range` loops (range increments live in the C `for` clause, so `continue` is
+  safe). Surfaced writing hand-rolled JSON/stream parsers in MFL.
+- **`encode` — string- and comment-aware function splitting.** `splitFunctions`
+  counted every `{`/`}` to find declaration boundaries, including braces inside
+  string literals and `//` comments. Any function emitting JSON (`"{...}"`) or
+  searching for a brace (`index(s, "}")`) failed with `unbalanced braces`. It now
+  tracks string state and stops at `//`.
+
 ## v0.7.0
 
 Dogfooding: real tools drove these in. A health checker added networking +
