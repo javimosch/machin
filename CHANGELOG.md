@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- **`flush()` builtin.** Forces buffered stdout out (`fflush`). libc fully buffers
+  stdout when it's a pipe, so a streaming program's output otherwise only appears
+  when the buffer fills or the process exits; calling `flush()` after a write
+  makes it visible immediately downstream. Surfaced by the streaming batcher,
+  whose whole point is timely emission.
+
 ## v0.17.0
 
 - **Comma-ok receive — `v, ok := <-ch`.** A receive now optionally reports

@@ -1800,6 +1800,11 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		}
 		c.addPair(argSlots[0], c.cInt)
 		return c.cInt, nil
+	case "flush":
+		if len(argSlots) != 0 {
+			return 0, fmt.Errorf("flush: no args")
+		}
+		return c.cInt, nil
 	case "http_get":
 		return 0, fmt.Errorf("http_get returns 3 values; use: status, body, err := http_get(url)")
 	case "json_get":
