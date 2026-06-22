@@ -1669,6 +1669,31 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		c.addPair(argSlots[0], c.cString)
 		c.addPair(argSlots[1], c.cString)
 		return c.cString, nil
+	case "wss_open":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("wss_open: 1 arg (url string)")
+		}
+		c.addPair(argSlots[0], c.cString)
+		return c.cInt, nil
+	case "wss_send":
+		if len(argSlots) != 2 {
+			return 0, fmt.Errorf("wss_send: 2 args (conn int, msg string)")
+		}
+		c.addPair(argSlots[0], c.cInt)
+		c.addPair(argSlots[1], c.cString)
+		return c.cInt, nil
+	case "wss_recv":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("wss_recv: 1 arg (conn int)")
+		}
+		c.addPair(argSlots[0], c.cInt)
+		return c.cString, nil
+	case "wss_close":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("wss_close: 1 arg (conn int)")
+		}
+		c.addPair(argSlots[0], c.cInt)
+		return c.cInt, nil
 	case "write":
 		if len(argSlots) != 2 {
 			return 0, fmt.Errorf("write: 2 args")

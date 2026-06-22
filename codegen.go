@@ -61,6 +61,7 @@ type cgen struct {
 	curFn     string // name of the function currently being emitted
 	safe      bool   // emit runtime bounds / div-by-zero / overflow checks
 	usesTLS   bool   // program calls https_get/https_post -> emit + link OpenSSL
+	usesWSS   bool   // program calls wss_* -> emit WebSocket runtime + link OpenSSL
 }
 
 const cRuntime = `#define _GNU_SOURCE
@@ -458,14 +459,14 @@ static int64_t mfl_mkdir(const char* path) {
 }
 `
 
-// tlsRuntime is a minimal HTTPS/1.1 client over real TLS (OpenSSL). It is
-// appended to the C output and linked against -lssl -lcrypto only when a
-// program calls https_get/https_post, so TLS-free binaries stay libc-only.
-// Handles cert verification (SNI + hostname), Content-Length, chunked
-// transfer-encoding, and redirect following. Returns the response body ("" on
-// any error). machin's first native TLS — retires the popen("curl") crutch.
-const tlsRuntime = `#include <openssl/ssl.h>
+// tlsCoreRuntime holds the shared OpenSSL plumbing (a verified TLS dial) used by
+// both the HTTPS client and the WebSocket client. Emitted whenever a program
+// uses native TLS (https_* or wss_*); linked against -lssl -lcrypto. A single
+// process-global SSL_CTX is shared across all connections (OpenSSL makes SSL_new
+// on a shared CTX thread-safe), so per-connection setup is just SSL_new+connect.
+const tlsCoreRuntime = `#include <openssl/ssl.h>
 #include <openssl/err.h>
+#include <openssl/rand.h>
 
 static char* mfl_dup_arena(const char* s, size_t n) {
     char* r = (char*)mfl_alloc(n + 1);
@@ -474,6 +475,62 @@ static char* mfl_dup_arena(const char* s, size_t n) {
     return r;
 }
 
+static SSL_CTX* mfl_ssl_ctx(void) {
+    static SSL_CTX* ctx = NULL;
+    static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
+    pthread_mutex_lock(&mu);
+    if (!ctx) {
+        ctx = SSL_CTX_new(TLS_client_method());
+        if (ctx) SSL_CTX_set_default_verify_paths(ctx);
+    }
+    pthread_mutex_unlock(&mu);
+    return ctx;
+}
+
+/* dial host:port and complete a verified TLS handshake (SNI + hostname).
+   Returns a connected SSL* (fd retrievable via SSL_get_fd) or NULL. */
+static SSL* mfl_tls_dial(const char* host, int port) {
+    struct addrinfo hints, *res = NULL;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    char ports[16];
+    snprintf(ports, sizeof(ports), "%d", port);
+    if (getaddrinfo(host, ports, &hints, &res) != 0) return NULL;
+    int fd = -1;
+    for (struct addrinfo* a = res; a; a = a->ai_next) {
+        fd = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
+        if (fd < 0) continue;
+        if (connect(fd, a->ai_addr, a->ai_addrlen) == 0) break;
+        close(fd);
+        fd = -1;
+    }
+    freeaddrinfo(res);
+    if (fd < 0) return NULL;
+    SSL_CTX* ctx = mfl_ssl_ctx();
+    if (!ctx) { close(fd); return NULL; }
+    SSL* ssl = SSL_new(ctx);
+    SSL_set_fd(ssl, fd);
+    SSL_set_tlsext_host_name(ssl, host);
+    SSL_set1_host(ssl, host);
+    SSL_set_verify(ssl, SSL_VERIFY_PEER, NULL);
+    if (SSL_connect(ssl) != 1) { SSL_free(ssl); close(fd); return NULL; }
+    return ssl;
+}
+
+static void mfl_tls_hangup(SSL* ssl) {
+    if (!ssl) return;
+    int fd = SSL_get_fd(ssl);
+    SSL_shutdown(ssl);
+    if (fd >= 0) close(fd);
+    SSL_free(ssl);
+}
+`
+
+// tlsRuntime is a minimal HTTPS/1.1 client built on tlsCoreRuntime. Emitted only
+// when a program calls https_get/https_post. Handles cert verification,
+// Content-Length, chunked transfer-encoding, and redirects; returns the body.
+const tlsRuntime = `
 /* read the whole TLS stream into a malloc'd buffer (caller frees); NUL-terminated */
 static char* mfl_tls_readall(SSL* ssl, size_t* outlen) {
     size_t cap = 16384, len = 0;
@@ -528,35 +585,10 @@ static char* mfl_https_request(const char* method, const char* url, const char* 
     if (*p == ':') { p++; port = atoi(p); while (*p && *p != '/') p++; }
     if (*p == '/') strncpy(path, p, sizeof(path) - 1);
     else { path[0] = '/'; path[1] = 0; }
-    if (port != 443 && strncmp(url, "http://", 7) == 0) return mfl_dup_arena("", 0); /* TLS only */
+    if (strncmp(url, "http://", 7) == 0) return mfl_dup_arena("", 0); /* TLS only */
 
-    struct addrinfo hints, *res = NULL;
-    memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-    char ports[16];
-    snprintf(ports, sizeof(ports), "%d", port);
-    if (getaddrinfo(host, ports, &hints, &res) != 0) return mfl_dup_arena("", 0);
-    int fd = -1;
-    for (struct addrinfo* a = res; a; a = a->ai_next) {
-        fd = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
-        if (fd < 0) continue;
-        if (connect(fd, a->ai_addr, a->ai_addrlen) == 0) break;
-        close(fd);
-        fd = -1;
-    }
-    freeaddrinfo(res);
-    if (fd < 0) return mfl_dup_arena("", 0);
-
-    SSL_CTX* ctx = SSL_CTX_new(TLS_client_method());
-    if (!ctx) { close(fd); return mfl_dup_arena("", 0); }
-    SSL_CTX_set_default_verify_paths(ctx);
-    SSL* ssl = SSL_new(ctx);
-    SSL_set_fd(ssl, fd);
-    SSL_set_tlsext_host_name(ssl, host);
-    SSL_set1_host(ssl, host);
-    SSL_set_verify(ssl, SSL_VERIFY_PEER, NULL);
-    if (SSL_connect(ssl) != 1) { SSL_free(ssl); SSL_CTX_free(ctx); close(fd); return mfl_dup_arena("", 0); }
+    SSL* ssl = mfl_tls_dial(host, port);
+    if (!ssl) return mfl_dup_arena("", 0);
 
     size_t blen = reqbody ? strlen(reqbody) : 0;
     size_t reqcap = blen + strlen(path) + strlen(host) + 256 + (ctype ? strlen(ctype) : 0);
@@ -578,10 +610,7 @@ static char* mfl_https_request(const char* method, const char* url, const char* 
 
     size_t rlen;
     char* raw = mfl_tls_readall(ssl, &rlen);
-    SSL_shutdown(ssl);
-    SSL_free(ssl);
-    SSL_CTX_free(ctx);
-    close(fd);
+    mfl_tls_hangup(ssl);
 
     int status = 0;
     { const char* sp = strchr(raw, ' '); if (sp) status = atoi(sp + 1); }
@@ -634,6 +663,171 @@ static char* mfl_https_request(const char* method, const char* url, const char* 
 
 static char* mfl_https_get(const char* url) { return mfl_https_request("GET", url, NULL, NULL, 5); }
 static char* mfl_https_post(const char* url, const char* body) { return mfl_https_request("POST", url, body, "application/json", 5); }
+`
+
+// wssRuntime is a WebSocket (RFC 6455) client over TLS, built on tlsCoreRuntime.
+// Emitted only when a program calls wss_*. wss_open performs the HTTP/1.1 Upgrade
+// handshake; send/recv implement client frame masking, fragmentation reassembly,
+// and automatic ping->pong / close handling. The connection is held as an int64
+// handle (a pointer), matching how machin carries opaque FFI handles.
+const wssRuntime = `
+typedef struct { SSL* ssl; } mfl_ws;
+
+/* read exactly n bytes from the TLS stream; 0 ok, -1 on EOF/error */
+static int mfl_ssl_read_n(SSL* ssl, unsigned char* buf, size_t n) {
+    size_t got = 0;
+    while (got < n) {
+        int r = SSL_read(ssl, buf + got, (int)(n - got));
+        if (r <= 0) return -1;
+        got += (size_t)r;
+    }
+    return 0;
+}
+
+static void mfl_b64(const unsigned char* in, int len, char* out) {
+    static const char* t = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    int o = 0;
+    for (int i = 0; i < len; i += 3) {
+        int n = in[i] << 16;
+        if (i + 1 < len) n |= in[i+1] << 8;
+        if (i + 2 < len) n |= in[i+2];
+        out[o++] = t[(n >> 18) & 63];
+        out[o++] = t[(n >> 12) & 63];
+        out[o++] = (i + 1 < len) ? t[(n >> 6) & 63] : '=';
+        out[o++] = (i + 2 < len) ? t[n & 63] : '=';
+    }
+    out[o] = 0;
+}
+
+/* write one masked client frame (opcode, payload). Client frames must be masked. */
+static void mfl_ws_frame(mfl_ws* w, int opcode, const unsigned char* payload, size_t len) {
+    unsigned char hdr[14];
+    int h = 0;
+    hdr[h++] = (unsigned char)(0x80 | (opcode & 0x0f));
+    if (len < 126) {
+        hdr[h++] = (unsigned char)(0x80 | len);
+    } else if (len < 65536) {
+        hdr[h++] = 0x80 | 126;
+        hdr[h++] = (unsigned char)((len >> 8) & 0xff);
+        hdr[h++] = (unsigned char)(len & 0xff);
+    } else {
+        hdr[h++] = 0x80 | 127;
+        for (int s = 56; s >= 0; s -= 8) hdr[h++] = (unsigned char)((len >> s) & 0xff);
+    }
+    unsigned char mask[4];
+    RAND_bytes(mask, 4);
+    memcpy(hdr + h, mask, 4);
+    h += 4;
+    unsigned char* buf = (unsigned char*)malloc(h + len);
+    memcpy(buf, hdr, h);
+    for (size_t k = 0; k < len; k++) buf[h + k] = payload[k] ^ mask[k & 3];
+    SSL_write(w->ssl, buf, (int)(h + len));
+    free(buf);
+}
+
+static int64_t mfl_wss_open(const char* url) {
+    char host[256] = {0}, path[2048] = {0};
+    int port = 443;
+    const char* p = url;
+    if (strncmp(p, "wss://", 6) == 0) p += 6;
+    else if (strncmp(p, "ws://", 5) == 0) return 0; /* TLS only */
+    else return 0;
+    int i = 0;
+    while (*p && *p != '/' && *p != ':' && i < 255) host[i++] = *p++;
+    host[i] = 0;
+    if (*p == ':') { p++; port = atoi(p); while (*p && *p != '/') p++; }
+    if (*p == '/') strncpy(path, p, sizeof(path) - 1);
+    else { path[0] = '/'; path[1] = 0; }
+
+    SSL* ssl = mfl_tls_dial(host, port);
+    if (!ssl) return 0;
+
+    unsigned char rnd[16];
+    RAND_bytes(rnd, 16);
+    char key[32];
+    mfl_b64(rnd, 16, key);
+    char req[4096];
+    int rl = snprintf(req, sizeof(req),
+        "GET %s HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\nUser-Agent: machin/0.9\r\n\r\n",
+        path, host, key);
+    SSL_write(ssl, req, rl);
+
+    /* read the handshake response one byte at a time so we stop exactly at the
+       blank line and never swallow the first data frame */
+    char resp[4096];
+    int ro = 0;
+    while (ro < (int)sizeof(resp) - 1) {
+        int r = SSL_read(ssl, resp + ro, 1);
+        if (r <= 0) break;
+        ro++;
+        if (ro >= 4 && resp[ro-4] == '\r' && resp[ro-3] == '\n' && resp[ro-2] == '\r' && resp[ro-1] == '\n') break;
+    }
+    resp[ro] = 0;
+    if (!strstr(resp, " 101")) { mfl_tls_hangup(ssl); return 0; }
+
+    mfl_ws* w = (mfl_ws*)malloc(sizeof(mfl_ws));
+    w->ssl = ssl;
+    return (int64_t)(intptr_t)w;
+}
+
+static int64_t mfl_wss_send(int64_t h, const char* msg) {
+    mfl_ws* w = (mfl_ws*)(intptr_t)h;
+    if (!w) return -1;
+    mfl_ws_frame(w, 0x1, (const unsigned char*)msg, strlen(msg));
+    return 0;
+}
+
+/* block until a full text/binary message arrives; "" on close or error.
+   Replies to pings, ignores pongs, and reassembles fragmented messages. */
+static char* mfl_wss_recv(int64_t h) {
+    mfl_ws* w = (mfl_ws*)(intptr_t)h;
+    if (!w) return mfl_dup_arena("", 0);
+    unsigned char* msg = NULL;
+    size_t mlen = 0;
+    for (;;) {
+        unsigned char hd[2];
+        if (mfl_ssl_read_n(w->ssl, hd, 2) < 0) { free(msg); return mfl_dup_arena("", 0); }
+        int fin = hd[0] & 0x80;
+        int opcode = hd[0] & 0x0f;
+        int masked = hd[1] & 0x80;
+        uint64_t len = hd[1] & 0x7f;
+        if (len == 126) {
+            unsigned char e[2];
+            if (mfl_ssl_read_n(w->ssl, e, 2) < 0) { free(msg); return mfl_dup_arena("", 0); }
+            len = ((uint64_t)e[0] << 8) | e[1];
+        } else if (len == 127) {
+            unsigned char e[8];
+            if (mfl_ssl_read_n(w->ssl, e, 8) < 0) { free(msg); return mfl_dup_arena("", 0); }
+            len = 0;
+            for (int s = 0; s < 8; s++) len = (len << 8) | e[s];
+        }
+        unsigned char mk[4] = {0,0,0,0};
+        if (masked && mfl_ssl_read_n(w->ssl, mk, 4) < 0) { free(msg); return mfl_dup_arena("", 0); }
+        unsigned char* pl = (unsigned char*)malloc(len ? len : 1);
+        if (len && mfl_ssl_read_n(w->ssl, pl, len) < 0) { free(pl); free(msg); return mfl_dup_arena("", 0); }
+        if (masked) for (uint64_t k = 0; k < len; k++) pl[k] ^= mk[k & 3];
+
+        if (opcode == 0x9) { mfl_ws_frame(w, 0xA, pl, len); free(pl); continue; } /* ping -> pong */
+        if (opcode == 0xA) { free(pl); continue; }                                /* pong */
+        if (opcode == 0x8) { mfl_ws_frame(w, 0x8, pl, len); free(pl); free(msg); return mfl_dup_arena("", 0); } /* close */
+
+        unsigned char* nm = (unsigned char*)realloc(msg, mlen + len);
+        msg = nm;
+        if (len) memcpy(msg + mlen, pl, len);
+        mlen += len;
+        free(pl);
+        if (fin) { char* r = mfl_dup_arena((char*)msg, mlen); free(msg); return r; }
+    }
+}
+
+static int64_t mfl_wss_close(int64_t h) {
+    mfl_ws* w = (mfl_ws*)(intptr_t)h;
+    if (!w) return -1;
+    mfl_ws_frame(w, 0x8, NULL, 0);
+    mfl_tls_hangup(w->ssl);
+    free(w);
+    return 0;
+}
 `
 
 // isFFIScalar reports whether t is an FFI scalar type name (vs a cstruct name).
@@ -762,10 +956,18 @@ func (g *cgen) program(p *Program) (string, error) {
 	var out strings.Builder
 	out.WriteString(cRuntime)
 	out.WriteByte('\n')
+	if g.usesTLS || g.usesWSS {
+		// OpenSSL plumbing — emitted (and linked) only when a program uses native
+		// TLS (https_* or wss_*), so TLS-free programs stay libc-only.
+		out.WriteString(tlsCoreRuntime)
+		out.WriteByte('\n')
+	}
 	if g.usesTLS {
-		// Emitted (and linked against OpenSSL) only when a program calls
-		// https_get/https_post, so TLS-free programs stay libc-only.
 		out.WriteString(tlsRuntime)
+		out.WriteByte('\n')
+	}
+	if g.usesWSS {
+		out.WriteString(wssRuntime)
 		out.WriteByte('\n')
 	}
 	// foreign (extern) declarations. With a header, its prototypes + C structs are
@@ -1881,6 +2083,18 @@ func (g *cgen) call(ex *Call) (string, error) {
 	case "https_post":
 		g.usesTLS = true
 		return fmt.Sprintf("mfl_https_post(%s, %s)", args[0], args[1]), nil
+	case "wss_open":
+		g.usesWSS = true
+		return fmt.Sprintf("mfl_wss_open(%s)", args[0]), nil
+	case "wss_send":
+		g.usesWSS = true
+		return fmt.Sprintf("mfl_wss_send(%s, %s)", args[0], args[1]), nil
+	case "wss_recv":
+		g.usesWSS = true
+		return fmt.Sprintf("mfl_wss_recv(%s)", args[0]), nil
+	case "wss_close":
+		g.usesWSS = true
+		return fmt.Sprintf("mfl_wss_close(%s)", args[0]), nil
 	case "print", "println":
 		return "", fmt.Errorf("print/println may only be used as a statement")
 	}

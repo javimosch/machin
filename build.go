@@ -44,9 +44,10 @@ func BuildBinary(prog *Program, outPath string, safe bool) error {
 			libs = append(libs, "-l"+l)
 		}
 	}
-	// native TLS (https_get/https_post) links OpenSSL — only when actually used,
-	// so TLS-free programs keep machin's libc-only footprint.
-	if strings.Contains(csrc, "mfl_https_") {
+	// native TLS (https_* / wss_*) links OpenSSL — only when actually used, so
+	// TLS-free programs keep machin's libc-only footprint. mfl_tls_dial is in the
+	// shared TLS core, emitted whenever either the HTTPS or WSS runtime is used.
+	if strings.Contains(csrc, "mfl_tls_dial") {
 		libs = append(libs, "-lssl", "-lcrypto")
 	}
 	args = append(args, "-o", outPath, tmp.Name())
