@@ -544,7 +544,7 @@ func TestHTTPSRuntimeGating(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(c, "mfl_https_request") || !strings.Contains(c, "openssl/ssl.h") {
+	if !strings.Contains(c, "mfl_http_do") || !strings.Contains(c, "openssl/ssl.h") {
 		t.Fatal("a program using https_get must emit the OpenSSL TLS runtime")
 	}
 	plain := &Program{Funcs: parseFuncs(t, `func main() { println("hi") }`)}
@@ -554,6 +554,25 @@ func TestHTTPSRuntimeGating(t *testing.T) {
 	}
 	if strings.Contains(c2, "mfl_https_") || strings.Contains(c2, "openssl") {
 		t.Fatal("a TLS-free program must stay libc-only (no OpenSSL emitted)")
+	}
+}
+
+// http_get returns (status, body, err) via the v, err := idiom — the multi-return
+// builtin path. Compiling must wire the destructure; using it as a single value
+// must fail with a helpful message.
+func TestHTTPGetMultiReturn(t *testing.T) {
+	prog := &Program{Funcs: parseFuncs(t, `func main() { s, b, e := http_get("https://x") println(str(s) + b + e) }`)}
+	c, err := CompileToC(prog, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(c, "mfl_http_result") || !strings.Contains(c, "mfl_http_get") {
+		t.Fatal("http_get multi-return must emit the result struct + accessor")
+	}
+	// single-value misuse is a clear typecheck error, not a silent miscompile
+	bad := &Program{Funcs: parseFuncs(t, `func main() { x := http_get("https://x") println(x) }`)}
+	if _, err := CompileToC(bad, false); err == nil || !strings.Contains(err.Error(), "returns 3 values") {
+		t.Fatalf("single-value http_get should error helpfully, got: %v", err)
 	}
 }
 

@@ -215,6 +215,7 @@ throughout the function body).
 | `now` | `() -> int` | wall-clock time in Unix seconds |
 | `now_ms` | `() -> int` | wall-clock time in milliseconds (for latency) |
 | `parse_int` | `(string) -> int` | parse an integer (0 if not numeric) |
+| `exit` | `(int) -> ` | terminate the process with a status code |
 | `read_file` | `(string) -> string` | read a whole file ("" on error) |
 | `write_file` | `(string, string) -> int` | write a file (bytes written; -1 on error) |
 | `list_dir` | `(string) -> []string` | directory entries (excludes `.`/`..`) |
@@ -243,6 +244,7 @@ throughout the function body).
 | `close` | `(int) -> ` | close a socket/fd |
 | `https_get` | `(string) -> string` | HTTPS GET over TLS; response body ("" on error) |
 | `https_post` | `(string, string) -> string` | HTTPS POST (JSON body) over TLS; response body |
+| `http_get` | `(string) -> (int, string, string)` | GET returning `(status, body, err)`; `err==""` ⇒ a response, else `"dns"`/`"connect"`/`"tls"`/`"scheme"`. Multi-assign only. |
 | `wss_open` | `(string) -> int` | open a `wss://` WebSocket; a connection handle, or 0 on failure |
 | `wss_send` | `(int, string) -> int` | send a text message on a WebSocket |
 | `wss_recv` | `(int) -> string` | next message (blocks); `""` on close (auto ping/pong) |

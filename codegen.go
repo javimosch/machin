@@ -157,6 +157,7 @@ static mfl_slice mfl_lit_str(int64_t n, ...) {
     for (int64_t i = 0; i < n; i++) ((char**)s.data)[i] = va_arg(ap, char*);
     va_end(ap); return s;
 }
+static int64_t mfl_exit(int64_t code) { exit((int)code); return 0; }
 static void mfl_sleep(int64_t ms) {
     struct timespec ts = { ms / 1000, (ms % 1000) * 1000000L };
     nanosleep(&ts, NULL);
@@ -488,15 +489,16 @@ static SSL_CTX* mfl_ssl_ctx(void) {
 }
 
 /* dial host:port and complete a verified TLS handshake (SNI + hostname).
-   Returns a connected SSL* (fd retrievable via SSL_get_fd) or NULL. */
-static SSL* mfl_tls_dial(const char* host, int port) {
+   Returns a connected SSL* (fd retrievable via SSL_get_fd) or NULL. On failure,
+   *stage (if non-NULL) is set to why: "dns", "connect", or "tls". */
+static SSL* mfl_tls_dial_e(const char* host, int port, const char** stage) {
     struct addrinfo hints, *res = NULL;
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
     char ports[16];
     snprintf(ports, sizeof(ports), "%d", port);
-    if (getaddrinfo(host, ports, &hints, &res) != 0) return NULL;
+    if (getaddrinfo(host, ports, &hints, &res) != 0) { if (stage) *stage = "dns"; return NULL; }
     int fd = -1;
     for (struct addrinfo* a = res; a; a = a->ai_next) {
         fd = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
@@ -506,17 +508,19 @@ static SSL* mfl_tls_dial(const char* host, int port) {
         fd = -1;
     }
     freeaddrinfo(res);
-    if (fd < 0) return NULL;
+    if (fd < 0) { if (stage) *stage = "connect"; return NULL; }
     SSL_CTX* ctx = mfl_ssl_ctx();
-    if (!ctx) { close(fd); return NULL; }
+    if (!ctx) { if (stage) *stage = "tls"; close(fd); return NULL; }
     SSL* ssl = SSL_new(ctx);
     SSL_set_fd(ssl, fd);
     SSL_set_tlsext_host_name(ssl, host);
     SSL_set1_host(ssl, host);
     SSL_set_verify(ssl, SSL_VERIFY_PEER, NULL);
-    if (SSL_connect(ssl) != 1) { SSL_free(ssl); close(fd); return NULL; }
+    if (SSL_connect(ssl) != 1) { if (stage) *stage = "tls"; SSL_free(ssl); close(fd); return NULL; }
     return ssl;
 }
+
+static SSL* mfl_tls_dial(const char* host, int port) { return mfl_tls_dial_e(host, port, NULL); }
 
 static void mfl_tls_hangup(SSL* ssl) {
     if (!ssl) return;
@@ -571,24 +575,34 @@ static char* mfl_chunk_decode(const char* body, size_t blen, size_t* outlen) {
     return out;
 }
 
-static char* mfl_https_request(const char* method, const char* url, const char* reqbody, const char* ctype, int redirects);
+/* (status, body, err) — err is "" on an HTTP response (status is the code), or a
+   transport-failure reason ("dns"/"connect"/"tls"/"scheme") with status 0. */
+typedef struct { int64_t status; char* body; char* err; } mfl_http_result;
 
-static char* mfl_https_request(const char* method, const char* url, const char* reqbody, const char* ctype, int redirects) {
+static mfl_http_result mfl_http_do(const char* method, const char* url, const char* reqbody, const char* ctype, int redirects);
+
+static mfl_http_result mfl_http_do(const char* method, const char* url, const char* reqbody, const char* ctype, int redirects) {
+    mfl_http_result R;
+    R.status = 0;
+    R.body = mfl_dup_arena("", 0);
+    R.err = mfl_dup_arena("", 0);
+
     char host[256] = {0}, path[2048] = {0};
     int port = 443;
     const char* p = url;
     if (strncmp(p, "https://", 8) == 0) p += 8;
-    else if (strncmp(p, "http://", 7) == 0) { p += 7; port = 80; }
+    else if (strncmp(p, "http://", 7) == 0) { R.err = mfl_dup_arena("scheme", 6); return R; } /* TLS only */
+    /* else: no scheme — assume https */
     int i = 0;
     while (*p && *p != '/' && *p != ':' && i < 255) host[i++] = *p++;
     host[i] = 0;
     if (*p == ':') { p++; port = atoi(p); while (*p && *p != '/') p++; }
     if (*p == '/') strncpy(path, p, sizeof(path) - 1);
     else { path[0] = '/'; path[1] = 0; }
-    if (strncmp(url, "http://", 7) == 0) return mfl_dup_arena("", 0); /* TLS only */
 
-    SSL* ssl = mfl_tls_dial(host, port);
-    if (!ssl) return mfl_dup_arena("", 0);
+    const char* stage = "connect";
+    SSL* ssl = mfl_tls_dial_e(host, port, &stage);
+    if (!ssl) { R.err = mfl_dup_arena(stage, strlen(stage)); return R; }
 
     size_t blen = reqbody ? strlen(reqbody) : 0;
     size_t reqcap = blen + strlen(path) + strlen(host) + 256 + (ctype ? strlen(ctype) : 0);
@@ -614,8 +628,9 @@ static char* mfl_https_request(const char* method, const char* url, const char* 
 
     int status = 0;
     { const char* sp = strchr(raw, ' '); if (sp) status = atoi(sp + 1); }
+    R.status = status;
     char* hb = strstr(raw, "\r\n\r\n");
-    if (!hb) { char* r = mfl_dup_arena(raw, rlen); free(raw); return r; }
+    if (!hb) { R.body = mfl_dup_arena(raw, rlen); free(raw); return R; }
     size_t hdrlen = (size_t)(hb - raw);
     char* body = hb + 4;
     size_t bodylen = rlen - (size_t)(body - raw);
@@ -637,17 +652,16 @@ static char* mfl_https_request(const char* method, const char* url, const char* 
                 free(raw);
                 const char* m = (status == 307 || status == 308) ? method : "GET";
                 const char* rb = (status == 307 || status == 308) ? reqbody : NULL;
-                return mfl_https_request(m, locurl, rb, ctype, redirects - 1);
+                return mfl_http_do(m, locurl, rb, ctype, redirects - 1);
             }
         }
     }
 
     char* hdrs = mfl_dup_arena(raw, hdrlen);
-    char* result;
     if (strcasestr(hdrs, "transfer-encoding: chunked") || strcasestr(hdrs, "transfer-encoding:chunked")) {
         size_t dl;
         char* dec = mfl_chunk_decode(body, bodylen, &dl);
-        result = mfl_dup_arena(dec, dl);
+        R.body = mfl_dup_arena(dec, dl);
         free(dec);
     } else {
         char* cl = strcasestr(hdrs, "content-length:");
@@ -655,14 +669,15 @@ static char* mfl_https_request(const char* method, const char* url, const char* 
             size_t want = (size_t)strtoul(cl + strlen("content-length:"), NULL, 10);
             if (want < bodylen) bodylen = want;
         }
-        result = mfl_dup_arena(body, bodylen);
+        R.body = mfl_dup_arena(body, bodylen);
     }
     free(raw);
-    return result;
+    return R;
 }
 
-static char* mfl_https_get(const char* url) { return mfl_https_request("GET", url, NULL, NULL, 5); }
-static char* mfl_https_post(const char* url, const char* body) { return mfl_https_request("POST", url, body, "application/json", 5); }
+static char* mfl_https_get(const char* url) { return mfl_http_do("GET", url, NULL, NULL, 5).body; }
+static char* mfl_https_post(const char* url, const char* body) { return mfl_http_do("POST", url, body, "application/json", 5).body; }
+static mfl_http_result mfl_http_get(const char* url) { return mfl_http_do("GET", url, NULL, NULL, 5); }
 `
 
 // wssRuntime is a WebSocket (RFC 6455) client over TLS, built on tlsCoreRuntime.
@@ -1316,6 +1331,25 @@ func (g *cgen) multiAssign(st *MultiAssign, depth int) error {
 	}
 
 	if len(st.Rhs) == 1 {
+		// multi-return builtin: http_get -> (status, body, err)
+		if call, isCall := st.Rhs[0].(*Call); isCall && call.Callee == "http_get" {
+			g.usesTLS = true
+			arg, err := g.expr(call.Args[0])
+			if err != nil {
+				return err
+			}
+			id := g.tmpID
+			g.tmpID++
+			g.buf.WriteString("{\n")
+			indentC(&g.buf, depth+1)
+			fmt.Fprintf(&g.buf, "mfl_http_result _t%d = mfl_http_get(%s);\n", id, arg)
+			assign(st.Names[0], fmt.Sprintf("_t%d.status", id))
+			assign(st.Names[1], fmt.Sprintf("_t%d.body", id))
+			assign(st.Names[2], fmt.Sprintf("_t%d.err", id))
+			indentC(&g.buf, depth)
+			g.buf.WriteString("}\n")
+			return nil
+		}
 		call, isCall := st.Rhs[0].(*Call)
 		if isCall && g.c.CalleeInst(g.curFn, call) != "" && g.c.RetArity(g.c.CalleeInst(g.curFn, call)) >= 2 {
 			args := make([]string, len(call.Args))
@@ -2038,6 +2072,8 @@ func (g *cgen) call(ex *Call) (string, error) {
 		return fmt.Sprintf("mfl_append(%s, &((%s[1]){%s})[0], sizeof(%s))", args[0], ct, args[1], ct), nil
 	case "sleep":
 		return fmt.Sprintf("mfl_sleep(%s)", args[0]), nil
+	case "exit":
+		return fmt.Sprintf("mfl_exit(%s)", args[0]), nil
 	case "str":
 		if g.c.NodeKind(g.curFn, ex.Args[0]) == KFloat {
 			return fmt.Sprintf("mfl_str_d(%s)", args[0]), nil
