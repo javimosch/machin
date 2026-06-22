@@ -9,7 +9,7 @@ import (
 
 // machinVersion is the single version string for the toolchain. Bump it when
 // cutting a release (alongside README badge / SPEC / CHANGELOG).
-const machinVersion = "0.20.0"
+const machinVersion = "0.21.0"
 
 // ---- the source-of-truth feature catalog ----
 //
@@ -171,7 +171,7 @@ func main() { println(str(sqrt(2.0))) }`},
 			{"map-comma-ok", "There is no map comma-ok: `v, ok := m[k]` does NOT compile. A read of an absent key returns the value type's zero value; use has(m, k) to test presence. (comma-ok is for channel receives: `v, ok := <-ch`.)"},
 			{"parse-witness", "parse(s, T{}) needs a value of T as a type witness, e.g. `u := parse(body, User{})`. For schemaless extraction use json_get(s, path); json(x) serializes any value."},
 			{"multi-assign-only", "http_get and json_get return multiple values; use `a, b, c := http_get(u)`. Calling them as a single value is a compile error."},
-			{"eval-order", "Operand and argument evaluation order is UNSPECIFIED (it inherits C; often right-to-left), unlike Go's left-to-right. Don't rely on it for side-effecting calls: `f() + g()` may run g() first. Sequence side effects into separate statements."},
+			{"eval-order", "Operands and arguments evaluate left-to-right (as in Go), including side effects: `f() + g()` runs f() before g(). Holds for binary ops, call args, slice/struct literals, and multi-return lists."},
 			{"composite-literal", "T{...} literals need T to be a known struct type at parse time. `machin encode` registers all `type` decls first, so this just works in normal builds."},
 			{"stdout-buffering", "libc fully buffers stdout when it's a pipe; a streaming program must call flush() after a write to appear promptly downstream. A TTY is line-buffered."},
 			{"channels-cross-goroutine", "Values sent over a channel are deep-copied across the goroutine/arena boundary (strings fast; slices/maps/structs via JSON), so they survive the sender goroutine. Channels of closures/funcs are not deep-copied."},

@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.21.0
+
+- **Left-to-right evaluation order (fixes #142).** Operands and arguments now
+  evaluate in source order, matching Go — previously machin inherited C's
+  unspecified order, so `f() + g()` could run `g()` first. Codegen hoists
+  side-effecting sub-expressions into sequenced temporaries (a GNU statement-
+  expression) for binary ops, call arguments, slice/struct literals, and
+  multi-return lists; pure expressions are untouched (no overhead). The
+  `eval-order` note in `machin guide` now states the guarantee.
+
 ## v0.20.0
 
 - **`machin guide` completeness pass.** A fresh-eyes audit confirmed the builtin
