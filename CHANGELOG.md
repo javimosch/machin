@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- **Channel `close` + range-over-channel.** Channels could be made and used but
+  never closed, so a consumer had no clean "no more data" signal — pools stopped
+  via sentinel values and a stray `range`/receive blocked forever. `close(ch)`
+  now marks a channel done (waking every blocked receiver); a receive drains the
+  buffer then yields the zero value, and **`for v := range ch`** loops until the
+  channel is closed and drained. `close` dispatches on its argument — a channel
+  closes the channel, an fd still closes the fd. Built on a new `mfl_chan_recv2`
+  (receive-with-ok) primitive. Surfaced building a streaming fetch pipeline whose
+  stages terminate by closing their channels.
+
 ## v0.13.0
 
 - **`select` — wait on multiple channels.** machin had goroutines and channels

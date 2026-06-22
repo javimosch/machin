@@ -576,6 +576,28 @@ func TestHTTPGetMultiReturn(t *testing.T) {
 	}
 }
 
+// close(ch) ends a range-over-channel: workers draining a closed jobs channel
+// stop cleanly, and a closed buffered channel is drained before the range ends.
+func TestChannelClose(t *testing.T) {
+	sq := `func sq(jobs, out) { for j := range jobs { out <- j*j } out <- -1 }`
+	main := `func main() {
+	jobs := make(chan int) out := make(chan int)
+	go sq(jobs, out)
+	n := 1 for n <= 4 { jobs <- n n = n + 1 }
+	close(jobs)
+	sum := 0 done := false
+	for done == false { r := <- out if r == -1 { done = true } if r != -1 { sum = sum + r } }
+	println(str(sum))
+	buf := make(chan int) buf <- 10 buf <- 20 close(buf)
+	t := 0 for v := range buf { t = t + v }
+	println(str(t))
+}`
+	out, _ := buildRun(t, main, sq)
+	if out != "30\n30\n" { // 1+4+9+16=30 ; 10+20=30
+		t.Fatalf("close/range: got %q, want %q", out, "30\n30\n")
+	}
+}
+
 // select waits on multiple channels: it takes a ready receive, falls to default
 // when nothing is ready, and supports the timer/result timeout pattern.
 func TestSelect(t *testing.T) {

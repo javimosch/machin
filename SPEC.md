@@ -196,6 +196,8 @@ throughout the function body).
   - `for cond { ... }` and `for { ... }` (infinite)
   - `for k, v := range x { ... }` over a slice (index, element), map (key,
     value), or string (index, 1-char). Either variable may be `_`.
+  - `for v := range ch { ... }` over a channel: receives each value until the
+    channel is closed and drained, then ends. One variable (the element).
   - `break` exits the innermost loop; `continue` skips to its next iteration.
 - `return`, `return e`, `return e1, e2`.
 - `x[i] = v`, `x.f = v`.
@@ -247,7 +249,7 @@ throughout the function body).
 | `dial` | `(string, int) -> int` | connect to host:port; an fd, or -1 on failure |
 | `listen`, `accept` | `(int) -> int` | open / accept on a TCP socket |
 | `read`, `write` | `(int[, string]) -> string\|int` | socket/fd I/O |
-| `close` | `(int) -> ` | close a socket/fd |
+| `close` | `(int\|chan) -> ` | close a socket/fd, or a channel (dispatched by argument) |
 | `https_get` | `(string) -> string` | HTTPS GET over TLS; response body ("" on error) |
 | `https_post` | `(string, string) -> string` | HTTPS POST (JSON body) over TLS; response body |
 | `http_get` | `(string) -> (int, string, string)` | GET returning `(status, body, err)`; `err==""` ⇒ a response, else `"dns"`/`"connect"`/`"tls"`/`"scheme"`. Multi-assign only. |

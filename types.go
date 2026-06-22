@@ -825,7 +825,7 @@ func (c *Checker) resolveDeferred() error {
 	}
 	for i := range c.rangeUses {
 		if !rangeDone[i] {
-			return fmt.Errorf("cannot range over this value (need a slice, map, or string)")
+			return fmt.Errorf("cannot range over this value (need a slice, map, string, or channel)")
 		}
 	}
 	return nil
@@ -870,6 +870,20 @@ func (c *Checker) tryRange(ru rangeUse) (bool, error) {
 			if _, err := c.union(ru.val, vs); err != nil {
 				return false, err
 			}
+		}
+		return true, nil
+	case KChan:
+		// for v := range ch — the single variable is the received element; the
+		// loop ends when the channel is closed and drained.
+		if ru.hasVal {
+			return false, fmt.Errorf("range over a channel takes a single variable")
+		}
+		e, err := c.chanElem(ru.base)
+		if err != nil {
+			return false, err
+		}
+		if _, err := c.union(ru.key, e); err != nil {
+			return false, err
 		}
 		return true, nil
 	}
@@ -1800,7 +1814,8 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		if len(argSlots) != 1 {
 			return 0, fmt.Errorf("close: 1 arg")
 		}
-		c.addPair(argSlots[0], c.cInt)
+		// arg is an fd (int) or a channel — codegen dispatches on its kind. Don't
+		// pin it to int, so close(ch) type-checks.
 		return c.cVoid, nil
 	}
 	if ef, ok := c.externs[ex.Callee]; ok {

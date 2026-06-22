@@ -167,13 +167,21 @@ static void mfl_sleep(int64_t ms) {
 typedef struct mfl_cnode { struct mfl_cnode* next; void* data; } mfl_cnode;
 typedef struct {
     pthread_mutex_t mu; pthread_cond_t cnd;
-    mfl_cnode *head, *tail; int64_t es;
+    mfl_cnode *head, *tail; int64_t es; int closed;
 } mfl_chan;
 static mfl_chan* mfl_make_chan(int64_t es) {
     mfl_chan* c = malloc(sizeof(mfl_chan));
     pthread_mutex_init(&c->mu, NULL); pthread_cond_init(&c->cnd, NULL);
-    c->head = c->tail = NULL; c->es = es;
+    c->head = c->tail = NULL; c->es = es; c->closed = 0;
     return c;
+}
+/* close a channel: receivers drain the buffer then get "not ok". Wakes every
+   blocked receiver so range/recv stop instead of hanging forever. */
+static void mfl_chan_close(mfl_chan* c) {
+    pthread_mutex_lock(&c->mu);
+    c->closed = 1;
+    pthread_cond_broadcast(&c->cnd);
+    pthread_mutex_unlock(&c->mu);
 }
 static void mfl_chan_send(mfl_chan* c, const void* v) {
     mfl_cnode* n = malloc(sizeof(mfl_cnode));
@@ -184,14 +192,23 @@ static void mfl_chan_send(mfl_chan* c, const void* v) {
     pthread_cond_signal(&c->cnd);
     pthread_mutex_unlock(&c->mu);
 }
-static void mfl_chan_recv(mfl_chan* c, void* out) {
+/* blocking receive with ok: 1 and fills out if a value arrived; 0 if the channel
+   is closed and drained (out left untouched). The primitive behind range-over-
+   channel and the comma-ok receive. */
+static int mfl_chan_recv2(mfl_chan* c, void* out) {
     pthread_mutex_lock(&c->mu);
-    while (!c->head) pthread_cond_wait(&c->cnd, &c->mu);
-    mfl_cnode* n = c->head; c->head = n->next;
+    while (!c->head && !c->closed) pthread_cond_wait(&c->cnd, &c->mu);
+    mfl_cnode* n = c->head;
+    if (!n) { pthread_mutex_unlock(&c->mu); return 0; }
+    c->head = n->next;
     if (!c->head) c->tail = NULL;
     pthread_mutex_unlock(&c->mu);
     memcpy(out, n->data, c->es);
     free(n->data); free(n);
+    return 1;
+}
+static void mfl_chan_recv(mfl_chan* c, void* out) {
+    if (!mfl_chan_recv2(c, out)) memset(out, 0, c->es);
 }
 /* non-blocking receive: 1 and fills out if an element was ready, else 0. The
    primitive behind select's poll over multiple channels. */
@@ -1714,6 +1731,18 @@ func (g *cgen) rangeStmt(st *RangeStmt, depth int) error {
 			indentC(&g.buf, depth+2)
 			fmt.Fprintf(&g.buf, "%s _v%d; mfl_map_get(_m%d, %s, %s, &_v%d); %s = _v%d;\n", vct, id, id, ik, sk, id, g.varRef(st.Val), id)
 		}
+	case KChan:
+		ect := g.c.ElemCType(g.curFn, st.X)
+		indentC(&g.buf, depth+1)
+		fmt.Fprintf(&g.buf, "mfl_chan* _ch%d = %s;\n", id, x)
+		indentC(&g.buf, depth+1)
+		// receive into the loop variable each iteration; stop when the channel is
+		// closed and drained (mfl_chan_recv2 returns 0).
+		if hasKey {
+			fmt.Fprintf(&g.buf, "while (mfl_chan_recv2(_ch%d, &%s)) {\n", id, g.varRef(st.Key))
+		} else {
+			fmt.Fprintf(&g.buf, "%s _cd%d; while (mfl_chan_recv2(_ch%d, &_cd%d)) {\n", ect, id, id, id)
+		}
 	default:
 		return fmt.Errorf("codegen: cannot range over %s", g.c.NodeKind(g.curFn, st.X))
 	}
@@ -2331,6 +2360,9 @@ func (g *cgen) call(ex *Call) (string, error) {
 	case "write":
 		return fmt.Sprintf("mfl_write(%s, %s)", args[0], args[1]), nil
 	case "close":
+		if g.c.NodeKind(g.curFn, ex.Args[0]) == KChan {
+			return fmt.Sprintf("mfl_chan_close(%s)", args[0]), nil
+		}
 		return fmt.Sprintf("mfl_close(%s)", args[0]), nil
 	case "input":
 		return "mfl_input()", nil
