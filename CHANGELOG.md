@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- **Error handling reaches the builtins — `http_get` returns `(status, body, err)`.**
+  machin's HTTP builtins collapsed every failure to `""`: a 404, a 503, an
+  empty-but-OK body, and an unreachable host were indistinguishable, so a program
+  couldn't *handle* errors. `http_get(url)` brings the Go-style `value, err :=`
+  idiom to the builtin layer — `status, body, err := http_get(url)`, where a
+  non-empty `err` is a transport failure (`"dns"`/`"connect"`/`"tls"`/`"scheme"`)
+  and otherwise `status` is the real HTTP code. The multi-assign destructure path
+  now recognizes multi-return builtins; the existing `https_get`/`https_post`
+  (body-only) are unchanged, both now built on the same status-aware core.
+  Surfaced building a link checker that has to classify why a URL is broken.
+- **`exit(code)`.** Terminate the process with a status code — so a CLI can fail
+  CI on a bad result (the link checker exits non-zero on a broken link).
+
 ## v0.10.0
 
 - **Native WebSocket — `wss_open`, `wss_send`, `wss_recv`, `wss_close`.** A

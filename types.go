@@ -1292,6 +1292,18 @@ func (c *Checker) genBinary(fn *FuncDecl, ex *Binary) (int, error) {
 	return 0, fmt.Errorf("unknown operator %q", ex.Op)
 }
 
+// multiRetBuiltin reports the argument and return type slots for builtins that
+// return multiple values via the Go-style `v, err := f()` idiom (err == "" means
+// success). This is how error handling reaches the builtin layer: a call like
+// http_get gives back (status, body, err) instead of collapsing failure to "".
+func (c *Checker) multiRetBuiltin(name string) (args []int, rets []int, ok bool) {
+	switch name {
+	case "http_get":
+		return []int{c.cString}, []int{c.cInt, c.cString, c.cString}, true
+	}
+	return nil, nil, false
+}
+
 func (c *Checker) genMultiAssign(fn *FuncDecl, st *MultiAssign) error {
 	env := c.vars[fn.Name]
 	nameSlots := make([]int, len(st.Names))
@@ -1313,6 +1325,28 @@ func (c *Checker) genMultiAssign(fn *FuncDecl, st *MultiAssign) error {
 	}
 
 	if len(st.Rhs) == 1 {
+		// a multi-return builtin (e.g. http_get -> status, body, err)
+		if call, ok := st.Rhs[0].(*Call); ok {
+			if aks, rks, isMRB := c.multiRetBuiltin(call.Callee); isMRB {
+				if len(call.Args) != len(aks) {
+					return fmt.Errorf("%s: expected %d args, got %d", call.Callee, len(aks), len(call.Args))
+				}
+				for i, a := range call.Args {
+					as, err := c.genExpr(fn, a)
+					if err != nil {
+						return err
+					}
+					c.addPair(as, aks[i])
+				}
+				if len(rks) != len(st.Names) {
+					return fmt.Errorf("%s returns %d values but %d are assigned", call.Callee, len(rks), len(st.Names))
+				}
+				for i := range rks {
+					c.addPair(nameSlots[i], rks[i])
+				}
+				return nil
+			}
+		}
 		// a single call returning multiple values destructures across the names
 		if call, ok := st.Rhs[0].(*Call); ok {
 			if srcFn, isUser := c.funcs[call.Callee]; isUser && funcArity(srcFn) >= 2 {
@@ -1669,6 +1703,14 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		c.addPair(argSlots[0], c.cString)
 		c.addPair(argSlots[1], c.cString)
 		return c.cString, nil
+	case "exit":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("exit: 1 arg (status code int)")
+		}
+		c.addPair(argSlots[0], c.cInt)
+		return c.cInt, nil
+	case "http_get":
+		return 0, fmt.Errorf("http_get returns 3 values; use: status, body, err := http_get(url)")
 	case "wss_open":
 		if len(argSlots) != 1 {
 			return 0, fmt.Errorf("wss_open: 1 arg (url string)")
