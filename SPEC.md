@@ -1,6 +1,6 @@
 # The MFL Language Specification
 
-Version 0.37.0
+Version 0.38.0
 
 MFL (Machine-First Language) is a statically-typed, Go-flavored backend language
 **shaped for machine authoring**: minimal syntax, no type annotations, one
@@ -283,6 +283,8 @@ throughout the function body).
 | `aes_gcm_decrypt` | `(bytes, bytes, bytes, bytes) -> bytes` | AES-GCM decrypt → plaintext (empty `bytes` on auth failure) |
 | `aes_cbc_encrypt` | `(bytes, bytes, bytes) -> bytes` | AES-CBC (key, iv, plaintext), PKCS#7 padded |
 | `aes_cbc_decrypt` | `(bytes, bytes, bytes) -> bytes` | AES-CBC decrypt → plaintext (empty on bad padding) |
+| `xeddsa_sign` | `(bytes, bytes, bytes) -> bytes` | XEdDSA signature over Curve25519 `(priv32, msg, random64)` → 64 bytes (Signal/WhatsApp identity signatures); links libsodium |
+| `xeddsa_verify` | `(bytes, bytes, bytes) -> bool` | XEdDSA verify `(curve25519 pub32, msg, sig64)`; links libsodium |
 | `url_encode` | `(string) -> string` | percent-encode for URLs (RFC 3986: keeps `A-Za-z0-9-._~`, encodes the rest, space → `%20`) |
 | `url_decode` | `(string) -> string` | percent-decode a URL component (lenient: `+` → space, malformed `%XX` passes through) |
 | `sha256` | `(string) -> string` | SHA-256 of text, lowercase hex |

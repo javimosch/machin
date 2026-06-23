@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.38.0
+
+- **`xeddsa_sign` / `xeddsa_verify` builtins — XEdDSA (Curve25519 signatures).**
+  The signature scheme Signal/WhatsApp use for identity and device signatures
+  (signing a Curve25519 key, not plain Ed25519). Backed by libsodium's Ed25519
+  group/scalar ops + OpenSSL SHA-512 + TweetNaCl field arithmetic for the
+  Montgomery→Edwards conversion; matches libsignal's `SignCurve25519.go`. Emitted
+  and linked (`-lsodium -lcrypto`) only when used — **requires libsodium-dev** on
+  the build host. Surfaced building WhatsApp device pairing (machin-wapair).
+
 ## v0.37.0
 
 - **`bytes` is now a first-class declarable type.** It was inference-only (locals

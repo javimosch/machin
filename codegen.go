@@ -66,6 +66,7 @@ type cgen struct {
 	usesRegex bool   // program calls regex_* -> emit POSIX regex runtime
 	usesSQLite bool  // program calls sqlite_* -> emit SQLite runtime + link -lsqlite3
 	usesCrypto bool  // program calls crypto builtins -> emit crypto runtime + link -lcrypto
+	usesXEdDSA bool  // program calls xeddsa_* -> emit XEdDSA runtime + link -lsodium -lcrypto
 }
 
 const cRuntime = `#define _GNU_SOURCE
@@ -1727,6 +1728,83 @@ static mfl_bytes mfl_crypto_aes_cbc_dec(mfl_bytes key, mfl_bytes iv, mfl_bytes c
 }
 `
 
+// xeddsaRuntime implements XEdDSA (Curve25519 signatures, the scheme Signal /
+// WhatsApp use for identity/device signatures) over libsodium's Ed25519 group &
+// scalar ops, OpenSSL SHA-512, and TweetNaCl's public-domain field arithmetic
+// (for the Montgomery->Edwards conversion in verify). Emitted and linked
+// (-lsodium -lcrypto) only when a program calls xeddsa_*. Matches libsignal's
+// ecc/SignCurve25519.go exactly: diversifier 0xFE||0xFF*31, sign bit in sig[63].
+const xeddsaRuntime = `#include <openssl/evp.h>
+
+/* libsodium (headers may be absent; declare the symbols we link against) */
+int crypto_core_ed25519_scalar_reduce(unsigned char*, const unsigned char*);
+int crypto_core_ed25519_scalar_mul(unsigned char*, const unsigned char*, const unsigned char*);
+int crypto_core_ed25519_scalar_add(unsigned char*, const unsigned char*, const unsigned char*);
+int crypto_scalarmult_ed25519_base_noclamp(unsigned char*, const unsigned char*);
+int crypto_sign_ed25519_verify_detached(const unsigned char*, const unsigned char*, unsigned long long, const unsigned char*);
+
+/* TweetNaCl field arithmetic (public domain) for the Montgomery->Edwards map */
+typedef long long mflx_i64; typedef mflx_i64 mflx_gf[16];
+static const mflx_gf mflx_gf1 = {1};
+static void mflx_unpack(mflx_gf o, const unsigned char* n) { int i; for (i = 0; i < 16; i++) o[i] = n[2*i] + ((mflx_i64)n[2*i+1] << 8); o[15] &= 0x7fff; }
+static void mflx_car(mflx_gf o) { int i; mflx_i64 c; for (i = 0; i < 16; i++) { o[i] += (1LL<<16); c = o[i]>>16; o[(i+1)*(i<15)] += c - 1 + 37*(c-1)*(i==15); o[i] -= c<<16; } }
+static void mflx_sel(mflx_gf p, mflx_gf q, int b) { mflx_i64 t, i, c = ~(b-1); for (i = 0; i < 16; i++) { t = c & (p[i]^q[i]); p[i] ^= t; q[i] ^= t; } }
+static void mflx_pack(unsigned char* o, const mflx_gf n) { int i, j, b; mflx_gf m, t; for (i = 0; i < 16; i++) t[i] = n[i]; mflx_car(t); mflx_car(t); mflx_car(t); for (j = 0; j < 2; j++) { m[0] = t[0]-0xffed; for (i = 1; i < 15; i++) { m[i] = t[i]-0xffff-((m[i-1]>>16)&1); m[i-1] &= 0xffff; } m[15] = t[15]-0x7fff-((m[14]>>16)&1); b = (m[15]>>16)&1; m[14] &= 0xffff; mflx_sel(t, m, 1-b); } for (i = 0; i < 16; i++) { o[2*i] = t[i]&0xff; o[2*i+1] = t[i]>>8; } }
+static void mflx_A(mflx_gf o, const mflx_gf a, const mflx_gf b) { int i; for (i = 0; i < 16; i++) o[i] = a[i]+b[i]; }
+static void mflx_Z(mflx_gf o, const mflx_gf a, const mflx_gf b) { int i; for (i = 0; i < 16; i++) o[i] = a[i]-b[i]; }
+static void mflx_M(mflx_gf o, const mflx_gf a, const mflx_gf b) { mflx_i64 i, j, t[31]; for (i = 0; i < 31; i++) t[i] = 0; for (i = 0; i < 16; i++) for (j = 0; j < 16; j++) t[i+j] += a[i]*b[j]; for (i = 0; i < 15; i++) t[i] += 38*t[i+16]; for (i = 0; i < 16; i++) o[i] = t[i]; mflx_car(o); mflx_car(o); }
+static void mflx_inv(mflx_gf o, const mflx_gf in) { mflx_gf c; int a; for (a = 0; a < 16; a++) c[a] = in[a]; for (a = 253; a >= 0; a--) { mflx_M(c, c, c); if (a != 2 && a != 4) mflx_M(c, c, in); } for (a = 0; a < 16; a++) o[a] = c[a]; }
+static void mflx_mont_to_ed(unsigned char* aed, const unsigned char* mpub, unsigned char signbit) {
+    unsigned char p[32]; memcpy(p, mpub, 32); p[31] &= 0x7f;
+    mflx_gf mx, mxm1, mxp1, iv, edy; mflx_unpack(mx, p);
+    mflx_Z(mxm1, mx, mflx_gf1); mflx_A(mxp1, mx, mflx_gf1); mflx_inv(iv, mxp1); mflx_M(edy, mxm1, iv);
+    mflx_pack(aed, edy); aed[31] |= (signbit & 0x80);
+}
+
+static void mflx_sha512(const unsigned char* a, size_t al, const unsigned char* b, size_t bl, const unsigned char* c, size_t cl, const unsigned char* d, size_t dl, unsigned char* out) {
+    size_t n = al + bl + cl + dl;
+    unsigned char* buf = (unsigned char*)malloc(n ? n : 1);
+    size_t o = 0;
+    if (al) { memcpy(buf+o, a, al); o += al; }
+    if (bl) { memcpy(buf+o, b, bl); o += bl; }
+    if (cl) { memcpy(buf+o, c, cl); o += cl; }
+    if (dl) { memcpy(buf+o, d, dl); o += dl; }
+    unsigned int ml;
+    EVP_Digest(buf, n, out, &ml, EVP_sha512(), NULL);
+    free(buf);
+}
+
+/* sign: priv 32 bytes, random 64 bytes -> 64-byte signature (R||s, A sign bit in [63]) */
+static mfl_bytes mfl_xeddsa_sign(mfl_bytes priv, mfl_bytes msg, mfl_bytes rnd) {
+    mfl_bytes sig; sig.len = 64; sig.data = (uint8_t*)mfl_alloc(64);
+    memset(sig.data, 0, 64);
+    if (priv.len < 32 || rnd.len < 64) return sig;
+    unsigned char a[32], a64[64], Aed[32], r[32], rh[64], R[32], h[32], hh[64], s[32], tmp[32], div[32];
+    memset(a64, 0, 64); memcpy(a, priv.data, 32); a[0] &= 248; a[31] &= 127; a[31] |= 64; memcpy(a64, a, 32);
+    crypto_core_ed25519_scalar_reduce(a, a64);
+    crypto_scalarmult_ed25519_base_noclamp(Aed, a);
+    div[0] = 0xFE; memset(div+1, 0xFF, 31);
+    mflx_sha512(div, 32, priv.data, 32, msg.data, (size_t)msg.len, rnd.data, 64, rh);
+    crypto_core_ed25519_scalar_reduce(r, rh);
+    crypto_scalarmult_ed25519_base_noclamp(R, r);
+    mflx_sha512(R, 32, Aed, 32, msg.data, (size_t)msg.len, NULL, 0, hh);
+    crypto_core_ed25519_scalar_reduce(h, hh);
+    crypto_core_ed25519_scalar_mul(tmp, h, a);
+    crypto_core_ed25519_scalar_add(s, tmp, r);
+    memcpy(sig.data, R, 32); memcpy(sig.data+32, s, 32); sig.data[63] |= Aed[31] & 0x80;
+    return sig;
+}
+
+/* verify: pub 32-byte Curve25519 key, sig 64 bytes -> 1 ok / 0 bad */
+static int mfl_xeddsa_verify(mfl_bytes pub, mfl_bytes msg, mfl_bytes sig) {
+    if (pub.len < 32 || sig.len < 64) return 0;
+    unsigned char Aed[32], s2[64];
+    mflx_mont_to_ed(Aed, pub.data, sig.data[63]);
+    memcpy(s2, sig.data, 64); s2[63] &= 0x7F;
+    return crypto_sign_ed25519_verify_detached(s2, msg.data, (unsigned long long)msg.len, Aed) == 0 ? 1 : 0;
+}
+`
+
 // isFFIScalar reports whether t is an FFI scalar type name (vs a cstruct name).
 func isFFIScalar(t string) bool {
 	switch t {
@@ -1885,6 +1963,12 @@ func (g *cgen) program(p *Program) (string, error) {
 		// OpenSSL libcrypto (rand/sha/hmac/hkdf/x25519/ed25519/aes) — emitted and
 		// linked (-lcrypto) only when a program calls a crypto builtin.
 		out.WriteString(cryptoRuntime)
+		out.WriteByte('\n')
+	}
+	if g.usesXEdDSA {
+		// XEdDSA (Curve25519 signatures) — libsodium + OpenSSL + TweetNaCl field
+		// math; emitted and linked (-lsodium -lcrypto) only when xeddsa_* is used.
+		out.WriteString(xeddsaRuntime)
 		out.WriteByte('\n')
 	}
 	// foreign (extern) declarations. With a header, its prototypes + C structs are
@@ -3273,6 +3357,12 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 	case "aes_cbc_decrypt":
 		g.usesCrypto = true
 		return fmt.Sprintf("mfl_crypto_aes_cbc_dec(%s, %s, %s)", args[0], args[1], args[2]), nil
+	case "xeddsa_sign":
+		g.usesXEdDSA = true
+		return fmt.Sprintf("mfl_xeddsa_sign(%s, %s, %s)", args[0], args[1], args[2]), nil
+	case "xeddsa_verify":
+		g.usesXEdDSA = true
+		return fmt.Sprintf("mfl_xeddsa_verify(%s, %s, %s)", args[0], args[1], args[2]), nil
 	case "has":
 		ik, sk := g.mapKeyArgs(ex.Args[0], args[1])
 		return fmt.Sprintf("mfl_map_has(%s, %s, %s)", args[0], ik, sk), nil
