@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.26.0
+
+- **SQLite builtins — `sqlite_open`, `sqlite_exec`, `sqlite_query`, `sqlite_close`.**
+  Real database storage, backed by `libsqlite3`. `sqlite_open(path)` returns a
+  handle (`:memory:` for in-memory); `sqlite_exec` runs result-less SQL;
+  `sqlite_query` runs a SELECT and returns a **JSON array of row objects**
+  (INTEGER/REAL unquoted, TEXT escaped, NULL null) — so it composes with
+  `json_get`. Emitted and linked (`-lsqlite3`) only when a program calls
+  `sqlite_*`. Surfaced building a persistent key-value store.
+
 ## v0.25.0
 
 - **`read_stdin()` builtin.** Reads all of stdin verbatim until EOF — exact

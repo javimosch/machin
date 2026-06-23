@@ -50,6 +50,10 @@ func BuildBinary(prog *Program, outPath string, safe bool) error {
 	if strings.Contains(csrc, "mfl_tls_dial") {
 		libs = append(libs, "-lssl", "-lcrypto")
 	}
+	// native SQLite (sqlite_*) links libsqlite3 — only when actually used.
+	if strings.Contains(csrc, "mfl_sqlite_") {
+		libs = append(libs, "-lsqlite3")
+	}
 	args = append(args, "-o", outPath, tmp.Name())
 	args = append(args, libs...)
 

@@ -1823,6 +1823,28 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		c.addPair(argSlots[0], c.cString)
 		c.addPair(argSlots[1], c.cString)
 		return c.cString, nil
+	case "sqlite_open":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("sqlite_open: 1 arg (path string)")
+		}
+		c.addPair(argSlots[0], c.cString)
+		return c.cInt, nil
+	case "sqlite_exec", "sqlite_query":
+		if len(argSlots) != 2 {
+			return 0, fmt.Errorf("%s: 2 args (db int, sql string)", ex.Callee)
+		}
+		c.addPair(argSlots[0], c.cInt)
+		c.addPair(argSlots[1], c.cString)
+		if ex.Callee == "sqlite_query" {
+			return c.cString, nil
+		}
+		return c.cInt, nil
+	case "sqlite_close":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("sqlite_close: 1 arg (db int)")
+		}
+		c.addPair(argSlots[0], c.cInt)
+		return c.cInt, nil
 	case "regex_match":
 		if len(argSlots) != 2 {
 			return 0, fmt.Errorf("regex_match: 2 args (s, pattern)")
