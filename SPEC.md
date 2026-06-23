@@ -1,6 +1,6 @@
 # The MFL Language Specification
 
-Version 0.29.0
+Version 0.30.0
 
 MFL (Machine-First Language) is a statically-typed, Go-flavored backend language
 **shaped for machine authoring**: minimal syntax, no type annotations, one
@@ -233,6 +233,7 @@ throughout the function body).
 | `now_ms` | `() -> int` | wall-clock time in milliseconds (for latency) |
 | `time_fields` | `(int) -> []int` | decompose a Unix timestamp (local time) → `[year, month(1-12), day, hour, minute, second, weekday(0=Sun), yearday]` |
 | `time_format` | `(int, string) -> string` | format a Unix timestamp (local time) with a `strftime(3)` pattern (`%Y %m %d %H %M %S %A %B %z %Z %F %T` …) |
+| `time_make` | `(int, int, int, int, int, int) -> int` | build a Unix timestamp from local calendar fields `(year, month, day, hour, minute, second)` — inverse of `time_fields`; `mktime(3)` normalizes out-of-range fields |
 | `parse_int` | `(string) -> int` | parse an integer (0 if not numeric) |
 | `exit` | `(int) -> ` | terminate the process with a status code |
 | `flush` | `() -> ` | flush buffered stdout (for prompt output through a pipe) |

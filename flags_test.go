@@ -55,6 +55,31 @@ func TestTimeFormat(t *testing.T) {
 	}
 }
 
+// time_make is the inverse of time_fields: building 2026-06-23 00:00:00 local
+// must yield 1782172800 under TZ=UTC, and round-tripping back via time_fields
+// must restore the fields.
+func TestTimeMake(t *testing.T) {
+	fn := parseFuncs(t, `func main() { u := time_make(2026, 6, 23, 0, 0, 0)  f := time_fields(u)  println(str(u) + " " + str(f[0]) + "-" + str(f[1]) + "-" + str(f[2])) }`)
+	bin, err := os.CreateTemp("", "mfl-tmk-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin.Close()
+	defer os.Remove(bin.Name())
+	if err := BuildBinary(&Program{Funcs: fn}, bin.Name(), false); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	cmd := exec.Command(bin.Name())
+	cmd.Env = append(os.Environ(), "TZ=UTC")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if strings.TrimSpace(string(out)) != "1782172800 2026-6-23" {
+		t.Fatalf("time_make: got %q, want %q", strings.TrimSpace(string(out)), "1782172800 2026-6-23")
+	}
+}
+
 // read_stdin slurps stdin verbatim — exact bytes (including newlines, no
 // trailing-newline assumption), unlike the line-based input().
 func TestReadStdin(t *testing.T) {

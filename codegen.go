@@ -675,6 +675,21 @@ static char* mfl_time_format(int64_t unix, const char* fmt) {
     out[n] = 0;
     return out;
 }
+/* construct a Unix timestamp from calendar fields (local time, the inverse of
+   time_fields): mktime normalizes out-of-range fields (e.g. day 32 rolls over)
+   and resolves DST via tm_isdst=-1. */
+static int64_t mfl_time_make(int64_t y, int64_t mo, int64_t d, int64_t h, int64_t mi, int64_t s) {
+    struct tm tmv;
+    memset(&tmv, 0, sizeof(tmv));
+    tmv.tm_year = (int)(y - 1900);
+    tmv.tm_mon = (int)(mo - 1);
+    tmv.tm_mday = (int)d;
+    tmv.tm_hour = (int)h;
+    tmv.tm_min = (int)mi;
+    tmv.tm_sec = (int)s;
+    tmv.tm_isdst = -1;
+    return (int64_t)mktime(&tmv);
+}
 static int64_t mfl_parse_int(const char* s) { return (int64_t)strtoll(s, NULL, 10); }
 
 /* file system: read/write whole files, list a directory, make a directory */
@@ -3005,6 +3020,8 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("mfl_time_fields(%s)", args[0]), nil
 	case "time_format":
 		return fmt.Sprintf("mfl_time_format(%s, %s)", args[0], args[1]), nil
+	case "time_make":
+		return fmt.Sprintf("mfl_time_make(%s, %s, %s, %s, %s, %s)", args[0], args[1], args[2], args[3], args[4], args[5]), nil
 	case "parse_int":
 		return fmt.Sprintf("mfl_parse_int(%s)", args[0]), nil
 	case "read_file":
