@@ -8,7 +8,7 @@ description: Build native games and interactive desktop/terminal apps in machin 
 machin (MFL) compiles to a native binary through C, and reaches real games two ways:
 
 - **Terminal (TUI):** ANSI escapes for drawing + `raw_mode`/`read_key` for input. A no-dependency single binary. → [machin-game-snake](https://github.com/javimosch/machin-game-snake) (Snake).
-- **GUI / audio:** [raylib](https://www.raylib.com/) through machin's C **FFI** — a real OpenGL window, textures, sound. Links the system graphics/audio stack, so **not** self-contained. → [machin-game-2048](https://github.com/javimosch/machin-game-2048) (shapes+text), [machin-game-flappy](https://github.com/javimosch/machin-game-flappy) (sprites/textures), [machin-game-simon](https://github.com/javimosch/machin-game-simon) (audio).
+- **GUI / audio:** [raylib](https://www.raylib.com/) through machin's C **FFI** — a real OpenGL window, textures, sound. Links the system graphics/audio stack, so **not** self-contained. → [machin-game-2048](https://github.com/javimosch/machin-game-2048) (shapes+text), [machin-game-flappy](https://github.com/javimosch/machin-game-flappy) (sprites/textures), [machin-game-simon](https://github.com/javimosch/machin-game-simon) (audio), [machin-demo-3d](https://github.com/javimosch/machin-demo-3d) (3D).
 
 Each game is its own public repo with a `build.sh` (`machin encode src.src > app.mfl && machin build app.mfl -o app`), a `README.md`, a repo-root `SKILL.md`, and committed `assets/`. This skill is the shared substrate; each game's SKILL.md has its specifics.
 
@@ -52,6 +52,9 @@ FFI tiers, all verified working:
 - **Scalars + by-value structs** (`Color`, and `f32`-field `Rectangle`/`Vector2`) passed by value.
 - **Struct return** — `LoadTexture` returns `Texture2D` (an all-int handle) by value.
 - **Opaque handles** (`cstruct Sound {}`, machin **v0.44.0**) — a by-value C struct that contains pointers (`Sound`/`Music`/`Font`). machin holds the real C struct and passes it back to fns without naming its fields. Receive it from a fn, store it (a var **or** `[]Sound`), pass it on; **no** construct or `.field`. (A single pointer is simpler: the `ptr` FFI type, an `int`.)
+- **Nested cstructs** (machin **v0.45.0**) — a `cstruct` field may be another `cstruct`, marshaled recursively. Declare the inner one **first**. Required for **3D** and 2D cameras: `cstruct Vector3 { x f32 y f32 z f32 }` then `cstruct Camera3D { position Vector3 target Vector3 up Vector3 fovy f32 projection i32 }`; construct with nested literals `Camera3D{Vector3{12.0,7.0,0.0}, Vector3{0.0,1.5,0.0}, Vector3{0.0,1.0,0.0}, 45.0, 0}` and pass by value to `BeginMode3D`.
+
+**3D** (see [machin-demo-3d](https://github.com/javimosch/machin-demo-3d)): bracket 3D draws with `BeginMode3D(cam)` / `EndMode3D()`; `DrawCube(Vector3, f32,f32,f32, Color)`, `DrawCubeWires`, `DrawSphere(Vector3, f32, Color)`, `DrawGrid(i32, f32)`; any `DrawText` after `EndMode3D` is screen-space. Rebuild the `Camera3D` each frame rather than mutating it. `projection` `0` = `CAMERA_PERSPECTIVE`. **Math:** machin has no native `sin`/`cos`/`sqrt` yet — reach libm with a second extern block: `extern "m" { header "math.h" link "m" fn sin(float) float fn cos(float) float }` (C `double sin(double)` lines up with MFL `float`). Native math builtins are the next gap.
 
 Sprite tricks: a **sprite sheet** is one PNG; pick a frame with a source `Rectangle{float(frame*48), 0, 48, 48}` and rotate via `DrawTexturePro` around `origin = Vector2{w/2, h/2}`. **Flip** with a negative source height (`Rectangle{0,0,88,-600}`) — reuse one texture for both orientations. **Center text** with `MeasureText`.
 
@@ -94,5 +97,6 @@ Rule of thumb: keep each value in one numeric world; cross the boundary explicit
 | 2048 | raylib FFI: scalars + `Color` | (composed; no new builtin) |
 | flappy | textures/sprites, `f32` structs, struct-return | `float()` int→float (v0.43.0) |
 | simon | audio: pointer-bearing `Sound` by value | FFI **opaque handles** `cstruct Name {}` (v0.44.0) |
+| 3d demo | 3D: `Camera3D` (struct of `Vector3`s) | FFI **nested cstructs** (v0.45.0); also surfaced the **native-math** gap (used libm) |
 
 When a new game hits a wall, that's the point: fill the gap in the language, release, and note it here.
