@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.45.0
+
+- **FFI nested cstructs.** A `cstruct` field may now be another declared
+  `cstruct`, not just a numeric scalar — a by-value struct of by-value structs.
+  The synthesized MFL struct nests the inner `mfl_` type and the boundary
+  marshaling recurses (`mfl_from_`/`mfl_to_` per field). This unblocks **3D**:
+  raylib's `Camera3D` is three `Vector3`s + scalars, so it couldn't be expressed
+  before; now `Camera3D{Vector3{...}, Vector3{...}, Vector3{...}, 45.0, 0}`
+  constructs and passes by value to `BeginMode3D`. Surfaced building
+  [machin-demo-3d](https://github.com/javimosch/machin-demo-3d). (Also unlocks 2D
+  cameras and any struct-of-structs C API.) Note the orbit math there still goes
+  through libm via `extern "m"` — machin has no native `sin`/`cos`/`sqrt` yet,
+  the next gap.
+
 ## v0.44.0
 
 - **FFI opaque handles — `cstruct Name {}`.** An empty-body `cstruct` declares a

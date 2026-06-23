@@ -623,11 +623,19 @@ func Check(p *Program) (*Checker, error) {
 		_, ok := c.structs[t]
 		return ok
 	}
+	// the set of all declared cstruct names, so a cstruct field may be another
+	// cstruct (nested by-value structs — e.g. raylib Camera3D holds Vector3s)
+	cstructNames := map[string]bool{}
+	for _, ed := range p.Externs {
+		for _, cs := range ed.Structs {
+			cstructNames[cs.Name] = true
+		}
+	}
 	for _, ed := range p.Externs {
 		for _, cs := range ed.Structs {
 			for _, f := range cs.Fields {
-				if !isFFINumeric(f.CType) {
-					return nil, fmt.Errorf("cstruct %s field %s: %q is not a numeric C type", cs.Name, f.Name, f.CType)
+				if !isFFINumeric(f.CType) && !cstructNames[f.CType] {
+					return nil, fmt.Errorf("cstruct %s field %s: %q is not a numeric C type or a declared cstruct", cs.Name, f.Name, f.CType)
 				}
 			}
 		}
