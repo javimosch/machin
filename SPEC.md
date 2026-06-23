@@ -1,6 +1,6 @@
 # The MFL Language Specification
 
-Version 0.44.0
+Version 0.45.0
 
 MFL (Machine-First Language) is a statically-typed, Go-flavored backend language
 **shaped for machine authoring**: minimal syntax, no type annotations, one
@@ -501,7 +501,10 @@ extern "m" { header "math.h" link "m" fn sqrt(float) float fn pow(float, float) 
 - `cstruct Name { field ctype ... }` — declares a C struct's layout (Phase 2).
   machin synthesizes a matching MFL struct `Name` (so MFL can construct and
   field-access it) and marshals between the MFL value and the C struct by value
-  at the boundary. Field types are sized C scalars (below).
+  at the boundary. Field types are sized C scalars (below) **or another declared
+  `cstruct`** — nested by-value structs marshal recursively, so e.g. raylib's
+  `Camera3D` (three `Vector3`s + scalars) is expressible and constructible
+  (`Camera3D{Vector3{...}, ...}`).
 - `cstruct Name {}` — an **opaque handle** (Phase 3): an empty body declares a
   by-value C type (from the `header`) that machin holds and passes back **without
   naming its fields**. This is for by-value structs that contain pointers and so

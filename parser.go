@@ -80,6 +80,12 @@ func ParseProgram(decls []string) (*Program, error) {
 	}
 	// a cstruct is also a first-class MFL struct (int/float fields); synthesize
 	// its TypeDecl so MFL code can construct and field-access it.
+	cstructNames := map[string]bool{}
+	for _, ed := range prog.Externs {
+		for _, cs := range ed.Structs {
+			cstructNames[cs.Name] = true
+		}
+	}
 	for _, ed := range prog.Externs {
 		for _, cs := range ed.Structs {
 			if cs.Opaque {
@@ -91,7 +97,12 @@ func ParseProgram(decls []string) (*Program, error) {
 			}
 			fields := make([]Field, len(cs.Fields))
 			for i, f := range cs.Fields {
-				fields[i] = Field{Name: f.Name, Type: ffiMFLType(f.CType)}
+				// a cstruct field may be another cstruct (nested by-value struct)
+				if cstructNames[f.CType] {
+					fields[i] = Field{Name: f.Name, Type: f.CType}
+				} else {
+					fields[i] = Field{Name: f.Name, Type: ffiMFLType(f.CType)}
+				}
 			}
 			prog.Types = append(prog.Types, &TypeDecl{Name: cs.Name, Fields: fields})
 			structs[cs.Name] = true

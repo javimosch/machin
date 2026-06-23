@@ -891,6 +891,30 @@ func TestOpaqueHandle(t *testing.T) {
 	}
 }
 
+// Nested cstructs: a cstruct field whose type is another cstruct (by-value
+// struct of by-value structs — e.g. raylib Camera3D holds Vector3s). The MFL
+// wrapper nests the inner mfl_ type and marshaling recurses. Codegen-level.
+func TestNestedCStruct(t *testing.T) {
+	src := []string{
+		`extern "g" { header "g.h" cstruct V3 { x f32 y f32 z f32 } cstruct Cam { pos V3 fovy f32 } fn Begin(Cam) }`,
+		`func main() { c := Cam{V3{1.0, 2.0, 3.0}, 45.0}  Begin(c) }`,
+	}
+	prog, err := ParseProgram(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := CompileToC(prog, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(c, "mfl_V3 f_pos;") {
+		t.Fatal("nested cstruct field must be the inner mfl_ type")
+	}
+	if !strings.Contains(c, "mfl_from_V3(c.pos)") || !strings.Contains(c, "mfl_to_V3(m.f_pos)") {
+		t.Fatal("nested cstruct field must marshal recursively")
+	}
+}
+
 // float() lifts a concrete int into float arithmetic (the counterpart to int()).
 // MFL has no implicit int->float, so a value typed int (a function return,
 // byte_at, len, ...) can't mix with a float without this.

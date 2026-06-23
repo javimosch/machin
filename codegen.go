@@ -2101,7 +2101,14 @@ func (g *cgen) program(p *Program) (string, error) {
 		fmt.Fprintf(&out, " } mfl_%s;\n", td.Name)
 	}
 	// FFI struct marshaling: convert each cstruct between its MFL value (mfl_Name,
-	// with int64/double fields) and the C layout (Name) at the boundary.
+	// with int64/double/nested mfl_ fields) and the C layout (Name) at the
+	// boundary. A nested cstruct field recurses through its own mfl_from_/mfl_to_.
+	cstructNames := map[string]bool{}
+	for _, ed := range p.Externs {
+		for _, cs := range ed.Structs {
+			cstructNames[cs.Name] = true
+		}
+	}
 	for _, ed := range p.Externs {
 		for _, cs := range ed.Structs {
 			if cs.Opaque {
@@ -2112,12 +2119,20 @@ func (g *cgen) program(p *Program) (string, error) {
 			}
 			fmt.Fprintf(&out, "static mfl_%s mfl_from_%s(%s c) { return (mfl_%s){", cs.Name, cs.Name, cs.Name, cs.Name)
 			for _, f := range cs.Fields {
-				fmt.Fprintf(&out, " .f_%s = c.%s,", f.Name, f.Name)
+				if cstructNames[f.CType] {
+					fmt.Fprintf(&out, " .f_%s = mfl_from_%s(c.%s),", f.Name, f.CType, f.Name)
+				} else {
+					fmt.Fprintf(&out, " .f_%s = c.%s,", f.Name, f.Name)
+				}
 			}
 			out.WriteString(" }; }\n")
 			fmt.Fprintf(&out, "static %s mfl_to_%s(mfl_%s m) { return (%s){", cs.Name, cs.Name, cs.Name, cs.Name)
 			for _, f := range cs.Fields {
-				fmt.Fprintf(&out, " .%s = (%s)m.f_%s,", f.Name, ffiCType(f.CType), f.Name)
+				if cstructNames[f.CType] {
+					fmt.Fprintf(&out, " .%s = mfl_to_%s(m.f_%s),", f.Name, f.CType, f.Name)
+				} else {
+					fmt.Fprintf(&out, " .%s = (%s)m.f_%s,", f.Name, ffiCType(f.CType), f.Name)
+				}
 			}
 			out.WriteString(" }; }\n")
 		}
