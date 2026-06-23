@@ -1631,6 +1631,58 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		c.addPair(argSlots[0], c.cBytes)
 		c.addPair(argSlots[1], c.cBytes)
 		return c.cBytes, nil
+	case "rand_bytes":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("rand_bytes: 1 arg (count)")
+		}
+		c.addPair(argSlots[0], c.cInt)
+		return c.cBytes, nil
+	case "sha256_bytes", "x25519_pub", "ed25519_pub":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("%s: 1 arg (bytes)", ex.Callee)
+		}
+		c.addPair(argSlots[0], c.cBytes)
+		return c.cBytes, nil
+	case "hmac_sha256_bytes", "x25519_shared", "ed25519_sign":
+		if len(argSlots) != 2 {
+			return 0, fmt.Errorf("%s: 2 args (bytes, bytes)", ex.Callee)
+		}
+		c.addPair(argSlots[0], c.cBytes)
+		c.addPair(argSlots[1], c.cBytes)
+		return c.cBytes, nil
+	case "ed25519_verify":
+		if len(argSlots) != 3 {
+			return 0, fmt.Errorf("ed25519_verify: 3 args (pub, msg, sig — all bytes)")
+		}
+		for _, sl := range argSlots {
+			c.addPair(sl, c.cBytes)
+		}
+		return c.cBool, nil
+	case "aes_cbc_encrypt", "aes_cbc_decrypt":
+		if len(argSlots) != 3 {
+			return 0, fmt.Errorf("%s: 3 args (key, iv, data — all bytes)", ex.Callee)
+		}
+		for _, sl := range argSlots {
+			c.addPair(sl, c.cBytes)
+		}
+		return c.cBytes, nil
+	case "aes_gcm_encrypt", "aes_gcm_decrypt":
+		if len(argSlots) != 4 {
+			return 0, fmt.Errorf("%s: 4 args (key, iv, data, aad — all bytes)", ex.Callee)
+		}
+		for _, sl := range argSlots {
+			c.addPair(sl, c.cBytes)
+		}
+		return c.cBytes, nil
+	case "hkdf_sha256":
+		if len(argSlots) != 4 {
+			return 0, fmt.Errorf("hkdf_sha256: 4 args (ikm, salt, info — bytes — and length int)")
+		}
+		c.addPair(argSlots[0], c.cBytes)
+		c.addPair(argSlots[1], c.cBytes)
+		c.addPair(argSlots[2], c.cBytes)
+		c.addPair(argSlots[3], c.cInt)
+		return c.cBytes, nil
 	case "append":
 		if len(argSlots) != 2 {
 			return 0, fmt.Errorf("append: 2 args")

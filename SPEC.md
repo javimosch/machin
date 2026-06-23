@@ -1,6 +1,6 @@
 # The MFL Language Specification
 
-Version 0.34.0
+Version 0.35.0
 
 MFL (Machine-First Language) is a statically-typed, Go-flavored backend language
 **shaped for machine authoring**: minimal syntax, no type annotations, one
@@ -270,6 +270,19 @@ throughout the function body).
 | `byte_at` | `(bytes, int) -> int` | byte value 0–255 at an index (`-1` if out of range) |
 | `bytes_sub` | `(bytes, int, int) -> bytes` | sub-range `[start, end)` |
 | `bytes_concat` | `(bytes, bytes) -> bytes` | concatenate two `bytes` values |
+| `rand_bytes` | `(int) -> bytes` | `n` cryptographically-random bytes (CSPRNG) |
+| `sha256_bytes` | `(bytes) -> bytes` | SHA-256 of binary → 32-byte digest (binary-safe) |
+| `hmac_sha256_bytes` | `(bytes, bytes) -> bytes` | HMAC-SHA256(key, msg) → 32 bytes |
+| `hkdf_sha256` | `(bytes, bytes, bytes, int) -> bytes` | HKDF-SHA256(ikm, salt, info, length) |
+| `x25519_pub` | `(bytes) -> bytes` | X25519 public key from a 32-byte private key |
+| `x25519_shared` | `(bytes, bytes) -> bytes` | X25519 ECDH shared secret (my private, their public) |
+| `ed25519_pub` | `(bytes) -> bytes` | Ed25519 public key from a 32-byte seed |
+| `ed25519_sign` | `(bytes, bytes) -> bytes` | Ed25519 signature (seed, msg) → 64 bytes |
+| `ed25519_verify` | `(bytes, bytes, bytes) -> bool` | Ed25519 verify (pub, msg, sig) |
+| `aes_gcm_encrypt` | `(bytes, bytes, bytes, bytes) -> bytes` | AES-GCM (key, iv, plaintext, aad) → ciphertext‖16-byte tag |
+| `aes_gcm_decrypt` | `(bytes, bytes, bytes, bytes) -> bytes` | AES-GCM decrypt → plaintext (empty `bytes` on auth failure) |
+| `aes_cbc_encrypt` | `(bytes, bytes, bytes) -> bytes` | AES-CBC (key, iv, plaintext), PKCS#7 padded |
+| `aes_cbc_decrypt` | `(bytes, bytes, bytes) -> bytes` | AES-CBC decrypt → plaintext (empty on bad padding) |
 | `url_encode` | `(string) -> string` | percent-encode for URLs (RFC 3986: keeps `A-Za-z0-9-._~`, encodes the rest, space → `%20`) |
 | `url_decode` | `(string) -> string` | percent-decode a URL component (lenient: `+` → space, malformed `%XX` passes through) |
 | `sha256` | `(string) -> string` | SHA-256 of text, lowercase hex |
