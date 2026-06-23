@@ -59,6 +59,11 @@ func BuildBinary(prog *Program, outPath string, safe bool) error {
 	if strings.Contains(csrc, "mfl_crypto_") {
 		libs = append(libs, "-lcrypto")
 	}
+	// XEdDSA builtins (xeddsa_sign/verify) link libsodium + OpenSSL libcrypto.
+	// Requires libsodium-dev (provides libsodium.so) on the build host.
+	if strings.Contains(csrc, "mfl_xeddsa_") {
+		libs = append(libs, "-lsodium", "-lcrypto")
+	}
 	args = append(args, "-o", outPath, tmp.Name())
 	args = append(args, libs...)
 

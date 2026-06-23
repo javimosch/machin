@@ -1676,6 +1676,22 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 			c.addPair(sl, c.cBytes)
 		}
 		return c.cBytes, nil
+	case "xeddsa_sign":
+		if len(argSlots) != 3 {
+			return 0, fmt.Errorf("xeddsa_sign: 3 args (priv32, msg, random64 — all bytes)")
+		}
+		for _, sl := range argSlots {
+			c.addPair(sl, c.cBytes)
+		}
+		return c.cBytes, nil
+	case "xeddsa_verify":
+		if len(argSlots) != 3 {
+			return 0, fmt.Errorf("xeddsa_verify: 3 args (pub32, msg, sig64 — all bytes)")
+		}
+		for _, sl := range argSlots {
+			c.addPair(sl, c.cBytes)
+		}
+		return c.cBool, nil
 	case "hkdf_sha256":
 		if len(argSlots) != 4 {
 			return 0, fmt.Errorf("hkdf_sha256: 4 args (ikm, salt, info — bytes — and length int)")

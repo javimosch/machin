@@ -9,7 +9,7 @@ import (
 
 // machinVersion is the single version string for the toolchain. Bump it when
 // cutting a release (alongside README badge / SPEC / CHANGELOG).
-const machinVersion = "0.37.0"
+const machinVersion = "0.38.0"
 
 // ---- the source-of-truth feature catalog ----
 //
@@ -143,6 +143,8 @@ func machinGuide() guideCatalog {
 			{"aes_gcm_decrypt", "(bytes, bytes, bytes, bytes) -> bytes", "AES-GCM decrypt (key, iv, ct||tag, aad) -> plaintext (empty bytes on auth failure)", "crypto"},
 			{"aes_cbc_encrypt", "(bytes, bytes, bytes) -> bytes", "AES-CBC encrypt (key, iv, plaintext), PKCS#7 padded", "crypto"},
 			{"aes_cbc_decrypt", "(bytes, bytes, bytes) -> bytes", "AES-CBC decrypt (key, iv, ciphertext) -> plaintext (empty on bad padding)", "crypto"},
+			{"xeddsa_sign", "(bytes, bytes, bytes) -> bytes", "XEdDSA sign over Curve25519 (priv32, msg, random64) -> 64-byte sig (Signal/WhatsApp identity sigs); needs libsodium", "crypto"},
+			{"xeddsa_verify", "(bytes, bytes, bytes) -> bool", "XEdDSA verify (curve25519 pub32, msg, sig64); needs libsodium", "crypto"},
 			// sqlite (libsqlite3, linked only when used)
 			{"sqlite_open", "(string) -> int", "open/create a SQLite db file -> handle (0 on fail); \":memory:\" for in-memory", "db"},
 			{"sqlite_exec", "(int, string[, []string]) -> int", "run SQL with no result; optional []string binds the ? params (injection-safe); 0 ok", "db"},

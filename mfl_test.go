@@ -800,6 +800,28 @@ func TestCrypto(t *testing.T) {
 	}
 }
 
+// XEdDSA (Curve25519 signatures) is gated like the other external runtimes:
+// emitted only when xeddsa_* is used. Compile-level (linking needs libsodium-dev,
+// so the behavioral check lives in machin-signal/machin-wapair, not the suite).
+func TestXEdDSAGating(t *testing.T) {
+	src := `func main() { sig := xeddsa_sign(rand_bytes(32), bytes("m"), rand_bytes(64))  println(xeddsa_verify(rand_bytes(32), bytes("m"), sig)) }`
+	c, err := CompileToC(&Program{Funcs: parseFuncs(t, src)}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(c, "mfl_xeddsa_sign") || !strings.Contains(c, "mfl_xeddsa_verify") || !strings.Contains(c, "mflx_mont_to_ed") {
+		t.Fatal("a program using xeddsa_* must emit the XEdDSA runtime")
+	}
+	// a crypto-free program must not pull it in
+	c2, err := CompileToC(&Program{Funcs: parseFuncs(t, `func main() { println("hi") }`)}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(c2, "mfl_xeddsa_") {
+		t.Fatal("a program not using xeddsa_* must not emit the XEdDSA runtime")
+	}
+}
+
 // SHA-256 and HMAC-SHA256 against published test vectors (must be byte-exact).
 func TestHashes(t *testing.T) {
 	main := `func main() {
