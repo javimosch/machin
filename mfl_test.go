@@ -891,6 +891,40 @@ func TestOpaqueHandle(t *testing.T) {
 	}
 }
 
+// Native math builtins (libm), linked -lm only when used; an explicit extern of
+// the same name shadows the builtin.
+func TestMathBuiltins(t *testing.T) {
+	main := `func main() {
+	println(str(sqrt(9.0)) + " " + str(pow(2.0, 8.0)) + " " + str(floor(3.9)) + " " + str(ceil(3.1)))
+	println(str(abs(0.0 - 7.0)) + " " + str(hypot(3.0, 4.0)) + " " + str(round(2.5)))
+	println(str(cos(0.0)) + " " + str(atan2(0.0, 1.0)))
+}`
+	out, _ := buildRun(t, main)
+	want := "3 256 3 4\n7 5 3\n1 0\n"
+	if out != want {
+		t.Fatalf("math: got %q, want %q", out, want)
+	}
+	// gated: a math-free program emits no math runtime (so it never links -lm)
+	plain, err := CompileToC(&Program{Funcs: parseFuncs(t, `func main() { println("hi") }`)}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(plain, "mfl_math_") {
+		t.Fatal("math runtime must not be emitted for a math-free program")
+	}
+	// an explicit extern declaration shadows the builtin of the same name
+	prog, err := ParseProgram([]string{
+		`extern "m" { header "math.h" link "m" fn sqrt(float) float }`,
+		`func main() { println(str(sqrt(1.0, 2.0))) }`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Check(prog); err == nil || !strings.Contains(err.Error(), "expected 1 args") {
+		t.Fatalf("extern sqrt should shadow the builtin (arity-checked), got %v", err)
+	}
+}
+
 // Nested cstructs: a cstruct field whose type is another cstruct (by-value
 // struct of by-value structs — e.g. raylib Camera3D holds Vector3s). The MFL
 // wrapper nests the inner mfl_ type and marshaling recurses. Codegen-level.

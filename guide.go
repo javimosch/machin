@@ -9,7 +9,7 @@ import (
 
 // machinVersion is the single version string for the toolchain. Bump it when
 // cutting a release (alongside README badge / SPEC / CHANGELOG).
-const machinVersion = "0.45.0"
+const machinVersion = "0.46.0"
 
 // ---- the source-of-truth feature catalog ----
 //
@@ -99,6 +99,20 @@ func machinGuide() guideCatalog {
 			{"int", "(number) -> int", "truncate to int", "convert"},
 			{"float", "(number) -> float", "int -> float (identity on float). MFL has no implicit int->float, so a concrete int (fn return, byte_at, len, ...) needs this to enter float math", "convert"},
 			{"parse_int", "(string) -> int", "parse an integer (0 if non-numeric)", "convert"},
+			// math (libm, linked -lm only when used; numeric in, float out)
+			{"sqrt", "(number) -> float", "square root", "math"},
+			{"cbrt", "(number) -> float", "cube root", "math"},
+			{"pow", "(number, number) -> float", "x raised to y", "math"},
+			{"exp", "(number) -> float", "e^x", "math"},
+			{"log", "(number) -> float", "natural log; also log2, log10", "math"},
+			{"sin", "(number) -> float", "sine (radians); also cos, tan", "math"},
+			{"asin", "(number) -> float", "arcsine; also acos, atan", "math"},
+			{"atan2", "(number, number) -> float", "atan(y/x) with quadrant (y, x)", "math"},
+			{"hypot", "(number, number) -> float", "sqrt(x*x+y*y) without overflow", "math"},
+			{"floor", "(number) -> float", "round toward -inf; also ceil, round, trunc", "math"},
+			{"abs", "(number) -> float", "absolute value (float; fabs)", "math"},
+			{"fmod", "(number, number) -> float", "floating-point remainder of x/y", "math"},
+			{"pi", "() -> float", "the constant pi", "math"},
 			// collections
 			{"len", "(string|slice|map) -> int", "length", "collection"},
 			{"append", "([]T, T) -> []T", "grow a slice", "collection"},
