@@ -1079,6 +1079,43 @@ typedef struct { int64_t status; char* body; char* err; } mfl_http_result;
 
 static mfl_http_result mfl_http_do(const char* method, const char* url, const char* reqbody, const char* ctype, const char* extra, int redirects);
 
+/* plain (non-TLS) transport for http:// URLs, mirroring the TLS path's staged
+   error vocabulary ("dns"/"connect"). */
+static int mfl_tcp_dial_e(const char* host, int port, const char** stage) {
+    struct addrinfo hints, *res, *rp;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC; hints.ai_socktype = SOCK_STREAM;
+    char ps[16]; snprintf(ps, sizeof(ps), "%d", port);
+    if (getaddrinfo(host, ps, &hints, &res) != 0) { if (stage) *stage = "dns"; return -1; }
+    int fd = -1;
+    for (rp = res; rp; rp = rp->ai_next) {
+        fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+        if (fd < 0) continue;
+        if (connect(fd, rp->ai_addr, rp->ai_addrlen) == 0) break;
+        close(fd); fd = -1;
+    }
+    freeaddrinfo(res);
+    if (fd < 0 && stage) *stage = "connect";
+    return fd;
+}
+static void mfl_sock_writeall(int fd, const char* buf, size_t n) {
+    size_t off = 0;
+    while (off < n) { ssize_t w = send(fd, buf + off, n - off, 0); if (w <= 0) break; off += (size_t)w; }
+}
+static char* mfl_sock_readall(int fd, size_t* outlen) {
+    size_t cap = 16384, len = 0;
+    char* buf = (char*)malloc(cap);
+    for (;;) {
+        if (len + 8192 > cap) { cap *= 2; buf = (char*)realloc(buf, cap); }
+        ssize_t n = recv(fd, buf + len, 8192, 0);
+        if (n <= 0) break;
+        len += (size_t)n;
+    }
+    buf[len] = 0;
+    *outlen = len;
+    return buf;
+}
+
 static mfl_http_result mfl_http_do(const char* method, const char* url, const char* reqbody, const char* ctype, const char* extra, int redirects) {
     mfl_http_result R;
     R.status = 0;
@@ -1086,21 +1123,18 @@ static mfl_http_result mfl_http_do(const char* method, const char* url, const ch
     R.err = mfl_dup_arena("", 0);
 
     char host[256] = {0}, path[2048] = {0};
-    int port = 443;
+    int is_https = 1;
     const char* p = url;
     if (strncmp(p, "https://", 8) == 0) p += 8;
-    else if (strncmp(p, "http://", 7) == 0) { R.err = mfl_dup_arena("scheme", 6); return R; } /* TLS only */
+    else if (strncmp(p, "http://", 7) == 0) { p += 7; is_https = 0; }
     /* else: no scheme — assume https */
+    int port = is_https ? 443 : 80;
     int i = 0;
     while (*p && *p != '/' && *p != ':' && i < 255) host[i++] = *p++;
     host[i] = 0;
     if (*p == ':') { p++; port = atoi(p); while (*p && *p != '/') p++; }
     if (*p == '/') strncpy(path, p, sizeof(path) - 1);
     else { path[0] = '/'; path[1] = 0; }
-
-    const char* stage = "connect";
-    SSL* ssl = mfl_tls_dial_e(host, port, &stage);
-    if (!ssl) { R.err = mfl_dup_arena(stage, strlen(stage)); return R; }
 
     size_t blen = reqbody ? strlen(reqbody) : 0;
     const char* ex = extra ? extra : "";   /* caller-supplied header lines (each ending \r\n) */
@@ -1125,12 +1159,23 @@ static mfl_http_result mfl_http_do(const char* method, const char* url, const ch
             "%s %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: machin/0.8\r\nAccept: */*\r\n%sConnection: close\r\n\r\n",
             method, path, host, ex);
     }
-    SSL_write(ssl, req, rl);
-    free(req);
-
     size_t rlen;
-    char* raw = mfl_tls_readall(ssl, &rlen);
-    mfl_tls_hangup(ssl);
+    char* raw;
+    const char* stage = "connect";
+    if (is_https) {
+        SSL* ssl = mfl_tls_dial_e(host, port, &stage);
+        if (!ssl) { R.err = mfl_dup_arena(stage, strlen(stage)); free(req); return R; }
+        SSL_write(ssl, req, rl);
+        raw = mfl_tls_readall(ssl, &rlen);
+        mfl_tls_hangup(ssl);
+    } else {
+        int fd = mfl_tcp_dial_e(host, port, &stage);
+        if (fd < 0) { R.err = mfl_dup_arena(stage, strlen(stage)); free(req); return R; }
+        mfl_sock_writeall(fd, req, rl);
+        raw = mfl_sock_readall(fd, &rlen);
+        close(fd);
+    }
+    free(req);
 
     int status = 0;
     { const char* sp = strchr(raw, ' '); if (sp) status = atoi(sp + 1); }

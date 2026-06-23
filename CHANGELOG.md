@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.39.0
+
+- **The HTTP client now does plain `http://`, not just TLS.** `http_get`,
+  `https_get`/`https_post`, and `http_request` previously rejected `http://` with
+  `err="scheme"`; now they connect over a plain TCP socket for `http://` URLs
+  (default port 80) and TLS for `https://` (443), sharing the same
+  request/redirect/chunked/Content-Length handling — so `http→https` redirects
+  follow transparently. Surfaced building machin-watch (an uptime monitor wants
+  to watch plain-HTTP endpoints).
+
 ## v0.38.0
 
 - **`xeddsa_sign` / `xeddsa_verify` builtins — XEdDSA (Curve25519 signatures).**
