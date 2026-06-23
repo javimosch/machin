@@ -87,6 +87,8 @@ const cRuntime = `#define _GNU_SOURCE
 #include <dirent.h>
 #include <sys/stat.h>
 #include <errno.h>
+#include <termios.h>
+#include <sys/select.h>
 
 /* slices: a Go-style header over an unboxed backing array */
 typedef struct { void* data; int64_t len; int64_t cap; } mfl_slice;
@@ -722,6 +724,47 @@ static char* mfl_input(void) {
         buf[len++] = (char)c;
     }
     buf[len] = 0;
+    return buf;
+}
+/* terminal raw mode + non-blocking single-key read (for TUIs and games).
+   raw_mode(1) puts the tty in cbreak + no-echo with VMIN=0/VTIME=0 so reads
+   never block; raw_mode(0) restores the saved settings. */
+static struct termios mfl_tty_saved;
+static int mfl_tty_raw = 0;
+static int64_t mfl_raw_mode(int64_t on) {
+    if (on) {
+        if (mfl_tty_raw) return 0;
+        struct termios t;
+        if (tcgetattr(STDIN_FILENO, &t) != 0) return -1;
+        mfl_tty_saved = t;
+        t.c_lflag &= ~(ICANON | ECHO);
+        t.c_cc[VMIN] = 0;
+        t.c_cc[VTIME] = 0;
+        if (tcsetattr(STDIN_FILENO, TCSANOW, &t) != 0) return -1;
+        mfl_tty_raw = 1;
+    } else {
+        if (!mfl_tty_raw) return 0;
+        tcsetattr(STDIN_FILENO, TCSANOW, &mfl_tty_saved);
+        mfl_tty_raw = 0;
+    }
+    return 0;
+}
+/* non-blocking read of one key; a 1-char string, or "" if nothing is waiting.
+   In raw mode VMIN=0 already makes read() return immediately; otherwise poll
+   with select() so we never block. */
+static char* mfl_read_key(void) {
+    char* buf = mfl_alloc(2);
+    buf[0] = 0; buf[1] = 0;
+    unsigned char c = 0;
+    if (mfl_tty_raw) {
+        if (read(STDIN_FILENO, &c, 1) == 1) buf[0] = (char)c;
+    } else {
+        fd_set fds; FD_ZERO(&fds); FD_SET(STDIN_FILENO, &fds);
+        struct timeval tv; tv.tv_sec = 0; tv.tv_usec = 0;
+        if (select(STDIN_FILENO + 1, &fds, NULL, NULL, &tv) > 0) {
+            if (read(STDIN_FILENO, &c, 1) == 1) buf[0] = (char)c;
+        }
+    }
     return buf;
 }
 /* read all of stdin verbatim until EOF (no line splitting). Exact for text;
@@ -3470,6 +3513,10 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("mfl_exit(%s)", args[0]), nil
 	case "flush":
 		return "mfl_flush()", nil
+	case "raw_mode":
+		return fmt.Sprintf("mfl_raw_mode(%s)", args[0]), nil
+	case "read_key":
+		return "mfl_read_key()", nil
 	case "base64_encode":
 		return fmt.Sprintf("mfl_base64_encode(%s)", args[0]), nil
 	case "base64_decode":

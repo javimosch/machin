@@ -9,7 +9,7 @@ import (
 
 // machinVersion is the single version string for the toolchain. Bump it when
 // cutting a release (alongside README badge / SPEC / CHANGELOG).
-const machinVersion = "0.40.0"
+const machinVersion = "0.41.0"
 
 // ---- the source-of-truth feature catalog ----
 //
@@ -76,6 +76,8 @@ func machinGuide() guideCatalog {
 			{"input", "() -> string", "read one stdin line (newline stripped; \"\" at EOF)", "io"},
 			{"read_stdin", "() -> string", "read all of stdin verbatim until EOF (exact bytes; no line splitting)", "io"},
 			{"flush", "() ->", "flush buffered stdout (prompt output through a pipe)", "io"},
+			{"raw_mode", "(int) -> int", "put the terminal in cbreak/no-echo mode (1) or restore it (0); pair them and restore before exit (for TUIs/games)", "io"},
+			{"read_key", "() -> string", "non-blocking single-key read: a 1-char string, or \"\" if no key is waiting (needs raw_mode for live input)", "io"},
 			{"read_file", "(string) -> string", "read a whole file (\"\" on error)", "io"},
 			{"write_file", "(string, string) -> int", "write a file (bytes; -1 on error)", "io"},
 			{"list_dir", "(string) -> []string", "directory entries (excludes . / ..)", "io"},
@@ -183,6 +185,7 @@ func machinGuide() guideCatalog {
 			{"hello", `func main() { println("hello") }`},
 			{"bytes", `func main() { b := from_hex("deadbeef")  b = bytes_concat(b, bytes("!"))  println(to_hex(b) + " len=" + str(len(b)) + " b0=" + str(byte_at(b, 0))) }`},
 			{"bitwise", `func main() { x := 0xa5  println(str(x >> 4 & 0x0f) + " " + str(x | 0x100) + " " + str(^x & 0xff)) }`},
+			{"terminal-input", `func main() { raw_mode(1)  esc := bytes_str(from_hex("1b"))  k := read_key()  if k == "q" { print(esc + "[2J") }  raw_mode(0) }`},
 			{"types", `type P struct { name string  age int }
 func main() { p := P{name: "ada", age: 36}  xs := []int{1, 2, 3}  m := make(map[string]int)  m["k"] = 1  println(p.name + " " + str(len(xs)) + " " + str(m["k"])) }`},
 			{"goroutine-channel", `func work(ch) { ch <- 42 }

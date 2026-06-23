@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.41.0
+
+- **Terminal input: `raw_mode(on)` + `read_key()`.** Real-time, per-keypress
+  terminal input. `raw_mode(1)` puts the tty in cbreak/no-echo mode (and
+  `raw_mode(0)` restores it); `read_key()` is a non-blocking single-key read —
+  a 1-char string, or `""` if nothing is waiting. `input()` was line-buffered
+  (it blocks for a whole line + Enter), which interactive TUIs and games can't
+  use. Surfaced by [machin-game-snake](https://github.com/javimosch/machin-game-snake)
+  — and it unlocks every future terminal UI (pickers, progress views, REPLs).
+
 ## v0.40.0
 
 - **Bitwise operators + hex/binary/octal literals.** `& | ^ << >>` (and unary `^`,
