@@ -30,6 +30,11 @@ type ExternDecl struct {
 type ExternStruct struct {
 	Name   string
 	Fields []ExternField
+	// Opaque marks a handle type declared with an empty body (`cstruct Sound {}`):
+	// machin holds the real C struct (from the header) by value without naming its
+	// fields, so by-value APIs whose structs contain pointers (raylib Sound/Music,
+	// …) can be loaded, stored, and passed back. No MFL field access/construction.
+	Opaque bool
 }
 
 // ExternField is one C struct field with a sized C scalar type (i8..u64, f32, f64).
@@ -57,9 +62,12 @@ type Field struct {
 }
 
 // TypeDecl is a struct type declaration: type Name struct { ... }.
+// COpaque, when non-empty, names a C type to wrap by value in one hidden field
+// (an opaque FFI handle synthesized from `cstruct Name {}`); Fields is then empty.
 type TypeDecl struct {
-	Name   string
-	Fields []Field
+	Name    string
+	Fields  []Field
+	COpaque string
 }
 
 func (TypeDecl) node() {}
