@@ -20,6 +20,12 @@ add it to [awesome-machin](https://github.com/javimosch/awesome-machin)** (the
 curated ecosystem list). Each app is its own public repo under `javimosch` with
 a `build.sh` (`machin encode src/*.src > app.mfl && machin build app.mfl`).
 
+Building a **game** (terminal TUI or raylib GUI/audio)? Read
+[`skills/machin-gamedev/SKILL.md`](skills/machin-gamedev/SKILL.md) first — the
+canonical setup, build-and-verify workflow, raylib FFI surface, and accumulated
+caveats/gotchas (especially MFL's no-implicit-`int`→`float` rule), distilled from
+machin-game-snake / -2048 / -flappy / -simon.
+
 ## What this is
 
 machin compiles MFL to native code through C:
