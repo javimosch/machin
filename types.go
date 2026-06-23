@@ -1855,6 +1855,17 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 			return 0, fmt.Errorf("input: no args")
 		}
 		return c.cString, nil
+	case "raw_mode":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("raw_mode: 1 arg (on: 1 enable, 0 restore)")
+		}
+		c.addPair(argSlots[0], c.cInt)
+		return c.cInt, nil
+	case "read_key":
+		if len(argSlots) != 0 {
+			return 0, fmt.Errorf("read_key: no args")
+		}
+		return c.cString, nil
 	case "read_stdin":
 		if len(argSlots) != 0 {
 			return 0, fmt.Errorf("read_stdin: no args")

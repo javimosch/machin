@@ -1,6 +1,6 @@
 # The MFL Language Specification
 
-Version 0.40.0
+Version 0.41.0
 
 MFL (Machine-First Language) is a statically-typed, Go-flavored backend language
 **shaped for machine authoring**: minimal syntax, no type annotations, one
@@ -242,6 +242,8 @@ throughout the function body).
 | `parse_int` | `(string) -> int` | parse an integer (0 if not numeric) |
 | `exit` | `(int) -> ` | terminate the process with a status code |
 | `flush` | `() -> ` | flush buffered stdout (for prompt output through a pipe) |
+| `raw_mode` | `(int) -> int` | put the terminal in cbreak/no-echo mode (`1`) or restore it (`0`); pair them and restore before exit (TUIs/games) |
+| `read_key` | `() -> string` | non-blocking single-key read: a 1-char string, or `""` if no key is waiting (needs `raw_mode` for live input) |
 | `read_file` | `(string) -> string` | read a whole file ("" on error) |
 | `write_file` | `(string, string) -> int` | write a file (bytes written; -1 on error) |
 | `list_dir` | `(string) -> []string` | directory entries (excludes `.`/`..`) |

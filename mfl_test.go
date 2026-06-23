@@ -862,6 +862,25 @@ func TestBitwise(t *testing.T) {
 	}
 }
 
+// Terminal input builtins: raw_mode (int -> int) and read_key (-> string).
+// Interactive behavior can't be unit-tested, so this checks the type contract
+// and that the C transport helpers are emitted.
+func TestTerminalInput(t *testing.T) {
+	src := `func main() { r := raw_mode(1)  k := read_key()  if k == "q" { println("bye " + str(r)) }  raw_mode(0) }`
+	c, err := CompileToC(&Program{Funcs: parseFuncs(t, src)}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(c, "mfl_raw_mode") || !strings.Contains(c, "mfl_read_key") {
+		t.Fatal("terminal input must emit mfl_raw_mode / mfl_read_key")
+	}
+	// raw_mode needs its on/off argument
+	bad := `func main() { raw_mode() }`
+	if _, err := CompileToC(&Program{Funcs: parseFuncs(t, bad)}, false); err == nil {
+		t.Fatal("raw_mode() with no argument should be an arity error")
+	}
+}
+
 // SHA-256 and HMAC-SHA256 against published test vectors (must be byte-exact).
 func TestHashes(t *testing.T) {
 	main := `func main() {
