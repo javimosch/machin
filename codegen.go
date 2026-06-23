@@ -1291,11 +1291,16 @@ static int64_t mfl_sqlite_exec(int64_t h, const char* sql) {
 static int64_t mfl_sqlite_close(int64_t h) {
     return sqlite3_close((sqlite3*)(intptr_t)h);
 }
-/* run a query, returning a JSON array of row objects. */
-static char* mfl_sqlite_query(int64_t h, const char* sql) {
-    sqlite3* db = (sqlite3*)(intptr_t)h;
-    sqlite3_stmt* st = NULL;
-    if (!db || sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) return mfl_dup_arena("[]", 2);
+/* bind a []string of params positionally to ?1, ?2, ... (all as text). */
+static void mfl_sqlite_bind(sqlite3_stmt* st, mfl_slice params) {
+    for (int64_t i = 0; i < params.len; i++) {
+        const char* p = ((char**)params.data)[i];
+        sqlite3_bind_text(st, (int)(i + 1), p ? p : "", -1, SQLITE_TRANSIENT);
+    }
+}
+/* step a prepared statement to completion, returning a JSON array of row
+   objects; finalizes the statement. */
+static char* mfl_sqlite_rows_json(sqlite3_stmt* st) {
     size_t cap = 256, len = 0;
     char* out = (char*)malloc(cap);
     out[len++] = '[';
@@ -1334,6 +1339,29 @@ static char* mfl_sqlite_query(int64_t h, const char* sql) {
     char* r = mfl_dup_arena(out, len);
     free(out);
     return r;
+}
+static char* mfl_sqlite_query(int64_t h, const char* sql) {
+    sqlite3* db = (sqlite3*)(intptr_t)h;
+    sqlite3_stmt* st = NULL;
+    if (!db || sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) return mfl_dup_arena("[]", 2);
+    return mfl_sqlite_rows_json(st);
+}
+/* parameterized variants: bind a []string of params to the ? placeholders. */
+static char* mfl_sqlite_query_p(int64_t h, const char* sql, mfl_slice params) {
+    sqlite3* db = (sqlite3*)(intptr_t)h;
+    sqlite3_stmt* st = NULL;
+    if (!db || sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) return mfl_dup_arena("[]", 2);
+    mfl_sqlite_bind(st, params);
+    return mfl_sqlite_rows_json(st);
+}
+static int64_t mfl_sqlite_exec_p(int64_t h, const char* sql, mfl_slice params) {
+    sqlite3* db = (sqlite3*)(intptr_t)h;
+    sqlite3_stmt* st = NULL;
+    if (!db || sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) return -1;
+    mfl_sqlite_bind(st, params);
+    int r = sqlite3_step(st);
+    sqlite3_finalize(st);
+    return (r == SQLITE_DONE || r == SQLITE_ROW) ? 0 : r;
 }
 `
 
@@ -2889,9 +2917,15 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("mfl_sqlite_open(%s)", args[0]), nil
 	case "sqlite_exec":
 		g.usesSQLite = true
+		if len(args) == 3 {
+			return fmt.Sprintf("mfl_sqlite_exec_p(%s, %s, %s)", args[0], args[1], args[2]), nil
+		}
 		return fmt.Sprintf("mfl_sqlite_exec(%s, %s)", args[0], args[1]), nil
 	case "sqlite_query":
 		g.usesSQLite = true
+		if len(args) == 3 {
+			return fmt.Sprintf("mfl_sqlite_query_p(%s, %s, %s)", args[0], args[1], args[2]), nil
+		}
 		return fmt.Sprintf("mfl_sqlite_query(%s, %s)", args[0], args[1]), nil
 	case "sqlite_close":
 		g.usesSQLite = true

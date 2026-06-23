@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.27.0
+
+- **Parameterized SQLite queries.** `sqlite_exec` and `sqlite_query` now take an
+  optional third argument — a `[]string` whose values bind to the `?`
+  placeholders, in order (via `sqlite3_bind_text`). This is **injection-safe**: a
+  value containing SQL is stored/compared literally, never executed. The two-arg
+  forms are unchanged.
+
 ## v0.26.0
 
 - **SQLite builtins — `sqlite_open`, `sqlite_exec`, `sqlite_query`, `sqlite_close`.**

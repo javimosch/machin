@@ -677,6 +677,23 @@ func TestSQLite(t *testing.T) {
 	}
 }
 
+// Parameterized queries bind a []string to the ? placeholders — injection-safe
+// (a value containing SQL is stored literally, not executed).
+func TestSQLiteParams(t *testing.T) {
+	main := `func main() {
+	db := sqlite_open(":memory:")
+	sqlite_exec(db, "CREATE TABLE u(name TEXT)")
+	sqlite_exec(db, "INSERT INTO u VALUES(?)", []string{"'; DROP TABLE u; --"})
+	r := sqlite_query(db, "SELECT name FROM u WHERE name = ?", []string{"'; DROP TABLE u; --"})
+	println(r)
+	sqlite_close(db)
+}`
+	out, _ := buildRun(t, main)
+	if out != "[{\"name\":\"'; DROP TABLE u; --\"}]\n" {
+		t.Fatalf("sqlite params: got %q", out)
+	}
+}
+
 // SHA-256 and HMAC-SHA256 against published test vectors (must be byte-exact).
 func TestHashes(t *testing.T) {
 	main := `func main() {
