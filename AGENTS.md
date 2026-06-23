@@ -9,6 +9,25 @@ language). Humans state intent; the machine reads and writes the code.
 > the compiler's own source-of-truth catalog (so it never drifts). This file is
 > about *contributing to the toolchain*; `machin guide` is about *writing MFL*.
 
+> **First, make sure your `machin` is current.** The guide catalog is compiled
+> *into* the binary, so a stale binary advertises a stale feature set — an agent
+> running an old `machin` won't see recently added builtins and may wrongly
+> conclude a capability is missing (this is what produced #196: `http_get`/`parse`
+> already existed, but an out-of-date binary didn't surface them). `make install`
+> copies the build to `$PREFIX/bin`, but nothing rebuilds it after a `git pull`,
+> so the `machin` on your `PATH` can silently lag the source. Before relying on
+> the language surface, rebuild and verify the versions agree:
+>
+> ```sh
+> make install      # or: go build -o "$(command -v machin)" .
+> test "$(machin guide | sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' | head -1)" \
+>      = "$(sed -n 's/.*machinVersion = "\([^"]*\)".*/\1/p' guide.go)" \
+>      && echo "machin is current" || echo "STALE: rebuild/install machin"
+> ```
+>
+> (Also delete any stray `./machin` build artifact in the repo — it is gitignored
+> and easy to run by accident.)
+
 ## Current direction: dogfood
 
 The POC goal is met; machin is now grown by **building real things** and letting
