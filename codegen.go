@@ -1024,9 +1024,9 @@ static char* mfl_chunk_decode(const char* body, size_t blen, size_t* outlen) {
    transport-failure reason ("dns"/"connect"/"tls"/"scheme") with status 0. */
 typedef struct { int64_t status; char* body; char* err; } mfl_http_result;
 
-static mfl_http_result mfl_http_do(const char* method, const char* url, const char* reqbody, const char* ctype, int redirects);
+static mfl_http_result mfl_http_do(const char* method, const char* url, const char* reqbody, const char* ctype, const char* extra, int redirects);
 
-static mfl_http_result mfl_http_do(const char* method, const char* url, const char* reqbody, const char* ctype, int redirects) {
+static mfl_http_result mfl_http_do(const char* method, const char* url, const char* reqbody, const char* ctype, const char* extra, int redirects) {
     mfl_http_result R;
     R.status = 0;
     R.body = mfl_dup_arena("", 0);
@@ -1050,19 +1050,27 @@ static mfl_http_result mfl_http_do(const char* method, const char* url, const ch
     if (!ssl) { R.err = mfl_dup_arena(stage, strlen(stage)); return R; }
 
     size_t blen = reqbody ? strlen(reqbody) : 0;
-    size_t reqcap = blen + strlen(path) + strlen(host) + 256 + (ctype ? strlen(ctype) : 0);
+    const char* ex = extra ? extra : "";   /* caller-supplied header lines (each ending \r\n) */
+    size_t reqcap = blen + strlen(path) + strlen(host) + 256 + (ctype ? strlen(ctype) : 0) + strlen(ex);
     char* req = (char*)malloc(reqcap);
     int rl;
     if (blen > 0) {
-        rl = snprintf(req, reqcap,
-            "%s %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: machin/0.8\r\nAccept: */*\r\nContent-Type: %s\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n",
-            method, path, host, ctype ? ctype : "application/octet-stream", blen);
+        if (ctype) {
+            rl = snprintf(req, reqcap,
+                "%s %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: machin/0.8\r\nAccept: */*\r\n%sContent-Type: %s\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n",
+                method, path, host, ex, ctype, blen);
+        } else {
+            /* http_request: caller owns Content-Type (via extra) */
+            rl = snprintf(req, reqcap,
+                "%s %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: machin/0.8\r\nAccept: */*\r\n%sContent-Length: %zu\r\nConnection: close\r\n\r\n",
+                method, path, host, ex, blen);
+        }
         memcpy(req + rl, reqbody, blen);
         rl += (int)blen;
     } else {
         rl = snprintf(req, reqcap,
-            "%s %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: machin/0.8\r\nAccept: */*\r\nConnection: close\r\n\r\n",
-            method, path, host);
+            "%s %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: machin/0.8\r\nAccept: */*\r\n%sConnection: close\r\n\r\n",
+            method, path, host, ex);
     }
     SSL_write(ssl, req, rl);
     free(req);
@@ -1097,7 +1105,7 @@ static mfl_http_result mfl_http_do(const char* method, const char* url, const ch
                 free(raw);
                 const char* m = (status == 307 || status == 308) ? method : "GET";
                 const char* rb = (status == 307 || status == 308) ? reqbody : NULL;
-                return mfl_http_do(m, locurl, rb, ctype, redirects - 1);
+                return mfl_http_do(m, locurl, rb, ctype, extra, redirects - 1);
             }
         }
     }
@@ -1120,9 +1128,26 @@ static mfl_http_result mfl_http_do(const char* method, const char* url, const ch
     return R;
 }
 
-static char* mfl_https_get(const char* url) { return mfl_http_do("GET", url, NULL, NULL, 5).body; }
-static char* mfl_https_post(const char* url, const char* body) { return mfl_http_do("POST", url, body, "application/json", 5).body; }
-static mfl_http_result mfl_http_get(const char* url) { return mfl_http_do("GET", url, NULL, NULL, 5); }
+static char* mfl_https_get(const char* url) { return mfl_http_do("GET", url, NULL, NULL, "", 5).body; }
+static char* mfl_https_post(const char* url, const char* body) { return mfl_http_do("POST", url, body, "application/json", "", 5).body; }
+static mfl_http_result mfl_http_get(const char* url) { return mfl_http_do("GET", url, NULL, NULL, "", 5); }
+/* general authenticated request: caller supplies the method, any extra header
+   lines (e.g. "Authorization: Bearer x", "Content-Type: application/json") as a
+   []string, and a body. Returns (status, body, err) like http_get. */
+static mfl_http_result mfl_http_request(const char* method, const char* url, mfl_slice headers, const char* body) {
+    size_t tot = 1;
+    for (int64_t i = 0; i < headers.len; i++) { char* h = ((char**)headers.data)[i]; if (h) tot += strlen(h) + 2; }
+    char* hb = (char*)malloc(tot);
+    size_t o = 0;
+    for (int64_t i = 0; i < headers.len; i++) {
+        char* h = ((char**)headers.data)[i];
+        if (h) { size_t l = strlen(h); memcpy(hb + o, h, l); o += l; hb[o++] = '\r'; hb[o++] = '\n'; }
+    }
+    hb[o] = 0;
+    mfl_http_result R = mfl_http_do(method, url, body, NULL, hb, 5);
+    free(hb);
+    return R;
+}
 `
 
 // wssRuntime is a WebSocket (RFC 6455) client over TLS, built on tlsCoreRuntime.
@@ -1964,6 +1989,8 @@ func multiRetBuiltinC(name string) (cfn, ctype string, fields []string, needsTLS
 	switch name {
 	case "http_get":
 		return "mfl_http_get", "mfl_http_result", []string{"status", "body", "err"}, true, true
+	case "http_request":
+		return "mfl_http_request", "mfl_http_result", []string{"status", "body", "err"}, true, true
 	case "json_get":
 		return "mfl_json_get", "mfl_json_result", []string{"value", "err"}, false, true
 	}

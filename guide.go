@@ -9,7 +9,7 @@ import (
 
 // machinVersion is the single version string for the toolchain. Bump it when
 // cutting a release (alongside README badge / SPEC / CHANGELOG).
-const machinVersion = "0.32.0"
+const machinVersion = "0.33.0"
 
 // ---- the source-of-truth feature catalog ----
 //
@@ -145,6 +145,7 @@ func machinGuide() guideCatalog {
 			{"https_get", "(string) -> string", "HTTPS GET over TLS; body (\"\" on error)", "net"},
 			{"https_post", "(string, string) -> string", "HTTPS POST (JSON body) over TLS; body", "net"},
 			{"http_get", "(string) -> (int, string, string)", "GET -> (status, body, err); err \"\"/dns/connect/tls/scheme. MULTI-ASSIGN ONLY", "net"},
+			{"http_request", "(string, string, []string, string) -> (int, string, string)", "auth'd HTTPS: (method, url, header lines like \"Authorization: Bearer x\", body) -> (status, body, err). MULTI-ASSIGN ONLY", "net"},
 			// websocket
 			{"wss_open", "(string) -> int", "open a wss:// WebSocket -> handle (0 on fail)", "ws"},
 			{"wss_send", "(int, string) -> int", "send a text message", "ws"},

@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.33.0
+
+- **`http_request(method, url, headers, body)` builtin.** Authenticated HTTPS for
+  any method, with caller-supplied header lines — the piece `https_get`/`https_post`
+  lacked (they hard-code the header set, so no `Authorization`). `headers` is a
+  `[]string` of `"Key: Value"` lines; returns `(status, body, err)` like `http_get`.
+  Surfaced wiring WhatsApp booking notifications into machin-meet (the WhatsApp
+  Cloud API and Twilio both require a bearer/basic `Authorization` header).
+
 ## v0.32.0
 
 - **`url_encode` / `url_decode` builtins.** Percent-encoding for URLs (RFC 3986):

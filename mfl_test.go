@@ -576,6 +576,28 @@ func TestHTTPGetMultiReturn(t *testing.T) {
 	}
 }
 
+// http_request(method, url, []string headers, body) -> (status, body, err): an
+// authenticated request with caller-supplied header lines. Same multi-return
+// path as http_get; compiling must wire the accessor and gate the TLS runtime.
+func TestHTTPRequest(t *testing.T) {
+	src := `func main() { h := []string{"Authorization: Bearer x"}  s, b, e := http_request("POST", "https://x", h, "{}")  println(str(s) + b + e) }`
+	c, err := CompileToC(&Program{Funcs: parseFuncs(t, src)}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(c, "mfl_http_request") || !strings.Contains(c, "mfl_http_result") {
+		t.Fatal("http_request must emit the result struct + accessor")
+	}
+	if !strings.Contains(c, "SSL_new") && !strings.Contains(c, "mfl_tls_dial_e") {
+		t.Fatal("http_request must gate in the OpenSSL TLS runtime")
+	}
+	// single-value misuse errors helpfully, like http_get
+	bad := `func main() { h := []string{}  x := http_request("GET", "https://x", h, "")  println(x) }`
+	if _, err := CompileToC(&Program{Funcs: parseFuncs(t, bad)}, false); err == nil || !strings.Contains(err.Error(), "returns 3 values") {
+		t.Fatalf("single-value http_request should error helpfully, got: %v", err)
+	}
+}
+
 // A string (or a struct's string fields) allocated in a short-lived goroutine
 // and sent over a channel must survive that goroutine's arena being reclaimed —
 // the channel deep-copies strings on send and adopts them on receive.
