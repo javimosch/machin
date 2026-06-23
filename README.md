@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.29.0-blue" alt="Version">
+  <img src="https://img.shields.io/badge/version-0.30.0-blue" alt="Version">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
   <img src="https://img.shields.io/badge/go-1.22-00ADD8" alt="Go">
   <img src="https://img.shields.io/badge/backend-C%20%E2%86%92%20native-orange" alt="Native">
@@ -45,7 +45,7 @@ bin/machin pack   app.mfl                # dense base64 form (distribution)
 - **Flow**: `if`/`for`/`while`/`range`, `break`/`continue`, multiple & named returns, comma-ok, variadics, closures (by-reference), implicit generics (monomorphized)
 - **Concurrency**: goroutines (`go`), channels (`close`, `for v := range ch`, `v, ok := <-ch`), `select` (multi-way + `default` + timeouts); per-goroutine arena GC + scoped `arena{}`; `--safe` checks
 - **Networking**: `dial` (client) + `listen`/`accept`/`read`/`write`/`close` (server); native TLS — `https_get`/`https_post` and a `wss_*` WebSocket client (OpenSSL, linked only when used)
-- **I/O & data**: `read_file`/`write_file`/`list_dir`/`mkdir`, `input`/`read_stdin`, `json`/`parse`/`json_get` (jq-style path), `args`/`env`/`now`/`now_ms`/`time_fields`/`time_format`/`parse_int`/`exit`/`flush`, string ops, regex, base64, hashes (sha256/hmac_sha256)
+- **I/O & data**: `read_file`/`write_file`/`list_dir`/`mkdir`, `input`/`read_stdin`, `json`/`parse`/`json_get` (jq-style path), `args`/`env`/`now`/`now_ms`/`time_fields`/`time_format`/`time_make`/`parse_int`/`exit`/`flush`, string ops, regex, base64, hashes (sha256/hmac_sha256)
 - **Error handling**: `http_get` returns `(status, body, err)` — the `v, err :=` idiom at the builtin layer (a 404, a 503, and an unreachable host are distinguishable)
 - **C FFI**: `extern` blocks — scalars, by-value structs (`cstruct`), opaque `ptr` handles, multi-`link` (drove a real raylib **GUI**)
 - **machweb**: a web framework written in MFL ([`framework/`](framework/))

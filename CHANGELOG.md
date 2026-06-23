@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.30.0
+
+- **`time_make(y, mo, d, h, mi, s)` builtin.** Build a Unix timestamp from local
+  calendar fields — the inverse of `time_fields`, backed by `mktime(3)` (which
+  also normalizes out-of-range fields, so day 32 rolls into the next month). This
+  completes the time trio: construct ↔ decompose ↔ render. Surfaced building
+  machin-meet (a one-person self-hostable Calendly), which needs "09:00 local on
+  date X → which Unix second?" to enumerate bookable slots.
+
 ## v0.29.0
 
 - **`time_format(unix, fmt)` builtin.** Format a Unix timestamp (local time) with

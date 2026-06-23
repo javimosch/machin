@@ -1768,6 +1768,14 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		c.addPair(argSlots[0], c.cInt)
 		c.addPair(argSlots[1], c.cString)
 		return c.cString, nil
+	case "time_make":
+		if len(argSlots) != 6 {
+			return 0, fmt.Errorf("time_make: 6 args (year, month, day, hour, minute, second)")
+		}
+		for _, sl := range argSlots {
+			c.addPair(sl, c.cInt)
+		}
+		return c.cInt, nil
 	case "parse_int":
 		if len(argSlots) != 1 {
 			return 0, fmt.Errorf("parse_int: 1 arg (string)")
