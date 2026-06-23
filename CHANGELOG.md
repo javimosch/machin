@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.36.0
+
+- **Binary WebSocket frames: `wss_send_bin(conn, bytes)` / `wss_recv_bin(conn) -> bytes`.**
+  The existing `wss_send`/`wss_recv` are text (`char*`) and truncate at a NUL; the
+  binary variants carry a `bytes` payload (send as opcode `0x2`, recv NUL-safe).
+  The frame loop is refactored into a shared core, so text and binary recv behave
+  identically (ping/pong, fragmentation, close). Step 3 of the native-WhatsApp path
+  (the protocol is binary framing).
+
 ## v0.35.0
 
 - **Crypto builtins over `bytes` (OpenSSL libcrypto).** Step 2 of the native-crypto

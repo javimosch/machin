@@ -2027,6 +2027,19 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		}
 		c.addPair(argSlots[0], c.cInt)
 		return c.cString, nil
+	case "wss_send_bin":
+		if len(argSlots) != 2 {
+			return 0, fmt.Errorf("wss_send_bin: 2 args (conn int, payload bytes)")
+		}
+		c.addPair(argSlots[0], c.cInt)
+		c.addPair(argSlots[1], c.cBytes)
+		return c.cInt, nil
+	case "wss_recv_bin":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("wss_recv_bin: 1 arg (conn int)")
+		}
+		c.addPair(argSlots[0], c.cInt)
+		return c.cBytes, nil
 	case "wss_close":
 		if len(argSlots) != 1 {
 			return 0, fmt.Errorf("wss_close: 1 arg (conn int)")

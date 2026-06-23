@@ -889,6 +889,23 @@ func TestJSONGet(t *testing.T) {
 	}
 }
 
+// Binary WebSocket frames: wss_send_bin takes a bytes payload, wss_recv_bin
+// returns bytes. Compiling must wire the binary framing + bytes type and gate in
+// the WS/TLS runtime.
+func TestWSSBinary(t *testing.T) {
+	src := `func main() { c := wss_open("wss://x")  wss_send_bin(c, from_hex("00ff"))  b := wss_recv_bin(c)  println(to_hex(b)) }`
+	c, err := CompileToC(&Program{Funcs: parseFuncs(t, src)}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(c, "mfl_wss_send_bin") || !strings.Contains(c, "mfl_wss_recv_bin") {
+		t.Fatal("binary wss must emit mfl_wss_send_bin / mfl_wss_recv_bin")
+	}
+	if !strings.Contains(c, "mfl_bytes") || !strings.Contains(c, "mfl_tls_dial") {
+		t.Fatal("binary wss must use the bytes type and the TLS core")
+	}
+}
+
 // The WebSocket runtime is emitted only when a program calls wss_*; it shares
 // the TLS core (mfl_tls_dial) with HTTPS but pulls in the WS framing separately.
 func TestWSSRuntimeGating(t *testing.T) {

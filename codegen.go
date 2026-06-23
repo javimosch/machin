@@ -1314,47 +1314,75 @@ static int64_t mfl_wss_send(int64_t h, const char* msg) {
     return 0;
 }
 
-/* block until a full text/binary message arrives; "" on close or error.
-   Replies to pings, ignores pongs, and reassembles fragmented messages. */
-static char* mfl_wss_recv(int64_t h) {
-    mfl_ws* w = (mfl_ws*)(intptr_t)h;
-    if (!w) return mfl_dup_arena("", 0);
+/* core: block until a full message; returns a malloc'd buffer (caller frees) and
+   its length via *outlen, or NULL on close/error. Replies to pings, ignores
+   pongs, reassembles fragments. An empty message returns a non-NULL 1-byte buf. */
+static unsigned char* mfl_ws_recv_raw(mfl_ws* w, size_t* outlen) {
+    *outlen = 0;
+    if (!w) return NULL;
     unsigned char* msg = NULL;
     size_t mlen = 0;
     for (;;) {
         unsigned char hd[2];
-        if (mfl_ssl_read_n(w->ssl, hd, 2) < 0) { free(msg); return mfl_dup_arena("", 0); }
+        if (mfl_ssl_read_n(w->ssl, hd, 2) < 0) { free(msg); return NULL; }
         int fin = hd[0] & 0x80;
         int opcode = hd[0] & 0x0f;
         int masked = hd[1] & 0x80;
         uint64_t len = hd[1] & 0x7f;
         if (len == 126) {
             unsigned char e[2];
-            if (mfl_ssl_read_n(w->ssl, e, 2) < 0) { free(msg); return mfl_dup_arena("", 0); }
+            if (mfl_ssl_read_n(w->ssl, e, 2) < 0) { free(msg); return NULL; }
             len = ((uint64_t)e[0] << 8) | e[1];
         } else if (len == 127) {
             unsigned char e[8];
-            if (mfl_ssl_read_n(w->ssl, e, 8) < 0) { free(msg); return mfl_dup_arena("", 0); }
+            if (mfl_ssl_read_n(w->ssl, e, 8) < 0) { free(msg); return NULL; }
             len = 0;
             for (int s = 0; s < 8; s++) len = (len << 8) | e[s];
         }
         unsigned char mk[4] = {0,0,0,0};
-        if (masked && mfl_ssl_read_n(w->ssl, mk, 4) < 0) { free(msg); return mfl_dup_arena("", 0); }
+        if (masked && mfl_ssl_read_n(w->ssl, mk, 4) < 0) { free(msg); return NULL; }
         unsigned char* pl = (unsigned char*)malloc(len ? len : 1);
-        if (len && mfl_ssl_read_n(w->ssl, pl, len) < 0) { free(pl); free(msg); return mfl_dup_arena("", 0); }
+        if (len && mfl_ssl_read_n(w->ssl, pl, len) < 0) { free(pl); free(msg); return NULL; }
         if (masked) for (uint64_t k = 0; k < len; k++) pl[k] ^= mk[k & 3];
 
         if (opcode == 0x9) { mfl_ws_frame(w, 0xA, pl, len); free(pl); continue; } /* ping -> pong */
         if (opcode == 0xA) { free(pl); continue; }                                /* pong */
-        if (opcode == 0x8) { mfl_ws_frame(w, 0x8, pl, len); free(pl); free(msg); return mfl_dup_arena("", 0); } /* close */
+        if (opcode == 0x8) { mfl_ws_frame(w, 0x8, pl, len); free(pl); free(msg); return NULL; } /* close */
 
         unsigned char* nm = (unsigned char*)realloc(msg, mlen + len);
         msg = nm;
         if (len) memcpy(msg + mlen, pl, len);
         mlen += len;
         free(pl);
-        if (fin) { char* r = mfl_dup_arena((char*)msg, mlen); free(msg); return r; }
+        if (fin) { *outlen = mlen; return msg ? msg : (unsigned char*)calloc(1, 1); }
     }
+}
+
+/* text recv: "" on close/error (truncates at an embedded NUL — for binary use wss_recv_bin) */
+static char* mfl_wss_recv(int64_t h) {
+    size_t n;
+    unsigned char* m = mfl_ws_recv_raw((mfl_ws*)(intptr_t)h, &n);
+    if (!m) return mfl_dup_arena("", 0);
+    char* r = mfl_dup_arena((char*)m, n);
+    free(m);
+    return r;
+}
+
+/* binary recv: a NUL-safe bytes message; empty bytes on close/error */
+static mfl_bytes mfl_wss_recv_bin(int64_t h) {
+    size_t n = 0;
+    unsigned char* m = mfl_ws_recv_raw((mfl_ws*)(intptr_t)h, &n);
+    mfl_bytes b; b.len = m ? (int64_t)n : 0; b.data = (uint8_t*)mfl_alloc(b.len ? b.len : 1);
+    if (m) { memcpy(b.data, m, n); free(m); }
+    return b;
+}
+
+/* binary send: one masked binary frame (opcode 0x2) carrying the bytes payload */
+static int64_t mfl_wss_send_bin(int64_t h, mfl_bytes b) {
+    mfl_ws* w = (mfl_ws*)(intptr_t)h;
+    if (!w) return -1;
+    mfl_ws_frame(w, 0x2, b.data, (size_t)b.len);
+    return 0;
 }
 
 static int64_t mfl_wss_close(int64_t h) {
@@ -3412,6 +3440,12 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 	case "wss_recv":
 		g.usesWSS = true
 		return fmt.Sprintf("mfl_wss_recv(%s)", args[0]), nil
+	case "wss_send_bin":
+		g.usesWSS = true
+		return fmt.Sprintf("mfl_wss_send_bin(%s, %s)", args[0], args[1]), nil
+	case "wss_recv_bin":
+		g.usesWSS = true
+		return fmt.Sprintf("mfl_wss_recv_bin(%s)", args[0]), nil
 	case "wss_close":
 		g.usesWSS = true
 		return fmt.Sprintf("mfl_wss_close(%s)", args[0]), nil

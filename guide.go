@@ -9,7 +9,7 @@ import (
 
 // machinVersion is the single version string for the toolchain. Bump it when
 // cutting a release (alongside README badge / SPEC / CHANGELOG).
-const machinVersion = "0.35.0"
+const machinVersion = "0.36.0"
 
 // ---- the source-of-truth feature catalog ----
 //
@@ -173,6 +173,8 @@ func machinGuide() guideCatalog {
 			{"wss_open", "(string) -> int", "open a wss:// WebSocket -> handle (0 on fail)", "ws"},
 			{"wss_send", "(int, string) -> int", "send a text message", "ws"},
 			{"wss_recv", "(int) -> string", "next message (blocks; \"\" on close; auto ping/pong)", "ws"},
+			{"wss_send_bin", "(int, bytes) -> int", "send a binary message (opcode 0x2) — NUL-safe, for binary protocols", "ws"},
+			{"wss_recv_bin", "(int) -> bytes", "next message as bytes (blocks; empty bytes on close; NUL-safe)", "ws"},
 			{"wss_close", "(int) -> int", "send close and tear down", "ws"},
 		},
 		Idioms: []guideIdiom{
