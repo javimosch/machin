@@ -1,6 +1,6 @@
 # The MFL Language Specification
 
-Version 0.33.0
+Version 0.34.0
 
 MFL (Machine-First Language) is a statically-typed, Go-flavored backend language
 **shaped for machine authoring**: minimal syntax, no type annotations, one
@@ -93,6 +93,7 @@ The decoded text of a declaration is tokenized as follows.
 | `float` | IEEE-754 double | `double` |
 | `bool` | boolean | `int` (0/1) |
 | `string` | immutable text; zero value `""` | `char*` |
+| `bytes` | NUL-safe binary buffer (pointer + length) | `mfl_bytes` |
 | `[]T` | slice of `T` (header + backing array) | `mfl_slice` |
 | `map[K]V` | hash map, `K` is `int` or `string` | `mfl_map*` |
 | `chan T` | channel of `T` | `mfl_chan*` |
@@ -262,6 +263,13 @@ throughout the function body).
 | `join` | `([]string, string) -> string` | join |
 | `base64_encode` | `(string) -> string` | base64-encode text (standard, padded) |
 | `base64_decode` | `(string) -> string` | base64-decode (lenient: standard + url-safe; ignores padding) |
+| `bytes` | `(string) -> bytes` | a `bytes` value from a string's raw bytes |
+| `bytes_str` | `(bytes) -> string` | `bytes` → string (NUL-terminated; truncates at an embedded `0`) |
+| `to_hex` | `(bytes) -> string` | lowercase hex of a `bytes` value |
+| `from_hex` | `(string) -> bytes` | parse hex → `bytes` (skips non-hex chars) |
+| `byte_at` | `(bytes, int) -> int` | byte value 0–255 at an index (`-1` if out of range) |
+| `bytes_sub` | `(bytes, int, int) -> bytes` | sub-range `[start, end)` |
+| `bytes_concat` | `(bytes, bytes) -> bytes` | concatenate two `bytes` values |
 | `url_encode` | `(string) -> string` | percent-encode for URLs (RFC 3986: keeps `A-Za-z0-9-._~`, encodes the rest, space → `%20`) |
 | `url_decode` | `(string) -> string` | percent-decode a URL component (lenient: `+` → space, malformed `%XX` passes through) |
 | `sha256` | `(string) -> string` | SHA-256 of text, lowercase hex |

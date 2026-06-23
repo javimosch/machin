@@ -431,6 +431,57 @@ static char* mfl_url_decode(const char* s) {
     out[j] = 0;
     return out;
 }
+/* bytes: a NUL-safe binary buffer (pointer + length), the type strings can't be.
+   Values are immutable (builtins return fresh arena buffers), so passing one by
+   value just shares the backing — same discipline as strings. */
+typedef struct { uint8_t* data; int64_t len; } mfl_bytes;
+static mfl_bytes mfl_bytes_from_str(const char* s) {
+    int64_t n = (int64_t)strlen(s);
+    mfl_bytes b; b.len = n; b.data = (uint8_t*)mfl_alloc(n ? n : 1);
+    memcpy(b.data, s, (size_t)n);
+    return b;
+}
+static char* mfl_bytes_str(mfl_bytes b) {   /* NUL-terminated; truncates at an embedded 0 */
+    char* out = (char*)mfl_alloc(b.len + 1);
+    memcpy(out, b.data, (size_t)b.len);
+    out[b.len] = 0;
+    return out;
+}
+static char* mfl_bytes_hex(mfl_bytes b) {
+    static const char hx[] = "0123456789abcdef";
+    char* out = (char*)mfl_alloc(b.len * 2 + 1);
+    for (int64_t i = 0; i < b.len; i++) { out[i*2] = hx[b.data[i] >> 4]; out[i*2+1] = hx[b.data[i] & 15]; }
+    out[b.len*2] = 0;
+    return out;
+}
+static mfl_bytes mfl_bytes_unhex(const char* s) {   /* skips non-hex chars (spaces, colons) */
+    int64_t n = (int64_t)strlen(s);
+    mfl_bytes b; b.len = 0; b.data = (uint8_t*)mfl_alloc(n / 2 + 1);
+    int hi = -1;
+    for (int64_t i = 0; i < n; i++) {
+        int v = mfl_hexval((unsigned char)s[i]);
+        if (v < 0) continue;
+        if (hi < 0) hi = v;
+        else { b.data[b.len++] = (uint8_t)((hi << 4) | v); hi = -1; }
+    }
+    return b;
+}
+static int64_t mfl_byte_at(mfl_bytes b, int64_t i) { return (i < 0 || i >= b.len) ? -1 : (int64_t)b.data[i]; }
+static mfl_bytes mfl_bytes_sub(mfl_bytes b, int64_t start, int64_t end) {
+    if (start < 0) start = 0;
+    if (end > b.len) end = b.len;
+    if (end < start) end = start;
+    int64_t n = end - start;
+    mfl_bytes r; r.len = n; r.data = (uint8_t*)mfl_alloc(n ? n : 1);
+    memcpy(r.data, b.data + start, (size_t)n);
+    return r;
+}
+static mfl_bytes mfl_bytes_concat(mfl_bytes a, mfl_bytes b) {
+    mfl_bytes r; r.len = a.len + b.len; r.data = (uint8_t*)mfl_alloc(r.len ? r.len : 1);
+    memcpy(r.data, a.data, (size_t)a.len);
+    memcpy(r.data + a.len, b.data, (size_t)b.len);
+    return r;
+}
 /* SHA-256 + HMAC-SHA256 (pure C, no dependency). Operate on NUL-terminated text
    and return a lowercase hex digest. */
 static uint32_t mfl_ror32(uint32_t x, int n) { return (x >> n) | (x << (32 - n)); }
@@ -1577,6 +1628,8 @@ func cType(k Kind) string {
 		return "int"
 	case KString:
 		return "char*"
+	case KBytes:
+		return "mfl_bytes"
 	case KVoid:
 		return "void"
 	case KSlice:
@@ -1597,7 +1650,7 @@ func cZero(k Kind) string {
 		return "0.0"
 	case KString:
 		return "\"\"" // the zero value of a string is "", not NULL
-	case KSlice, KStruct, KFunc:
+	case KSlice, KStruct, KFunc, KBytes:
 		return "{0}"
 	default:
 		return "0"
@@ -2355,6 +2408,8 @@ func (g *cgen) printCall(call *Call, depth int) error {
 			fmt.Fprintf(&g.buf, "fputs((%s) ? \"true\" : \"false\", stdout);", e)
 		case KString:
 			fmt.Fprintf(&g.buf, "{ const char* _s = (%s); fputs(_s ? _s : \"\", stdout); }", e)
+		case KBytes:
+			fmt.Fprintf(&g.buf, "fputs(mfl_bytes_hex(%s), stdout);", e) // print bytes as hex
 		case KSlice, KStruct, KChan, KMap:
 			return fmt.Errorf("cannot print a %s value", g.c.NodeKind(g.curFn, a))
 		default:
@@ -2966,12 +3021,26 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 	switch ex.Callee {
 	case "len":
 		switch g.c.NodeKind(g.curFn, ex.Args[0]) {
-		case KSlice:
+		case KSlice, KBytes:
 			return fmt.Sprintf("((%s).len)", args[0]), nil
 		case KMap:
 			return fmt.Sprintf("mfl_map_len(%s)", args[0]), nil
 		}
 		return fmt.Sprintf("((int64_t)strlen(%s))", args[0]), nil
+	case "bytes":
+		return fmt.Sprintf("mfl_bytes_from_str(%s)", args[0]), nil
+	case "bytes_str":
+		return fmt.Sprintf("mfl_bytes_str(%s)", args[0]), nil
+	case "to_hex":
+		return fmt.Sprintf("mfl_bytes_hex(%s)", args[0]), nil
+	case "from_hex":
+		return fmt.Sprintf("mfl_bytes_unhex(%s)", args[0]), nil
+	case "byte_at":
+		return fmt.Sprintf("mfl_byte_at(%s, %s)", args[0], args[1]), nil
+	case "bytes_sub":
+		return fmt.Sprintf("mfl_bytes_sub(%s, %s, %s)", args[0], args[1], args[2]), nil
+	case "bytes_concat":
+		return fmt.Sprintf("mfl_bytes_concat(%s, %s)", args[0], args[1]), nil
 	case "has":
 		ik, sk := g.mapKeyArgs(ex.Args[0], args[1])
 		return fmt.Sprintf("mfl_map_has(%s, %s, %s)", args[0], ik, sk), nil

@@ -28,6 +28,7 @@ const (
 	KChan   // chan elem; element kind stored in the slot's elem slot
 	KMap    // map[k]v; key/value kinds stored in mkey/mval slots
 	KFunc   // a function value; signature stored in the slot's fsig
+	KBytes  // a NUL-safe binary buffer (pointer + length)
 )
 
 func (k Kind) String() string {
@@ -56,6 +57,8 @@ func (k Kind) String() string {
 		return "map"
 	case KFunc:
 		return "func"
+	case KBytes:
+		return "bytes"
 	}
 	return "?"
 }
@@ -82,7 +85,7 @@ type Checker struct {
 	nodeSlot   map[string]map[Node]int // instance -> expr node -> slot
 
 	// shared concrete slots (no inner type vars, safe to share)
-	cBool, cString, cVoid, cInt, cFloat int
+	cBool, cString, cVoid, cInt, cFloat, cBytes int
 
 	externs map[string]*ExternFunc // foreign C functions, by name
 
@@ -585,6 +588,7 @@ func Check(p *Program) (*Checker, error) {
 	c.cVoid = newSlot(c, KVoid)
 	c.cInt = newSlot(c, KInt)
 	c.cFloat = newSlot(c, KFloat)
+	c.cBytes = newSlot(c, KBytes)
 
 	// 0. register struct types and validate their field types
 	for _, td := range p.Types {
@@ -666,8 +670,8 @@ func Check(p *Program) (*Checker, error) {
 	}
 	// 5. validate len() arguments now that kinds are fully resolved.
 	for _, slot := range c.lenArgs {
-		if k := c.kindOf(slot); k != KString && k != KSlice && k != KMap {
-			return nil, fmt.Errorf("len: argument must be a string, slice, or map, got %s", k)
+		if k := c.kindOf(slot); k != KString && k != KSlice && k != KMap && k != KBytes {
+			return nil, fmt.Errorf("len: argument must be a string, slice, map, or bytes, got %s", k)
 		}
 	}
 	// 6. dedup instances by concrete signature and assign C names
@@ -1581,6 +1585,52 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		// an int) after solving, instead of emitting strlen() on a scalar.
 		c.lenArgs = append(c.lenArgs, argSlots[0])
 		return c.cInt, nil
+	case "bytes":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("bytes: 1 arg (string)")
+		}
+		c.addPair(argSlots[0], c.cString)
+		return c.cBytes, nil
+	case "bytes_str":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("bytes_str: 1 arg (bytes)")
+		}
+		c.addPair(argSlots[0], c.cBytes)
+		return c.cString, nil
+	case "to_hex":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("to_hex: 1 arg (bytes)")
+		}
+		c.addPair(argSlots[0], c.cBytes)
+		return c.cString, nil
+	case "from_hex":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("from_hex: 1 arg (string)")
+		}
+		c.addPair(argSlots[0], c.cString)
+		return c.cBytes, nil
+	case "byte_at":
+		if len(argSlots) != 2 {
+			return 0, fmt.Errorf("byte_at: 2 args (bytes, index)")
+		}
+		c.addPair(argSlots[0], c.cBytes)
+		c.addPair(argSlots[1], c.cInt)
+		return c.cInt, nil
+	case "bytes_sub":
+		if len(argSlots) != 3 {
+			return 0, fmt.Errorf("bytes_sub: 3 args (bytes, start, end)")
+		}
+		c.addPair(argSlots[0], c.cBytes)
+		c.addPair(argSlots[1], c.cInt)
+		c.addPair(argSlots[2], c.cInt)
+		return c.cBytes, nil
+	case "bytes_concat":
+		if len(argSlots) != 2 {
+			return 0, fmt.Errorf("bytes_concat: 2 args (bytes, bytes)")
+		}
+		c.addPair(argSlots[0], c.cBytes)
+		c.addPair(argSlots[1], c.cBytes)
+		return c.cBytes, nil
 	case "append":
 		if len(argSlots) != 2 {
 			return 0, fmt.Errorf("append: 2 args")
@@ -2068,6 +2118,8 @@ func (c *Checker) ctypeSlot(slot int) string {
 		return "int"
 	case KString:
 		return "char*"
+	case KBytes:
+		return "mfl_bytes"
 	case KVoid:
 		return "void"
 	case KSlice:
