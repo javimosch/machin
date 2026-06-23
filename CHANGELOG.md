@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.35.0
+
+- **Crypto builtins over `bytes` (OpenSSL libcrypto).** Step 2 of the native-crypto
+  path: `rand_bytes`, `sha256_bytes`, `hmac_sha256_bytes`, `hkdf_sha256`,
+  `x25519_pub`/`x25519_shared`, `ed25519_pub`/`ed25519_sign`/`ed25519_verify`,
+  `aes_gcm_encrypt`/`decrypt`, `aes_cbc_encrypt`/`decrypt` — thin wrappers over
+  OpenSSL, all operating on `bytes`. Emitted and linked (`-lcrypto`) only when a
+  program uses one, so crypto-free programs stay lean. This proves the viability
+  checkpoint: machin can do an X25519 ECDH handshake natively. (Digests match
+  OpenSSL byte-for-byte; X25519 agreement, Ed25519 sign/verify, and AES-GCM/CBC
+  round-trips all verified.)
+
 ## v0.34.0
 
 - **`bytes` type — a NUL-safe binary buffer.** machin strings are NUL-terminated

@@ -54,6 +54,11 @@ func BuildBinary(prog *Program, outPath string, safe bool) error {
 	if strings.Contains(csrc, "mfl_sqlite_") {
 		libs = append(libs, "-lsqlite3")
 	}
+	// crypto builtins (rand/sha/hmac/hkdf/x25519/ed25519/aes) link OpenSSL
+	// libcrypto — only when used. Harmless if -lcrypto is already added for TLS.
+	if strings.Contains(csrc, "mfl_crypto_") {
+		libs = append(libs, "-lcrypto")
+	}
 	args = append(args, "-o", outPath, tmp.Name())
 	args = append(args, libs...)
 

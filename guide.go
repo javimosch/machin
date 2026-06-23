@@ -9,7 +9,7 @@ import (
 
 // machinVersion is the single version string for the toolchain. Bump it when
 // cutting a release (alongside README badge / SPEC / CHANGELOG).
-const machinVersion = "0.34.0"
+const machinVersion = "0.35.0"
 
 // ---- the source-of-truth feature catalog ----
 //
@@ -129,6 +129,20 @@ func machinGuide() guideCatalog {
 			{"byte_at", "(bytes, int) -> int", "byte value 0-255 at an index (-1 if out of range)", "bytes"},
 			{"bytes_sub", "(bytes, int, int) -> bytes", "sub-range [start, end) of a bytes value", "bytes"},
 			{"bytes_concat", "(bytes, bytes) -> bytes", "concatenate two bytes values", "bytes"},
+			// crypto over bytes (OpenSSL libcrypto, linked only when used)
+			{"rand_bytes", "(int) -> bytes", "n cryptographically-random bytes (CSPRNG)", "crypto"},
+			{"sha256_bytes", "(bytes) -> bytes", "SHA-256 of binary -> 32-byte digest (binary-safe, unlike sha256)", "crypto"},
+			{"hmac_sha256_bytes", "(bytes, bytes) -> bytes", "HMAC-SHA256(key, msg) -> 32 bytes (binary-safe)", "crypto"},
+			{"hkdf_sha256", "(bytes, bytes, bytes, int) -> bytes", "HKDF-SHA256(ikm, salt, info, length) -> length bytes", "crypto"},
+			{"x25519_pub", "(bytes) -> bytes", "X25519 public key from a 32-byte private key", "crypto"},
+			{"x25519_shared", "(bytes, bytes) -> bytes", "X25519 ECDH shared secret (my private, their public) -> 32 bytes", "crypto"},
+			{"ed25519_pub", "(bytes) -> bytes", "Ed25519 public key from a 32-byte seed", "crypto"},
+			{"ed25519_sign", "(bytes, bytes) -> bytes", "Ed25519 sign (seed, msg) -> 64-byte signature", "crypto"},
+			{"ed25519_verify", "(bytes, bytes, bytes) -> bool", "Ed25519 verify (pub, msg, sig)", "crypto"},
+			{"aes_gcm_encrypt", "(bytes, bytes, bytes, bytes) -> bytes", "AES-GCM (key, iv, plaintext, aad) -> ciphertext||16-byte tag (key 16 or 32)", "crypto"},
+			{"aes_gcm_decrypt", "(bytes, bytes, bytes, bytes) -> bytes", "AES-GCM decrypt (key, iv, ct||tag, aad) -> plaintext (empty bytes on auth failure)", "crypto"},
+			{"aes_cbc_encrypt", "(bytes, bytes, bytes) -> bytes", "AES-CBC encrypt (key, iv, plaintext), PKCS#7 padded", "crypto"},
+			{"aes_cbc_decrypt", "(bytes, bytes, bytes) -> bytes", "AES-CBC decrypt (key, iv, ciphertext) -> plaintext (empty on bad padding)", "crypto"},
 			// sqlite (libsqlite3, linked only when used)
 			{"sqlite_open", "(string) -> int", "open/create a SQLite db file -> handle (0 on fail); \":memory:\" for in-memory", "db"},
 			{"sqlite_exec", "(int, string[, []string]) -> int", "run SQL with no result; optional []string binds the ? params (injection-safe); 0 ok", "db"},

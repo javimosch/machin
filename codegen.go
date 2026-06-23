@@ -65,6 +65,7 @@ type cgen struct {
 	usesWSS   bool   // program calls wss_* -> emit WebSocket runtime + link OpenSSL
 	usesRegex bool   // program calls regex_* -> emit POSIX regex runtime
 	usesSQLite bool  // program calls sqlite_* -> emit SQLite runtime + link -lsqlite3
+	usesCrypto bool  // program calls crypto builtins -> emit crypto runtime + link -lcrypto
 }
 
 const cRuntime = `#define _GNU_SOURCE
@@ -1540,6 +1541,164 @@ static int64_t mfl_sqlite_exec_p(int64_t h, const char* sql, mfl_slice params) {
 }
 `
 
+// cryptoRuntime wraps OpenSSL libcrypto primitives over the bytes type. Emitted
+// (and linked, -lcrypto) only when a program calls a crypto builtin. All inputs
+// and outputs are mfl_bytes (arena-allocated); ed25519_verify returns a bool.
+const cryptoRuntime = `#include <openssl/evp.h>
+#include <openssl/rand.h>
+#include <openssl/hmac.h>
+#include <openssl/sha.h>
+#include <openssl/kdf.h>
+
+static mfl_bytes mfl_crypto_buf(int64_t n) {
+    mfl_bytes b; b.len = n < 0 ? 0 : n; b.data = (uint8_t*)mfl_alloc(b.len ? b.len : 1); return b;
+}
+static mfl_bytes mfl_crypto_rand(int64_t n) {
+    mfl_bytes b = mfl_crypto_buf(n);
+    if (b.len > 0) RAND_bytes(b.data, (int)b.len);
+    return b;
+}
+static mfl_bytes mfl_crypto_sha256(mfl_bytes m) {
+    mfl_bytes out = mfl_crypto_buf(32);
+    SHA256(m.data, (size_t)m.len, out.data);
+    return out;
+}
+static mfl_bytes mfl_crypto_hmac256(mfl_bytes key, mfl_bytes msg) {
+    mfl_bytes out = mfl_crypto_buf(32);
+    unsigned int n = 32;
+    HMAC(EVP_sha256(), key.data, (int)key.len, msg.data, (size_t)msg.len, out.data, &n);
+    out.len = n;
+    return out;
+}
+static mfl_bytes mfl_crypto_hkdf(mfl_bytes ikm, mfl_bytes salt, mfl_bytes info, int64_t length) {
+    mfl_bytes out = mfl_crypto_buf(length);
+    EVP_PKEY_CTX* c = EVP_PKEY_CTX_new_id(EVP_PKEY_HKDF, NULL);
+    if (c) {
+        size_t l = (size_t)out.len;
+        if (EVP_PKEY_derive_init(c) > 0 &&
+            EVP_PKEY_CTX_set_hkdf_md(c, EVP_sha256()) > 0 &&
+            EVP_PKEY_CTX_set1_hkdf_salt(c, salt.data, (int)salt.len) > 0 &&
+            EVP_PKEY_CTX_set1_hkdf_key(c, ikm.data, (int)ikm.len) > 0 &&
+            EVP_PKEY_CTX_add1_hkdf_info(c, info.data, (int)info.len) > 0 &&
+            EVP_PKEY_derive(c, out.data, &l) > 0) out.len = (int64_t)l;
+        else out.len = 0;
+        EVP_PKEY_CTX_free(c);
+    }
+    return out;
+}
+static mfl_bytes mfl_crypto_x25519_pub(mfl_bytes priv) {
+    mfl_bytes out = mfl_crypto_buf(32); out.len = 0;
+    EVP_PKEY* pk = EVP_PKEY_new_raw_private_key(EVP_PKEY_X25519, NULL, priv.data, (size_t)priv.len);
+    if (pk) { size_t l = 32; if (EVP_PKEY_get_raw_public_key(pk, out.data, &l) > 0) out.len = (int64_t)l; EVP_PKEY_free(pk); }
+    return out;
+}
+static mfl_bytes mfl_crypto_x25519_shared(mfl_bytes priv, mfl_bytes peer) {
+    mfl_bytes out = mfl_crypto_buf(32); out.len = 0;
+    EVP_PKEY* sk = EVP_PKEY_new_raw_private_key(EVP_PKEY_X25519, NULL, priv.data, (size_t)priv.len);
+    EVP_PKEY* pubk = EVP_PKEY_new_raw_public_key(EVP_PKEY_X25519, NULL, peer.data, (size_t)peer.len);
+    if (sk && pubk) {
+        EVP_PKEY_CTX* c = EVP_PKEY_CTX_new(sk, NULL);
+        if (c && EVP_PKEY_derive_init(c) > 0 && EVP_PKEY_derive_set_peer(c, pubk) > 0) {
+            size_t l = 32; if (EVP_PKEY_derive(c, out.data, &l) > 0) out.len = (int64_t)l;
+        }
+        if (c) EVP_PKEY_CTX_free(c);
+    }
+    if (sk) EVP_PKEY_free(sk);
+    if (pubk) EVP_PKEY_free(pubk);
+    return out;
+}
+static mfl_bytes mfl_crypto_ed25519_pub(mfl_bytes seed) {
+    mfl_bytes out = mfl_crypto_buf(32); out.len = 0;
+    EVP_PKEY* pk = EVP_PKEY_new_raw_private_key(EVP_PKEY_ED25519, NULL, seed.data, (size_t)seed.len);
+    if (pk) { size_t l = 32; if (EVP_PKEY_get_raw_public_key(pk, out.data, &l) > 0) out.len = (int64_t)l; EVP_PKEY_free(pk); }
+    return out;
+}
+static mfl_bytes mfl_crypto_ed25519_sign(mfl_bytes seed, mfl_bytes msg) {
+    mfl_bytes out = mfl_crypto_buf(64); out.len = 0;
+    EVP_PKEY* pk = EVP_PKEY_new_raw_private_key(EVP_PKEY_ED25519, NULL, seed.data, (size_t)seed.len);
+    if (pk) {
+        EVP_MD_CTX* c = EVP_MD_CTX_new();
+        if (c && EVP_DigestSignInit(c, NULL, NULL, NULL, pk) > 0) {
+            size_t l = 64; if (EVP_DigestSign(c, out.data, &l, msg.data, (size_t)msg.len) > 0) out.len = (int64_t)l;
+        }
+        if (c) EVP_MD_CTX_free(c);
+        EVP_PKEY_free(pk);
+    }
+    return out;
+}
+static int mfl_crypto_ed25519_verify(mfl_bytes pub, mfl_bytes msg, mfl_bytes sig) {
+    int ok = 0;
+    EVP_PKEY* pk = EVP_PKEY_new_raw_public_key(EVP_PKEY_ED25519, NULL, pub.data, (size_t)pub.len);
+    if (pk) {
+        EVP_MD_CTX* c = EVP_MD_CTX_new();
+        if (c && EVP_DigestVerifyInit(c, NULL, NULL, NULL, pk) > 0)
+            ok = EVP_DigestVerify(c, sig.data, (size_t)sig.len, msg.data, (size_t)msg.len) == 1;
+        if (c) EVP_MD_CTX_free(c);
+        EVP_PKEY_free(pk);
+    }
+    return ok;
+}
+static mfl_bytes mfl_crypto_aes_gcm_enc(mfl_bytes key, mfl_bytes iv, mfl_bytes pt, mfl_bytes aad) {
+    mfl_bytes out = mfl_crypto_buf(pt.len + 16); out.len = 0;
+    EVP_CIPHER_CTX* c = EVP_CIPHER_CTX_new();
+    const EVP_CIPHER* ciph = (key.len == 16) ? EVP_aes_128_gcm() : EVP_aes_256_gcm();
+    if (c && EVP_EncryptInit_ex(c, ciph, NULL, NULL, NULL) > 0 &&
+        EVP_CIPHER_CTX_ctrl(c, EVP_CTRL_GCM_SET_IVLEN, (int)iv.len, NULL) > 0 &&
+        EVP_EncryptInit_ex(c, NULL, NULL, key.data, iv.data) > 0) {
+        int l = 0, t = 0;
+        if (aad.len > 0) EVP_EncryptUpdate(c, NULL, &l, aad.data, (int)aad.len);
+        EVP_EncryptUpdate(c, out.data, &l, pt.data, (int)pt.len); t = l;
+        EVP_EncryptFinal_ex(c, out.data + t, &l); t += l;
+        EVP_CIPHER_CTX_ctrl(c, EVP_CTRL_GCM_GET_TAG, 16, out.data + t);
+        out.len = t + 16;
+    }
+    if (c) EVP_CIPHER_CTX_free(c);
+    return out;
+}
+static mfl_bytes mfl_crypto_aes_gcm_dec(mfl_bytes key, mfl_bytes iv, mfl_bytes ct, mfl_bytes aad) {
+    mfl_bytes out = mfl_crypto_buf(ct.len > 16 ? ct.len - 16 : 1); out.len = 0;
+    if (ct.len < 16) return out;
+    int64_t ctlen = ct.len - 16;
+    EVP_CIPHER_CTX* c = EVP_CIPHER_CTX_new();
+    const EVP_CIPHER* ciph = (key.len == 16) ? EVP_aes_128_gcm() : EVP_aes_256_gcm();
+    if (c && EVP_DecryptInit_ex(c, ciph, NULL, NULL, NULL) > 0 &&
+        EVP_CIPHER_CTX_ctrl(c, EVP_CTRL_GCM_SET_IVLEN, (int)iv.len, NULL) > 0 &&
+        EVP_DecryptInit_ex(c, NULL, NULL, key.data, iv.data) > 0) {
+        int l = 0, t = 0;
+        if (aad.len > 0) EVP_DecryptUpdate(c, NULL, &l, aad.data, (int)aad.len);
+        EVP_DecryptUpdate(c, out.data, &l, ct.data, (int)ctlen); t = l;
+        EVP_CIPHER_CTX_ctrl(c, EVP_CTRL_GCM_SET_TAG, 16, ct.data + ctlen);
+        if (EVP_DecryptFinal_ex(c, out.data + t, &l) > 0) out.len = t + l;  /* else stays 0: auth fail */
+    }
+    if (c) EVP_CIPHER_CTX_free(c);
+    return out;
+}
+static mfl_bytes mfl_crypto_aes_cbc_enc(mfl_bytes key, mfl_bytes iv, mfl_bytes pt) {
+    mfl_bytes out = mfl_crypto_buf(pt.len + 16); out.len = 0;
+    EVP_CIPHER_CTX* c = EVP_CIPHER_CTX_new();
+    const EVP_CIPHER* ciph = (key.len == 16) ? EVP_aes_128_cbc() : EVP_aes_256_cbc();
+    if (c && EVP_EncryptInit_ex(c, ciph, NULL, key.data, iv.data) > 0) {
+        int l = 0, t = 0;
+        EVP_EncryptUpdate(c, out.data, &l, pt.data, (int)pt.len); t = l;
+        EVP_EncryptFinal_ex(c, out.data + t, &l); out.len = t + l;
+    }
+    if (c) EVP_CIPHER_CTX_free(c);
+    return out;
+}
+static mfl_bytes mfl_crypto_aes_cbc_dec(mfl_bytes key, mfl_bytes iv, mfl_bytes ct) {
+    mfl_bytes out = mfl_crypto_buf(ct.len ? ct.len : 1); out.len = 0;
+    EVP_CIPHER_CTX* c = EVP_CIPHER_CTX_new();
+    const EVP_CIPHER* ciph = (key.len == 16) ? EVP_aes_128_cbc() : EVP_aes_256_cbc();
+    if (c && EVP_DecryptInit_ex(c, ciph, NULL, key.data, iv.data) > 0) {
+        int l = 0, t = 0;
+        EVP_DecryptUpdate(c, out.data, &l, ct.data, (int)ct.len); t = l;
+        if (EVP_DecryptFinal_ex(c, out.data + t, &l) > 0) out.len = t + l;  /* else 0: bad pad */
+    }
+    if (c) EVP_CIPHER_CTX_free(c);
+    return out;
+}
+`
+
 // isFFIScalar reports whether t is an FFI scalar type name (vs a cstruct name).
 func isFFIScalar(t string) bool {
 	switch t {
@@ -1692,6 +1851,12 @@ func (g *cgen) program(p *Program) (string, error) {
 		// SQLite (libsqlite3) — emitted and linked (-lsqlite3) only when a program
 		// calls sqlite_*, so other programs don't depend on it.
 		out.WriteString(sqliteRuntime)
+		out.WriteByte('\n')
+	}
+	if g.usesCrypto {
+		// OpenSSL libcrypto (rand/sha/hmac/hkdf/x25519/ed25519/aes) — emitted and
+		// linked (-lcrypto) only when a program calls a crypto builtin.
+		out.WriteString(cryptoRuntime)
 		out.WriteByte('\n')
 	}
 	// foreign (extern) declarations. With a header, its prototypes + C structs are
@@ -3041,6 +3206,45 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("mfl_bytes_sub(%s, %s, %s)", args[0], args[1], args[2]), nil
 	case "bytes_concat":
 		return fmt.Sprintf("mfl_bytes_concat(%s, %s)", args[0], args[1]), nil
+	case "rand_bytes":
+		g.usesCrypto = true
+		return fmt.Sprintf("mfl_crypto_rand(%s)", args[0]), nil
+	case "sha256_bytes":
+		g.usesCrypto = true
+		return fmt.Sprintf("mfl_crypto_sha256(%s)", args[0]), nil
+	case "hmac_sha256_bytes":
+		g.usesCrypto = true
+		return fmt.Sprintf("mfl_crypto_hmac256(%s, %s)", args[0], args[1]), nil
+	case "hkdf_sha256":
+		g.usesCrypto = true
+		return fmt.Sprintf("mfl_crypto_hkdf(%s, %s, %s, %s)", args[0], args[1], args[2], args[3]), nil
+	case "x25519_pub":
+		g.usesCrypto = true
+		return fmt.Sprintf("mfl_crypto_x25519_pub(%s)", args[0]), nil
+	case "x25519_shared":
+		g.usesCrypto = true
+		return fmt.Sprintf("mfl_crypto_x25519_shared(%s, %s)", args[0], args[1]), nil
+	case "ed25519_pub":
+		g.usesCrypto = true
+		return fmt.Sprintf("mfl_crypto_ed25519_pub(%s)", args[0]), nil
+	case "ed25519_sign":
+		g.usesCrypto = true
+		return fmt.Sprintf("mfl_crypto_ed25519_sign(%s, %s)", args[0], args[1]), nil
+	case "ed25519_verify":
+		g.usesCrypto = true
+		return fmt.Sprintf("mfl_crypto_ed25519_verify(%s, %s, %s)", args[0], args[1], args[2]), nil
+	case "aes_gcm_encrypt":
+		g.usesCrypto = true
+		return fmt.Sprintf("mfl_crypto_aes_gcm_enc(%s, %s, %s, %s)", args[0], args[1], args[2], args[3]), nil
+	case "aes_gcm_decrypt":
+		g.usesCrypto = true
+		return fmt.Sprintf("mfl_crypto_aes_gcm_dec(%s, %s, %s, %s)", args[0], args[1], args[2], args[3]), nil
+	case "aes_cbc_encrypt":
+		g.usesCrypto = true
+		return fmt.Sprintf("mfl_crypto_aes_cbc_enc(%s, %s, %s)", args[0], args[1], args[2]), nil
+	case "aes_cbc_decrypt":
+		g.usesCrypto = true
+		return fmt.Sprintf("mfl_crypto_aes_cbc_dec(%s, %s, %s)", args[0], args[1], args[2]), nil
 	case "has":
 		ik, sk := g.mapKeyArgs(ex.Args[0], args[1])
 		return fmt.Sprintf("mfl_map_has(%s, %s, %s)", args[0], ik, sk), nil

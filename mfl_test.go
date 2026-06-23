@@ -756,6 +756,33 @@ func TestBytes(t *testing.T) {
 	}
 }
 
+// The OpenSSL-backed crypto builtins over bytes: digests match known vectors,
+// X25519 agreement holds, Ed25519 sign/verify works (and rejects tampering), and
+// AES-GCM round-trips (with auth failure -> empty on a wrong AAD).
+func TestCrypto(t *testing.T) {
+	main := `func main() {
+	println(to_hex(sha256_bytes(bytes("abc"))))
+	println(to_hex(hmac_sha256_bytes(bytes("key"), bytes("msg"))))
+	a := rand_bytes(32)  b := rand_bytes(32)
+	println(to_hex(x25519_shared(a, x25519_pub(b))) == to_hex(x25519_shared(b, x25519_pub(a))))
+	seed := rand_bytes(32)  m := bytes("hi")
+	sig := ed25519_sign(seed, m)
+	println(ed25519_verify(ed25519_pub(seed), m, sig))
+	println(ed25519_verify(ed25519_pub(seed), bytes("no"), sig))
+	k := rand_bytes(32)  iv := rand_bytes(12)
+	ct := aes_gcm_encrypt(k, iv, m, bytes(""))
+	println(bytes_str(aes_gcm_decrypt(k, iv, ct, bytes(""))) == "hi")
+	println(str(len(aes_gcm_decrypt(k, iv, ct, bytes("x")))))
+}`
+	out, _ := buildRun(t, main)
+	want := "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\n" +
+		"2d93cbc1be167bcb1637a4a23cbff01a7878f0c50ee833954ea5221bb1b8c628\n" +
+		"true\ntrue\nfalse\ntrue\n0\n"
+	if out != want {
+		t.Fatalf("crypto: got %q, want %q", out, want)
+	}
+}
+
 // SHA-256 and HMAC-SHA256 against published test vectors (must be byte-exact).
 func TestHashes(t *testing.T) {
 	main := `func main() {
