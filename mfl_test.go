@@ -660,6 +660,23 @@ func TestFlush(t *testing.T) {
 	}
 }
 
+// SQLite: open in-memory, create/insert, and query back a JSON row array
+// (INTEGER unquoted, TEXT escaped) — links libsqlite3 only because sqlite_* is used.
+func TestSQLite(t *testing.T) {
+	main := `func main() {
+	db := sqlite_open(":memory:")
+	sqlite_exec(db, "CREATE TABLE t(n int, s text)")
+	sqlite_exec(db, "INSERT INTO t VALUES(1, 'a')")
+	sqlite_exec(db, "INSERT INTO t VALUES(2, 'b')")
+	println(sqlite_query(db, "SELECT n, s FROM t ORDER BY n"))
+	sqlite_close(db)
+}`
+	out, _ := buildRun(t, main)
+	if out != "[{\"n\":1,\"s\":\"a\"},{\"n\":2,\"s\":\"b\"}]\n" {
+		t.Fatalf("sqlite: got %q", out)
+	}
+}
+
 // SHA-256 and HMAC-SHA256 against published test vectors (must be byte-exact).
 func TestHashes(t *testing.T) {
 	main := `func main() {

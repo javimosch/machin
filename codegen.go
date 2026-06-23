@@ -64,6 +64,7 @@ type cgen struct {
 	usesTLS   bool   // program calls https_get/https_post -> emit + link OpenSSL
 	usesWSS   bool   // program calls wss_* -> emit WebSocket runtime + link OpenSSL
 	usesRegex bool   // program calls regex_* -> emit POSIX regex runtime
+	usesSQLite bool  // program calls sqlite_* -> emit SQLite runtime + link -lsqlite3
 }
 
 const cRuntime = `#define _GNU_SOURCE
@@ -1267,6 +1268,75 @@ static char* mfl_regex_replace(const char* s, const char* pat, const char* repl)
 }
 `
 
+// sqliteRuntime is a thin SQLite client over libsqlite3, emitted (and linked
+// -lsqlite3) only when a program calls sqlite_*. A connection is an int handle
+// (the sqlite3* pointer). sqlite_query returns the result set as a JSON array of
+// row objects, so it composes with json_get. INTEGER/REAL are unquoted, TEXT is
+// JSON-escaped, NULL is null.
+const sqliteRuntime = `#include <sqlite3.h>
+
+static int64_t mfl_sqlite_open(const char* path) {
+    sqlite3* db = NULL;
+    if (sqlite3_open(path, &db) != SQLITE_OK) { sqlite3_close(db); return 0; }
+    return (int64_t)(intptr_t)db;
+}
+static int64_t mfl_sqlite_exec(int64_t h, const char* sql) {
+    sqlite3* db = (sqlite3*)(intptr_t)h;
+    if (!db) return -1;
+    char* err = NULL;
+    int r = sqlite3_exec(db, sql, NULL, NULL, &err);
+    if (err) sqlite3_free(err);
+    return r;
+}
+static int64_t mfl_sqlite_close(int64_t h) {
+    return sqlite3_close((sqlite3*)(intptr_t)h);
+}
+/* run a query, returning a JSON array of row objects. */
+static char* mfl_sqlite_query(int64_t h, const char* sql) {
+    sqlite3* db = (sqlite3*)(intptr_t)h;
+    sqlite3_stmt* st = NULL;
+    if (!db || sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) return mfl_dup_arena("[]", 2);
+    size_t cap = 256, len = 0;
+    char* out = (char*)malloc(cap);
+    out[len++] = '[';
+    int ncol = sqlite3_column_count(st);
+    int row = 0;
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        if (row++) { if (len + 1 >= cap) { cap *= 2; out = realloc(out, cap); } out[len++] = ','; }
+        if (len + 1 >= cap) { cap *= 2; out = realloc(out, cap); }
+        out[len++] = '{';
+        for (int i = 0; i < ncol; i++) {
+            char* cell;
+            const char* name = sqlite3_column_name(st, i);
+            char* jname = mfl_json_str(name ? name : "");
+            int t = sqlite3_column_type(st, i);
+            if (t == SQLITE_INTEGER || t == SQLITE_FLOAT) {
+                const unsigned char* txt = sqlite3_column_text(st, i);
+                cell = mfl_dup((const char*)(txt ? txt : (const unsigned char*)"0"));
+            } else if (t == SQLITE_NULL) {
+                cell = mfl_dup("null");
+            } else {
+                const unsigned char* txt = sqlite3_column_text(st, i);
+                cell = mfl_json_str((const char*)(txt ? txt : (const unsigned char*)""));
+            }
+            char* piece = mfl_cat(mfl_cat(jname, ":"), cell);
+            if (i) piece = mfl_cat(",", piece);
+            size_t pl = strlen(piece);
+            while (len + pl + 2 >= cap) { cap *= 2; out = realloc(out, cap); }
+            memcpy(out + len, piece, pl); len += pl;
+        }
+        if (len + 1 >= cap) { cap *= 2; out = realloc(out, cap); }
+        out[len++] = '}';
+    }
+    if (len + 1 >= cap) { cap *= 2; out = realloc(out, cap); }
+    out[len++] = ']';
+    sqlite3_finalize(st);
+    char* r = mfl_dup_arena(out, len);
+    free(out);
+    return r;
+}
+`
+
 // isFFIScalar reports whether t is an FFI scalar type name (vs a cstruct name).
 func isFFIScalar(t string) bool {
 	switch t {
@@ -1411,6 +1481,12 @@ func (g *cgen) program(p *Program) (string, error) {
 		// POSIX regex (libc) — emitted only when a program calls regex_*, so other
 		// programs don't pull in <regex.h> (keeps them portable to libcs without it).
 		out.WriteString(regexRuntime)
+		out.WriteByte('\n')
+	}
+	if g.usesSQLite {
+		// SQLite (libsqlite3) — emitted and linked (-lsqlite3) only when a program
+		// calls sqlite_*, so other programs don't depend on it.
+		out.WriteString(sqliteRuntime)
 		out.WriteByte('\n')
 	}
 	// foreign (extern) declarations. With a header, its prototypes + C structs are
@@ -2808,6 +2884,18 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("mfl_sha256(%s)", args[0]), nil
 	case "hmac_sha256":
 		return fmt.Sprintf("mfl_hmac_sha256(%s, %s)", args[0], args[1]), nil
+	case "sqlite_open":
+		g.usesSQLite = true
+		return fmt.Sprintf("mfl_sqlite_open(%s)", args[0]), nil
+	case "sqlite_exec":
+		g.usesSQLite = true
+		return fmt.Sprintf("mfl_sqlite_exec(%s, %s)", args[0], args[1]), nil
+	case "sqlite_query":
+		g.usesSQLite = true
+		return fmt.Sprintf("mfl_sqlite_query(%s, %s)", args[0], args[1]), nil
+	case "sqlite_close":
+		g.usesSQLite = true
+		return fmt.Sprintf("mfl_sqlite_close(%s)", args[0]), nil
 	case "regex_match":
 		g.usesRegex = true
 		return fmt.Sprintf("mfl_regex_match(%s, %s)", args[0], args[1]), nil
