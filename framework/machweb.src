@@ -59,8 +59,37 @@ func param(path, prefix) (v) {
 
 // ---- server ----
 
+// content_length parses the Content-Length header value from a request's headers.
+func content_length(head) (n) {
+    n = 0
+    i := index(to_lower(head), "content-length:")
+    if i >= 0 {
+        rest := substr(head, i + 15, len(head))   // text after "content-length:"
+        nl := index(rest, "\r\n")
+        if nl >= 0 { rest = substr(rest, 0, nl) }
+        n = parse_int(trim(rest))
+    }
+}
+
+// read_request reads a whole HTTP request, not just the first packet: a browser
+// often sends the POST body in a separate TCP segment from the headers, so we
+// keep reading until Content-Length bytes of body have arrived.
+func read_request(conn) (raw) {
+    raw = read(conn)
+    sep := index(raw, "\r\n\r\n")
+    if sep >= 0 {
+        clen := content_length(substr(raw, 0, sep))
+        body_start := sep + 4
+        for len(raw) - body_start < clen {
+            chunk := read(conn)
+            if chunk == "" { break }            // connection closed early
+            raw = raw + chunk
+        }
+    }
+}
+
 func machweb_handle(conn, handler) {
-    raw := read(conn)
+    raw := read_request(conn)
     req := parse_request(raw)
     res := handler(req)
     out := "HTTP/1.1 " + res.status + "\r\nContent-Type: " + res.ctype + "\r\nContent-Length: " + str(len(res.body)) + "\r\nConnection: close\r\n\r\n" + res.body
