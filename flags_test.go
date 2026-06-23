@@ -80,6 +80,30 @@ func TestTimeMake(t *testing.T) {
 	}
 }
 
+// time_format_utc renders in UTC regardless of $TZ: with TZ pinned to a +0530
+// zone, the iCalendar stamp for 1782172800 must still be the UTC wall clock.
+func TestTimeFormatUTC(t *testing.T) {
+	fn := parseFuncs(t, `func main() { println(time_format_utc(1782172800, "%Y%m%dT%H%M%SZ")) }`)
+	bin, err := os.CreateTemp("", "mfl-tfu-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin.Close()
+	defer os.Remove(bin.Name())
+	if err := BuildBinary(&Program{Funcs: fn}, bin.Name(), false); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	cmd := exec.Command(bin.Name())
+	cmd.Env = append(os.Environ(), "TZ=Asia/Kolkata")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if strings.TrimSpace(string(out)) != "20260623T000000Z" {
+		t.Fatalf("time_format_utc: got %q, want %q", strings.TrimSpace(string(out)), "20260623T000000Z")
+	}
+}
+
 // read_stdin slurps stdin verbatim — exact bytes (including newlines, no
 // trailing-newline assumption), unlike the line-based input().
 func TestReadStdin(t *testing.T) {

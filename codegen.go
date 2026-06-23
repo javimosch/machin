@@ -690,6 +690,18 @@ static int64_t mfl_time_make(int64_t y, int64_t mo, int64_t d, int64_t h, int64_
     tmv.tm_isdst = -1;
     return (int64_t)mktime(&tmv);
 }
+/* like time_format but in UTC (gmtime): the form .ics / RFC-3339 timestamps want. */
+static char* mfl_time_format_utc(int64_t unix, const char* fmt) {
+    time_t t = (time_t)unix;
+    struct tm tmv;
+    gmtime_r(&t, &tmv);
+    char buf[512];
+    size_t n = strftime(buf, sizeof(buf), fmt, &tmv);
+    char* out = mfl_alloc(n + 1);
+    memcpy(out, buf, n);
+    out[n] = 0;
+    return out;
+}
 static int64_t mfl_parse_int(const char* s) { return (int64_t)strtoll(s, NULL, 10); }
 
 /* file system: read/write whole files, list a directory, make a directory */
@@ -3020,6 +3032,8 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("mfl_time_fields(%s)", args[0]), nil
 	case "time_format":
 		return fmt.Sprintf("mfl_time_format(%s, %s)", args[0], args[1]), nil
+	case "time_format_utc":
+		return fmt.Sprintf("mfl_time_format_utc(%s, %s)", args[0], args[1]), nil
 	case "time_make":
 		return fmt.Sprintf("mfl_time_make(%s, %s, %s, %s, %s, %s)", args[0], args[1], args[2], args[3], args[4], args[5]), nil
 	case "parse_int":

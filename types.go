@@ -1761,9 +1761,9 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		}
 		c.addPair(argSlots[0], c.cInt)
 		return newSliceSlot(c, c.cInt), nil
-	case "time_format":
+	case "time_format", "time_format_utc":
 		if len(argSlots) != 2 {
-			return 0, fmt.Errorf("time_format: 2 args (unix seconds, strftime pattern)")
+			return 0, fmt.Errorf("%s: 2 args (unix seconds, strftime pattern)", ex.Callee)
 		}
 		c.addPair(argSlots[0], c.cInt)
 		c.addPair(argSlots[1], c.cString)

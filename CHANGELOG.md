@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.31.0
+
+- **`time_format_utc(unix, fmt)` builtin.** Like `time_format` but in UTC
+  (`gmtime` instead of `localtime`) — the form iCalendar `.ics` and RFC-3339
+  timestamps want, without the `%z`-offset arithmetic dance. Surfaced finishing
+  machin-meet, whose `.ics` `DTSTART`/`DTEND` must be in UTC.
+
 ## v0.30.0
 
 - **`time_make(y, mo, d, h, mi, s)` builtin.** Build a Unix timestamp from local
