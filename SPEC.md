@@ -1,6 +1,6 @@
 # The MFL Language Specification
 
-Version 0.43.0
+Version 0.44.0
 
 MFL (Machine-First Language) is a statically-typed, Go-flavored backend language
 **shaped for machine authoring**: minimal syntax, no type annotations, one
@@ -502,9 +502,17 @@ extern "m" { header "math.h" link "m" fn sqrt(float) float fn pow(float, float) 
   machin synthesizes a matching MFL struct `Name` (so MFL can construct and
   field-access it) and marshals between the MFL value and the C struct by value
   at the boundary. Field types are sized C scalars (below).
+- `cstruct Name {}` — an **opaque handle** (Phase 3): an empty body declares a
+  by-value C type (from the `header`) that machin holds and passes back **without
+  naming its fields**. This is for by-value structs that contain pointers and so
+  can't be a numeric `cstruct` — e.g. raylib's `Sound`/`Music`/`Font`. MFL can
+  receive one from a `fn`, store it (in a variable or `[]Name`), and pass it to
+  another `fn`; it cannot construct or field-access it. (Distinct from `ptr`,
+  which is a single pointer held as an `int`; an opaque `cstruct` is the whole
+  by-value aggregate.)
 - `fn Name(t, ...) ret` — a foreign function. Parameter and return types are FFI
-  scalar types, or the name of a declared `cstruct`; a missing return type means
-  `void`.
+  scalar types, or the name of a declared `cstruct` (numeric or opaque); a
+  missing return type means `void`.
 
 **FFI scalar types** → C: `int`/`i64`→`int64_t`, `i32`→`int32_t`, `i16`→`int16_t`,
 `i8`→`int8_t`, `u64`→`uint64_t` … `u8`→`uint8_t`, `float`/`f64`→`double`,

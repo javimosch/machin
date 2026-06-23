@@ -82,6 +82,13 @@ func ParseProgram(decls []string) (*Program, error) {
 	// its TypeDecl so MFL code can construct and field-access it.
 	for _, ed := range prog.Externs {
 		for _, cs := range ed.Structs {
+			if cs.Opaque {
+				// an opaque handle: wrap the real C type (from the header) by value;
+				// no MFL fields to construct or access.
+				prog.Types = append(prog.Types, &TypeDecl{Name: cs.Name, COpaque: cs.Name})
+				structs[cs.Name] = true
+				continue
+			}
 			fields := make([]Field, len(cs.Fields))
 			for i, f := range cs.Fields {
 				fields[i] = Field{Name: f.Name, Type: ffiMFLType(f.CType)}
@@ -189,7 +196,7 @@ func (p *Parser) parseExternDecl() (*ExternDecl, error) {
 			if _, err := p.expect(TPunct, "}"); err != nil {
 				return nil, err
 			}
-			ed.Structs = append(ed.Structs, ExternStruct{Name: name.Val, Fields: fields})
+			ed.Structs = append(ed.Structs, ExternStruct{Name: name.Val, Fields: fields, Opaque: len(fields) == 0})
 		case "fn":
 			name, err := p.expect(TIdent, "")
 			if err != nil {

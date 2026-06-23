@@ -2089,6 +2089,11 @@ func (g *cgen) program(p *Program) (string, error) {
 	}
 	// struct typedefs, in declaration order (a struct may reference earlier ones)
 	for _, td := range p.Types {
+		if td.COpaque != "" {
+			// an opaque FFI handle: wrap the real C type by value in one hidden field
+			fmt.Fprintf(&out, "typedef struct { %s _c; } mfl_%s;\n", td.COpaque, td.Name)
+			continue
+		}
 		fmt.Fprintf(&out, "typedef struct {")
 		for _, f := range td.Fields {
 			fmt.Fprintf(&out, " %s f_%s;", cTypeName(f.Type), f.Name)
@@ -2099,6 +2104,12 @@ func (g *cgen) program(p *Program) (string, error) {
 	// with int64/double fields) and the C layout (Name) at the boundary.
 	for _, ed := range p.Externs {
 		for _, cs := range ed.Structs {
+			if cs.Opaque {
+				// copy the whole C struct in/out of the one-field MFL wrapper
+				fmt.Fprintf(&out, "static mfl_%s mfl_from_%s(%s c) { return (mfl_%s){ ._c = c }; }\n", cs.Name, cs.Name, cs.Name, cs.Name)
+				fmt.Fprintf(&out, "static %s mfl_to_%s(mfl_%s m) { return m._c; }\n", cs.Name, cs.Name, cs.Name)
+				continue
+			}
 			fmt.Fprintf(&out, "static mfl_%s mfl_from_%s(%s c) { return (mfl_%s){", cs.Name, cs.Name, cs.Name, cs.Name)
 			for _, f := range cs.Fields {
 				fmt.Fprintf(&out, " .f_%s = c.%s,", f.Name, f.Name)

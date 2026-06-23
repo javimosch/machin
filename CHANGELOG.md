@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.44.0
+
+- **FFI opaque handles — `cstruct Name {}`.** An empty-body `cstruct` declares a
+  by-value C type (from the `header`) that machin holds and passes back **without
+  naming its fields**. This is for by-value structs that contain pointers and so
+  can't be a numeric `cstruct` — e.g. raylib's `Sound`/`Music`/`Font`. MFL can
+  receive one from a `fn`, store it (a variable or `[]Name`), and pass it to
+  another `fn`; it can't construct or field-access it. machin wraps the real C
+  struct in one hidden field and copies it whole at the boundary, so the existing
+  by-value marshaling path carries it. Surfaced building
+  [machin-game-simon](https://github.com/javimosch/machin-game-simon), whose audio
+  needs `LoadSound`→`PlaySound` over raylib's pointer-bearing `Sound`. Unlocks
+  every "load a handle, pass it back" C library, not just audio.
+
 ## v0.43.0
 
 - **`float()` — int → float conversion.** The counterpart to `int()`. MFL has no

@@ -9,7 +9,7 @@ import (
 
 // machinVersion is the single version string for the toolchain. Bump it when
 // cutting a release (alongside README badge / SPEC / CHANGELOG).
-const machinVersion = "0.43.0"
+const machinVersion = "0.44.0"
 
 // ---- the source-of-truth feature catalog ----
 //
@@ -227,6 +227,7 @@ func main() { println(str(sqrt(2.0))) }`},
 			{"parse-witness", "parse(s, T{}) needs a value of T as a type witness, e.g. `u := parse(body, User{})`. For schemaless extraction use json_get(s, path); json(x) serializes any value."},
 			{"multi-assign-only", "http_get and json_get return multiple values; use `a, b, c := http_get(u)`. Calling them as a single value is a compile error."},
 			{"int-float-no-implicit", "There is NO implicit int->float. Only a flexible numeric LITERAL (e.g. 5) promotes against a float; a CONCRETE int — a fn return, byte_at, len, a typed param, or an int-slice element — is a hard `int vs float` mismatch with a float. Wrap it: float(byte_at(b,0)) / 2.0. (int() goes the other way.) This also applies to f32/f64 struct fields in FFI cstructs."},
+			{"ffi-opaque-handle", "For a by-value C struct that contains pointers (raylib Sound/Music/Font/Texture with internals, FILE wrappers, ...), declare an OPAQUE cstruct with an empty body: `cstruct Sound {}`. machin holds the real C struct by value and passes it back to fns without naming its fields — receive it from a fn, store it (incl. []Sound), pass it on; no construct or .field. (A single pointer is simpler: the `ptr` FFI type, held as an int.)"},
 			{"eval-order", "Operands and arguments evaluate left-to-right (as in Go), including side effects: `f() + g()` runs f() before g(). Holds for binary ops, call args, slice/struct literals, and multi-return lists."},
 			{"composite-literal", "T{...} literals need T to be a known struct type at parse time. `machin encode` registers all `type` decls first, so this just works in normal builds."},
 			{"stdout-buffering", "libc fully buffers stdout when it's a pipe; a streaming program must call flush() after a write to appear promptly downstream. A TTY is line-buffered."},

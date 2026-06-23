@@ -862,6 +862,35 @@ func TestBitwise(t *testing.T) {
 	}
 }
 
+// Opaque FFI handles: `cstruct Name {}` (empty body) wraps a by-value C struct
+// machin can hold and pass back without naming its fields — for APIs whose
+// structs contain pointers (raylib Sound/Music, ...). Codegen-level (no link).
+func TestOpaqueHandle(t *testing.T) {
+	src := []string{
+		`extern "audio" { header "audio.h" cstruct Sound {} fn LoadSound(string) Sound fn PlaySound(Sound) }`,
+		`func main() { s := LoadSound("a.wav")  PlaySound(s) }`,
+	}
+	prog, err := ParseProgram(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := CompileToC(prog, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// the MFL wrapper holds the real C type by value in one hidden field...
+	if !strings.Contains(c, "typedef struct { Sound _c; } mfl_Sound;") {
+		t.Fatal("opaque handle must wrap the real C type in mfl_Sound._c")
+	}
+	// ...and marshaling copies the whole struct in/out, not field-by-field
+	if !strings.Contains(c, "mfl_to_Sound(mfl_Sound m) { return m._c; }") {
+		t.Fatal("opaque handle marshaling must copy the whole C struct")
+	}
+	if !strings.Contains(c, "mfl_from_Sound") {
+		t.Fatal("opaque handle must marshal the FFI return back to MFL")
+	}
+}
+
 // float() lifts a concrete int into float arithmetic (the counterpart to int()).
 // MFL has no implicit int->float, so a value typed int (a function return,
 // byte_at, len, ...) can't mix with a float without this.
