@@ -9,7 +9,7 @@ import (
 
 // machinVersion is the single version string for the toolchain. Bump it when
 // cutting a release (alongside README badge / SPEC / CHANGELOG).
-const machinVersion = "0.21.0"
+const machinVersion = "0.22.0"
 
 // ---- the source-of-truth feature catalog ----
 //
@@ -109,6 +109,11 @@ func machinGuide() guideCatalog {
 			{"replace", "(string, string, string) -> string", "replace all", "string"},
 			{"split", "(string, string) -> []string", "split on a separator", "string"},
 			{"join", "([]string, string) -> string", "join with a separator", "string"},
+			// regex (POSIX extended)
+			{"regex_match", "(string, string) -> bool", "does the ERE pattern match anywhere in s", "regex"},
+			{"regex_find", "(string, string) -> string", "first ERE match in s (\"\" if none)", "regex"},
+			{"regex_groups", "(string, string) -> []string", "first match's groups: [0]=whole, [1..]=captures ([] if none)", "regex"},
+			{"regex_replace", "(string, string, string) -> string", "replace all ERE matches in s with repl", "regex"},
 			// json
 			{"json", "(any) -> string", "serialize a value to JSON", "json"},
 			{"parse", "(string, T{}) -> T", "parse JSON into T (T{} is a type witness)", "json"},

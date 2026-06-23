@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.22.0
+
+- **Regex builtins — `regex_match`, `regex_find`, `regex_groups`, `regex_replace`.**
+  POSIX extended-regex (ERE) over the subject string: test a match, extract the
+  first match, pull capture groups (`[0]` whole, `[1..]` subgroups), or replace
+  all matches. Backed by libc's `<regex.h>`, emitted only when a program uses
+  `regex_*` (so others stay portable). Surfaced building a grep.
+
 ## v0.21.0
 
 - **Left-to-right evaluation order (fixes #142).** Operands and arguments now

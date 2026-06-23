@@ -660,6 +660,20 @@ func TestFlush(t *testing.T) {
 	}
 }
 
+// POSIX regex builtins: match, find, capture groups, and replace-all.
+func TestRegex(t *testing.T) {
+	main := `func main() {
+	ok := "false"  if regex_match("a@b.co", "^[a-z]+@[a-z]+\.[a-z]+$") { ok = "true" }
+	g := regex_groups("2026-06-22", "([0-9]+)-([0-9]+)-([0-9]+)")
+	gs := ""  if len(g) == 4 { gs = g[1] + "/" + g[2] + "/" + g[3] }
+	println(ok + "|" + regex_find("id 4821 x", "[0-9]+") + "|" + gs + "|" + regex_replace("5-9", "[0-9]+", "#"))
+}`
+	out, _ := buildRun(t, main)
+	if out != "true|4821|2026/06/22|#-#\n" {
+		t.Fatalf("regex: got %q", out)
+	}
+}
+
 // Operands and arguments evaluate left-to-right (Go semantics), even when they
 // have side effects — `g() + g()` on a counter yields 1 then 2, not 2 then 1.
 func TestEvalOrderLeftToRight(t *testing.T) {

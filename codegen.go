@@ -63,6 +63,7 @@ type cgen struct {
 	safe      bool   // emit runtime bounds / div-by-zero / overflow checks
 	usesTLS   bool   // program calls https_get/https_post -> emit + link OpenSSL
 	usesWSS   bool   // program calls wss_* -> emit WebSocket runtime + link OpenSSL
+	usesRegex bool   // program calls regex_* -> emit POSIX regex runtime
 }
 
 const cRuntime = `#define _GNU_SOURCE
@@ -1050,6 +1051,83 @@ static int64_t mfl_wss_close(int64_t h) {
 }
 `
 
+// regexRuntime is POSIX extended-regex (ERE) support via libc's <regex.h>,
+// emitted only when a program calls regex_*. match/find/groups/replace operate
+// on the subject first (like the other string builtins). A bad pattern fails
+// safe: match=false, find/replace return the input/empty, groups returns [].
+const regexRuntime = `#include <regex.h>
+
+static int mfl_regex_match(const char* s, const char* pat) {
+    regex_t re;
+    if (regcomp(&re, pat, REG_EXTENDED | REG_NOSUB) != 0) return 0;
+    int r = regexec(&re, s, 0, NULL, 0);
+    regfree(&re);
+    return r == 0 ? 1 : 0;
+}
+static char* mfl_regex_find(const char* s, const char* pat) {
+    regex_t re;
+    if (regcomp(&re, pat, REG_EXTENDED) != 0) return mfl_dup_arena("", 0);
+    regmatch_t m[1];
+    char* out = mfl_dup_arena("", 0);
+    if (regexec(&re, s, 1, m, 0) == 0 && m[0].rm_so >= 0) {
+        out = mfl_dup_arena(s + m[0].rm_so, (size_t)(m[0].rm_eo - m[0].rm_so));
+    }
+    regfree(&re);
+    return out;
+}
+/* groups: []string of the first match — index 0 is the whole match, 1..n the
+   captured subgroups (an unmatched optional group is ""). Empty if no match. */
+static mfl_slice mfl_regex_groups(const char* s, const char* pat) {
+    mfl_slice out = {0};
+    regex_t re;
+    if (regcomp(&re, pat, REG_EXTENDED) != 0) return out;
+    size_t ng = re.re_nsub + 1;
+    regmatch_t* m = (regmatch_t*)malloc(ng * sizeof(regmatch_t));
+    if (regexec(&re, s, ng, m, 0) == 0) {
+        for (size_t i = 0; i < ng; i++) {
+            char* g;
+            if (m[i].rm_so >= 0) g = mfl_dup_arena(s + m[i].rm_so, (size_t)(m[i].rm_eo - m[i].rm_so));
+            else g = mfl_dup_arena("", 0);
+            out = mfl_append(out, &g, sizeof(char*));
+        }
+    }
+    free(m);
+    regfree(&re);
+    return out;
+}
+static char* mfl_regex_replace(const char* s, const char* pat, const char* repl) {
+    regex_t re;
+    if (regcomp(&re, pat, REG_EXTENDED) != 0) return mfl_dup_arena(s, strlen(s));
+    size_t cap = strlen(s) + 64, len = 0, rl = strlen(repl);
+    char* out = (char*)malloc(cap);
+    const char* p = s;
+    regmatch_t m[1];
+    int eflags = 0;
+    while (regexec(&re, p, 1, m, eflags) == 0) {
+        size_t so = (size_t)m[0].rm_so, eo = (size_t)m[0].rm_eo;
+        while (len + so + rl + 2 >= cap) { cap *= 2; out = (char*)realloc(out, cap); }
+        memcpy(out + len, p, so); len += so;
+        memcpy(out + len, repl, rl); len += rl;
+        if (eo == so) { /* empty match: emit one char to make progress */
+            if (p[eo] == 0) { p += eo; break; }
+            out[len++] = p[eo];
+            p += eo + 1;
+        } else {
+            p += eo;
+        }
+        eflags = REG_NOTBOL;
+    }
+    size_t rest = strlen(p);
+    while (len + rest + 1 >= cap) { cap *= 2; out = (char*)realloc(out, cap); }
+    memcpy(out + len, p, rest); len += rest;
+    out[len] = 0;
+    regfree(&re);
+    char* r = mfl_dup_arena(out, len);
+    free(out);
+    return r;
+}
+`
+
 // isFFIScalar reports whether t is an FFI scalar type name (vs a cstruct name).
 func isFFIScalar(t string) bool {
 	switch t {
@@ -1188,6 +1266,12 @@ func (g *cgen) program(p *Program) (string, error) {
 	}
 	if g.usesWSS {
 		out.WriteString(wssRuntime)
+		out.WriteByte('\n')
+	}
+	if g.usesRegex {
+		// POSIX regex (libc) — emitted only when a program calls regex_*, so other
+		// programs don't pull in <regex.h> (keeps them portable to libcs without it).
+		out.WriteString(regexRuntime)
 		out.WriteByte('\n')
 	}
 	// foreign (extern) declarations. With a header, its prototypes + C structs are
@@ -2577,6 +2661,18 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("mfl_exit(%s)", args[0]), nil
 	case "flush":
 		return "mfl_flush()", nil
+	case "regex_match":
+		g.usesRegex = true
+		return fmt.Sprintf("mfl_regex_match(%s, %s)", args[0], args[1]), nil
+	case "regex_find":
+		g.usesRegex = true
+		return fmt.Sprintf("mfl_regex_find(%s, %s)", args[0], args[1]), nil
+	case "regex_replace":
+		g.usesRegex = true
+		return fmt.Sprintf("mfl_regex_replace(%s, %s, %s)", args[0], args[1], args[2]), nil
+	case "regex_groups":
+		g.usesRegex = true
+		return fmt.Sprintf("mfl_regex_groups(%s, %s)", args[0], args[1]), nil
 	case "str":
 		if g.c.NodeKind(g.curFn, ex.Args[0]) == KFloat {
 			return fmt.Sprintf("mfl_str_d(%s)", args[0]), nil

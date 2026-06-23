@@ -1,6 +1,6 @@
 # The MFL Language Specification
 
-Version 0.21.0
+Version 0.22.0
 
 MFL (Machine-First Language) is a statically-typed, Go-flavored backend language
 **shaped for machine authoring**: minimal syntax, no type annotations, one
@@ -255,6 +255,10 @@ throughout the function body).
 | `replace` | `(string, string, string) -> string` | replace all |
 | `split` | `(string, string) -> []string` | split |
 | `join` | `([]string, string) -> string` | join |
+| `regex_match` | `(string, string) -> bool` | does a POSIX ERE pattern match anywhere in s |
+| `regex_find` | `(string, string) -> string` | first ERE match in s (`""` if none) |
+| `regex_groups` | `(string, string) -> []string` | first match's groups: `[0]` whole, `[1..]` captures (`[]` if none) |
+| `regex_replace` | `(string, string, string) -> string` | replace all ERE matches in s with repl |
 | `sleep` | `(int) -> ` | pause (milliseconds) |
 | `dial` | `(string, int) -> int` | connect to host:port; an fd, or -1 on failure |
 | `listen`, `accept` | `(int) -> int` | open / accept on a TCP socket |
