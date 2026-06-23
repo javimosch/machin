@@ -9,7 +9,7 @@ import (
 
 // machinVersion is the single version string for the toolchain. Bump it when
 // cutting a release (alongside README badge / SPEC / CHANGELOG).
-const machinVersion = "0.33.0"
+const machinVersion = "0.34.0"
 
 // ---- the source-of-truth feature catalog ----
 //
@@ -62,6 +62,7 @@ func machinGuide() guideCatalog {
 			{"float", "double"},
 			{"bool", "true/false"},
 			{"string", "immutable UTF-8 bytes; zero value \"\""},
+			{"bytes", "NUL-safe binary buffer (ptr+len); from bytes()/from_hex(); inspect with len/byte_at/to_hex. For binary protocols & crypto (strings truncate at NUL)"},
 			{"[]T", "slice (append to grow); for i, v := range"},
 			{"map[K]V", "K is int or string; make(map[K]V); has/delete/keys"},
 			{"struct", "type T struct { f T ... }; value semantics; T{f: v}"},
@@ -120,6 +121,14 @@ func machinGuide() guideCatalog {
 			{"url_decode", "(string) -> string", "percent-decode a URL component (lenient: + -> space, bad %XX passes through)", "string"},
 			{"sha256", "(string) -> string", "SHA-256 of text, lowercase hex", "crypto"},
 			{"hmac_sha256", "(string, string) -> string", "HMAC-SHA256(key, message), lowercase hex (webhook signatures)", "crypto"},
+			// bytes (a NUL-safe binary buffer — the type strings can't be; for binary protocols/crypto)
+			{"bytes", "(string) -> bytes", "make a bytes value from a string's raw bytes", "bytes"},
+			{"bytes_str", "(bytes) -> string", "bytes -> string (NUL-terminated; truncates at an embedded 0)", "bytes"},
+			{"to_hex", "(bytes) -> string", "lowercase hex of a bytes value", "bytes"},
+			{"from_hex", "(string) -> bytes", "parse hex -> bytes (skips non-hex chars)", "bytes"},
+			{"byte_at", "(bytes, int) -> int", "byte value 0-255 at an index (-1 if out of range)", "bytes"},
+			{"bytes_sub", "(bytes, int, int) -> bytes", "sub-range [start, end) of a bytes value", "bytes"},
+			{"bytes_concat", "(bytes, bytes) -> bytes", "concatenate two bytes values", "bytes"},
 			// sqlite (libsqlite3, linked only when used)
 			{"sqlite_open", "(string) -> int", "open/create a SQLite db file -> handle (0 on fail); \":memory:\" for in-memory", "db"},
 			{"sqlite_exec", "(int, string[, []string]) -> int", "run SQL with no result; optional []string binds the ? params (injection-safe); 0 ok", "db"},
@@ -154,6 +163,7 @@ func machinGuide() guideCatalog {
 		},
 		Idioms: []guideIdiom{
 			{"hello", `func main() { println("hello") }`},
+			{"bytes", `func main() { b := from_hex("deadbeef")  b = bytes_concat(b, bytes("!"))  println(to_hex(b) + " len=" + str(len(b)) + " b0=" + str(byte_at(b, 0))) }`},
 			{"types", `type P struct { name string  age int }
 func main() { p := P{name: "ada", age: 36}  xs := []int{1, 2, 3}  m := make(map[string]int)  m["k"] = 1  println(p.name + " " + str(len(xs)) + " " + str(m["k"])) }`},
 			{"goroutine-channel", `func work(ch) { ch <- 42 }

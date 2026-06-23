@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.34.0
+
+- **`bytes` type — a NUL-safe binary buffer.** machin strings are NUL-terminated
+  `char*`, so they can't hold arbitrary binary (anything with a `0x00` byte gets
+  truncated). The new `bytes` type (pointer + length) can. Builtins: `bytes(str)`,
+  `bytes_str(b)`, `to_hex`/`from_hex`, `byte_at`, `bytes_sub`, `bytes_concat`;
+  `len(b)` works, and `println(b)` prints hex. This is the foundation for binary
+  protocols and real crypto (step 1 of a native WhatsApp client — see machin-meet).
+
 ## v0.33.0
 
 - **`http_request(method, url, headers, body)` builtin.** Authenticated HTTPS for

@@ -735,6 +735,27 @@ func TestURLEncoding(t *testing.T) {
 	}
 }
 
+// bytes is a NUL-safe binary buffer: it must survive an embedded zero byte that
+// would truncate a string, round-trip through hex, and support len/byte_at/
+// sub/concat. The "00" in the middle is the whole point.
+func TestBytes(t *testing.T) {
+	main := `func main() {
+	b := from_hex("48650061ff")            // H e \0 a 0xff  — has an embedded NUL
+	println(str(len(b)))                    // 5, not 2 (a string would stop at the NUL)
+	println(to_hex(b))
+	println(str(byte_at(b, 4)))             // 255
+	println(to_hex(bytes_sub(b, 1, 3)))     // "6500"
+	println(to_hex(bytes_concat(from_hex("aa"), from_hex("bbcc"))))
+	println(to_hex(bytes("ABC")))           // 414243
+	println(b)                              // println of bytes prints hex
+}`
+	out, _ := buildRun(t, main)
+	want := "5\n48650061ff\n255\n6500\naabbcc\n414243\n48650061ff\n"
+	if out != want {
+		t.Fatalf("bytes: got %q, want %q", out, want)
+	}
+}
+
 // SHA-256 and HMAC-SHA256 against published test vectors (must be byte-exact).
 func TestHashes(t *testing.T) {
 	main := `func main() {
