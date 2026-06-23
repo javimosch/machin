@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.40.0
+
+- **Bitwise operators + hex/binary/octal literals.** `& | ^ << >>` (and unary `^`,
+  complement), `int`-only, with Go's precedence (`<< >> &` bind like `* / %`;
+  `| ^` like `+ -`). Integer literals now accept `0xff`, `0b1010`, `0o17` (with
+  `_` separators). The whole binary/crypto/protocol surface (machin-protobuf,
+  machin-wabin, machin-signal, machin-noise) had been faking these with `* / %`
+  over powers of two — `cb >> 4 & 0x0f` instead of `(cb / 16) % 16`. Surfaced by
+  that accumulated real usage.
+
 ## v0.39.0
 
 - **The HTTP client now does plain `http://`, not just TLS.** `http_get`,

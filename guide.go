@@ -9,7 +9,7 @@ import (
 
 // machinVersion is the single version string for the toolchain. Bump it when
 // cutting a release (alongside README badge / SPEC / CHANGELOG).
-const machinVersion = "0.39.0"
+const machinVersion = "0.40.0"
 
 // ---- the source-of-truth feature catalog ----
 //
@@ -182,6 +182,7 @@ func machinGuide() guideCatalog {
 		Idioms: []guideIdiom{
 			{"hello", `func main() { println("hello") }`},
 			{"bytes", `func main() { b := from_hex("deadbeef")  b = bytes_concat(b, bytes("!"))  println(to_hex(b) + " len=" + str(len(b)) + " b0=" + str(byte_at(b, 0))) }`},
+			{"bitwise", `func main() { x := 0xa5  println(str(x >> 4 & 0x0f) + " " + str(x | 0x100) + " " + str(^x & 0xff)) }`},
 			{"types", `type P struct { name string  age int }
 func main() { p := P{name: "ada", age: 36}  xs := []int{1, 2, 3}  m := make(map[string]int)  m["k"] = 1  println(p.name + " " + str(len(xs)) + " " + str(m["k"])) }`},
 			{"goroutine-channel", `func work(ch) { ch <- 42 }

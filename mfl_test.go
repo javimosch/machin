@@ -841,6 +841,27 @@ func TestXEdDSAGating(t *testing.T) {
 	}
 }
 
+// Bitwise operators (& | ^ << >> and unary ^) plus hex/binary/octal int literals:
+// precedence matches Go (<< >> & like * / %; | ^ like + -), int-only.
+func TestBitwise(t *testing.T) {
+	main := `func main() {
+	println(str(0xff & 0x0f) + " " + str(0xf0 | 0x0f) + " " + str(0xff ^ 0x0f))
+	println(str(1 << 8) + " " + str(0xabcd >> 8) + " " + str(^0))
+	println(str(0b1010) + " " + str(0o17) + " " + str(0xa5 >> 4 & 0x0f))
+	println(str(1 | 2 << 1))
+}`
+	out, _ := buildRun(t, main)
+	want := "15 255 240\n256 171 -1\n10 15 10\n5\n"
+	if out != want {
+		t.Fatalf("bitwise: got %q, want %q", out, want)
+	}
+	// int-only: a float operand is a clean type error, not leaked cc output
+	bad := `func main() { x := 1.5  println(str(x & 2)) }`
+	if _, err := CompileToC(&Program{Funcs: parseFuncs(t, bad)}, false); err == nil {
+		t.Fatal("bitwise on a float operand should be a type error")
+	}
+}
+
 // SHA-256 and HMAC-SHA256 against published test vectors (must be byte-exact).
 func TestHashes(t *testing.T) {
 	main := `func main() {

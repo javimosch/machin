@@ -793,8 +793,8 @@ var precedence = map[string]int{
 	"&&": 2,
 	"==": 3, "!=": 3,
 	"<": 4, "<=": 4, ">": 4, ">=": 4,
-	"+": 5, "-": 5,
-	"*": 6, "/": 6, "%": 6,
+	"+": 5, "-": 5, "|": 5, "^": 5,
+	"*": 6, "/": 6, "%": 6, "<<": 6, ">>": 6, "&": 6,
 }
 
 func (p *Parser) parseExpr() (Expr, error) {
@@ -827,7 +827,7 @@ func (p *Parser) parseBinary(minPrec int) (Expr, error) {
 
 func (p *Parser) parseUnary() (Expr, error) {
 	t := p.peek()
-	if t.Kind == TOp && (t.Val == "-" || t.Val == "!") {
+	if t.Kind == TOp && (t.Val == "-" || t.Val == "!" || t.Val == "^") {
 		p.next()
 		x, err := p.parseUnary()
 		if err != nil {
@@ -887,7 +887,7 @@ func (p *Parser) parsePrimary() (Expr, error) {
 	switch t.Kind {
 	case TInt:
 		p.next()
-		n, err := strconv.ParseInt(t.Val, 10, 64)
+		n, err := strconv.ParseInt(t.Val, 0, 64) // base 0: decimal, 0x hex, 0b binary, 0o octal
 		if err != nil {
 			return nil, err
 		}
