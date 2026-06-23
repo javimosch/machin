@@ -1,6 +1,6 @@
 # The MFL Language Specification
 
-Version 0.35.0
+Version 0.36.0
 
 MFL (Machine-First Language) is a statically-typed, Go-flavored backend language
 **shaped for machine authoring**: minimal syntax, no type annotations, one
@@ -307,6 +307,8 @@ throughout the function body).
 | `wss_open` | `(string) -> int` | open a `wss://` WebSocket; a connection handle, or 0 on failure |
 | `wss_send` | `(int, string) -> int` | send a text message on a WebSocket |
 | `wss_recv` | `(int) -> string` | next message (blocks); `""` on close (auto ping/pong) |
+| `wss_send_bin` | `(int, bytes) -> int` | send a binary message (opcode `0x2`) — NUL-safe |
+| `wss_recv_bin` | `(int) -> bytes` | next message as `bytes` (blocks); empty `bytes` on close |
 | `wss_close` | `(int) -> int` | send close and tear down the connection |
 
 ---
