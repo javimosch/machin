@@ -1,6 +1,6 @@
 # The MFL Language Specification
 
-Version 0.31.0
+Version 0.32.0
 
 MFL (Machine-First Language) is a statically-typed, Go-flavored backend language
 **shaped for machine authoring**: minimal syntax, no type annotations, one
@@ -262,6 +262,8 @@ throughout the function body).
 | `join` | `([]string, string) -> string` | join |
 | `base64_encode` | `(string) -> string` | base64-encode text (standard, padded) |
 | `base64_decode` | `(string) -> string` | base64-decode (lenient: standard + url-safe; ignores padding) |
+| `url_encode` | `(string) -> string` | percent-encode for URLs (RFC 3986: keeps `A-Za-z0-9-._~`, encodes the rest, space → `%20`) |
+| `url_decode` | `(string) -> string` | percent-decode a URL component (lenient: `+` → space, malformed `%XX` passes through) |
 | `sha256` | `(string) -> string` | SHA-256 of text, lowercase hex |
 | `hmac_sha256` | `(string, string) -> string` | HMAC-SHA256(key, message), lowercase hex |
 | `sqlite_open` | `(string) -> int` | open/create a SQLite db file → handle (0 on fail); `:memory:` for in-memory |

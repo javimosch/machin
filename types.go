@@ -1831,7 +1831,7 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 			return 0, fmt.Errorf("flush: no args")
 		}
 		return c.cInt, nil
-	case "base64_encode", "base64_decode", "sha256":
+	case "base64_encode", "base64_decode", "url_encode", "url_decode", "sha256":
 		if len(argSlots) != 1 {
 			return 0, fmt.Errorf("%s: 1 arg (string)", ex.Callee)
 		}

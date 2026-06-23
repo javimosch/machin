@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.32.0
+
+- **`url_encode` / `url_decode` builtins.** Percent-encoding for URLs (RFC 3986):
+  `url_encode` keeps the unreserved set `A-Za-z0-9-._~` and `%XX`-encodes the rest
+  (space → `%20`); `url_decode` reverses it leniently (`+` → space, malformed `%XX`
+  passes through). Surfaced building machin-qs (a query-string ⇄ JSON converter),
+  and lets servers like machin-meet decode query/form values safely.
+
 ## v0.31.0
 
 - **`time_format_utc(unix, fmt)` builtin.** Like `time_format` but in UTC

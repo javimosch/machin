@@ -694,6 +694,25 @@ func TestSQLiteParams(t *testing.T) {
 	}
 }
 
+// url_encode follows RFC 3986 (space -> %20, reserved chars escaped, unreserved
+// kept); url_decode reverses it and also treats '+' as space.
+func TestURLEncoding(t *testing.T) {
+	main := `func main() {
+	println(url_encode("a b&c=d/e?f+g~h"))
+	println(url_decode("a%20b%26c%3Dd%2Fe%3Ff%2Bg~h"))
+	println(url_decode("a+b%20c"))
+	println(url_decode(url_encode("héllo, wörld! 100%")))
+}`
+	out, _ := buildRun(t, main)
+	want := "a%20b%26c%3Dd%2Fe%3Ff%2Bg~h\n" +
+		"a b&c=d/e?f+g~h\n" +
+		"a b c\n" +
+		"héllo, wörld! 100%\n"
+	if out != want {
+		t.Fatalf("url encoding: got %q, want %q", out, want)
+	}
+}
+
 // SHA-256 and HMAC-SHA256 against published test vectors (must be byte-exact).
 func TestHashes(t *testing.T) {
 	main := `func main() {
