@@ -1841,6 +1841,15 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		}
 		c.addPair(argSlots[0], newSlot(c, KNum))
 		return c.cInt, nil
+	case "float":
+		// int -> float (and identity on float). The counterpart to int(): MFL
+		// has no implicit int->float, so a concrete int (a function return,
+		// byte_at, len, ...) needs this to enter float arithmetic.
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("float: 1 arg")
+		}
+		c.addPair(argSlots[0], newSlot(c, KNum))
+		return c.cFloat, nil
 	case "listen", "accept":
 		if len(argSlots) != 1 {
 			return 0, fmt.Errorf("%s: 1 arg", ex.Callee)
