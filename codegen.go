@@ -384,6 +384,53 @@ static char* mfl_base64_decode(const char* s) {
     out[j] = 0;
     return out;
 }
+/* URL percent-encoding (RFC 3986). url_encode keeps the unreserved set
+   A-Za-z0-9-._~ and %XX-encodes everything else (space -> %20). url_decode
+   reverses it and is lenient: it also maps '+' to space (form style) and passes
+   a malformed % through unchanged. */
+static int mfl_hexval(int c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+static char* mfl_url_encode(const char* s) {
+    static const char hex[] = "0123456789ABCDEF";
+    size_t n = strlen(s), j = 0;
+    char* out = (char*)mfl_alloc(n * 3 + 1);
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)s[i];
+        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+            c == '-' || c == '_' || c == '.' || c == '~') {
+            out[j++] = (char)c;
+        } else {
+            out[j++] = '%';
+            out[j++] = hex[c >> 4];
+            out[j++] = hex[c & 15];
+        }
+    }
+    out[j] = 0;
+    return out;
+}
+static char* mfl_url_decode(const char* s) {
+    size_t n = strlen(s), j = 0;
+    char* out = (char*)mfl_alloc(n + 1);
+    for (size_t i = 0; i < n; i++) {
+        char c = s[i];
+        if (c == '+') {
+            out[j++] = ' ';
+        } else if (c == '%' && i + 2 < n) {
+            int hi = mfl_hexval((unsigned char)s[i+1]);
+            int lo = mfl_hexval((unsigned char)s[i+2]);
+            if (hi >= 0 && lo >= 0) { out[j++] = (char)((hi << 4) | lo); i += 2; }
+            else { out[j++] = c; }
+        } else {
+            out[j++] = c;
+        }
+    }
+    out[j] = 0;
+    return out;
+}
 /* SHA-256 + HMAC-SHA256 (pure C, no dependency). Operate on NUL-terminated text
    and return a lowercase hex digest. */
 static uint32_t mfl_ror32(uint32_t x, int n) { return (x >> n) | (x << (32 - n)); }
@@ -2960,6 +3007,10 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("mfl_base64_encode(%s)", args[0]), nil
 	case "base64_decode":
 		return fmt.Sprintf("mfl_base64_decode(%s)", args[0]), nil
+	case "url_encode":
+		return fmt.Sprintf("mfl_url_encode(%s)", args[0]), nil
+	case "url_decode":
+		return fmt.Sprintf("mfl_url_decode(%s)", args[0]), nil
 	case "sha256":
 		return fmt.Sprintf("mfl_sha256(%s)", args[0]), nil
 	case "hmac_sha256":

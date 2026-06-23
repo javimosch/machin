@@ -9,7 +9,7 @@ import (
 
 // machinVersion is the single version string for the toolchain. Bump it when
 // cutting a release (alongside README badge / SPEC / CHANGELOG).
-const machinVersion = "0.31.0"
+const machinVersion = "0.32.0"
 
 // ---- the source-of-truth feature catalog ----
 //
@@ -116,6 +116,8 @@ func machinGuide() guideCatalog {
 			{"join", "([]string, string) -> string", "join with a separator", "string"},
 			{"base64_encode", "(string) -> string", "base64-encode text (standard, padded)", "string"},
 			{"base64_decode", "(string) -> string", "base64-decode (lenient: standard + url-safe; ignores padding)", "string"},
+			{"url_encode", "(string) -> string", "percent-encode for URLs (RFC 3986; keeps A-Za-z0-9-._~, space -> %20)", "string"},
+			{"url_decode", "(string) -> string", "percent-decode a URL component (lenient: + -> space, bad %XX passes through)", "string"},
 			{"sha256", "(string) -> string", "SHA-256 of text, lowercase hex", "crypto"},
 			{"hmac_sha256", "(string, string) -> string", "HMAC-SHA256(key, message), lowercase hex (webhook signatures)", "crypto"},
 			// sqlite (libsqlite3, linked only when used)
