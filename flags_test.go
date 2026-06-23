@@ -7,6 +7,30 @@ import (
 	"testing"
 )
 
+// time_fields decomposes a unix timestamp into calendar fields (local time);
+// pinned with TZ=UTC for determinism (2026-06-23 00:00 UTC -> Tuesday).
+func TestTimeFields(t *testing.T) {
+	fn := parseFuncs(t, `func main() { f := time_fields(1782172800)  println(str(f[0]) + "-" + str(f[1]) + "-" + str(f[2]) + " " + str(f[3]) + ":" + str(f[4]) + " w" + str(f[6])) }`)
+	bin, err := os.CreateTemp("", "mfl-tf-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin.Close()
+	defer os.Remove(bin.Name())
+	if err := BuildBinary(&Program{Funcs: fn}, bin.Name(), false); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	cmd := exec.Command(bin.Name())
+	cmd.Env = append(os.Environ(), "TZ=UTC")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if strings.TrimSpace(string(out)) != "2026-6-23 0:0 w2" {
+		t.Fatalf("time_fields: got %q, want %q", strings.TrimSpace(string(out)), "2026-6-23 0:0 w2")
+	}
+}
+
 // read_stdin slurps stdin verbatim — exact bytes (including newlines, no
 // trailing-newline assumption), unlike the line-based input().
 func TestReadStdin(t *testing.T) {
