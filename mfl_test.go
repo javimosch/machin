@@ -598,6 +598,25 @@ func TestHTTPRequest(t *testing.T) {
 	}
 }
 
+// The HTTP client speaks both plain http:// (a raw TCP socket) and https:// (TLS)
+// from the same path — so the generated client must contain the plain-socket
+// transport, and must NOT keep the old "scheme" rejection.
+func TestHTTPPlainAndTLS(t *testing.T) {
+	c, err := CompileToC(&Program{Funcs: parseFuncs(t, `func main() { s, b, e := http_get("http://x")  println(str(s) + b + e) }`)}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(c, "mfl_tcp_dial_e") || !strings.Contains(c, "mfl_sock_readall") {
+		t.Fatal("the HTTP client must emit the plain-socket transport")
+	}
+	if !strings.Contains(c, "mfl_tls_dial_e") {
+		t.Fatal("the HTTP client must still emit the TLS transport")
+	}
+	if strings.Contains(c, `R.err = mfl_dup_arena("scheme"`) {
+		t.Fatal("the old http:// 'scheme' rejection must be gone")
+	}
+}
+
 // A string (or a struct's string fields) allocated in a short-lived goroutine
 // and sent over a channel must survive that goroutine's arena being reclaimed —
 // the channel deep-copies strings on send and adopts them on receive.
