@@ -1,6 +1,6 @@
 # The MFL Language Specification
 
-Version 0.41.0
+Version 0.42.0
 
 MFL (Machine-First Language) is a statically-typed, Go-flavored backend language
 **shaped for machine authoring**: minimal syntax, no type annotations, one
@@ -249,7 +249,7 @@ throughout the function body).
 | `list_dir` | `(string) -> []string` | directory entries (excludes `.`/`..`) |
 | `mkdir` | `(string) -> int` | create a directory (0 ok; -1 on error) |
 | `len` | `(string\|slice\|map) -> int` | length |
-| `str` | `(int\|float) -> string` | format a number |
+| `str` | `(int\|float\|bool\|string) -> string` | format a value: a number, a bool (`"true"`/`"false"`), or a string (identity) |
 | `int` | `(number) -> int` | truncate to int |
 | `append` | `([]T, T) -> []T` | grow a slice |
 | `has`, `delete` | `(map, K) -> bool` / `-> ` | membership / removal |

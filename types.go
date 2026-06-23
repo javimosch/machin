@@ -93,6 +93,7 @@ type Checker struct {
 	plus  []plusCons // overloaded '+' constraints, resolved by fixpoint
 
 	lenArgs   []int      // slots passed to len(); must resolve to string/slice/map
+	strArgs   []int      // slots passed to str(); must resolve to a number, bool, or string
 	fieldUses []fieldUse // struct field access/assign, resolved after solve
 	indexUses []indexUse // x[i] access/assign, resolved after solve (slice or map)
 	rangeUses []rangeUse // for-range loops, resolved after solve
@@ -674,6 +675,12 @@ func Check(p *Program) (*Checker, error) {
 	for _, slot := range c.lenArgs {
 		if k := c.kindOf(slot); k != KString && k != KSlice && k != KMap && k != KBytes {
 			return nil, fmt.Errorf("len: argument must be a string, slice, map, or bytes, got %s", k)
+		}
+	}
+	// 5b. validate str() arguments: a number, bool, or string.
+	for _, slot := range c.strArgs {
+		if k := c.kindOf(slot); !isNumeric(k) && k != KBool && k != KString {
+			return nil, fmt.Errorf("str: argument must be a number, bool, or string, got %s", k)
 		}
 	}
 	// 6. dedup instances by concrete signature and assign C names
@@ -1823,7 +1830,10 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		if len(argSlots) != 1 {
 			return 0, fmt.Errorf("str: 1 arg")
 		}
-		c.addPair(argSlots[0], newSlot(c, KNum))
+		// str accepts a number, bool, or string; the exact emission is picked by
+		// the arg's resolved kind at codegen. Validated after solve (strArgs) so
+		// we neither force the arg numeric (which rejected bool) nor lose safety.
+		c.strArgs = append(c.strArgs, argSlots[0])
 		return c.cString, nil
 	case "int":
 		if len(argSlots) != 1 {

@@ -342,6 +342,7 @@ static char* mfl_cat(const char* a, const char* b) {
 }
 static char* mfl_str_i(int64_t v) { char* b = mfl_alloc(24); snprintf(b, 24, "%lld", (long long)v); return b; }
 static char* mfl_str_d(double v)  { char* b = mfl_alloc(32); snprintf(b, 32, "%g", v); return b; }
+static char* mfl_str_b(int64_t v) { return v ? "true" : "false"; }
 static char* mfl_dup(const char* s) { size_t n = strlen(s); char* r = mfl_alloc(n+1); memcpy(r, s, n+1); return r; }
 /* base64 (standard alphabet, padded) over text. */
 static char* mfl_base64_encode(const char* s) {
@@ -3560,8 +3561,13 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		g.usesRegex = true
 		return fmt.Sprintf("mfl_regex_groups(%s, %s)", args[0], args[1]), nil
 	case "str":
-		if g.c.NodeKind(g.curFn, ex.Args[0]) == KFloat {
+		switch g.c.NodeKind(g.curFn, ex.Args[0]) {
+		case KFloat:
 			return fmt.Sprintf("mfl_str_d(%s)", args[0]), nil
+		case KBool:
+			return fmt.Sprintf("mfl_str_b(%s)", args[0]), nil
+		case KString:
+			return args[0], nil
 		}
 		return fmt.Sprintf("mfl_str_i(%s)", args[0]), nil
 	case "int":

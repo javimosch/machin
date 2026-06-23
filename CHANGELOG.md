@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.42.0
+
+- **`str` accepts `bool` and `string`.** `str(true)` → `"true"`, `str(false)`
+  → `"false"`, and `str` of a string is the identity. `str` was numeric-only, so
+  `"moved=" + str(moved)` was a `bool vs num` type error — a papercut everyone
+  worked around with a hand-written `b2s` helper. Surfaced repeatedly building
+  the game logic in machin-game-snake / machin-game-2048. Non-stringable kinds
+  (slice, map, struct, …) are still a clean compile error.
+
 ## v0.41.0
 
 - **Terminal input: `raw_mode(on)` + `read_key()`.** Real-time, per-keypress

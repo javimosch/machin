@@ -862,6 +862,26 @@ func TestBitwise(t *testing.T) {
 	}
 }
 
+// str() over each accepted kind: number, bool, and string. Bool renders as
+// "true"/"false" (the papercut fix); a non-stringable kind is a clean error.
+func TestStrKinds(t *testing.T) {
+	main := `func main() {
+	println(str(42) + " " + str(3.5))
+	println(str(true) + " " + str(false) + " " + str(10 > 3))
+	println(str("hi"))
+}`
+	out, _ := buildRun(t, main)
+	want := "42 3.5\ntrue false true\nhi\n"
+	if out != want {
+		t.Fatalf("str: got %q, want %q", out, want)
+	}
+	// a slice (or any non-number/bool/string) is still a type error
+	bad := `func main() { xs := []int{1, 2}  println(str(xs)) }`
+	if _, err := CompileToC(&Program{Funcs: parseFuncs(t, bad)}, false); err == nil {
+		t.Fatal("str of a slice should be a type error")
+	}
+}
+
 // Terminal input builtins: raw_mode (int -> int) and read_key (-> string).
 // Interactive behavior can't be unit-tested, so this checks the type contract
 // and that the C transport helpers are emitted.

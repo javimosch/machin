@@ -9,7 +9,7 @@ import (
 
 // machinVersion is the single version string for the toolchain. Bump it when
 // cutting a release (alongside README badge / SPEC / CHANGELOG).
-const machinVersion = "0.41.0"
+const machinVersion = "0.42.0"
 
 // ---- the source-of-truth feature catalog ----
 //
@@ -95,7 +95,7 @@ func machinGuide() guideCatalog {
 			{"time_format_utc", "(int, string) -> string", "like time_format but in UTC (gmtime) — the form .ics / RFC-3339 stamps want", "time"},
 			{"time_make", "(int, int, int, int, int, int) -> int", "build a unix timestamp from local calendar fields (year,month,day,hour,min,sec); inverse of time_fields, normalizes overflow", "time"},
 			// convert
-			{"str", "(int|float) -> string", "format a number", "convert"},
+			{"str", "(int|float|bool|string) -> string", "format a value: number, bool (\"true\"/\"false\"), or string (identity)", "convert"},
 			{"int", "(number) -> int", "truncate to int", "convert"},
 			{"parse_int", "(string) -> int", "parse an integer (0 if non-numeric)", "convert"},
 			// collections
