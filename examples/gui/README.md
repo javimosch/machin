@@ -6,6 +6,11 @@ shows that the FFI (scalars + by-value structs — `Color` here) is enough to dr
 a real graphics library: open an OpenGL window, draw rectangles and text, and
 poll the mouse each frame.
 
+> **Building a full game?** See [`skills/machin-gamedev/SKILL.md`](../../skills/machin-gamedev/SKILL.md)
+> for the canonical setup, build-and-verify workflow, the wider FFI surface
+> (textures, audio, opaque handles), and the caveats/gotchas — distilled from the
+> machin-game-snake / -2048 / -flappy / -simon repos.
+
 ```
 +--------------------------------+
 |        MFL GAME MENU           |
