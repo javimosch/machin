@@ -1830,11 +1830,14 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		c.addPair(argSlots[0], c.cString)
 		return c.cInt, nil
 	case "sqlite_exec", "sqlite_query":
-		if len(argSlots) != 2 {
-			return 0, fmt.Errorf("%s: 2 args (db int, sql string)", ex.Callee)
+		if len(argSlots) != 2 && len(argSlots) != 3 {
+			return 0, fmt.Errorf("%s: 2 or 3 args (db int, sql string[, params []string])", ex.Callee)
 		}
 		c.addPair(argSlots[0], c.cInt)
 		c.addPair(argSlots[1], c.cString)
+		if len(argSlots) == 3 {
+			c.addPair(argSlots[2], newSliceSlot(c, c.cString))
+		}
 		if ex.Callee == "sqlite_query" {
 			return c.cString, nil
 		}

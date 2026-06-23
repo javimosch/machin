@@ -1,6 +1,6 @@
 # The MFL Language Specification
 
-Version 0.26.0
+Version 0.27.0
 
 MFL (Machine-First Language) is a statically-typed, Go-flavored backend language
 **shaped for machine authoring**: minimal syntax, no type annotations, one
@@ -261,8 +261,8 @@ throughout the function body).
 | `sha256` | `(string) -> string` | SHA-256 of text, lowercase hex |
 | `hmac_sha256` | `(string, string) -> string` | HMAC-SHA256(key, message), lowercase hex |
 | `sqlite_open` | `(string) -> int` | open/create a SQLite db file → handle (0 on fail); `:memory:` for in-memory |
-| `sqlite_exec` | `(int, string) -> int` | run SQL with no result (CREATE/INSERT/…); 0 on success |
-| `sqlite_query` | `(int, string) -> string` | run a SELECT → JSON array of row objects (composes with `json_get`) |
+| `sqlite_exec` | `(int, string[, []string]) -> int` | run SQL with no result; an optional `[]string` binds the `?` placeholders (injection-safe); 0 on success |
+| `sqlite_query` | `(int, string[, []string]) -> string` | run a SELECT → JSON array of row objects; an optional `[]string` binds the `?` placeholders; composes with `json_get` |
 | `sqlite_close` | `(int) -> int` | close the database |
 | `regex_match` | `(string, string) -> bool` | does a POSIX ERE pattern match anywhere in s |
 | `regex_find` | `(string, string) -> string` | first ERE match in s (`""` if none) |
