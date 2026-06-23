@@ -3572,6 +3572,8 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("mfl_str_i(%s)", args[0]), nil
 	case "int":
 		return fmt.Sprintf("((int64_t)(%s))", args[0]), nil
+	case "float":
+		return fmt.Sprintf("((double)(%s))", args[0]), nil
 	case "dial":
 		return fmt.Sprintf("mfl_dial(%s, %s)", args[0], args[1]), nil
 	case "listen":

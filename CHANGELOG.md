@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.43.0
+
+- **`float()` — int → float conversion.** The counterpart to `int()`. MFL has no
+  implicit `int`→`float`: only a flexible numeric *literal* promotes against a
+  float; a *concrete* int (a function return, `byte_at`, `len`, a typed param, an
+  `int`-slice element, or an `f32`/`f64` FFI struct field) was a hard
+  `int vs float` mismatch. `float(x)` lifts it. Surfaced building the physics and
+  random-pipe placement in [machin-game-flappy](https://github.com/javimosch/machin-game-flappy),
+  where `byte_at`-derived randomness and pixel coordinates are all float.
+
 ## v0.42.0
 
 - **`str` accepts `bool` and `string`.** `str(true)` → `"true"`, `str(false)`

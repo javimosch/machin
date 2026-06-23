@@ -1,6 +1,6 @@
 # The MFL Language Specification
 
-Version 0.42.0
+Version 0.43.0
 
 MFL (Machine-First Language) is a statically-typed, Go-flavored backend language
 **shaped for machine authoring**: minimal syntax, no type annotations, one
@@ -179,8 +179,11 @@ throughout the function body).
 - **Bitwise** `& | ^ << >>` (and unary `^`, complement) are **`int`-only** —
   Go semantics and precedence (`<< >> &` bind like `* / %`; `| ^` like `+ -`).
 - **Arithmetic** `+ - * / %`: numeric operands. `/` of two `int` is integer
-  division; `%` is `int`-only. Mixing an `int` with a `float` promotes to
-  `float`.
+  division; `%` is `int`-only. A flexible numeric **literal** promotes to `float`
+  on contact (`3.0 + 2`), but a **concrete** `int` — a function return, `byte_at`,
+  `len`, a typed parameter, an `int`-slice element — does **not**; mixing it with
+  a `float` is an `int vs float` error. Convert it with `float(x)` (and `int(x)`
+  the other way). The same applies to `f32`/`f64` fields of FFI `cstruct`s.
 - **`+`** on two `string`s concatenates.
 - **Comparisons** yield `bool`; `&&`/`||` short-circuit.
 - **Indexing** `x[i]`: slice (by `int`) or map (by key); also map/slice
@@ -251,6 +254,7 @@ throughout the function body).
 | `len` | `(string\|slice\|map) -> int` | length |
 | `str` | `(int\|float\|bool\|string) -> string` | format a value: a number, a bool (`"true"`/`"false"`), or a string (identity) |
 | `int` | `(number) -> int` | truncate to int |
+| `float` | `(number) -> float` | `int` → `float` (identity on `float`); there is no implicit `int`→`float`, so a concrete `int` needs this to enter float arithmetic |
 | `append` | `([]T, T) -> []T` | grow a slice |
 | `has`, `delete` | `(map, K) -> bool` / `-> ` | membership / removal |
 | `keys` | `(map[K]V) -> []K` | a map's keys |

@@ -862,6 +862,27 @@ func TestBitwise(t *testing.T) {
 	}
 }
 
+// float() lifts a concrete int into float arithmetic (the counterpart to int()).
+// MFL has no implicit int->float, so a value typed int (a function return,
+// byte_at, len, ...) can't mix with a float without this.
+func TestFloatCast(t *testing.T) {
+	main := `func main() {
+	xs := []int{7, 0, 0}
+	avg := float(xs[0]) / 2.0
+	println(str(avg) + " " + str(float(3.5)) + " " + str(int(float(9))))
+}`
+	out, _ := buildRun(t, main)
+	want := "3.5 3.5 9\n"
+	if out != want {
+		t.Fatalf("float: got %q, want %q", out, want)
+	}
+	// float() of a non-number is a type error
+	bad := `func main() { println(str(float("x"))) }`
+	if _, err := CompileToC(&Program{Funcs: parseFuncs(t, bad)}, false); err == nil {
+		t.Fatal("float of a string should be a type error")
+	}
+}
+
 // str() over each accepted kind: number, bool, and string. Bool renders as
 // "true"/"false" (the papercut fix); a non-stringable kind is a clean error.
 func TestStrKinds(t *testing.T) {
