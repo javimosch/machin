@@ -660,6 +660,20 @@ func TestFlush(t *testing.T) {
 	}
 }
 
+// base64 encode/decode, round-trip, and lenient url-safe (JWT) decoding.
+func TestBase64(t *testing.T) {
+	main := `func main() {
+	e := base64_encode("hi machin")
+	rt := "no"  if base64_decode(e) == "hi machin" { rt = "yes" }
+	jwt := base64_decode("eyJhbGciOiJIUzI1NiJ9")
+	println(e + "|" + rt + "|" + jwt)
+}`
+	out, _ := buildRun(t, main)
+	if out != "aGkgbWFjaGlu|yes|{\"alg\":\"HS256\"}\n" {
+		t.Fatalf("base64: got %q", out)
+	}
+}
+
 // POSIX regex builtins: match, find, capture groups, and replace-all.
 func TestRegex(t *testing.T) {
 	main := `func main() {

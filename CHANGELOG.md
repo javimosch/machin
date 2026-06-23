@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.23.0
+
+- **Base64 builtins — `base64_encode`, `base64_decode`.** `base64_encode` emits
+  standard padded base64; `base64_decode` is lenient — it accepts the standard
+  and url-safe alphabets (`-`/`_`) and ignores padding/whitespace, so it also
+  decodes JWT segments. Pure C (no dependency), in the always-on runtime.
+  Surfaced building a JWT decoder.
+
 ## v0.22.0
 
 - **Regex builtins — `regex_match`, `regex_find`, `regex_groups`, `regex_replace`.**
