@@ -1805,6 +1805,12 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 			return 0, fmt.Errorf("flush: no args")
 		}
 		return c.cInt, nil
+	case "base64_encode", "base64_decode":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("%s: 1 arg (string)", ex.Callee)
+		}
+		c.addPair(argSlots[0], c.cString)
+		return c.cString, nil
 	case "regex_match":
 		if len(argSlots) != 2 {
 			return 0, fmt.Errorf("regex_match: 2 args (s, pattern)")

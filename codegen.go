@@ -338,6 +338,51 @@ static char* mfl_cat(const char* a, const char* b) {
 static char* mfl_str_i(int64_t v) { char* b = mfl_alloc(24); snprintf(b, 24, "%lld", (long long)v); return b; }
 static char* mfl_str_d(double v)  { char* b = mfl_alloc(32); snprintf(b, 32, "%g", v); return b; }
 static char* mfl_dup(const char* s) { size_t n = strlen(s); char* r = mfl_alloc(n+1); memcpy(r, s, n+1); return r; }
+/* base64 (standard alphabet, padded) over text. */
+static char* mfl_base64_encode(const char* s) {
+    static const char t[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    size_t n = strlen(s), j = 0, i = 0;
+    char* out = (char*)mfl_alloc(4 * ((n + 2) / 3) + 1);
+    for (; i + 3 <= n; i += 3) {
+        uint32_t v = ((uint32_t)(unsigned char)s[i] << 16) | ((uint32_t)(unsigned char)s[i+1] << 8) | (unsigned char)s[i+2];
+        out[j++] = t[(v >> 18) & 63]; out[j++] = t[(v >> 12) & 63];
+        out[j++] = t[(v >> 6) & 63];  out[j++] = t[v & 63];
+    }
+    if (n - i == 1) {
+        uint32_t v = (uint32_t)(unsigned char)s[i] << 16;
+        out[j++] = t[(v >> 18) & 63]; out[j++] = t[(v >> 12) & 63];
+        out[j++] = '='; out[j++] = '=';
+    } else if (n - i == 2) {
+        uint32_t v = ((uint32_t)(unsigned char)s[i] << 16) | ((uint32_t)(unsigned char)s[i+1] << 8);
+        out[j++] = t[(v >> 18) & 63]; out[j++] = t[(v >> 12) & 63];
+        out[j++] = t[(v >> 6) & 63];  out[j++] = '=';
+    }
+    out[j] = 0;
+    return out;
+}
+/* lenient base64 decode: accepts standard and url-safe ('-' '_'), ignores
+   padding/whitespace, so it also decodes JWT segments. "" for empty input. */
+static int mfl_b64val(int c) {
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+    if (c >= '0' && c <= '9') return c - '0' + 52;
+    if (c == '+' || c == '-') return 62;
+    if (c == '/' || c == '_') return 63;
+    return -1;
+}
+static char* mfl_base64_decode(const char* s) {
+    size_t n = strlen(s), j = 0;
+    char* out = (char*)mfl_alloc(n + 1);
+    int buf = 0, bits = 0;
+    for (size_t i = 0; i < n; i++) {
+        int v = mfl_b64val((unsigned char)s[i]);
+        if (v < 0) continue;
+        buf = (buf << 6) | v; bits += 6;
+        if (bits >= 8) { bits -= 8; out[j++] = (char)((buf >> bits) & 0xFF); }
+    }
+    out[j] = 0;
+    return out;
+}
 static char* mfl_json_str(const char* s) { /* quote + escape a string */
     if (!s) s = "";
     size_t n = strlen(s), j = 0;
@@ -2661,6 +2706,10 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("mfl_exit(%s)", args[0]), nil
 	case "flush":
 		return "mfl_flush()", nil
+	case "base64_encode":
+		return fmt.Sprintf("mfl_base64_encode(%s)", args[0]), nil
+	case "base64_decode":
+		return fmt.Sprintf("mfl_base64_decode(%s)", args[0]), nil
 	case "regex_match":
 		g.usesRegex = true
 		return fmt.Sprintf("mfl_regex_match(%s, %s)", args[0], args[1]), nil
