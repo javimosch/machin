@@ -36,7 +36,9 @@ A handler is a closure `func(Request) Response`. `serve(port, handler)` runs the
 server, dispatching every request to it in its own goroutine (whose memory is
 reclaimed when the response is sent).
 
-**Request** — `req.method`, `req.path`, `req.body`. The full request body is
+**Request** — `req.method`, `req.path`, `req.body`, and `header(req, name)` for a
+request header (case-insensitive; `""` if absent — handy for `Authorization`).
+The full request body is
 read before dispatch (it keeps reading until `Content-Length` bytes arrive, so a
 `POST` whose body lands in a later TCP segment than its headers — as browsers
 often send — still parses).

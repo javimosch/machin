@@ -9,9 +9,10 @@
 // own goroutine; the goroutine's memory is reclaimed when the response is sent.
 
 type Request struct {
-    method string
-    path   string
-    body   string
+    method  string
+    path    string
+    body    string
+    headers map[string]string   // lowercased header name -> value; read via header(req, name)
 }
 
 type Response struct {
@@ -35,7 +36,24 @@ func not_found() (r) { r = response("404 Not Found", "text/plain", "not found") 
 
 // ---- request helpers ----
 
-// parse_request extracts the method, path, and body from a raw HTTP request.
+// parse_headers builds a map of the request headers (names lowercased), reading
+// the lines between the request line and the blank line before the body.
+func parse_headers(raw) (h) {
+    h = make(map[string]string)
+    start := index(raw, "\r\n")
+    if start < 0 { return }
+    sep := index(raw, "\r\n\r\n")
+    if sep < 0 { sep = len(raw) }
+    block := substr(raw, start + 2, sep)
+    for _, line := range split(block, "\r\n") {
+        ci := index(line, ":")
+        if ci > 0 {
+            h[to_lower(trim(substr(line, 0, ci)))] = trim(substr(line, ci + 1, len(line)))
+        }
+    }
+}
+
+// parse_request extracts the method, path, headers, and body from a raw request.
 func parse_request(raw) (req) {
     nl := index(raw, "\r\n")
     line := substr(raw, 0, nl)
@@ -46,7 +64,14 @@ func parse_request(raw) (req) {
         m = parts[0]
         p = parts[1]
     }
-    req = Request{method: m, path: p, body: http_body(raw)}
+    req = Request{method: m, path: p, body: http_body(raw), headers: parse_headers(raw)}
+}
+
+// header returns a request header value (case-insensitive), or "" if absent.
+func header(req, name) (v) {
+    v = ""
+    k := to_lower(name)
+    if has(req.headers, k) { v = req.headers[k] }
 }
 
 // param returns the path segment after a prefix:
