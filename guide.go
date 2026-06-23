@@ -9,7 +9,7 @@ import (
 
 // machinVersion is the single version string for the toolchain. Bump it when
 // cutting a release (alongside README badge / SPEC / CHANGELOG).
-const machinVersion = "0.28.0"
+const machinVersion = "0.29.0"
 
 // ---- the source-of-truth feature catalog ----
 //
@@ -88,6 +88,7 @@ func machinGuide() guideCatalog {
 			{"now_ms", "() -> int", "wall-clock milliseconds", "time"},
 			{"sleep", "(int) ->", "pause for N milliseconds", "time"},
 			{"time_fields", "(int) -> []int", "decompose a unix timestamp (local) -> [year,month,day,hour,min,sec,weekday(0=Sun),yearday]", "time"},
+			{"time_format", "(int, string) -> string", "format a unix timestamp (local) with a strftime pattern (%Y %m %d %H %M %S %A %B %z %Z %F %T ...)", "time"},
 			// convert
 			{"str", "(int|float) -> string", "format a number", "convert"},
 			{"int", "(number) -> int", "truncate to int", "convert"},

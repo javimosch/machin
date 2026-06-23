@@ -662,6 +662,19 @@ static mfl_slice mfl_time_fields(int64_t unix) {
     memcpy(s.data, v, sizeof(v));
     return s;
 }
+/* format a Unix timestamp (local time) with a strftime(3) pattern:
+   %Y %m %d %H %M %S %A %a %B %b %p %j %z %Z %F %T ... ("" if it overflows) */
+static char* mfl_time_format(int64_t unix, const char* fmt) {
+    time_t t = (time_t)unix;
+    struct tm tmv;
+    localtime_r(&t, &tmv);
+    char buf[512];
+    size_t n = strftime(buf, sizeof(buf), fmt, &tmv);
+    char* out = mfl_alloc(n + 1);
+    memcpy(out, buf, n);
+    out[n] = 0;
+    return out;
+}
 static int64_t mfl_parse_int(const char* s) { return (int64_t)strtoll(s, NULL, 10); }
 
 /* file system: read/write whole files, list a directory, make a directory */
@@ -2990,6 +3003,8 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return "mfl_now_ms()", nil
 	case "time_fields":
 		return fmt.Sprintf("mfl_time_fields(%s)", args[0]), nil
+	case "time_format":
+		return fmt.Sprintf("mfl_time_format(%s, %s)", args[0], args[1]), nil
 	case "parse_int":
 		return fmt.Sprintf("mfl_parse_int(%s)", args[0]), nil
 	case "read_file":

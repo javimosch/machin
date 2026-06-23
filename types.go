@@ -1761,6 +1761,13 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		}
 		c.addPair(argSlots[0], c.cInt)
 		return newSliceSlot(c, c.cInt), nil
+	case "time_format":
+		if len(argSlots) != 2 {
+			return 0, fmt.Errorf("time_format: 2 args (unix seconds, strftime pattern)")
+		}
+		c.addPair(argSlots[0], c.cInt)
+		c.addPair(argSlots[1], c.cString)
+		return c.cString, nil
 	case "parse_int":
 		if len(argSlots) != 1 {
 			return 0, fmt.Errorf("parse_int: 1 arg (string)")
