@@ -2780,7 +2780,11 @@ func (g *cgen) expr(e Expr) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		return "(" + ex.Op + x + ")", nil
+		op := ex.Op
+		if op == "^" { // MFL bitwise complement -> C's ~
+			op = "~"
+		}
+		return "(" + op + x + ")", nil
 	case *Binary:
 		return g.binary(ex)
 	case *Call:

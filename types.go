@@ -1224,6 +1224,10 @@ func (c *Checker) genExprInner(fn *FuncDecl, e Expr) (int, error) {
 			c.addPair(xs, c.cBool)
 			return c.cBool, nil
 		}
+		if ex.Op == "^" {              // bitwise complement: int-only
+			c.addPair(xs, c.cInt)
+			return xs, nil
+		}
 		c.addPair(xs, newSlot(c, KNum))
 		return xs, nil
 	case *Binary:
@@ -1353,9 +1357,9 @@ func (c *Checker) genBinary(fn *FuncDecl, ex *Binary) (int, error) {
 		c.addPair(ls, rs)
 		c.addPair(ls, newSlot(c, KNum))
 		return ls, nil
-	case "%":
-		// C's % is integer-only; reject float operands at type-check time
-		// so the user gets a clean MFL error instead of leaked cc output.
+	case "%", "&", "|", "^", "<<", ">>":
+		// integer-only operators (C's %, &, |, ^, <<, >>); reject non-int operands
+		// at type-check time so the user gets a clean MFL error, not leaked cc output.
 		c.addPair(ls, rs)
 		c.addPair(ls, c.cInt)
 		return ls, nil

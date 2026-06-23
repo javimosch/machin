@@ -1,6 +1,6 @@
 # The MFL Language Specification
 
-Version 0.39.0
+Version 0.40.0
 
 MFL (Machine-First Language) is a statically-typed, Go-flavored backend language
 **shaped for machine authoring**: minimal syntax, no type annotations, one
@@ -75,12 +75,13 @@ The decoded text of a declaration is tokenized as follows.
 - **Comments.** `// ...` to end of line. (Stripped during encoding; not present
   in the canonical single-line form.)
 - **Identifiers.** `[A-Za-z_][A-Za-z0-9_]*`. `_` is the blank identifier.
-- **Integer literals.** decimal digits, e.g. `0`, `42`.
+- **Integer literals.** decimal (`42`), hex (`0xff`), binary (`0b1010`), or octal
+  (`0o17`); underscores allowed as separators (`0xff_00`).
 - **Float literals.** digits with a `.`, e.g. `3.14`, `0.5`.
 - **String literals.** `"..."` with escapes `\n \t \r \" \\`.
 - **Keywords.** `func return if else while for range true false nil var go type
   struct chan make map arena extern break continue select`.
-- **Operators and punctuation.** `+ - * / % == != < <= > >= && || ! = := <- .
+- **Operators and punctuation.** `+ - * / % & | ^ << >> == != < <= > >= && || ! = := <- .
   : , ; ( ) { } [ ]`.
 
 ---
@@ -174,7 +175,9 @@ throughout the function body).
 - **Composite literals:** `[]T{...}`, `T{f: v, ...}` / `T{v, ...}`.
 - **Construction:** `make(map[K]V)`, `make(chan T)`, `func(params){...}`.
 - **Operators**, by increasing precedence:
-  `||` · `&&` · `== != < <= > >=` · `+ -` · `* / %` · unary `- ! <-`.
+  `||` · `&&` · `== != < <= > >=` · `+ - | ^` · `* / % << >> &` · unary `- ! ^ <-`.
+- **Bitwise** `& | ^ << >>` (and unary `^`, complement) are **`int`-only** —
+  Go semantics and precedence (`<< >> &` bind like `* / %`; `| ^` like `+ -`).
 - **Arithmetic** `+ - * / %`: numeric operands. `/` of two `int` is integer
   division; `%` is `int`-only. Mixing an `int` with a `float` promotes to
   `float`.

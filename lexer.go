@@ -74,6 +74,18 @@ func Lex(src string) ([]Token, error) {
 
 func (l *Lexer) lexNumber() {
 	start := l.pos
+	// hex (0x) / binary (0b) / octal (0o) integer literals
+	if l.src[l.pos] == '0' && l.pos+1 < len(l.src) {
+		p := l.src[l.pos+1]
+		if p == 'x' || p == 'X' || p == 'b' || p == 'B' || p == 'o' || p == 'O' {
+			l.pos += 2
+			for l.pos < len(l.src) && isAlnum(l.src[l.pos]) {
+				l.pos++
+			}
+			l.toks = append(l.toks, Token{Kind: TInt, Val: l.src[start:l.pos], Pos: start})
+			return
+		}
+	}
 	isFloat := false
 	for l.pos < len(l.src) && (isDigit(l.src[l.pos]) || l.src[l.pos] == '.') {
 		if l.src[l.pos] == '.' {
@@ -149,7 +161,7 @@ func (l *Lexer) lexOpOrPunct() error {
 		two = l.src[l.pos : l.pos+2]
 	}
 	switch two {
-	case "==", "!=", "<=", ">=", "&&", "||", ":=", "<-":
+	case "==", "!=", "<=", ">=", "&&", "||", ":=", "<-", "<<", ">>":
 		l.pos += 2
 		l.toks = append(l.toks, Token{Kind: TOp, Val: two, Pos: start})
 		return nil
@@ -159,7 +171,7 @@ func (l *Lexer) lexOpOrPunct() error {
 		l.pos++
 		l.toks = append(l.toks, Token{Kind: TPunct, Val: string(c), Pos: start})
 		return nil
-	case '+', '-', '*', '/', '%', '<', '>', '!', '=':
+	case '+', '-', '*', '/', '%', '<', '>', '!', '=', '&', '|', '^':
 		l.pos++
 		l.toks = append(l.toks, Token{Kind: TOp, Val: string(c), Pos: start})
 		return nil
