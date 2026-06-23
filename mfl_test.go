@@ -660,6 +660,20 @@ func TestFlush(t *testing.T) {
 	}
 }
 
+// SHA-256 and HMAC-SHA256 against published test vectors (must be byte-exact).
+func TestHashes(t *testing.T) {
+	main := `func main() {
+	println(sha256("abc"))
+	println(hmac_sha256("key", "The quick brown fox jumps over the lazy dog"))
+}`
+	out, _ := buildRun(t, main)
+	want := "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\n" +
+		"f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8\n"
+	if out != want {
+		t.Fatalf("hash: got %q, want %q", out, want)
+	}
+}
+
 // base64 encode/decode, round-trip, and lenient url-safe (JWT) decoding.
 func TestBase64(t *testing.T) {
 	main := `func main() {

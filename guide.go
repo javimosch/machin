@@ -9,7 +9,7 @@ import (
 
 // machinVersion is the single version string for the toolchain. Bump it when
 // cutting a release (alongside README badge / SPEC / CHANGELOG).
-const machinVersion = "0.23.0"
+const machinVersion = "0.24.0"
 
 // ---- the source-of-truth feature catalog ----
 //
@@ -111,6 +111,8 @@ func machinGuide() guideCatalog {
 			{"join", "([]string, string) -> string", "join with a separator", "string"},
 			{"base64_encode", "(string) -> string", "base64-encode text (standard, padded)", "string"},
 			{"base64_decode", "(string) -> string", "base64-decode (lenient: standard + url-safe; ignores padding)", "string"},
+			{"sha256", "(string) -> string", "SHA-256 of text, lowercase hex", "crypto"},
+			{"hmac_sha256", "(string, string) -> string", "HMAC-SHA256(key, message), lowercase hex (webhook signatures)", "crypto"},
 			// regex (POSIX extended)
 			{"regex_match", "(string, string) -> bool", "does the ERE pattern match anywhere in s", "regex"},
 			{"regex_find", "(string, string) -> string", "first ERE match in s (\"\" if none)", "regex"},
