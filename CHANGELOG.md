@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.24.0
+
+- **Hash builtins — `sha256`, `hmac_sha256`.** `sha256(s)` and
+  `hmac_sha256(key, msg)` return a lowercase hex digest. Pure C (no dependency),
+  byte-exact against `sha256sum`/`openssl` (FIPS-180-4 + RFC 2104 test vectors).
+  The common use is verifying webhook signatures (GitHub `X-Hub-Signature-256`,
+  Stripe). Surfaced building a webhook signature verifier; completes the
+  decode-then-verify story machin-jwt started.
+
 ## v0.23.0
 
 - **Base64 builtins — `base64_encode`, `base64_decode`.** `base64_encode` emits
