@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.46.1
+
+- **docs:** fix the guide's `ffi-nested-cstruct` gotcha, which still said "no
+  native sin/cos/sqrt yet" after v0.46.0 added them; point to the `math` builtins
+  instead. Refresh the `machin-gamedev` skill's math note + dogfood record.
+
 ## v0.46.0
 
 - **Native math builtins.** A floating-point math suite over libm:
