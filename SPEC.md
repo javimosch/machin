@@ -1,6 +1,6 @@
 # The MFL Language Specification
 
-Version 0.24.0
+Version 0.25.0
 
 MFL (Machine-First Language) is a statically-typed, Go-flavored backend language
 **shaped for machine authoring**: minimal syntax, no type annotations, one
@@ -226,6 +226,7 @@ throughout the function body).
 |---------|-----------|---------|
 | `print`, `println` | `(...) -> ` | write arguments (no / trailing newline) |
 | `input` | `() -> string` | read one line from stdin (newline stripped; `""` at EOF) |
+| `read_stdin` | `() -> string` | read all of stdin verbatim until EOF (exact bytes; no line splitting) |
 | `args` | `() -> []string` | command-line arguments (`args()[0]` is the program path) |
 | `env` | `(string) -> string` | environment variable (`""` if unset) |
 | `now` | `() -> int` | wall-clock time in Unix seconds |

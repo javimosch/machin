@@ -623,6 +623,20 @@ static char* mfl_input(void) {
     buf[len] = 0;
     return buf;
 }
+/* read all of stdin verbatim until EOF (no line splitting). Exact for text;
+   an embedded NUL would truncate the string view (machin strings are C strings). */
+static char* mfl_read_stdin(void) {
+    size_t cap = 65536, len = 0;
+    char* buf = (char*)malloc(cap);
+    size_t n;
+    while ((n = fread(buf + len, 1, cap - len - 1, stdin)) > 0) {
+        len += n;
+        if (len + 1 >= cap) { cap *= 2; buf = (char*)realloc(buf, cap); }
+    }
+    char* r = mfl_dup_arena(buf, len);
+    free(buf);
+    return r;
+}
 
 /* command-line arguments, environment, and wall-clock time */
 static int mfl_argc = 0;
@@ -2830,6 +2844,8 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("mfl_close(%s)", args[0]), nil
 	case "input":
 		return "mfl_input()", nil
+	case "read_stdin":
+		return "mfl_read_stdin()", nil
 	case "args":
 		return "mfl_args()", nil
 	case "env":
