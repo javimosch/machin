@@ -1,6 +1,6 @@
 # The MFL Language Specification
 
-Version 0.32.0
+Version 0.33.0
 
 MFL (Machine-First Language) is a statically-typed, Go-flavored backend language
 **shaped for machine authoring**: minimal syntax, no type annotations, one
@@ -282,6 +282,7 @@ throughout the function body).
 | `https_get` | `(string) -> string` | HTTPS GET over TLS; response body ("" on error) |
 | `https_post` | `(string, string) -> string` | HTTPS POST (JSON body) over TLS; response body |
 | `http_get` | `(string) -> (int, string, string)` | GET returning `(status, body, err)`; `err==""` ⇒ a response, else `"dns"`/`"connect"`/`"tls"`/`"scheme"`. Multi-assign only. |
+| `http_request` | `(string, string, []string, string) -> (int, string, string)` | authenticated HTTPS: `(method, url, header lines, body)` → `(status, body, err)`. Each header is a `"Key: Value"` line (e.g. `"Authorization: Bearer …"`); caller owns `Content-Type`. Multi-assign only. |
 | `wss_open` | `(string) -> int` | open a `wss://` WebSocket; a connection handle, or 0 on failure |
 | `wss_send` | `(int, string) -> int` | send a text message on a WebSocket |
 | `wss_recv` | `(int) -> string` | next message (blocks); `""` on close (auto ping/pong) |
