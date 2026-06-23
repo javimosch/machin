@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.28.0
+
+- **`time_fields(unix)` builtin.** Decompose a Unix timestamp (local time) into
+  `[year, month, day, hour, minute, second, weekday(0=Sun), yearday]` — the
+  calendar view machin lacked (it had `now()` but no way to read its parts).
+  Backed by `localtime_r`. Surfaced building a cron-expression evaluator.
+
 ## v0.27.0
 
 - **Parameterized SQLite queries.** `sqlite_exec` and `sqlite_query` now take an

@@ -650,6 +650,18 @@ static mfl_slice mfl_args(void) {
 static char* mfl_env(const char* k) { char* v = getenv(k); return v ? v : ""; }
 static int64_t mfl_now(void) { return (int64_t)time(NULL); }
 static int64_t mfl_now_ms(void) { struct timeval tv; gettimeofday(&tv, NULL); return (int64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000; }
+/* decompose a Unix timestamp (local time) into
+   [year, month(1-12), day(1-31), hour, minute, second, weekday(0=Sun), yearday(1-366)] */
+static mfl_slice mfl_time_fields(int64_t unix) {
+    time_t t = (time_t)unix;
+    struct tm tmv;
+    localtime_r(&t, &tmv);
+    int64_t v[8] = { tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday,
+        tmv.tm_hour, tmv.tm_min, tmv.tm_sec, tmv.tm_wday, tmv.tm_yday + 1 };
+    mfl_slice s = { mfl_alloc(8 * sizeof(int64_t)), 8, 8 };
+    memcpy(s.data, v, sizeof(v));
+    return s;
+}
 static int64_t mfl_parse_int(const char* s) { return (int64_t)strtoll(s, NULL, 10); }
 
 /* file system: read/write whole files, list a directory, make a directory */
@@ -2976,6 +2988,8 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return "mfl_now()", nil
 	case "now_ms":
 		return "mfl_now_ms()", nil
+	case "time_fields":
+		return fmt.Sprintf("mfl_time_fields(%s)", args[0]), nil
 	case "parse_int":
 		return fmt.Sprintf("mfl_parse_int(%s)", args[0]), nil
 	case "read_file":

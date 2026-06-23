@@ -1755,6 +1755,12 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 			return 0, fmt.Errorf("now_ms: no args")
 		}
 		return c.cInt, nil
+	case "time_fields":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("time_fields: 1 arg (unix seconds)")
+		}
+		c.addPair(argSlots[0], c.cInt)
+		return newSliceSlot(c, c.cInt), nil
 	case "parse_int":
 		if len(argSlots) != 1 {
 			return 0, fmt.Errorf("parse_int: 1 arg (string)")
