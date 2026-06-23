@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.46.0
+
+- **Native math builtins.** A floating-point math suite over libm:
+  `sin cos tan asin acos atan atan2 sqrt cbrt pow exp log log2 log10 floor ceil
+  round trunc abs fmod hypot` and `pi()`. Numeric in, `float` out; libm is linked
+  (`-lm`) and the runtime emitted **only when a math builtin is used**, so
+  math-free programs keep their libc-only footprint. An `extern` declaration of
+  the same name still shadows the builtin (so existing `extern "m" { fn sqrt ... }`
+  code is unchanged). Surfaced by [machin-demo-3d](https://github.com/javimosch/machin-demo-3d),
+  which had to reach libm via `extern "m"` for its camera orbit — now `sin`/`cos`
+  are native. The driver for procedural-animation apps.
+
 ## v0.45.0
 
 - **FFI nested cstructs.** A `cstruct` field may now be another declared

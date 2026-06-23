@@ -1594,6 +1594,18 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		}
 		argSlots[i] = s
 	}
+	// An explicit extern declaration shadows a builtin of the same name, so a
+	// program that declares e.g. `fn sqrt(float) float` gets its extern rather
+	// than the math builtin.
+	if ef, ok := c.externs[ex.Callee]; ok {
+		if len(argSlots) != len(ef.Params) {
+			return 0, fmt.Errorf("%s: expected %d args, got %d", ef.Name, len(ef.Params), len(argSlots))
+		}
+		for i, pt := range ef.Params {
+			c.addPair(argSlots[i], c.ffiSlot(pt))
+		}
+		return c.ffiSlot(ef.Ret), nil
+	}
 	switch ex.Callee {
 	case "print", "println":
 		return c.cVoid, nil
@@ -1858,6 +1870,25 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		}
 		c.addPair(argSlots[0], newSlot(c, KNum))
 		return c.cFloat, nil
+	case "sin", "cos", "tan", "asin", "acos", "atan", "exp", "log", "log2", "log10", "sqrt", "cbrt", "floor", "ceil", "round", "trunc", "abs":
+		// native math (libm): numeric in, float out
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("%s: 1 arg", ex.Callee)
+		}
+		c.addPair(argSlots[0], newSlot(c, KNum))
+		return c.cFloat, nil
+	case "pow", "atan2", "fmod", "hypot":
+		if len(argSlots) != 2 {
+			return 0, fmt.Errorf("%s: 2 args", ex.Callee)
+		}
+		c.addPair(argSlots[0], newSlot(c, KNum))
+		c.addPair(argSlots[1], newSlot(c, KNum))
+		return c.cFloat, nil
+	case "pi":
+		if len(argSlots) != 0 {
+			return 0, fmt.Errorf("pi: no args")
+		}
+		return c.cFloat, nil
 	case "listen", "accept":
 		if len(argSlots) != 1 {
 			return 0, fmt.Errorf("%s: 1 arg", ex.Callee)
@@ -2120,16 +2151,6 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		// arg is an fd (int) or a channel — codegen dispatches on its kind. Don't
 		// pin it to int, so close(ch) type-checks.
 		return c.cVoid, nil
-	}
-	if ef, ok := c.externs[ex.Callee]; ok {
-		// a foreign C function: fixed signature, compiled to a direct C call
-		if len(argSlots) != len(ef.Params) {
-			return 0, fmt.Errorf("%s: expected %d args, got %d", ef.Name, len(ef.Params), len(argSlots))
-		}
-		for i, pt := range ef.Params {
-			c.addPair(argSlots[i], c.ffiSlot(pt))
-		}
-		return c.ffiSlot(ef.Ret), nil
 	}
 	if _, isFunc := c.funcs[ex.Callee]; !isFunc {
 		// not a top-level function — maybe a function-valued local variable

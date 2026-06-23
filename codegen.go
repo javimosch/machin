@@ -67,6 +67,7 @@ type cgen struct {
 	usesSQLite bool  // program calls sqlite_* -> emit SQLite runtime + link -lsqlite3
 	usesCrypto bool  // program calls crypto builtins -> emit crypto runtime + link -lcrypto
 	usesXEdDSA bool  // program calls xeddsa_* -> emit XEdDSA runtime + link -lsodium -lcrypto
+	usesMath  bool   // program calls math builtins (sin/cos/sqrt/...) -> emit math runtime + link -lm
 }
 
 const cRuntime = `#define _GNU_SOURCE
@@ -1485,6 +1486,35 @@ static int64_t mfl_wss_close(int64_t h) {
 }
 `
 
+// mathRuntime is the native floating-point math suite over libm's <math.h>,
+// emitted (and linked -lm) only when a program calls a math builtin. Each is a
+// thin wrapper named mfl_math_<libm-name> on a double; machin's float is double,
+// so signatures line up exactly. _GNU_SOURCE (set in cRuntime) exposes M_PI.
+const mathRuntime = `#include <math.h>
+static double mfl_math_sin(double x){return sin(x);}
+static double mfl_math_cos(double x){return cos(x);}
+static double mfl_math_tan(double x){return tan(x);}
+static double mfl_math_asin(double x){return asin(x);}
+static double mfl_math_acos(double x){return acos(x);}
+static double mfl_math_atan(double x){return atan(x);}
+static double mfl_math_exp(double x){return exp(x);}
+static double mfl_math_log(double x){return log(x);}
+static double mfl_math_log2(double x){return log2(x);}
+static double mfl_math_log10(double x){return log10(x);}
+static double mfl_math_sqrt(double x){return sqrt(x);}
+static double mfl_math_cbrt(double x){return cbrt(x);}
+static double mfl_math_floor(double x){return floor(x);}
+static double mfl_math_ceil(double x){return ceil(x);}
+static double mfl_math_round(double x){return round(x);}
+static double mfl_math_trunc(double x){return trunc(x);}
+static double mfl_math_fabs(double x){return fabs(x);}
+static double mfl_math_pow(double a,double b){return pow(a,b);}
+static double mfl_math_atan2(double a,double b){return atan2(a,b);}
+static double mfl_math_fmod(double a,double b){return fmod(a,b);}
+static double mfl_math_hypot(double a,double b){return hypot(a,b);}
+static double mfl_math_pi(void){return M_PI;}
+`
+
 // regexRuntime is POSIX extended-regex (ERE) support via libc's <regex.h>,
 // emitted only when a program calls regex_*. match/find/groups/replace operate
 // on the subject first (like the other string builtins). A bad pattern fails
@@ -2034,6 +2064,12 @@ func (g *cgen) program(p *Program) (string, error) {
 	}
 	if g.usesWSS {
 		out.WriteString(wssRuntime)
+		out.WriteByte('\n')
+	}
+	if g.usesMath {
+		// native math (libm) — emitted and linked (-lm) only when a program calls a
+		// math builtin, so math-free programs keep machin's libc-only footprint.
+		out.WriteString(mathRuntime)
 		out.WriteByte('\n')
 	}
 	if g.usesRegex {
@@ -3414,6 +3450,30 @@ func (g *cgen) call(ex *Call) (string, error) {
 }
 
 func (g *cgen) callBody(ex *Call, args []string) (string, error) {
+	// An explicit extern declaration shadows a builtin of the same name (matches
+	// the type-checker), so a declared `fn sqrt(float) float` is called, not the
+	// math builtin.
+	if ef := g.c.ExternFn(ex.Callee); ef != nil {
+		parts := make([]string, len(args))
+		for i, a := range args {
+			switch pt := ef.Params[i]; {
+			case pt == "ptr": // MFL int -> opaque void*
+				parts[i] = fmt.Sprintf("(void*)(intptr_t)(%s)", a)
+			case isFFIScalar(pt):
+				parts[i] = fmt.Sprintf("(%s)(%s)", ffiCType(pt), a)
+			default: // a cstruct, marshaled into the C layout
+				parts[i] = fmt.Sprintf("mfl_to_%s(%s)", pt, a)
+			}
+		}
+		call := fmt.Sprintf("%s(%s)", ef.Name, strings.Join(parts, ", "))
+		switch {
+		case ef.Ret == "ptr": // void* -> MFL int
+			return fmt.Sprintf("(int64_t)(intptr_t)(%s)", call), nil
+		case ef.Ret != "" && !isFFIScalar(ef.Ret):
+			return fmt.Sprintf("mfl_from_%s(%s)", ef.Ret, call), nil
+		}
+		return call, nil
+	}
 	switch ex.Callee {
 	case "len":
 		switch g.c.NodeKind(g.curFn, ex.Args[0]) {
@@ -3600,6 +3660,19 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("((int64_t)(%s))", args[0]), nil
 	case "float":
 		return fmt.Sprintf("((double)(%s))", args[0]), nil
+	case "sin", "cos", "tan", "asin", "acos", "atan", "exp", "log", "log2", "log10", "sqrt", "cbrt", "floor", "ceil", "round", "trunc", "abs":
+		g.usesMath = true
+		fn := ex.Callee
+		if fn == "abs" {
+			fn = "fabs"
+		}
+		return fmt.Sprintf("mfl_math_%s((double)(%s))", fn, args[0]), nil
+	case "pow", "atan2", "fmod", "hypot":
+		g.usesMath = true
+		return fmt.Sprintf("mfl_math_%s((double)(%s), (double)(%s))", ex.Callee, args[0], args[1]), nil
+	case "pi":
+		g.usesMath = true
+		return "mfl_math_pi()", nil
 	case "dial":
 		return fmt.Sprintf("mfl_dial(%s, %s)", args[0], args[1]), nil
 	case "listen":
@@ -3671,29 +3744,6 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("mfl_wss_close(%s)", args[0]), nil
 	case "print", "println":
 		return "", fmt.Errorf("print/println may only be used as a statement")
-	}
-	if ef := g.c.ExternFn(ex.Callee); ef != nil {
-		// a foreign C function: cast scalar args to their C type and marshal
-		// struct args into the C layout; marshal a struct return back to MFL.
-		parts := make([]string, len(args))
-		for i, a := range args {
-			switch pt := ef.Params[i]; {
-			case pt == "ptr": // MFL int -> opaque void*
-				parts[i] = fmt.Sprintf("(void*)(intptr_t)(%s)", a)
-			case isFFIScalar(pt):
-				parts[i] = fmt.Sprintf("(%s)(%s)", ffiCType(pt), a)
-			default: // a cstruct, marshaled into the C layout
-				parts[i] = fmt.Sprintf("mfl_to_%s(%s)", pt, a)
-			}
-		}
-		call := fmt.Sprintf("%s(%s)", ef.Name, strings.Join(parts, ", "))
-		switch {
-		case ef.Ret == "ptr": // void* -> MFL int
-			return fmt.Sprintf("(int64_t)(intptr_t)(%s)", call), nil
-		case ef.Ret != "" && !isFFIScalar(ef.Ret):
-			return fmt.Sprintf("mfl_from_%s(%s)", ef.Ret, call), nil
-		}
-		return call, nil
 	}
 	if !g.c.IsTopFunc(ex.Callee) {
 		// a function-valued local variable, called by name
