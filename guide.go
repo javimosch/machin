@@ -9,7 +9,7 @@ import (
 
 // machinVersion is the single version string for the toolchain. Bump it when
 // cutting a release (alongside README badge / SPEC / CHANGELOG).
-const machinVersion = "0.24.0"
+const machinVersion = "0.25.0"
 
 // ---- the source-of-truth feature catalog ----
 //
@@ -73,6 +73,7 @@ func machinGuide() guideCatalog {
 			{"print", "(...) ->", "write args, no trailing newline", "io"},
 			{"println", "(...) ->", "write args + trailing newline", "io"},
 			{"input", "() -> string", "read one stdin line (newline stripped; \"\" at EOF)", "io"},
+			{"read_stdin", "() -> string", "read all of stdin verbatim until EOF (exact bytes; no line splitting)", "io"},
 			{"flush", "() ->", "flush buffered stdout (prompt output through a pipe)", "io"},
 			{"read_file", "(string) -> string", "read a whole file (\"\" on error)", "io"},
 			{"write_file", "(string, string) -> int", "write a file (bytes; -1 on error)", "io"},

@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.25.0
+
+- **`read_stdin()` builtin.** Reads all of stdin verbatim until EOF — exact
+  bytes, no line splitting — unlike the line-based `input()` (which strips
+  newlines and loses the trailing-newline distinction). This is what lets a tool
+  process its input byte-exact (an exact byte count, a precise webhook body, a
+  binary-ish payload). Surfaced building a `wc` clone.
+
 ## v0.24.0
 
 - **Hash builtins — `sha256`, `hmac_sha256`.** `sha256(s)` and
