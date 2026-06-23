@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.29.0
+
+- **`time_format(unix, fmt)` builtin.** Format a Unix timestamp (local time) with
+  a `strftime(3)` pattern — `%Y-%m-%d`, `%H:%M:%S`, weekday/month names (`%A`/`%B`),
+  zone name/offset (`%Z`/`%z`), `%F`, `%T`, and the rest. The pieces `time_fields`
+  can't give you (locale names, zone). Surfaced building machin-date (a `date(1)` clone).
+
 ## v0.28.0
 
 - **`time_fields(unix)` builtin.** Decompose a Unix timestamp (local time) into
