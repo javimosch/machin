@@ -756,6 +756,23 @@ func TestBytes(t *testing.T) {
 	}
 }
 
+// bytes is a first-class declarable type: usable as a struct field (and mutable),
+// a map value, and a function return — not just an inferred local.
+func TestBytesDeclarable(t *testing.T) {
+	out := runProg(t,
+		`type Box struct { id int  data bytes }`,
+		`func main() {
+	b := Box{id: 7, data: from_hex("deadbeef")}
+	b.data = bytes_concat(b.data, from_hex("99"))
+	m := make(map[string]bytes)
+	m["k"] = from_hex("00ff")
+	println(str(b.id) + " " + to_hex(b.data) + " " + to_hex(m["k"]))
+}`)
+	if out != "7 deadbeef99 00ff\n" {
+		t.Fatalf("declarable bytes: got %q", out)
+	}
+}
+
 // The OpenSSL-backed crypto builtins over bytes: digests match known vectors,
 // X25519 agreement holds, Ed25519 sign/verify works (and rejects tampering), and
 // AES-GCM round-trips (with auth failure -> empty on a wrong AAD).

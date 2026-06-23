@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.37.0
+
+- **`bytes` is now a first-class declarable type.** It was inference-only (locals
+  from `bytes()`/crypto builtins); now it's usable in `struct` fields, `map`
+  values (`map[string]bytes`), and `[]bytes`, so you can hold binary state in a
+  record — needed for protocol state machines (e.g. a Noise handshake). One-line
+  type-checker change; the C type (`mfl_bytes`) already existed.
+
 ## v0.36.0
 
 - **Binary WebSocket frames: `wss_send_bin(conn, bytes)` / `wss_recv_bin(conn) -> bytes`.**

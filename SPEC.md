@@ -1,6 +1,6 @@
 # The MFL Language Specification
 
-Version 0.36.0
+Version 0.37.0
 
 MFL (Machine-First Language) is a statically-typed, Go-flavored backend language
 **shaped for machine authoring**: minimal syntax, no type annotations, one
@@ -123,8 +123,8 @@ type User struct {
 }
 ```
 
-A field type is `int`, `float`, `bool`, `string`, `[]T`, `map[K]V`, `func` (a
-function value), or another struct name. Structs have **value semantics**:
+A field type is `int`, `float`, `bool`, `string`, `bytes`, `[]T`, `map[K]V`,
+`func` (a function value), or another struct name. Structs have **value semantics**:
 assigning or passing one copies it.
 
 The `func` type denotes a function value whose signature is inferred from use —
