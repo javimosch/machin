@@ -87,16 +87,17 @@ JS becomes a tiny host that applies a patch list machin computes. This is where
 vector/array marshaling layer and probably FFI **callbacks** (host → MFL, shared
 with the game-dev roadmap's Phase-4 callbacks).
 
-**Tier 4 — full-stack MFL (started).** One language across the wire: a component
+**Tier 4 — full-stack MFL (under way).** One language across the wire: a component
 written once in MFL, run on the [`machweb`](../framework) server for first paint
 and in wasm for interactivity. [machin-web-demo-ssr](https://github.com/javimosch/machin-web-demo-ssr)
-is the first step — a shared `view.src` compiled into both the native server and
-the wasm client, producing byte-identical HTML. Still ahead: a single binary that
-**serves its own wasm + assets** (wants a machweb bytes-body response — a `.wasm`
-has NUL bytes a C-string body truncates), shared MFL types/(de)serialization
-across the wire, and server-rendered-then-**hydrated** pages (reuse the SSR DOM,
-attach the wasm client). The richer reaches (typed RPC, streaming) stay
-aspirational.
+now does this in **one binary** — a shared `view.src` compiled into both the
+native server and the wasm client (byte-identical HTML), and the server **serves
+its own `.wasm`** so the page hydrates with no separate static host. That last
+step drove **binary HTTP bodies** in v0.51.0 (`read_file_bytes` + `write_bytes`,
+machweb `ok_wasm` — a `.wasm` has NUL bytes a C-string body truncates). Still
+ahead: shared MFL types/(de)serialization across the wire (typed RPC), and richer
+hydration (reuse the server DOM tree rather than re-rendering). Streaming/RPC at
+scale stays aspirational.
 
 ## Method
 
