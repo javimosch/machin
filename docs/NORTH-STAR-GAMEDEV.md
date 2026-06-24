@@ -18,15 +18,15 @@ Native binaries through raylib's C FFI (and a terminal track):
 
 | capability | repo | what it proved |
 |---|---|---|
-| terminal real-time game | [machin-game-snake](https://github.com/javimosch/machin-game-snake) | `raw_mode`/`read_key` (v0.41.0) |
-| 2D GUI (shapes+text) | [machin-game-2048](https://github.com/javimosch/machin-game-2048) | scalars + by-value `Color` |
-| sprites / textures | [machin-game-flappy](https://github.com/javimosch/machin-game-flappy) | `f32` structs, struct-return; drove `float()` (v0.43.0) |
-| audio | [machin-game-simon](https://github.com/javimosch/machin-game-simon) | FFI **opaque handles** (v0.44.0) |
-| 3D + per-object rotation | [machin-demo-3d](https://github.com/javimosch/machin-demo-3d) | FFI **nested cstructs** (v0.45.0) → drove **native math** (v0.46.0); rlgl matrix stack |
-| 2D procedural animation | [machin-demo-anim](https://github.com/javimosch/machin-demo-anim) | composition on native math |
-| procedural mesh (immediate mode) | [machin-demo-terrain](https://github.com/javimosch/machin-demo-terrain) | rlgl `rlVertex3f` stream; flat shading in MFL |
-| **static GPU mesh** | [machin-demo-planet](https://github.com/javimosch/machin-demo-planet) | **pointer/array FFI** (v0.47.0): raw memory + `*T` deref param → `UploadMesh`/`LoadModelFromMesh` |
-| **infinite procedural world** | [machin-demo-cyberpunk](https://github.com/javimosch/machin-demo-cyberpunk) | **`noise2`/`noise3`** (v0.49.0) → fbm terrain, chunk-streamed GPU meshes, fly camera, neon buildings, instanced flora, shader fog, **skeletal fauna**, **10 km draw distance** |
+| terminal real-time game | [machin-game-demo-snake](https://github.com/javimosch/machin-game-demo-snake) | `raw_mode`/`read_key` (v0.41.0) |
+| 2D GUI (shapes+text) | [machin-game-demo-2048](https://github.com/javimosch/machin-game-demo-2048) | scalars + by-value `Color` |
+| sprites / textures | [machin-game-demo-flappy](https://github.com/javimosch/machin-game-demo-flappy) | `f32` structs, struct-return; drove `float()` (v0.43.0) |
+| audio | [machin-game-demo-simon](https://github.com/javimosch/machin-game-demo-simon) | FFI **opaque handles** (v0.44.0) |
+| 3D + per-object rotation | [machin-game-demo-3d](https://github.com/javimosch/machin-game-demo-3d) | FFI **nested cstructs** (v0.45.0) → drove **native math** (v0.46.0); rlgl matrix stack |
+| 2D procedural animation | [machin-game-demo-anim](https://github.com/javimosch/machin-game-demo-anim) | composition on native math |
+| procedural mesh (immediate mode) | [machin-game-demo-terrain](https://github.com/javimosch/machin-game-demo-terrain) | rlgl `rlVertex3f` stream; flat shading in MFL |
+| **static GPU mesh** | [machin-game-demo-planet](https://github.com/javimosch/machin-game-demo-planet) | **pointer/array FFI** (v0.47.0): raw memory + `*T` deref param → `UploadMesh`/`LoadModelFromMesh` |
+| **infinite procedural world** | [machin-game-demo-cyberpunk](https://github.com/javimosch/machin-game-demo-cyberpunk) | **`noise2`/`noise3`** (v0.49.0) → fbm terrain, chunk-streamed GPU meshes, fly camera, neon buildings, instanced flora, shader fog, **skeletal fauna**, **10 km draw distance** |
 
 The how-to substrate is [`skills/machin-gamedev/SKILL.md`](../skills/machin-gamedev/SKILL.md):
 setup, the FFI surface, the **headerless-extern trick** (reach any scalar/`void`
@@ -49,15 +49,15 @@ instead of re-emitting every frame. This was the first hard gap — it needed
 **pointer/array FFI** (raw C buffers, struct-by-pointer), now done: `alloc`/`poke_*`
 raw memory (v0.47.0) plus **pointer-bearing `cstruct` fields + an inout `T*` param**
 (v0.48.0), so a `Mesh` is a `cstruct` the C compiler lays out — no hard-coded
-offsets ([machin-demo-planet](https://github.com/javimosch/machin-demo-planet)).
+offsets ([machin-game-demo-planet](https://github.com/javimosch/machin-game-demo-planet)).
 Instancing (`DrawMeshInstanced`, fields of objects) is **done — composition**:
 the `Matrix` transform array is raw memory + a `ptr`, the instancing shader
-composes, and `Material` is a partial cstruct. [machin-demo-cyberpunk](https://github.com/javimosch/machin-demo-cyberpunk)
+composes, and `Material` is a partial cstruct. [machin-game-demo-cyberpunk](https://github.com/javimosch/machin-game-demo-cyberpunk)
 draws thousands of GPU-instanced plants in one call.
 
 **Tier 3 — procedural worlds (started).**
 - **Planet / terrain generation:** the **infinite chunk-streamed terrain** is here
-  ([machin-demo-cyberpunk](https://github.com/javimosch/machin-demo-cyberpunk)) —
+  ([machin-game-demo-cyberpunk](https://github.com/javimosch/machin-game-demo-cyberpunk)) —
   fbm over the native **`noise2`** (v0.49.0), GPU-mesh chunks loaded/unloaded
   around a fly camera, procedurally placed buildings (clustered in city
   districts), **GPU-instanced flora** in the scrubland between (one
@@ -98,7 +98,7 @@ Each is a candidate to be *driven by a demo*, not built speculatively:
 3. ~~**Shaders / uniforms**~~ — **reachable via the FFI (composition), demonstrated:**
    `Shader` is a pointer-field cstruct, `RenderTexture2D` is nested cstructs, and
    `LoadShaderFromMemory`/`SetShaderValue(..., ptr, kind)`/`SetShaderValueTexture`
-   are plain FFI — no new language feature. [machin-demo-cyberpunk](https://github.com/javimosch/machin-demo-cyberpunk)
+   are plain FFI — no new language feature. [machin-game-demo-cyberpunk](https://github.com/javimosch/machin-game-demo-cyberpunk)
    does a depth-fog post-process pass. The **same path** now unblocks real GPU
    instancing (an instancing VS + `DrawMeshInstanced`) and textured/lit materials —
    those are demos to build, not language gaps.

@@ -19,12 +19,14 @@ type Response struct {
     status string
     ctype  string
     body   string
+    bin    bytes      // binary body, used when is_bin == 1 (NUL-safe; body is ignored)
+    is_bin int        // 1 = serve bin (raw bytes), 0 = serve body (text)
 }
 
 // ---- response builders ----
 
 func response(status, ctype, body) (r) {
-    r = Response{status: status, ctype: ctype, body: body}
+    r = Response{status: status, ctype: ctype, body: body, is_bin: 0}
 }
 
 func ok_text(body) (r) { r = response("200 OK", "text/plain; charset=utf-8", body) }
@@ -33,6 +35,15 @@ func ok_json(body) (r) { r = response("200 OK", "application/json", body) }
 func created(body) (r) { r = response("201 Created", "application/json", body) }
 func bad_request(msg) (r) { r = response("400 Bad Request", "text/plain", msg) }
 func not_found() (r) { r = response("404 Not Found", "text/plain", "not found") }
+
+// ok_bytes serves a raw binary body (NUL-safe) with an explicit content type —
+// for assets like wasm/images/fonts a text body would truncate at a NUL byte.
+func ok_bytes(ctype, b) (r) {
+    r = Response{status: "200 OK", ctype: ctype, body: "", bin: b, is_bin: 1}
+}
+// ok_wasm serves a WebAssembly module with the correct content type, so a single
+// machin binary can ship both its SSR HTML and its own .wasm SPA bundle.
+func ok_wasm(b) (r) { r = ok_bytes("application/wasm", b) }
 
 // ---- request helpers ----
 
@@ -117,8 +128,15 @@ func machweb_handle(conn, handler) {
     raw := read_request(conn)
     req := parse_request(raw)
     res := handler(req)
-    out := "HTTP/1.1 " + res.status + "\r\nContent-Type: " + res.ctype + "\r\nContent-Length: " + str(len(res.body)) + "\r\nConnection: close\r\n\r\n" + res.body
-    write(conn, out)
+    if res.is_bin == 1 {
+        // binary body: write the headers, then the raw bytes (NUL-safe).
+        head := "HTTP/1.1 " + res.status + "\r\nContent-Type: " + res.ctype + "\r\nContent-Length: " + str(len(res.bin)) + "\r\nConnection: close\r\n\r\n"
+        write(conn, head)
+        write_bytes(conn, res.bin)
+    } else {
+        out := "HTTP/1.1 " + res.status + "\r\nContent-Type: " + res.ctype + "\r\nContent-Length: " + str(len(res.body)) + "\r\nConnection: close\r\n\r\n" + res.body
+        write(conn, out)
+    }
     close(conn)
 }
 

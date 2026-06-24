@@ -14,7 +14,7 @@ browser** via WebAssembly — the way Rust does with Yew / Leptos / Dioxus.
 
 Rust reaches the browser through **LLVM → wasm** plus DOM bindings. machin's
 analog is **MFL → C → wasm**, and the C step already exists. The proof is
-[machin-demo-wasm](https://github.com/javimosch/machin-demo-wasm): an interactive
+[machin-web-demo-wasm](https://github.com/javimosch/machin-web-demo-wasm): an interactive
 counter whose entire view (markup, arithmetic, a recursive `fib`) is MFL compiled
 to a `.wasm` and rendered live in Chrome, with JS doing nothing but forwarding
 events and painting the string machin emits.
@@ -38,8 +38,8 @@ north star is to make it first-class.
 | capability | repo | what it proved |
 |---|---|---|
 | **`--target wasm` (first-class, v0.50.0)** | this repo | `machin build --target wasm` → a `wasm32-wasi` reactor module via `zig cc`; `export func` + FFI-as-import bridge built into codegen; lean pay-as-you-go runtime |
-| **MFL in the browser** | [machin-demo-wasm](https://github.com/javimosch/machin-demo-wasm) | MFL → C → wasm; FFI-as-import DOM bridge; string marshaling; verified on-screen in Chrome |
-| **isomorphic SSR** | [machin-demo-ssr](https://github.com/javimosch/machin-demo-ssr) | one `view.src` compiled into both a native machweb server (HTML per request) and the wasm client — server HTML and client re-render byte-identical |
+| **MFL in the browser** | [machin-web-demo-wasm](https://github.com/javimosch/machin-web-demo-wasm) | MFL → C → wasm; FFI-as-import DOM bridge; string marshaling; verified on-screen in Chrome |
+| **isomorphic SSR** | [machin-web-demo-ssr](https://github.com/javimosch/machin-web-demo-ssr) | one `view.src` compiled into both a native machweb server (HTML per request) and the wasm client — server HTML and client re-render byte-identical |
 | backend web framework | [`framework/machweb.src`](../framework) | `serve(port, handler)` → self-contained native server |
 
 ## The feature roadmap (gaps, in rough dependency order)
@@ -87,22 +87,23 @@ JS becomes a tiny host that applies a patch list machin computes. This is where
 vector/array marshaling layer and probably FFI **callbacks** (host → MFL, shared
 with the game-dev roadmap's Phase-4 callbacks).
 
-**Tier 4 — full-stack MFL (started).** One language across the wire: a component
+**Tier 4 — full-stack MFL (under way).** One language across the wire: a component
 written once in MFL, run on the [`machweb`](../framework) server for first paint
-and in wasm for interactivity. [machin-demo-ssr](https://github.com/javimosch/machin-demo-ssr)
-is the first step — a shared `view.src` compiled into both the native server and
-the wasm client, producing byte-identical HTML. Still ahead: a single binary that
-**serves its own wasm + assets** (wants a machweb bytes-body response — a `.wasm`
-has NUL bytes a C-string body truncates), shared MFL types/(de)serialization
-across the wire, and server-rendered-then-**hydrated** pages (reuse the SSR DOM,
-attach the wasm client). The richer reaches (typed RPC, streaming) stay
-aspirational.
+and in wasm for interactivity. [machin-web-demo-ssr](https://github.com/javimosch/machin-web-demo-ssr)
+now does this in **one binary** — a shared `view.src` compiled into both the
+native server and the wasm client (byte-identical HTML), and the server **serves
+its own `.wasm`** so the page hydrates with no separate static host. That last
+step drove **binary HTTP bodies** in v0.51.0 (`read_file_bytes` + `write_bytes`,
+machweb `ok_wasm` — a `.wasm` has NUL bytes a C-string body truncates). Still
+ahead: shared MFL types/(de)serialization across the wire (typed RPC), and richer
+hydration (reuse the server DOM tree rather than re-rendering). Streaming/RPC at
+scale stays aspirational.
 
 ## Method
 
 Same loop as the rest of machin: build a real thing, hit the wall, fill it in the
 language, release, record. The frontend's first wall — the unconditionally-POSIX
-core runtime — was hit by [machin-demo-wasm](https://github.com/javimosch/machin-demo-wasm)
+core runtime — was hit by [machin-web-demo-wasm](https://github.com/javimosch/machin-web-demo-wasm)
 and filled in **v0.50.0** (`--target wasm`); the next wall is package-level state
 (gap #5), to be named by the next demo. Be honest about
 **composition vs. new feature**: that the FFI *already* doubles as the wasm

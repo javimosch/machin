@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.51.0
+
+- **Binary HTTP bodies — a machweb server can serve its own wasm (and any binary
+  asset).** Two NUL-safe builtins over the `bytes` type:
+  - **`read_file_bytes(path) -> bytes`** — read a whole file's raw bytes (the
+    existing `read_file` returns a C string and truncates at the first NUL, so it
+    can't carry a `.wasm`/image/font).
+  - **`write_bytes(fd, bytes) -> int`** — write the exact bytes of a buffer to an
+    fd (a full-write loop), unlike `write` which `strlen`s a string body.
+
+  [`framework/machweb.src`](framework) gains a binary response path: the `Response`
+  carries an optional `bin bytes` (+ `is_bin` flag), with builders **`ok_bytes(ctype,
+  b)`** and **`ok_wasm(b)`**; `machweb_handle` writes the headers then the raw bytes
+  when `is_bin` is set. So a single native machin binary can ship both its SSR HTML
+  *and* its own `.wasm` SPA bundle — verified byte-identical over HTTP, and the
+  served module still instantiates. The keystone for **full-stack MFL** (one binary,
+  server-rendered then hydrated); drove
+  [machin-web-demo-ssr](https://github.com/javimosch/machin-web-demo-ssr). `write_bytes`
+  is gated like the rest of the socket runtime (native always; wasm only when used).
+
 ## v0.50.0
 
 - **`--target wasm` — machin compiles to WebAssembly (frontend / in-browser).**
@@ -27,7 +47,7 @@
   so a frontend module references no `socket()`/`termios` symbols (which wasi-libc
   doesn't fully provide) and compiles clean — the same `usesX` gating machin
   already does for TLS/WebSocket/regex/math/SQLite. Drove
-  [machin-demo-wasm](https://github.com/javimosch/machin-demo-wasm); see
+  [machin-web-demo-wasm](https://github.com/javimosch/machin-web-demo-wasm); see
   `docs/NORTH-STAR-WEB.md`. Still ahead for a richer frontend: package-level
   globals (state lives host-side today) and a shipped JS string/array runtime.
 
@@ -37,7 +57,7 @@
   smooth/continuous; 2D and 3D. The backbone of procedural worlds — layer it (fbm,
   in MFL) for terrain, animate 2D noise over time with `noise3`. Pure C + libm's
   `floor`; the runtime is emitted and `-lm` linked only when used. Drove a full
-  procedural planet ([machin-demo-cyberpunk](https://github.com/javimosch/machin-demo-cyberpunk)):
+  procedural planet ([machin-game-demo-cyberpunk](https://github.com/javimosch/machin-game-demo-cyberpunk)):
   infinite chunk-streamed terrain + procedurally placed buildings, all from noise.
 
 ## v0.48.0
@@ -55,7 +75,7 @@
     returns the GPU vao/vbo ids in the mesh).
 
   Together these drop the hard-coded `Mesh` byte offsets from
-  [machin-demo-planet](https://github.com/javimosch/machin-demo-planet): the GPU
+  [machin-game-demo-planet](https://github.com/javimosch/machin-game-demo-planet): the GPU
   mesh is now a `cstruct Mesh { … vertices ptr colors ptr … }` built by value and
   uploaded via the inout `Mesh*`. Resolves the rough edge noted in v0.47.0.
 
@@ -78,7 +98,7 @@
   This is the first FFI tier that hands C **raw pointers/arrays**, unlocking GPU
   vertex buffers (`UploadMesh`/`LoadModelFromMesh`/`DrawModel`) — a procedurally
   generated mesh built in MFL and uploaded to VRAM. Surfaced (and verified) by
-  [machin-demo-planet](https://github.com/javimosch/machin-demo-planet). The
+  [machin-game-demo-planet](https://github.com/javimosch/machin-game-demo-planet). The
   Tier-2 unlock in the [game-dev north star](docs/NORTH-STAR-GAMEDEV.md).
 
 ## v0.46.1
@@ -95,7 +115,7 @@
   (`-lm`) and the runtime emitted **only when a math builtin is used**, so
   math-free programs keep their libc-only footprint. An `extern` declaration of
   the same name still shadows the builtin (so existing `extern "m" { fn sqrt ... }`
-  code is unchanged). Surfaced by [machin-demo-3d](https://github.com/javimosch/machin-demo-3d),
+  code is unchanged). Surfaced by [machin-game-demo-3d](https://github.com/javimosch/machin-game-demo-3d),
   which had to reach libm via `extern "m"` for its camera orbit — now `sin`/`cos`
   are native. The driver for procedural-animation apps.
 
@@ -108,7 +128,7 @@
   raylib's `Camera3D` is three `Vector3`s + scalars, so it couldn't be expressed
   before; now `Camera3D{Vector3{...}, Vector3{...}, Vector3{...}, 45.0, 0}`
   constructs and passes by value to `BeginMode3D`. Surfaced building
-  [machin-demo-3d](https://github.com/javimosch/machin-demo-3d). (Also unlocks 2D
+  [machin-game-demo-3d](https://github.com/javimosch/machin-game-demo-3d). (Also unlocks 2D
   cameras and any struct-of-structs C API.) Note the orbit math there still goes
   through libm via `extern "m"` — machin has no native `sin`/`cos`/`sqrt` yet,
   the next gap.
@@ -123,7 +143,7 @@
   another `fn`; it can't construct or field-access it. machin wraps the real C
   struct in one hidden field and copies it whole at the boundary, so the existing
   by-value marshaling path carries it. Surfaced building
-  [machin-game-simon](https://github.com/javimosch/machin-game-simon), whose audio
+  [machin-game-demo-simon](https://github.com/javimosch/machin-game-demo-simon), whose audio
   needs `LoadSound`→`PlaySound` over raylib's pointer-bearing `Sound`. Unlocks
   every "load a handle, pass it back" C library, not just audio.
 
@@ -134,7 +154,7 @@
   float; a *concrete* int (a function return, `byte_at`, `len`, a typed param, an
   `int`-slice element, or an `f32`/`f64` FFI struct field) was a hard
   `int vs float` mismatch. `float(x)` lifts it. Surfaced building the physics and
-  random-pipe placement in [machin-game-flappy](https://github.com/javimosch/machin-game-flappy),
+  random-pipe placement in [machin-game-demo-flappy](https://github.com/javimosch/machin-game-demo-flappy),
   where `byte_at`-derived randomness and pixel coordinates are all float.
 
 ## v0.42.0
@@ -143,7 +163,7 @@
   → `"false"`, and `str` of a string is the identity. `str` was numeric-only, so
   `"moved=" + str(moved)` was a `bool vs num` type error — a papercut everyone
   worked around with a hand-written `b2s` helper. Surfaced repeatedly building
-  the game logic in machin-game-snake / machin-game-2048. Non-stringable kinds
+  the game logic in machin-game-demo-snake / machin-game-demo-2048. Non-stringable kinds
   (slice, map, struct, …) are still a clean compile error.
 
 ## v0.41.0
@@ -153,7 +173,7 @@
   `raw_mode(0)` restores it); `read_key()` is a non-blocking single-key read —
   a 1-char string, or `""` if nothing is waiting. `input()` was line-buffered
   (it blocks for a whole line + Enter), which interactive TUIs and games can't
-  use. Surfaced by [machin-game-snake](https://github.com/javimosch/machin-game-snake)
+  use. Surfaced by [machin-game-demo-snake](https://github.com/javimosch/machin-game-demo-snake)
   — and it unlocks every future terminal UI (pickers, progress views, REPLs).
 
 ## v0.40.0

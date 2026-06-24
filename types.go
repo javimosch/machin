@@ -2095,6 +2095,19 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		}
 		c.addPair(argSlots[0], c.cString)
 		return c.cString, nil
+	case "read_file_bytes":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("read_file_bytes: 1 arg (path)")
+		}
+		c.addPair(argSlots[0], c.cString)
+		return c.cBytes, nil
+	case "write_bytes":
+		if len(argSlots) != 2 {
+			return 0, fmt.Errorf("write_bytes: 2 args (fd, bytes)")
+		}
+		c.addPair(argSlots[0], c.cInt)
+		c.addPair(argSlots[1], c.cBytes)
+		return c.cInt, nil
 	case "write_file":
 		if len(argSlots) != 2 {
 			return 0, fmt.Errorf("write_file: 2 args (path, content)")
