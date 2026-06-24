@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.48.0
+
+- **Pointer-bearing `cstruct` fields + inout `T*` params.** Two follow-ups to the
+  v0.47.0 pointer/array FFI that let MFL declare and pass C structs containing
+  pointers, instead of poking raw bytes at hard-coded offsets:
+  - a `cstruct` **field** may be **`ptr`** — held as an `int` in MFL, cast through
+    `void*` at the boundary (C converts to `float*`, `unsigned char*`, …). So a
+    struct like raylib's `Mesh` is declared with its pointer fields and the C
+    compiler lays it out.
+  - a new **inout** param form **`T*`** (`T` a declared `cstruct`) — the arg is a
+    cstruct *variable*, marshaled to a C temporary, passed **by pointer**, and the
+    modified struct **written back** afterward (e.g. `fn UploadMesh(Mesh*, bool)`
+    returns the GPU vao/vbo ids in the mesh).
+
+  Together these drop the hard-coded `Mesh` byte offsets from
+  [machin-demo-planet](https://github.com/javimosch/machin-demo-planet): the GPU
+  mesh is now a `cstruct Mesh { … vertices ptr colors ptr … }` built by value and
+  uploaded via the inout `Mesh*`. Resolves the rough edge noted in v0.47.0.
+
 ## v0.47.0
 
 - **Pointer/array FFI — raw memory + `*T` params.** machin can now build C

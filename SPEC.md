@@ -1,6 +1,6 @@
 # The MFL Language Specification
 
-Version 0.47.0
+Version 0.48.0
 
 MFL (Machine-First Language) is a statically-typed, Go-flavored backend language
 **shaped for machine authoring**: minimal syntax, no type annotations, one
@@ -516,10 +516,18 @@ extern "m" { header "math.h" link "m" fn sqrt(float) float fn pow(float, float) 
   by-value aggregate.)
 - `fn Name(t, ...) ret` — a foreign function. Parameter and return types are FFI
   scalar types, or the name of a declared `cstruct` (numeric or opaque); a
-  missing return type means `void`. A param may also be **`*T`** (`T` a C type
-  from the header): the MFL argument is a pointer (an `int`) and the call
-  **dereferences it, passing the pointed-to `T` by value** — e.g.
-  `fn LoadModelFromMesh(*Mesh) Model`. (To pass the pointer itself, use `ptr`.)
+  missing return type means `void`. Two pointer param forms: **`*T`** (`T` a C
+  type from the header) — the MFL argument is a pointer (an `int`) and the call
+  **dereferences it, passing the pointed-to `T` by value** (`fn LoadModelFromMesh(*Mesh)`);
+  and **`T*`** (`T` a declared `cstruct`) — **inout**: the MFL argument is a
+  cstruct *variable*, marshaled to a C temporary, passed **by pointer**, and the
+  modified struct **written back** after the call (`fn UploadMesh(Mesh*, bool)`).
+  (To pass a raw pointer itself, use `ptr`.)
+- A `cstruct` **field** may also be **`ptr`** — a pointer, held as an `int` in MFL
+  and cast through `void*` at the boundary (which C converts to the real field
+  type, `float*` etc.). This lets MFL declare a struct like raylib's `Mesh`
+  (pointer fields to GPU buffers) and let the C compiler lay it out, instead of
+  poking raw bytes at hard-coded offsets.
 
 **Raw memory** (pointers are `int`s, like `ptr`) lets MFL build C buffers and
 structs to hand to a foreign function: `alloc(n) -> int` (n **zeroed** bytes),

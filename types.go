@@ -623,6 +623,10 @@ func Check(p *Program) (*Checker, error) {
 		if strings.HasPrefix(t, "*") {
 			return true // *Name: deref an MFL int (ptr) to a header C type, by value
 		}
+		if strings.HasSuffix(t, "*") {
+			_, ok := c.structs[strings.TrimSuffix(t, "*")]
+			return ok // Name*: inout, pass an MFL cstruct by pointer with writeback
+		}
 		_, ok := c.structs[t]
 		return ok
 	}
@@ -637,8 +641,8 @@ func Check(p *Program) (*Checker, error) {
 	for _, ed := range p.Externs {
 		for _, cs := range ed.Structs {
 			for _, f := range cs.Fields {
-				if !isFFINumeric(f.CType) && !cstructNames[f.CType] {
-					return nil, fmt.Errorf("cstruct %s field %s: %q is not a numeric C type or a declared cstruct", cs.Name, f.Name, f.CType)
+				if !isFFINumeric(f.CType) && !cstructNames[f.CType] && f.CType != "ptr" {
+					return nil, fmt.Errorf("cstruct %s field %s: %q is not a numeric C type, a declared cstruct, or ptr", cs.Name, f.Name, f.CType)
 				}
 			}
 		}
@@ -1571,6 +1575,9 @@ func (c *Checker) genStructLit(fn *FuncDecl, ex *StructLit) (int, error) {
 func (c *Checker) ffiSlot(t string) int {
 	if strings.HasPrefix(t, "*") {
 		return c.cInt // *Name: the MFL arg is a pointer held as an int
+	}
+	if strings.HasSuffix(t, "*") {
+		return newStructSlot(c, strings.TrimSuffix(t, "*")) // Name*: the arg is a cstruct value (inout)
 	}
 	switch t {
 	case "":

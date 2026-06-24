@@ -2169,6 +2169,8 @@ func (g *cgen) program(p *Program) (string, error) {
 			for _, f := range cs.Fields {
 				if cstructNames[f.CType] {
 					fmt.Fprintf(&out, " .f_%s = mfl_from_%s(c.%s),", f.Name, f.CType, f.Name)
+				} else if f.CType == "ptr" {
+					fmt.Fprintf(&out, " .f_%s = (int64_t)(intptr_t)c.%s,", f.Name, f.Name)
 				} else {
 					fmt.Fprintf(&out, " .f_%s = c.%s,", f.Name, f.Name)
 				}
@@ -2178,6 +2180,10 @@ func (g *cgen) program(p *Program) (string, error) {
 			for _, f := range cs.Fields {
 				if cstructNames[f.CType] {
 					fmt.Fprintf(&out, " .%s = mfl_to_%s(m.f_%s),", f.Name, f.CType, f.Name)
+				} else if f.CType == "ptr" {
+					// a pointer field: MFL holds it as an int; void* converts to the
+					// real C field type (float*, unsigned char*, ...).
+					fmt.Fprintf(&out, " .%s = (void*)(intptr_t)m.f_%s,", f.Name, f.Name)
 				} else {
 					fmt.Fprintf(&out, " .%s = (%s)m.f_%s,", f.Name, ffiCType(f.CType), f.Name)
 				}
@@ -3467,12 +3473,19 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 	// math builtin.
 	if ef := g.c.ExternFn(ex.Callee); ef != nil {
 		parts := make([]string, len(args))
+		var pre, post []string // for inout (Name*) params: temp + writeback
 		for i, a := range args {
 			switch pt := ef.Params[i]; {
 			case pt == "ptr": // MFL int -> opaque void*
 				parts[i] = fmt.Sprintf("(void*)(intptr_t)(%s)", a)
 			case strings.HasPrefix(pt, "*"): // *Name: deref an MFL int (ptr) to a C struct, by value
 				parts[i] = fmt.Sprintf("(*(%s*)(intptr_t)(%s))", pt[1:], a)
+			case strings.HasSuffix(pt, "*"): // Name*: pass an MFL cstruct by pointer, writing back (inout)
+				base := pt[:len(pt)-1]
+				tmp := fmt.Sprintf("_io%d", i)
+				pre = append(pre, fmt.Sprintf("%s %s = mfl_to_%s(%s);", base, tmp, base, a))
+				post = append(post, fmt.Sprintf("%s = mfl_from_%s(%s);", a, base, tmp))
+				parts[i] = "&" + tmp
 			case isFFIScalar(pt):
 				parts[i] = fmt.Sprintf("(%s)(%s)", ffiCType(pt), a)
 			default: // a cstruct, marshaled into the C layout
@@ -3480,6 +3493,12 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 			}
 		}
 		call := fmt.Sprintf("%s(%s)", ef.Name, strings.Join(parts, ", "))
+		if len(pre) > 0 {
+			// an inout call: temp(s), the call, then write the modified struct(s)
+			// back to the MFL variable(s). A GNU statement-expression (the call is
+			// void in practice — UploadMesh etc.).
+			return fmt.Sprintf("({ %s %s; %s })", strings.Join(pre, " "), call, strings.Join(post, " ")), nil
+		}
 		switch {
 		case ef.Ret == "ptr": // void* -> MFL int
 			return fmt.Sprintf("(int64_t)(intptr_t)(%s)", call), nil

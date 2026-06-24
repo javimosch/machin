@@ -229,7 +229,14 @@ func (p *Parser) parseExternDecl() (*ExternDecl, error) {
 				if t.Kind != TIdent {
 					return nil, fmt.Errorf("extern fn %s: expected a parameter type, got %q", name.Val, t.Val)
 				}
-				params = append(params, prefix+t.Val)
+				// a trailing * means "pass this MFL cstruct by pointer, writing the
+				// modified struct back" (inout) — e.g. fn UploadMesh(Mesh*, bool).
+				suffix := ""
+				if p.peek().Val == "*" {
+					p.next()
+					suffix = "*"
+				}
+				params = append(params, prefix+t.Val+suffix)
 				for p.peek().Val == "," {
 					p.next()
 				}

@@ -961,6 +961,44 @@ func TestFFIDerefParam(t *testing.T) {
 	}
 }
 
+// A cstruct field may be a pointer (`ptr`) — held as an int in MFL, cast through
+// void* at the boundary (so the C compiler lays out a struct like raylib's Mesh).
+func TestPointerCStructField(t *testing.T) {
+	prog, err := ParseProgram([]string{
+		`extern "g" { header "g.h" cstruct Buf { n i32 data ptr } fn Use(Buf) }`,
+		`func main() { b := Buf{4, alloc(16)}  Use(b)  println(str(b.n)) }`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := CompileToC(prog, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(c, ".data = (void*)(intptr_t)m.f_data") {
+		t.Fatal("a ptr cstruct field must marshal through void*")
+	}
+}
+
+// `Name*` (inout): pass an MFL cstruct by pointer and write the modified struct
+// back to the variable after the call (e.g. UploadMesh(Mesh*)).
+func TestInoutStructParam(t *testing.T) {
+	prog, err := ParseProgram([]string{
+		`extern "g" { header "g.h" cstruct S { n i32 } fn Up(S*) }`,
+		`func main() { s := S{1}  Up(s)  println(str(s.n)) }`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := CompileToC(prog, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(c, "mfl_to_S(v_s)") || !strings.Contains(c, "= mfl_from_S(_io") || !strings.Contains(c, "Up(&_io") {
+		t.Fatal("Name* must pass &temp and write the struct back to the variable")
+	}
+}
+
 // Nested cstructs: a cstruct field whose type is another cstruct (by-value
 // struct of by-value structs — e.g. raylib Camera3D holds Vector3s). The MFL
 // wrapper nests the inner mfl_ type and marshaling recurses. Codegen-level.
