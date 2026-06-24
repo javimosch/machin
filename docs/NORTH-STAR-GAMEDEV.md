@@ -50,18 +50,20 @@ instead of re-emitting every frame. This was the first hard gap — it needed
 raw memory (v0.47.0) plus **pointer-bearing `cstruct` fields + an inout `T*` param**
 (v0.48.0), so a `Mesh` is a `cstruct` the C compiler lays out — no hard-coded
 offsets ([machin-demo-planet](https://github.com/javimosch/machin-demo-planet)).
-Instancing (`DrawMeshInstanced`, for fields of objects) is now also reachable:
-the `Matrix` transform array is just raw memory + a `ptr`, and the required
-instancing shader composes too (see item 3) — it's a demo to build, not a gap.
+Instancing (`DrawMeshInstanced`, fields of objects) is **done — composition**:
+the `Matrix` transform array is raw memory + a `ptr`, the instancing shader
+composes, and `Material` is a partial cstruct. [machin-demo-cyberpunk](https://github.com/javimosch/machin-demo-cyberpunk)
+draws thousands of GPU-instanced plants in one call.
 
 **Tier 3 — procedural worlds (started).**
 - **Planet / terrain generation:** the **infinite chunk-streamed terrain** is here
   ([machin-demo-cyberpunk](https://github.com/javimosch/machin-demo-cyberpunk)) —
   fbm over the native **`noise2`** (v0.49.0), GPU-mesh chunks loaded/unloaded
-  around a fly camera, with procedurally placed buildings. Still ahead:
-  **level-of-detail** (coarser meshes far away), **biomes/erosion**, and
-  **scattering** of *flora/fauna* as **instanced** meshes (needs typed array FFI
-  for `DrawMeshInstanced`).
+  around a fly camera, procedurally placed buildings (clustered in city
+  districts), **GPU-instanced flora** in the scrubland between (one
+  `DrawMeshInstanced` call for thousands of plants), and **depth fog** via a
+  post-process shader. Still ahead: **level-of-detail** (coarser meshes far
+  away), **biomes/erosion**, and animated **fauna** / denser ecosystems.
 - **2D & 3D skeleton animation (procedural):** bone hierarchies, forward
   kinematics, and **IK** (inverse kinematics) for limbs; blending. Mostly MFL math
   over transforms — but benefits from the vector/matrix layer and, for 3D, skinned
