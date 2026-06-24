@@ -46,10 +46,11 @@ a small **vector/matrix helper layer** (vec3/mat4 ops as MFL or builtins) and
 to a GPU vertex buffer (`Mesh` + `UploadMesh` + `LoadModelFromMesh`/`DrawModel`),
 instead of re-emitting every frame. This was the first hard gap — it needed
 **pointer/array FFI** (raw C buffers, struct-by-pointer), now done: `alloc`/`poke_*`
-raw memory + the `*T` deref param ([machin-demo-planet](https://github.com/javimosch/machin-demo-planet)).
-Still rough: struct fields are poked at **hard-coded byte offsets** (a future
-*pointer-bearing `cstruct` field* would let the C compiler compute the layout),
-and `DrawMeshInstanced` (fields of objects) needs a `Matrix` **array** parameter.
+raw memory (v0.47.0) plus **pointer-bearing `cstruct` fields + an inout `T*` param**
+(v0.48.0), so a `Mesh` is a `cstruct` the C compiler lays out — no hard-coded
+offsets ([machin-demo-planet](https://github.com/javimosch/machin-demo-planet)).
+Still missing for instancing: `DrawMeshInstanced` (fields of objects) needs a
+`Matrix` **array** parameter (typed array FFI).
 
 **Tier 3 — procedural worlds.**
 - **Planet / terrain generation:** chunked height fields with level-of-detail,
@@ -74,11 +75,11 @@ hand-rolled. Listed as a direction, not a plan.
 
 Each is a candidate to be *driven by a demo*, not built speculatively:
 
-1. ~~**Pointer / array FFI**~~ — **done (v0.47.0):** raw memory (`alloc`/`poke_*`/
-   `peek_*`/`free`, pointers as `int`) + the `*T` deref param + `ptr` for
-   pass-by-pointer. Follow-ups: **pointer-bearing `cstruct` fields** (so the C
-   compiler lays out `Mesh` instead of hard-coded offsets) and **typed array
-   params** (`Matrix*` for `DrawMeshInstanced`).
+1. ~~**Pointer / array FFI**~~ — **done (v0.47.0–v0.48.0):** raw memory
+   (`alloc`/`poke_*`/`peek_*`/`free`, pointers as `int`), the `*T` deref param,
+   `ptr` pass-by-pointer, **pointer-bearing `cstruct` fields**, and an **inout
+   `T*`** param (so a `Mesh` is a cstruct the C compiler lays out — no offsets).
+   Remaining follow-up: **typed array params** (`Matrix*` for `DrawMeshInstanced`).
 2. **A vector/matrix layer** — vec2/vec3/vec4 + mat4 ops. Could be a vendored MFL
    module first; promote hot paths to builtins if measured.
 3. **Shaders / uniforms** — `LoadShader`, `SetShaderValue` (needs pointer FFI for
