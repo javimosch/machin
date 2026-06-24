@@ -1,6 +1,6 @@
 # The MFL Language Specification
 
-Version 0.51.0
+Version 0.52.0
 
 MFL (Machine-First Language) is a statically-typed, Go-flavored backend language
 **shaped for machine authoring**: minimal syntax, no type annotations, one
@@ -160,12 +160,21 @@ sum(xs...)                     // spread: nums = xs
 
 ```go
 x := expr      // declare, type inferred from expr
-var x = expr   // same
+var x = expr   // same (inside a function)
 x = expr       // assign (x must exist; types must match)
 ```
 
 Variables have **function scope** (a name denotes one binding, of one type,
 throughout the function body).
+
+A `var name = expr` written at **top level** (not inside a function) is a
+**package global**: a single mutable binding shared by every function, its type
+inferred from the initializer and uses. Unlike a local it persists for the life
+of the program (and, under the wasm target, across exported-function calls — so a
+component can own its state). `=` to its name assigns the global; `:=` inside a
+function introduces a local that may shadow it. Globals are in scope inside
+closures too (referenced directly, not captured). Their initializers run once at
+startup (before `main`; at `_initialize` for a wasm reactor).
 
 ---
 

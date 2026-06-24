@@ -89,6 +89,7 @@ type cgen struct {
 	usesNet   bool   // program calls dial/listen/accept/read/write/close(fd) -> emit POSIX socket runtime
 	usesTTY   bool   // program calls raw_mode/read_key -> emit termios/select runtime
 	target    string // "" or "native" (default) -> cc; "wasm" -> zig cc, lean runtime, FFI as imports, exports
+	globals   map[string]bool // package-global names (emitted as C statics, mfl_g_<name>)
 }
 
 // build targets.
@@ -2151,6 +2152,12 @@ func cZero(k Kind) string {
 }
 
 func (g *cgen) program(p *Program) (string, error) {
+	// record package-global names so varRef renders them as mfl_g_<name> (this must
+	// be set before any function body is emitted, since bodies may reference them).
+	g.globals = map[string]bool{}
+	for _, name := range g.c.GlobalOrder() {
+		g.globals[name] = true
+	}
 	// emit one function body per instance (monomorphization); this also fills
 	// g.tramp via any go statements.
 	for _, inst := range g.c.Reps() {
@@ -2343,6 +2350,15 @@ func (g *cgen) program(p *Program) (string, error) {
 		out.WriteString(g.jsonFns.String())
 		out.WriteByte('\n')
 	}
+	// package globals: zero-initialized C statics; their MFL initializers run in a
+	// constructor (emitted after the function bodies). Declared here so function
+	// bodies that reference mfl_g_<name> compile.
+	for _, name := range g.c.GlobalOrder() {
+		fmt.Fprintf(&out, "static %s mfl_g_%s;\n", g.c.GlobalCType(name), name)
+	}
+	if len(g.c.GlobalOrder()) > 0 {
+		out.WriteByte('\n')
+	}
 	for _, inst := range g.c.Reps() {
 		// Under wasm, an `export func` is exported to the host under its clean source
 		// name (so JS calls instance.exports.render, not the mangled C symbol). The
@@ -2357,6 +2373,28 @@ func (g *cgen) program(p *Program) (string, error) {
 	out.WriteByte('\n')
 	out.WriteString(g.tramp.String())
 	out.WriteString(g.buf.String())
+	// package-global initializers run in a C constructor — before main (native) and
+	// at _initialize (wasm reactor). Compile each init into a scratch buffer so any
+	// helper statements land inside the constructor, in declaration order.
+	if len(p.Globals) > 0 {
+		g.curFn = "$globals"
+		var ctor strings.Builder
+		for _, gv := range p.Globals {
+			saved := g.buf
+			g.buf = strings.Builder{}
+			e, err := g.expr(gv.Init)
+			if err != nil {
+				return "", err
+			}
+			helpers := g.buf.String()
+			g.buf = saved
+			ctor.WriteString(helpers)
+			fmt.Fprintf(&ctor, "    mfl_g_%s = %s;\n", gv.Name, e)
+		}
+		out.WriteString("__attribute__((constructor)) static void mfl_globals_init(void) {\n")
+		out.WriteString(ctor.String())
+		out.WriteString("}\n")
+	}
 	// Native entry point. The wasm target is a reactor module (no `int main`): the
 	// host drives it through the exported functions, so emit the C main only for
 	// native, and only when the program actually defines an MFL main.
@@ -3260,6 +3298,10 @@ func (g *cgen) isBoxed(name string) bool {
 func (g *cgen) varRef(name string) string {
 	if g.isBoxed(name) {
 		return "(*v_" + name + ")"
+	}
+	// a package global, unless shadowed by a local/param of the current function
+	if g.globals[name] && !g.c.IsLocal(g.curFn, name) {
+		return "mfl_g_" + name
 	}
 	return "v_" + name
 }

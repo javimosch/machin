@@ -8,6 +8,16 @@ type Program struct {
 	Types   []*TypeDecl
 	Funcs   []*FuncDecl
 	Externs []*ExternDecl
+	Globals []*GlobalVar
+}
+
+// GlobalVar is a package-level mutable variable: `var name = expr` at top level.
+// It is shared by every function (read and assigned), its type inferred from the
+// initializer (and its uses). Unlike a local, it persists across calls — so a
+// wasm module's exported functions can hold state between host invocations.
+type GlobalVar struct {
+	Name string
+	Init Expr
 }
 
 // ExternDecl declares foreign C functions and how to compile/link against them:

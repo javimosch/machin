@@ -110,7 +110,28 @@ type Checker struct {
 	reps        []string                          // representative instances (one C function each)
 	exportSrc   map[string]bool                   // source names declared `export func`
 	hasMainFn   bool                              // program defines a main function
+	globalSlot  map[string]int                    // package-global name -> type slot
+	globalOrder []string                          // package globals in declaration order
 }
+
+// IsLocal reports whether name is a parameter or local of the given instance (so
+// codegen can tell a shadowing local from a package global of the same name).
+func (c *Checker) IsLocal(inst, name string) bool {
+	_, ok := c.vars[inst][name]
+	return ok
+}
+
+// IsGlobal reports whether name is a declared package global.
+func (c *Checker) IsGlobal(name string) bool { _, ok := c.globalSlot[name]; return ok }
+
+// GlobalOrder returns the package globals in declaration order.
+func (c *Checker) GlobalOrder() []string { return c.globalOrder }
+
+// GlobalCType returns the C type of a package global.
+func (c *Checker) GlobalCType(name string) string { return c.ctypeSlot(c.globalSlot[name]) }
+
+// GlobalKind returns the inferred kind of a package global (for zero values).
+func (c *Checker) GlobalKind(name string) Kind { return c.kindOf(c.globalSlot[name]) }
 
 // HasMain reports whether the program defines a main function.
 func (c *Checker) HasMain() bool { return c.hasMainFn }
@@ -696,6 +717,30 @@ func Check(p *Program) (*Checker, error) {
 			c.externs[f.Name] = &f
 		}
 	}
+	// 1b. package globals: type each one from its initializer, in declaration order
+	//     (a later global may reference an earlier one). They live in a synthetic
+	//     "$globals" context; references resolve through the globalSlot fallback in
+	//     genExpr/AssignStmt, so functions and globals share the same variables.
+	c.globalSlot = map[string]int{}
+	if len(p.Globals) > 0 {
+		gfn := &FuncDecl{Name: "$globals"}
+		c.vars["$globals"] = map[string]int{}
+		c.nodeSlot["$globals"] = map[Node]int{}
+		c.callInst["$globals"] = map[*Call]string{}
+		c.closureInst["$globals"] = map[*MakeClosure]string{}
+		c.instStack["$globals"] = "$globals"
+		for _, g := range p.Globals {
+			vs, err := c.genExpr(gfn, g.Init)
+			if err != nil {
+				return nil, fmt.Errorf("global %s: %w", g.Name, err)
+			}
+			slot := newSlot(c, KVar)
+			c.addPair(slot, vs)
+			c.globalSlot[g.Name] = slot
+			c.globalOrder = append(c.globalOrder, g.Name)
+		}
+		delete(c.instStack, "$globals")
+	}
 	// 2. instantiate from the roots; every reachable function is specialized per
 	//    concrete call-site type (monomorphization). main is a root when present;
 	//    each `export func` is also a root (kept even if main never calls it), with
@@ -1041,6 +1086,12 @@ func (c *Checker) genStmt(fn *FuncDecl, s Stmt) error {
 		env := c.vars[fn.Name]
 		slot, ok := env[st.Name]
 		if !ok {
+			// `=` to a name that is a package global assigns the global (a local is
+			// only created by `:=`, which may also shadow a global).
+			if gs, isG := c.globalSlot[st.Name]; isG && st.Op == "=" {
+				c.addPair(gs, vs)
+				return nil
+			}
 			slot = newSlot(c, KVar)
 			env[st.Name] = slot
 			c.localOrder[fn.Name] = append(c.localOrder[fn.Name], st.Name)
@@ -1274,6 +1325,9 @@ func (c *Checker) genExprInner(fn *FuncDecl, e Expr) (int, error) {
 		return c.cVoid, nil
 	case *Ident:
 		if s, ok := c.vars[fn.Name][ex.Name]; ok {
+			return s, nil
+		}
+		if s, ok := c.globalSlot[ex.Name]; ok { // a package global, in scope everywhere
 			return s, nil
 		}
 		return 0, fmt.Errorf("%s: undefined variable %q", fn.Name, ex.Name)
