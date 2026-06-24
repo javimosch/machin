@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.51.0
+
+- **Binary HTTP bodies — a machweb server can serve its own wasm (and any binary
+  asset).** Two NUL-safe builtins over the `bytes` type:
+  - **`read_file_bytes(path) -> bytes`** — read a whole file's raw bytes (the
+    existing `read_file` returns a C string and truncates at the first NUL, so it
+    can't carry a `.wasm`/image/font).
+  - **`write_bytes(fd, bytes) -> int`** — write the exact bytes of a buffer to an
+    fd (a full-write loop), unlike `write` which `strlen`s a string body.
+
+  [`framework/machweb.src`](framework) gains a binary response path: the `Response`
+  carries an optional `bin bytes` (+ `is_bin` flag), with builders **`ok_bytes(ctype,
+  b)`** and **`ok_wasm(b)`**; `machweb_handle` writes the headers then the raw bytes
+  when `is_bin` is set. So a single native machin binary can ship both its SSR HTML
+  *and* its own `.wasm` SPA bundle — verified byte-identical over HTTP, and the
+  served module still instantiates. The keystone for **full-stack MFL** (one binary,
+  server-rendered then hydrated); drove
+  [machin-web-demo-ssr](https://github.com/javimosch/machin-web-demo-ssr). `write_bytes`
+  is gated like the rest of the socket runtime (native always; wasm only when used).
+
 ## v0.50.0
 
 - **`--target wasm` — machin compiles to WebAssembly (frontend / in-browser).**

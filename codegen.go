@@ -827,6 +827,19 @@ static int64_t mfl_write_file(const char* path, const char* content) {
     size_t w = fwrite(content, 1, len, f);
     fclose(f); return (int64_t)w;
 }
+/* read a file's raw bytes (NUL-safe, unlike read_file which returns a C string).
+   Empty bytes if the file can't be opened. */
+static mfl_bytes mfl_read_file_bytes(const char* path) {
+    mfl_bytes b; b.len = 0; b.data = (uint8_t*)mfl_alloc(1);
+    FILE* f = fopen(path, "rb");
+    if (!f) return b;
+    fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
+    if (n < 0) n = 0;
+    b.data = (uint8_t*)mfl_alloc((size_t)n ? (size_t)n : 1);
+    b.len = (int64_t)fread(b.data, 1, (size_t)n, f);
+    fclose(f);
+    return b;
+}
 static mfl_slice mfl_list_dir(const char* path) {
     mfl_slice out = {0};
     DIR* d = opendir(path);
@@ -1013,6 +1026,16 @@ static char* mfl_read(int64_t fd) {
     return buf;
 }
 static int64_t mfl_write(int64_t fd, const char* s) { return (int64_t)write((int)fd, s, strlen(s)); }
+/* write the exact bytes of a buffer to an fd (NUL-safe, for binary responses). */
+static int64_t mfl_write_bytes(int64_t fd, mfl_bytes b) {
+    size_t off = 0;
+    while (off < (size_t)b.len) {
+        ssize_t w = write((int)fd, b.data + off, (size_t)b.len - off);
+        if (w <= 0) break;
+        off += (size_t)w;
+    }
+    return (int64_t)off;
+}
 static void mfl_close(int64_t fd) { close((int)fd); }
 `
 
@@ -3881,6 +3904,11 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("mfl_parse_int(%s)", args[0]), nil
 	case "read_file":
 		return fmt.Sprintf("mfl_read_file(%s)", args[0]), nil
+	case "read_file_bytes":
+		return fmt.Sprintf("mfl_read_file_bytes(%s)", args[0]), nil
+	case "write_bytes":
+		g.usesNet = true
+		return fmt.Sprintf("mfl_write_bytes(%s, %s)", args[0], args[1]), nil
 	case "write_file":
 		return fmt.Sprintf("mfl_write_file(%s, %s)", args[0], args[1]), nil
 	case "list_dir":

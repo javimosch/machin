@@ -9,7 +9,7 @@ import (
 
 // machinVersion is the single version string for the toolchain. Bump it when
 // cutting a release (alongside README badge / SPEC / CHANGELOG).
-const machinVersion = "0.50.0"
+const machinVersion = "0.51.0"
 
 // ---- the source-of-truth feature catalog ----
 //
@@ -79,6 +79,7 @@ func machinGuide() guideCatalog {
 			{"raw_mode", "(int) -> int", "put the terminal in cbreak/no-echo mode (1) or restore it (0); pair them and restore before exit (for TUIs/games)", "io"},
 			{"read_key", "() -> string", "non-blocking single-key read: a 1-char string, or \"\" if no key is waiting (needs raw_mode for live input)", "io"},
 			{"read_file", "(string) -> string", "read a whole file (\"\" on error)", "io"},
+			{"read_file_bytes", "(string) -> bytes", "read a whole file's raw bytes, NUL-safe (empty on error) — for binary assets", "io"},
 			{"write_file", "(string, string) -> int", "write a file (bytes; -1 on error)", "io"},
 			{"list_dir", "(string) -> []string", "directory entries (excludes . / ..)", "io"},
 			{"mkdir", "(string) -> int", "create a directory (0 ok; -1 error)", "io"},
@@ -193,6 +194,7 @@ func machinGuide() guideCatalog {
 			{"accept", "(int) -> int", "accept a connection -> fd", "net"},
 			{"read", "(int) -> string", "read a chunk from an fd (blocks)", "net"},
 			{"write", "(int, string) -> int", "write to an fd", "net"},
+			{"write_bytes", "(int, bytes) -> int", "write raw bytes to an fd, NUL-safe — for binary HTTP responses", "net"},
 			{"close", "(int|chan) ->", "close an fd, or a channel (by argument type)", "net"},
 			{"https_get", "(string) -> string", "GET over TLS (or plain http:// URLs); body (\"\" on error)", "net"},
 			{"https_post", "(string, string) -> string", "POST (JSON body) over TLS (or plain http://); body", "net"},
