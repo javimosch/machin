@@ -305,6 +305,10 @@ type FuncDecl struct {
 	// Variadic marks the last parameter as variadic: it collects trailing call
 	// arguments into a slice.
 	Variadic bool
+	// Exported marks a function declared `export func ...`: it is a reachability
+	// root (kept even if main never calls it) and, under the wasm target, becomes
+	// a WebAssembly export the host (JS) can call. A no-op for the native target.
+	Exported bool
 	// IsLambda marks a lifted lambda: it is always invoked via the closure
 	// convention (a leading void* env), and its first NumCaptures params are
 	// captured variables, supplied at runtime from that heap environment.

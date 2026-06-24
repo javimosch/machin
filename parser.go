@@ -367,6 +367,11 @@ func (p *Parser) parseTypeName() (string, error) {
 }
 
 func (p *Parser) parseFuncDecl() (*FuncDecl, error) {
+	exported := false
+	if p.peek().Kind == TKeyword && p.peek().Val == "export" {
+		p.next()
+		exported = true
+	}
 	if _, err := p.expect(TKeyword, "func"); err != nil {
 		return nil, err
 	}
@@ -423,7 +428,7 @@ func (p *Parser) parseFuncDecl() (*FuncDecl, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &FuncDecl{Name: nameTok.Val, Params: params, Returns: returns, Variadic: variadic, Body: body}, nil
+	return &FuncDecl{Name: nameTok.Val, Params: params, Returns: returns, Variadic: variadic, Body: body, Exported: exported}, nil
 }
 
 func (p *Parser) parseBlock() ([]Stmt, error) {

@@ -29,7 +29,7 @@ var keywords = map[string]bool{
 	"while": true, "for": true, "true": true, "false": true,
 	"nil": true, "var": true, "go": true, "type": true, "struct": true,
 	"chan": true, "make": true, "map": true, "range": true,
-	"arena": true, "extern": true,
+	"arena": true, "extern": true, "export": true,
 	"break": true, "continue": true, "select": true,
 }
 
