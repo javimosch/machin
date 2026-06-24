@@ -345,6 +345,18 @@ static char* mfl_str_i(int64_t v) { char* b = mfl_alloc(24); snprintf(b, 24, "%l
 static char* mfl_str_d(double v)  { char* b = mfl_alloc(32); snprintf(b, 32, "%g", v); return b; }
 static char* mfl_str_b(int64_t v) { return v ? "true" : "false"; }
 static char* mfl_dup(const char* s) { size_t n = strlen(s); char* r = mfl_alloc(n+1); memcpy(r, s, n+1); return r; }
+/* raw heap memory: a pointer is an int (intptr_t round-trip), as with the ptr
+   FFI type. alloc() is zeroed (calloc) so building C structs is safe. For
+   filling C buffers (vertex arrays) and structs to hand to a C API. */
+static int64_t mfl_raw_alloc(int64_t n) { return (int64_t)(intptr_t)calloc(1, (size_t)(n > 0 ? n : 0)); }
+static void mfl_raw_free(int64_t p) { free((void*)(intptr_t)p); }
+static void mfl_poke_f32(int64_t p, int64_t o, double v) { *(float*)((char*)(intptr_t)p + o) = (float)v; }
+static void mfl_poke_i32(int64_t p, int64_t o, int64_t v) { *(int32_t*)((char*)(intptr_t)p + o) = (int32_t)v; }
+static void mfl_poke_u8(int64_t p, int64_t o, int64_t v) { *(uint8_t*)((char*)(intptr_t)p + o) = (uint8_t)v; }
+static void mfl_poke_u16(int64_t p, int64_t o, int64_t v) { *(uint16_t*)((char*)(intptr_t)p + o) = (uint16_t)v; }
+static void mfl_poke_ptr(int64_t p, int64_t o, int64_t v) { *(void**)((char*)(intptr_t)p + o) = (void*)(intptr_t)v; }
+static double mfl_peek_f32(int64_t p, int64_t o) { return (double)*(float*)((char*)(intptr_t)p + o); }
+static int64_t mfl_peek_i32(int64_t p, int64_t o) { return (int64_t)*(int32_t*)((char*)(intptr_t)p + o); }
 /* base64 (standard alphabet, padded) over text. */
 static char* mfl_base64_encode(const char* s) {
     static const char t[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -3459,6 +3471,8 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 			switch pt := ef.Params[i]; {
 			case pt == "ptr": // MFL int -> opaque void*
 				parts[i] = fmt.Sprintf("(void*)(intptr_t)(%s)", a)
+			case strings.HasPrefix(pt, "*"): // *Name: deref an MFL int (ptr) to a C struct, by value
+				parts[i] = fmt.Sprintf("(*(%s*)(intptr_t)(%s))", pt[1:], a)
 			case isFFIScalar(pt):
 				parts[i] = fmt.Sprintf("(%s)(%s)", ffiCType(pt), a)
 			default: // a cstruct, marshaled into the C layout
@@ -3673,6 +3687,14 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 	case "pi":
 		g.usesMath = true
 		return "mfl_math_pi()", nil
+	case "alloc":
+		return fmt.Sprintf("mfl_raw_alloc(%s)", args[0]), nil
+	case "free":
+		return fmt.Sprintf("mfl_raw_free(%s)", args[0]), nil
+	case "poke_f32", "poke_i32", "poke_u8", "poke_u16", "poke_ptr":
+		return fmt.Sprintf("mfl_%s(%s, %s, %s)", ex.Callee, args[0], args[1], args[2]), nil
+	case "peek_f32", "peek_i32":
+		return fmt.Sprintf("mfl_%s(%s, %s)", ex.Callee, args[0], args[1]), nil
 	case "dial":
 		return fmt.Sprintf("mfl_dial(%s, %s)", args[0], args[1]), nil
 	case "listen":

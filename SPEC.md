@@ -1,6 +1,6 @@
 # The MFL Language Specification
 
-Version 0.46.1
+Version 0.47.0
 
 MFL (Machine-First Language) is a statically-typed, Go-flavored backend language
 **shaped for machine authoring**: minimal syntax, no type annotations, one
@@ -516,7 +516,19 @@ extern "m" { header "math.h" link "m" fn sqrt(float) float fn pow(float, float) 
   by-value aggregate.)
 - `fn Name(t, ...) ret` — a foreign function. Parameter and return types are FFI
   scalar types, or the name of a declared `cstruct` (numeric or opaque); a
-  missing return type means `void`.
+  missing return type means `void`. A param may also be **`*T`** (`T` a C type
+  from the header): the MFL argument is a pointer (an `int`) and the call
+  **dereferences it, passing the pointed-to `T` by value** — e.g.
+  `fn LoadModelFromMesh(*Mesh) Model`. (To pass the pointer itself, use `ptr`.)
+
+**Raw memory** (pointers are `int`s, like `ptr`) lets MFL build C buffers and
+structs to hand to a foreign function: `alloc(n) -> int` (n **zeroed** bytes),
+`free(p)`, `poke_f32`/`poke_i32`/`poke_u8`/`poke_u16`/`poke_ptr(p, byteOffset, v)`,
+and `peek_f32`/`peek_i32(p, byteOffset)`. The pattern for a GPU mesh: `poke` the
+vertex/colour arrays and a `Mesh` struct into `alloc`'d memory, `UploadMesh(p, ...)`
+(a `ptr` param — `void*` converts to `Mesh*`, and the call writes the VAO/VBO ids
+back), then `LoadModelFromMesh(p)` (a `*Mesh` param). Struct offsets are
+layout-specific — pin the C library version.
 
 **FFI scalar types** → C: `int`/`i64`→`int64_t`, `i32`→`int32_t`, `i16`→`int16_t`,
 `i8`→`int8_t`, `u64`→`uint64_t` … `u8`→`uint8_t`, `float`/`f64`→`double`,

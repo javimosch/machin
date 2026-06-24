@@ -218,11 +218,18 @@ func (p *Parser) parseExternDecl() (*ExternDecl, error) {
 			}
 			var params []string
 			for p.peek().Val != ")" && p.peek().Kind != TEOF {
+				// a leading * means "deref this pointer (an MFL int) and pass the
+				// pointed-to C struct by value" — e.g. fn LoadModelFromMesh(*Mesh).
+				prefix := ""
+				if p.peek().Val == "*" {
+					p.next()
+					prefix = "*"
+				}
 				t := p.next() // a scalar FFI type or a cstruct name; validated by the checker
 				if t.Kind != TIdent {
 					return nil, fmt.Errorf("extern fn %s: expected a parameter type, got %q", name.Val, t.Val)
 				}
-				params = append(params, t.Val)
+				params = append(params, prefix+t.Val)
 				for p.peek().Val == "," {
 					p.next()
 				}

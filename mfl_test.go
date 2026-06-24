@@ -925,6 +925,42 @@ func TestMathBuiltins(t *testing.T) {
 	}
 }
 
+// Raw heap memory: alloc + typed poke/peek round-trip, then free. (Pointers are
+// ints; for building C buffers/structs to hand to a foreign API.)
+func TestRawMemory(t *testing.T) {
+	main := `func main() {
+	p := alloc(32)
+	poke_f32(p, 0, 1.5)
+	poke_i32(p, 8, 7)
+	poke_u8(p, 12, 200)
+	println(str(peek_f32(p, 0)) + " " + str(peek_i32(p, 8)) + " " + str(peek_i32(p, 12)))
+	free(p)
+}`
+	out, _ := buildRun(t, main)
+	if out != "1.5 7 200\n" {
+		t.Fatalf("raw memory: got %q, want %q", out, "1.5 7 200\n")
+	}
+}
+
+// The `*Name` FFI param convention: deref an MFL int (pointer) and pass the
+// pointed-to C struct by value (e.g. LoadModelFromMesh(*Mesh)). Codegen-level.
+func TestFFIDerefParam(t *testing.T) {
+	prog, err := ParseProgram([]string{
+		`extern "g" { header "g.h" cstruct Model {} fn LoadFrom(*Thing) Model }`,
+		`func main() { m := LoadFrom(0)  println(str(0)) }`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := CompileToC(prog, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(c, "(*(Thing*)(intptr_t)") {
+		t.Fatal("*Name param must deref the pointer and pass the C struct by value")
+	}
+}
+
 // Nested cstructs: a cstruct field whose type is another cstruct (by-value
 // struct of by-value structs — e.g. raylib Camera3D holds Vector3s). The MFL
 // wrapper nests the inner mfl_ type and marshaling recurses. Codegen-level.
