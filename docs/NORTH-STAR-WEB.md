@@ -39,6 +39,7 @@ north star is to make it first-class.
 |---|---|---|
 | **`--target wasm` (first-class, v0.50.0)** | this repo | `machin build --target wasm` → a `wasm32-wasi` reactor module via `zig cc`; `export func` + FFI-as-import bridge built into codegen; lean pay-as-you-go runtime |
 | **MFL in the browser** | [machin-demo-wasm](https://github.com/javimosch/machin-demo-wasm) | MFL → C → wasm; FFI-as-import DOM bridge; string marshaling; verified on-screen in Chrome |
+| **isomorphic SSR** | [machin-demo-ssr](https://github.com/javimosch/machin-demo-ssr) | one `view.src` compiled into both a native machweb server (HTML per request) and the wasm client — server HTML and client re-render byte-identical |
 | backend web framework | [`framework/machweb.src`](../framework) | `serve(port, handler)` → self-contained native server |
 
 ## The feature roadmap (gaps, in rough dependency order)
@@ -86,10 +87,16 @@ JS becomes a tiny host that applies a patch list machin computes. This is where
 vector/array marshaling layer and probably FFI **callbacks** (host → MFL, shared
 with the game-dev roadmap's Phase-4 callbacks).
 
-**Tier 4 — full-stack MFL (aspirational).** One language across the wire: the
-[`machweb`](../framework) server and the wasm client share MFL types and
-(de)serialization, so a request/response or a server-rendered-then-hydrated page
-is written once. A stretch goal, listed as a direction, not a plan.
+**Tier 4 — full-stack MFL (started).** One language across the wire: a component
+written once in MFL, run on the [`machweb`](../framework) server for first paint
+and in wasm for interactivity. [machin-demo-ssr](https://github.com/javimosch/machin-demo-ssr)
+is the first step — a shared `view.src` compiled into both the native server and
+the wasm client, producing byte-identical HTML. Still ahead: a single binary that
+**serves its own wasm + assets** (wants a machweb bytes-body response — a `.wasm`
+has NUL bytes a C-string body truncates), shared MFL types/(de)serialization
+across the wire, and server-rendered-then-**hydrated** pages (reuse the SSR DOM,
+attach the wasm client). The richer reaches (typed RPC, streaming) stay
+aspirational.
 
 ## Method
 
