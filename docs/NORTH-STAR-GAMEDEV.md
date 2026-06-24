@@ -50,8 +50,9 @@ instead of re-emitting every frame. This was the first hard gap — it needed
 raw memory (v0.47.0) plus **pointer-bearing `cstruct` fields + an inout `T*` param**
 (v0.48.0), so a `Mesh` is a `cstruct` the C compiler lays out — no hard-coded
 offsets ([machin-demo-planet](https://github.com/javimosch/machin-demo-planet)).
-Still missing for instancing: `DrawMeshInstanced` (fields of objects) needs a
-`Matrix` **array** parameter (typed array FFI).
+Instancing (`DrawMeshInstanced`, for fields of objects) is now also reachable:
+the `Matrix` transform array is just raw memory + a `ptr`, and the required
+instancing shader composes too (see item 3) — it's a demo to build, not a gap.
 
 **Tier 3 — procedural worlds (started).**
 - **Planet / terrain generation:** the **infinite chunk-streamed terrain** is here
@@ -82,11 +83,17 @@ Each is a candidate to be *driven by a demo*, not built speculatively:
    (`alloc`/`poke_*`/`peek_*`/`free`, pointers as `int`), the `*T` deref param,
    `ptr` pass-by-pointer, **pointer-bearing `cstruct` fields**, and an **inout
    `T*`** param (so a `Mesh` is a cstruct the C compiler lays out — no offsets).
-   Remaining follow-up: **typed array params** (`Matrix*` for `DrawMeshInstanced`).
+   A typed C array (`Matrix*`, `Vector3*`, …) is just raw memory passed as `ptr`,
+   so `DrawMeshInstanced` and friends need no further FFI — just a demo.
 2. **A vector/matrix layer** — vec2/vec3/vec4 + mat4 ops. Could be a vendored MFL
    module first; promote hot paths to builtins if measured.
-3. **Shaders / uniforms** — `LoadShader`, `SetShaderValue` (needs pointer FFI for
-   uniform arrays); lighting, post-processing.
+3. ~~**Shaders / uniforms**~~ — **reachable via the FFI (composition), demonstrated:**
+   `Shader` is a pointer-field cstruct, `RenderTexture2D` is nested cstructs, and
+   `LoadShaderFromMemory`/`SetShaderValue(..., ptr, kind)`/`SetShaderValueTexture`
+   are plain FFI — no new language feature. [machin-demo-cyberpunk](https://github.com/javimosch/machin-demo-cyberpunk)
+   does a depth-fog post-process pass. The **same path** now unblocks real GPU
+   instancing (an instancing VS + `DrawMeshInstanced`) and textured/lit materials —
+   those are demos to build, not language gaps.
 4. ~~**A noise builtin**~~ — **done (v0.49.0):** `noise2`/`noise3` (Perlin),
    deterministic, ~`[-1,1]`; fbm layered in MFL. The backbone of procedural worlds.
 5. **FFI callbacks (Phase 4)** — C calling back into MFL (custom render/audio
