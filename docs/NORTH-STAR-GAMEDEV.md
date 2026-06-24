@@ -26,6 +26,7 @@ Native binaries through raylib's C FFI (and a terminal track):
 | 2D procedural animation | [machin-demo-anim](https://github.com/javimosch/machin-demo-anim) | composition on native math |
 | procedural mesh (immediate mode) | [machin-demo-terrain](https://github.com/javimosch/machin-demo-terrain) | rlgl `rlVertex3f` stream; flat shading in MFL |
 | **static GPU mesh** | [machin-demo-planet](https://github.com/javimosch/machin-demo-planet) | **pointer/array FFI** (v0.47.0): raw memory + `*T` deref param → `UploadMesh`/`LoadModelFromMesh` |
+| **infinite procedural world** | [machin-demo-cyberpunk](https://github.com/javimosch/machin-demo-cyberpunk) | **`noise2`/`noise3`** (v0.49.0) → fbm terrain, chunk-streamed GPU meshes, fly camera, neon buildings |
 
 The how-to substrate is [`skills/machin-gamedev/SKILL.md`](../skills/machin-gamedev/SKILL.md):
 setup, the FFI surface, the **headerless-extern trick** (reach any scalar/`void`
@@ -52,12 +53,14 @@ offsets ([machin-demo-planet](https://github.com/javimosch/machin-demo-planet)).
 Still missing for instancing: `DrawMeshInstanced` (fields of objects) needs a
 `Matrix` **array** parameter (typed array FFI).
 
-**Tier 3 — procedural worlds.**
-- **Planet / terrain generation:** chunked height fields with level-of-detail,
-  biomes, erosion; **scattering** of *flora/fauna* (instanced meshes placed by
-  density functions and noise). Needs Tier-2 meshes + instancing + a real noise
-  primitive (Perlin/Simplex — a candidate native builtin, since layered `sin` only
-  goes so far).
+**Tier 3 — procedural worlds (started).**
+- **Planet / terrain generation:** the **infinite chunk-streamed terrain** is here
+  ([machin-demo-cyberpunk](https://github.com/javimosch/machin-demo-cyberpunk)) —
+  fbm over the native **`noise2`** (v0.49.0), GPU-mesh chunks loaded/unloaded
+  around a fly camera, with procedurally placed buildings. Still ahead:
+  **level-of-detail** (coarser meshes far away), **biomes/erosion**, and
+  **scattering** of *flora/fauna* as **instanced** meshes (needs typed array FFI
+  for `DrawMeshInstanced`).
 - **2D & 3D skeleton animation (procedural):** bone hierarchies, forward
   kinematics, and **IK** (inverse kinematics) for limbs; blending. Mostly MFL math
   over transforms — but benefits from the vector/matrix layer and, for 3D, skinned
@@ -84,7 +87,8 @@ Each is a candidate to be *driven by a demo*, not built speculatively:
    module first; promote hot paths to builtins if measured.
 3. **Shaders / uniforms** — `LoadShader`, `SetShaderValue` (needs pointer FFI for
    uniform arrays); lighting, post-processing.
-4. **A noise builtin** — Perlin/Simplex; the backbone of procedural worlds.
+4. ~~**A noise builtin**~~ — **done (v0.49.0):** `noise2`/`noise3` (Perlin),
+   deterministic, ~`[-1,1]`; fbm layered in MFL. The backbone of procedural worlds.
 5. **FFI callbacks (Phase 4)** — C calling back into MFL (custom render/audio
    callbacks, `SetTraceLogCallback`, GLFW-style input hooks).
 6. **Deterministic fixed-step sim** loop patterns + spatial structures (for Tier 4).
