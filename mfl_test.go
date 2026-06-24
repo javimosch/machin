@@ -1023,6 +1023,32 @@ func TestNestedCStruct(t *testing.T) {
 	}
 }
 
+// Perlin noise builtins: deterministic, in ~[-1,1], continuous; gated (-lm only
+// when used).
+func TestNoise(t *testing.T) {
+	main := `func main() {
+	a := noise2(3.5, 1.2)
+	b := noise2(3.5, 1.2)
+	ok := "no"  if a == b { ok = "yes" }
+	inr := "no"  if a > 0.0 - 1.0 { if a < 1.0 { inr = "yes" } }
+	near := "no"  d := noise2(3.5, 1.2) - noise2(3.51, 1.2)  if d < 0.2 { if d > 0.0 - 0.2 { near = "yes" } }
+	println(ok + " " + inr + " " + near + " " + str(noise3(0.0, 0.0, 0.0)))
+}`
+	out, _ := buildRun(t, main)
+	// deterministic, in range, continuous; noise3 at the origin is ~0
+	if !strings.HasPrefix(out, "yes yes yes ") {
+		t.Fatalf("noise: got %q", out)
+	}
+	// gated: a noise-free program emits no noise runtime
+	plain, err := CompileToC(&Program{Funcs: parseFuncs(t, `func main() { println("hi") }`)}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(plain, "mfl_noise") {
+		t.Fatal("noise runtime must not be emitted for a noise-free program")
+	}
+}
+
 // float() lifts a concrete int into float arithmetic (the counterpart to int()).
 // MFL has no implicit int->float, so a value typed int (a function return,
 // byte_at, len, ...) can't mix with a float without this.
