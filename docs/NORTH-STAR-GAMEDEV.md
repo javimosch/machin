@@ -26,7 +26,7 @@ Native binaries through raylib's C FFI (and a terminal track):
 | 2D procedural animation | [machin-demo-anim](https://github.com/javimosch/machin-demo-anim) | composition on native math |
 | procedural mesh (immediate mode) | [machin-demo-terrain](https://github.com/javimosch/machin-demo-terrain) | rlgl `rlVertex3f` stream; flat shading in MFL |
 | **static GPU mesh** | [machin-demo-planet](https://github.com/javimosch/machin-demo-planet) | **pointer/array FFI** (v0.47.0): raw memory + `*T` deref param → `UploadMesh`/`LoadModelFromMesh` |
-| **infinite procedural world** | [machin-demo-cyberpunk](https://github.com/javimosch/machin-demo-cyberpunk) | **`noise2`/`noise3`** (v0.49.0) → fbm terrain, chunk-streamed GPU meshes, fly camera, neon buildings |
+| **infinite procedural world** | [machin-demo-cyberpunk](https://github.com/javimosch/machin-demo-cyberpunk) | **`noise2`/`noise3`** (v0.49.0) → fbm terrain, chunk-streamed GPU meshes, fly camera, neon buildings, instanced flora, shader fog, **skeletal fauna**, **10 km draw distance** |
 
 The how-to substrate is [`skills/machin-gamedev/SKILL.md`](../skills/machin-gamedev/SKILL.md):
 setup, the FFI surface, the **headerless-extern trick** (reach any scalar/`void`
@@ -61,13 +61,19 @@ draws thousands of GPU-instanced plants in one call.
   fbm over the native **`noise2`** (v0.49.0), GPU-mesh chunks loaded/unloaded
   around a fly camera, procedurally placed buildings (clustered in city
   districts), **GPU-instanced flora** in the scrubland between (one
-  `DrawMeshInstanced` call for thousands of plants), and **depth fog** via a
-  post-process shader. Still ahead: **level-of-detail** (coarser meshes far
-  away), **biomes/erosion**, and animated **fauna** / denser ecosystems.
-- **2D & 3D skeleton animation (procedural):** bone hierarchies, forward
-  kinematics, and **IK** (inverse kinematics) for limbs; blending. Mostly MFL math
-  over transforms — but benefits from the vector/matrix layer and, for 3D, skinned
-  meshes (more `Mesh`/`Matrix` FFI).
+  `DrawMeshInstanced` call for thousands of plants), **depth fog** via a
+  post-process shader, a herd of **procedurally-animated skeletal fauna**, and a
+  **10 km draw distance** (custom projection matrix via `rlSetMatrixProjection`
+  + a coarse recentered terrain underlay — a first **level-of-detail** step).
+  Still ahead: finer **LOD** (mesh decimation, not just one coarse ring),
+  **biomes/erosion**, and denser ecosystems.
+- **2D & 3D skeleton animation (procedural) — started, composition.** Bone
+  hierarchies and **forward kinematics** are just the rlgl matrix stack
+  (`rlPush`/`rlTranslatef`/`rlRotatef`/`rlPop`) nested per joint — the cyberpunk
+  fauna are FK skeletons with a sine-driven diagonal gait, no skinned mesh, no new
+  feature. Still ahead: **IK** (inverse kinematics) for foot-planting, animation
+  blending, and skinned meshes for organic bodies — those want the vector/matrix
+  layer and more `Mesh`/`Matrix` FFI.
 
 **Tier 4 — simulation sandbox (aspirational, not set in stone).** A combat-sim in
 the spirit of **ArmA / Armed Assault**: real **ballistics** (drag, gravity, wind,
