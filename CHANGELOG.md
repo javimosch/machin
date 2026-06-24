@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.47.0
+
+- **Pointer/array FFI — raw memory + `*T` params.** machin can now build C
+  buffers and structs and hand them to a foreign API:
+  - raw heap memory (pointers are `int`s): `alloc(n)` (zeroed), `free(p)`,
+    `poke_f32`/`poke_i32`/`poke_u8`/`poke_u16`/`poke_ptr(p, byteOffset, v)`,
+    `peek_f32`/`peek_i32(p, byteOffset)`.
+  - a new FFI param convention **`*T`** — the MFL arg is a pointer (`int`); the
+    call dereferences it and passes the pointed-to C struct **by value** (e.g.
+    `fn LoadModelFromMesh(*Mesh) Model`). Pass the pointer itself with `ptr`
+    (`void*` → any `T*`), so an in/out `UploadMesh(Mesh*)` writes back into the
+    buffer.
+  - Also: an explicit `extern` declaration now resolves before the builtin
+    switch (introduced in v0.46.0), so reaching a foreign `fn` of the same name
+    as a builtin still works.
+
+  This is the first FFI tier that hands C **raw pointers/arrays**, unlocking GPU
+  vertex buffers (`UploadMesh`/`LoadModelFromMesh`/`DrawModel`) — a procedurally
+  generated mesh built in MFL and uploaded to VRAM. Surfaced (and verified) by
+  [machin-demo-planet](https://github.com/javimosch/machin-demo-planet). The
+  Tier-2 unlock in the [game-dev north star](docs/NORTH-STAR-GAMEDEV.md).
+
 ## v0.46.1
 
 - **docs:** fix the guide's `ffi-nested-cstruct` gotcha, which still said "no

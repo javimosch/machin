@@ -620,6 +620,9 @@ func Check(p *Program) (*Checker, error) {
 		if t == "" || isFFIScalar(t) {
 			return true
 		}
+		if strings.HasPrefix(t, "*") {
+			return true // *Name: deref an MFL int (ptr) to a header C type, by value
+		}
 		_, ok := c.structs[t]
 		return ok
 	}
@@ -1566,6 +1569,9 @@ func (c *Checker) genStructLit(fn *FuncDecl, ex *StructLit) (int, error) {
 // ffiSlot maps an FFI type name to its checker slot: a scalar's shared slot, a
 // fresh struct slot for a cstruct name, or void for "".
 func (c *Checker) ffiSlot(t string) int {
+	if strings.HasPrefix(t, "*") {
+		return c.cInt // *Name: the MFL arg is a pointer held as an int
+	}
 	switch t {
 	case "":
 		return c.cVoid
@@ -1889,6 +1895,50 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 			return 0, fmt.Errorf("pi: no args")
 		}
 		return c.cFloat, nil
+	// raw heap memory: pointers are ints. For building C buffers/structs to hand
+	// to a foreign API (e.g. a GPU vertex buffer via the FFI).
+	case "alloc":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("alloc: 1 arg (byte count)")
+		}
+		c.addPair(argSlots[0], c.cInt)
+		return c.cInt, nil
+	case "free":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("free: 1 arg (pointer)")
+		}
+		c.addPair(argSlots[0], c.cInt)
+		return c.cVoid, nil
+	case "poke_f32":
+		if len(argSlots) != 3 {
+			return 0, fmt.Errorf("poke_f32: 3 args (ptr, byte offset, value)")
+		}
+		c.addPair(argSlots[0], c.cInt)
+		c.addPair(argSlots[1], c.cInt)
+		c.addPair(argSlots[2], newSlot(c, KNum))
+		return c.cVoid, nil
+	case "poke_i32", "poke_u8", "poke_u16", "poke_ptr":
+		if len(argSlots) != 3 {
+			return 0, fmt.Errorf("%s: 3 args (ptr, byte offset, value)", ex.Callee)
+		}
+		c.addPair(argSlots[0], c.cInt)
+		c.addPair(argSlots[1], c.cInt)
+		c.addPair(argSlots[2], c.cInt)
+		return c.cVoid, nil
+	case "peek_f32":
+		if len(argSlots) != 2 {
+			return 0, fmt.Errorf("peek_f32: 2 args (ptr, byte offset)")
+		}
+		c.addPair(argSlots[0], c.cInt)
+		c.addPair(argSlots[1], c.cInt)
+		return c.cFloat, nil
+	case "peek_i32":
+		if len(argSlots) != 2 {
+			return 0, fmt.Errorf("peek_i32: 2 args (ptr, byte offset)")
+		}
+		c.addPair(argSlots[0], c.cInt)
+		c.addPair(argSlots[1], c.cInt)
+		return c.cInt, nil
 	case "listen", "accept":
 		if len(argSlots) != 1 {
 			return 0, fmt.Errorf("%s: 1 arg", ex.Callee)

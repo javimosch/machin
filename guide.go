@@ -9,7 +9,7 @@ import (
 
 // machinVersion is the single version string for the toolchain. Bump it when
 // cutting a release (alongside README badge / SPEC / CHANGELOG).
-const machinVersion = "0.46.1"
+const machinVersion = "0.47.0"
 
 // ---- the source-of-truth feature catalog ----
 //
@@ -113,6 +113,14 @@ func machinGuide() guideCatalog {
 			{"abs", "(number) -> float", "absolute value (float; fabs)", "math"},
 			{"fmod", "(number, number) -> float", "floating-point remainder of x/y", "math"},
 			{"pi", "() -> float", "the constant pi", "math"},
+			// raw memory (pointers are ints) — build C buffers/structs for the FFI
+			{"alloc", "(int) -> int", "allocate n zeroed bytes; returns a pointer (as int). For C buffers/structs to hand to an extern fn", "memory"},
+			{"free", "(int) ->", "free a pointer returned by alloc", "memory"},
+			{"poke_f32", "(int, int, number) ->", "write a 32-bit float at ptr+byteoffset", "memory"},
+			{"poke_i32", "(int, int, int) ->", "write a 32-bit int at ptr+byteoffset (also poke_u8, poke_u16)", "memory"},
+			{"poke_ptr", "(int, int, int) ->", "write an 8-byte pointer value at ptr+byteoffset (e.g. a buffer into a struct field)", "memory"},
+			{"peek_f32", "(int, int) -> float", "read a 32-bit float at ptr+byteoffset", "memory"},
+			{"peek_i32", "(int, int) -> int", "read a 32-bit int at ptr+byteoffset", "memory"},
 			// collections
 			{"len", "(string|slice|map) -> int", "length", "collection"},
 			{"append", "([]T, T) -> []T", "grow a slice", "collection"},
@@ -243,6 +251,7 @@ func main() { println(str(sqrt(2.0))) }`},
 			{"int-float-no-implicit", "There is NO implicit int->float. Only a flexible numeric LITERAL (e.g. 5) promotes against a float; a CONCRETE int — a fn return, byte_at, len, a typed param, or an int-slice element — is a hard `int vs float` mismatch with a float. Wrap it: float(byte_at(b,0)) / 2.0. (int() goes the other way.) This also applies to f32/f64 struct fields in FFI cstructs."},
 			{"ffi-opaque-handle", "For a by-value C struct that contains pointers (raylib Sound/Music/Font/Texture with internals, FILE wrappers, ...), declare an OPAQUE cstruct with an empty body: `cstruct Sound {}`. machin holds the real C struct by value and passes it back to fns without naming its fields — receive it from a fn, store it (incl. []Sound), pass it on; no construct or .field. (A single pointer is simpler: the `ptr` FFI type, held as an int.)"},
 			{"ffi-nested-cstruct", "A cstruct field may be ANOTHER cstruct (by-value struct of structs) — declare the inner one first. e.g. `cstruct Vector3 { x f32 y f32 z f32 }` then `cstruct Camera3D { position Vector3 target Vector3 up Vector3 fovy f32 projection i32 }`; construct with nested literals `Camera3D{Vector3{0,10,10}, Vector3{0,0,0}, Vector3{0,1,0}, 45.0, 0}`. Required for 3D (BeginMode3D) and 2D cameras. (Camera/orbit trig: machin has native sin/cos/sqrt/pi etc. — see the `math` builtins.)"},
+			{"ffi-raw-buffers", "To hand a C API a raw buffer or build a C struct, use raw memory (pointers are ints): `p := alloc(nbytes)` (zeroed), `poke_f32/poke_i32/poke_u8/poke_ptr(p, byteOffset, v)`, `peek_f32/peek_i32`, `free(p)`. Pass the pointer to an extern fn taking `ptr` (becomes void*, implicitly any T*). To pass the *pointed-to struct by value*, declare the param `*Name` — `fn LoadModelFromMesh(*Mesh) Model` emits `*(Mesh*)ptr`. So: build a Mesh in alloc'd memory (poke its fields at known offsets), `UploadMesh(meshPtr, false)` (ptr param, writes back), then `LoadModelFromMesh(meshPtr)` (*Mesh). Offsets are layout-specific — pin the C lib version. (see machin-demo-planet)"},
 			{"eval-order", "Operands and arguments evaluate left-to-right (as in Go), including side effects: `f() + g()` runs f() before g(). Holds for binary ops, call args, slice/struct literals, and multi-return lists."},
 			{"composite-literal", "T{...} literals need T to be a known struct type at parse time. `machin encode` registers all `type` decls first, so this just works in normal builds."},
 			{"stdout-buffering", "libc fully buffers stdout when it's a pipe; a streaming program must call flush() after a write to appear promptly downstream. A TTY is line-buffered."},
