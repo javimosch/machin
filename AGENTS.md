@@ -43,7 +43,8 @@ Building a **game** (terminal TUI or raylib GUI/audio)? Read
 [`skills/machin-gamedev/SKILL.md`](skills/machin-gamedev/SKILL.md) first — the
 canonical setup, build-and-verify workflow, raylib FFI surface, and accumulated
 caveats/gotchas (especially MFL's no-implicit-`int`→`float` rule), distilled from
-machin-game-snake / -2048 / -flappy / -simon.
+the game/demo series. Game-dev has become a primary dogfood domain; its direction
+and gap roadmap live in [`docs/NORTH-STAR-GAMEDEV.md`](docs/NORTH-STAR-GAMEDEV.md).
 
 ## What this is
 
