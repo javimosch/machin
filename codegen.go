@@ -10,13 +10,30 @@ import (
 // `cc -O2`, so MFL's runtime cost is whatever the C compiler's optimizer
 // produces — native, on par with C/Rust/Zig for scalar code.
 func CompileToC(p *Program, safe bool) (string, error) {
+	src, _, err := CompileToCTarget(p, safe, targetNative)
+	return src, err
+}
+
+// CompileToCTarget compiles to C for a given target ("native" or "wasm"). For
+// the wasm target it also returns the C names of the program's `export func`s
+// (the symbols the wasm linker exports). The emitted C differs by target: a wasm
+// build tags FFI imports with wasm import attributes, omits the POSIX socket/tty
+// runtime unless used, and omits the native `int main` entry point.
+func CompileToCTarget(p *Program, safe bool, target string) (string, []string, error) {
+	if target == "" {
+		target = targetNative
+	}
 	liftClosures(p) // idempotent: a no-op once literals are already lifted
 	c, err := Check(p)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
-	g := &cgen{c: c, safe: safe, jsonMemo: map[string]string{}, parseMemo: map[string]string{}, chanJSONMemo: map[string][2]string{}}
-	return g.program(p)
+	g := &cgen{c: c, safe: safe, target: target, jsonMemo: map[string]string{}, parseMemo: map[string]string{}, chanJSONMemo: map[string][2]string{}}
+	src, err := g.program(p)
+	if err != nil {
+		return "", nil, err
+	}
+	return src, c.ExportNames(), nil
 }
 
 // cTypeName renders a declared type string (int, float, bool, string, []elem,
@@ -69,7 +86,18 @@ type cgen struct {
 	usesXEdDSA bool  // program calls xeddsa_* -> emit XEdDSA runtime + link -lsodium -lcrypto
 	usesMath  bool   // program calls math builtins (sin/cos/sqrt/...) -> emit math runtime + link -lm
 	usesNoise bool   // program calls noise2/noise3 -> emit Perlin noise runtime + link -lm
+	usesNet   bool   // program calls dial/listen/accept/read/write/close(fd) -> emit POSIX socket runtime
+	usesTTY   bool   // program calls raw_mode/read_key -> emit termios/select runtime
+	target    string // "" or "native" (default) -> cc; "wasm" -> zig cc, lean runtime, FFI as imports, exports
 }
+
+// build targets.
+const (
+	targetNative = "native"
+	targetWasm   = "wasm"
+)
+
+func (g *cgen) wasm() bool { return g.target == targetWasm }
 
 const cRuntime = `#define _GNU_SOURCE
 #include <stdio.h>
@@ -690,45 +718,6 @@ static char* mfl_join(mfl_slice xs, const char* sep) {
     return r;
 }
 
-/* networking: the low-level shape of Go's net package */
-static int64_t mfl_listen(int64_t port) {
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    int opt = 1; setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-    struct sockaddr_in a; memset(&a, 0, sizeof(a));
-    a.sin_family = AF_INET; a.sin_addr.s_addr = INADDR_ANY; a.sin_port = htons((uint16_t)port);
-    if (bind(fd, (struct sockaddr*)&a, sizeof(a)) < 0) { perror("bind"); exit(1); }
-    if (listen(fd, 64) < 0) { perror("listen"); exit(1); }
-    return fd;
-}
-static int64_t mfl_accept(int64_t fd) { return accept((int)fd, NULL, NULL); }
-/* dial: connect a TCP socket to host:port, returning an fd (-1 on failure).
-   The fd is used with the same read/write/close as an accepted connection. */
-static int64_t mfl_dial(const char* host, int64_t port) {
-    struct addrinfo hints, *res, *rp;
-    memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_UNSPEC; hints.ai_socktype = SOCK_STREAM;
-    char ps[16]; snprintf(ps, sizeof(ps), "%lld", (long long)port);
-    if (getaddrinfo(host, ps, &hints, &res) != 0) return -1;
-    int fd = -1;
-    for (rp = res; rp; rp = rp->ai_next) {
-        fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
-        if (fd < 0) continue;
-        if (connect(fd, rp->ai_addr, rp->ai_addrlen) == 0) break;
-        close(fd); fd = -1;
-    }
-    freeaddrinfo(res);
-    return fd;
-}
-static char* mfl_read(int64_t fd) {
-    char* buf = mfl_alloc(65536);
-    ssize_t n = read((int)fd, buf, 65535);
-    if (n < 0) n = 0;
-    buf[n] = 0;
-    return buf;
-}
-static int64_t mfl_write(int64_t fd, const char* s) { return (int64_t)write((int)fd, s, strlen(s)); }
-static void mfl_close(int64_t fd) { close((int)fd); }
-
 /* read one line from stdin (without the trailing newline); "" at EOF */
 static char* mfl_input(void) {
     size_t cap = 128, len = 0;
@@ -739,47 +728,6 @@ static char* mfl_input(void) {
         buf[len++] = (char)c;
     }
     buf[len] = 0;
-    return buf;
-}
-/* terminal raw mode + non-blocking single-key read (for TUIs and games).
-   raw_mode(1) puts the tty in cbreak + no-echo with VMIN=0/VTIME=0 so reads
-   never block; raw_mode(0) restores the saved settings. */
-static struct termios mfl_tty_saved;
-static int mfl_tty_raw = 0;
-static int64_t mfl_raw_mode(int64_t on) {
-    if (on) {
-        if (mfl_tty_raw) return 0;
-        struct termios t;
-        if (tcgetattr(STDIN_FILENO, &t) != 0) return -1;
-        mfl_tty_saved = t;
-        t.c_lflag &= ~(ICANON | ECHO);
-        t.c_cc[VMIN] = 0;
-        t.c_cc[VTIME] = 0;
-        if (tcsetattr(STDIN_FILENO, TCSANOW, &t) != 0) return -1;
-        mfl_tty_raw = 1;
-    } else {
-        if (!mfl_tty_raw) return 0;
-        tcsetattr(STDIN_FILENO, TCSANOW, &mfl_tty_saved);
-        mfl_tty_raw = 0;
-    }
-    return 0;
-}
-/* non-blocking read of one key; a 1-char string, or "" if nothing is waiting.
-   In raw mode VMIN=0 already makes read() return immediately; otherwise poll
-   with select() so we never block. */
-static char* mfl_read_key(void) {
-    char* buf = mfl_alloc(2);
-    buf[0] = 0; buf[1] = 0;
-    unsigned char c = 0;
-    if (mfl_tty_raw) {
-        if (read(STDIN_FILENO, &c, 1) == 1) buf[0] = (char)c;
-    } else {
-        fd_set fds; FD_ZERO(&fds); FD_SET(STDIN_FILENO, &fds);
-        struct timeval tv; tv.tv_sec = 0; tv.tv_usec = 0;
-        if (select(STDIN_FILENO + 1, &fds, NULL, NULL, &tv) > 0) {
-            if (read(STDIN_FILENO, &c, 1) == 1) buf[0] = (char)c;
-        }
-    }
     return buf;
 }
 /* read all of stdin verbatim until EOF (no line splitting). Exact for text;
@@ -1020,6 +968,97 @@ static mfl_json_result mfl_json_get(const char* json, const char* path) {
     if (!end) { R.err = mfl_dup_arena("parse", 5); return R; }
     R.value = mfl_dup_arena(cur, (size_t)(end - cur));
     return R;
+}
+`
+
+// netRuntime is the POSIX socket layer (Go's net package, low-level): listen/
+// accept/dial/read/write/close over TCP fds. Part of the always-on runtime for
+// the native target; under the wasm target it is emitted only when the program
+// actually calls one of these builtins (a frontend app that touches no sockets
+// then references no POSIX networking symbols at all).
+const netRuntime = `/* networking: the low-level shape of Go's net package */
+static int64_t mfl_listen(int64_t port) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    int opt = 1; setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    struct sockaddr_in a; memset(&a, 0, sizeof(a));
+    a.sin_family = AF_INET; a.sin_addr.s_addr = INADDR_ANY; a.sin_port = htons((uint16_t)port);
+    if (bind(fd, (struct sockaddr*)&a, sizeof(a)) < 0) { perror("bind"); exit(1); }
+    if (listen(fd, 64) < 0) { perror("listen"); exit(1); }
+    return fd;
+}
+static int64_t mfl_accept(int64_t fd) { return accept((int)fd, NULL, NULL); }
+/* dial: connect a TCP socket to host:port, returning an fd (-1 on failure).
+   The fd is used with the same read/write/close as an accepted connection. */
+static int64_t mfl_dial(const char* host, int64_t port) {
+    struct addrinfo hints, *res, *rp;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC; hints.ai_socktype = SOCK_STREAM;
+    char ps[16]; snprintf(ps, sizeof(ps), "%lld", (long long)port);
+    if (getaddrinfo(host, ps, &hints, &res) != 0) return -1;
+    int fd = -1;
+    for (rp = res; rp; rp = rp->ai_next) {
+        fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+        if (fd < 0) continue;
+        if (connect(fd, rp->ai_addr, rp->ai_addrlen) == 0) break;
+        close(fd); fd = -1;
+    }
+    freeaddrinfo(res);
+    return fd;
+}
+static char* mfl_read(int64_t fd) {
+    char* buf = mfl_alloc(65536);
+    ssize_t n = read((int)fd, buf, 65535);
+    if (n < 0) n = 0;
+    buf[n] = 0;
+    return buf;
+}
+static int64_t mfl_write(int64_t fd, const char* s) { return (int64_t)write((int)fd, s, strlen(s)); }
+static void mfl_close(int64_t fd) { close((int)fd); }
+`
+
+// ttyRuntime is terminal raw mode + non-blocking single-key reads (termios +
+// select), for TUIs and terminal games. Always-on for native; under wasm emitted
+// only when raw_mode/read_key is used (a browser app references neither).
+const ttyRuntime = `/* terminal raw mode + non-blocking single-key read (for TUIs and games).
+   raw_mode(1) puts the tty in cbreak + no-echo with VMIN=0/VTIME=0 so reads
+   never block; raw_mode(0) restores the saved settings. */
+static struct termios mfl_tty_saved;
+static int mfl_tty_raw = 0;
+static int64_t mfl_raw_mode(int64_t on) {
+    if (on) {
+        if (mfl_tty_raw) return 0;
+        struct termios t;
+        if (tcgetattr(STDIN_FILENO, &t) != 0) return -1;
+        mfl_tty_saved = t;
+        t.c_lflag &= ~(ICANON | ECHO);
+        t.c_cc[VMIN] = 0;
+        t.c_cc[VTIME] = 0;
+        if (tcsetattr(STDIN_FILENO, TCSANOW, &t) != 0) return -1;
+        mfl_tty_raw = 1;
+    } else {
+        if (!mfl_tty_raw) return 0;
+        tcsetattr(STDIN_FILENO, TCSANOW, &mfl_tty_saved);
+        mfl_tty_raw = 0;
+    }
+    return 0;
+}
+/* non-blocking read of one key; a 1-char string, or "" if nothing is waiting.
+   In raw mode VMIN=0 already makes read() return immediately; otherwise poll
+   with select() so we never block. */
+static char* mfl_read_key(void) {
+    char* buf = mfl_alloc(2);
+    buf[0] = 0; buf[1] = 0;
+    unsigned char c = 0;
+    if (mfl_tty_raw) {
+        if (read(STDIN_FILENO, &c, 1) == 1) buf[0] = (char)c;
+    } else {
+        fd_set fds; FD_ZERO(&fds); FD_SET(STDIN_FILENO, &fds);
+        struct timeval tv; tv.tv_sec = 0; tv.tv_usec = 0;
+        if (select(STDIN_FILENO + 1, &fds, NULL, NULL, &tv) > 0) {
+            if (read(STDIN_FILENO, &c, 1) == 1) buf[0] = (char)c;
+        }
+    }
+    return buf;
 }
 `
 
@@ -2099,6 +2138,17 @@ func (g *cgen) program(p *Program) (string, error) {
 	var out strings.Builder
 	out.WriteString(cRuntime)
 	out.WriteByte('\n')
+	// POSIX socket + tty runtimes: always present for the native target; for the
+	// wasm target emitted only when actually used, so a browser app pulls in no
+	// socket/termios symbols (which wasi-libc does not fully provide).
+	if !g.wasm() || g.usesNet {
+		out.WriteString(netRuntime)
+		out.WriteByte('\n')
+	}
+	if !g.wasm() || g.usesTTY {
+		out.WriteString(ttyRuntime)
+		out.WriteByte('\n')
+	}
 	if g.usesTLS || g.usesWSS {
 		// OpenSSL plumbing — emitted (and linked) only when a program uses native
 		// TLS (https_* or wss_*), so TLS-free programs stay libc-only.
@@ -2172,7 +2222,18 @@ func (g *cgen) program(p *Program) (string, error) {
 			if ps == "" {
 				ps = "void"
 			}
-			fmt.Fprintf(&out, "extern %s %s(%s);\n", externCType(ef.Ret), ef.Name, ps)
+			// Under the wasm target a headerless extern is a host (JS) function: tag
+			// it as a wasm import so the linker leaves it undefined for the host to
+			// supply. The `extern "<lib>"` name is the import module (default "env").
+			var attr string
+			if g.wasm() && ed.Header == "" {
+				mod := ed.Lib
+				if mod == "" {
+					mod = "env"
+				}
+				attr = fmt.Sprintf("__attribute__((import_module(%q), import_name(%q))) ", mod, ef.Name)
+			}
+			fmt.Fprintf(&out, "%sextern %s %s(%s);\n", attr, externCType(ef.Ret), ef.Name, ps)
 		}
 	}
 	// struct typedefs, in declaration order (a struct may reference earlier ones)
@@ -2260,12 +2321,25 @@ func (g *cgen) program(p *Program) (string, error) {
 		out.WriteByte('\n')
 	}
 	for _, inst := range g.c.Reps() {
+		// Under wasm, an `export func` is exported to the host under its clean source
+		// name (so JS calls instance.exports.render, not the mangled C symbol). The
+		// attribute on the prototype also forces the export — no linker flag needed.
+		if g.wasm() {
+			if src := g.c.SrcFunc(inst); g.c.exportSrc[src.Name] {
+				fmt.Fprintf(&out, "__attribute__((export_name(%q))) ", src.Name)
+			}
+		}
 		out.WriteString(g.signature(inst) + ";\n")
 	}
 	out.WriteByte('\n')
 	out.WriteString(g.tramp.String())
 	out.WriteString(g.buf.String())
-	out.WriteString("int main(int argc, char** argv) { mfl_argc = argc; mfl_argv = argv; mfl_main(); return 0; }\n")
+	// Native entry point. The wasm target is a reactor module (no `int main`): the
+	// host drives it through the exported functions, so emit the C main only for
+	// native, and only when the program actually defines an MFL main.
+	if !g.wasm() && g.c.HasMain() {
+		out.WriteString("int main(int argc, char** argv) { mfl_argc = argc; mfl_argv = argv; mfl_main(); return 0; }\n")
+	}
 	return out.String(), nil
 }
 
@@ -3674,8 +3748,10 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 	case "flush":
 		return "mfl_flush()", nil
 	case "raw_mode":
+		g.usesTTY = true
 		return fmt.Sprintf("mfl_raw_mode(%s)", args[0]), nil
 	case "read_key":
+		g.usesTTY = true
 		return "mfl_read_key()", nil
 	case "base64_encode":
 		return fmt.Sprintf("mfl_base64_encode(%s)", args[0]), nil
@@ -3761,19 +3837,25 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 	case "peek_f32", "peek_i32":
 		return fmt.Sprintf("mfl_%s(%s, %s)", ex.Callee, args[0], args[1]), nil
 	case "dial":
+		g.usesNet = true
 		return fmt.Sprintf("mfl_dial(%s, %s)", args[0], args[1]), nil
 	case "listen":
+		g.usesNet = true
 		return fmt.Sprintf("mfl_listen(%s)", args[0]), nil
 	case "accept":
+		g.usesNet = true
 		return fmt.Sprintf("mfl_accept(%s)", args[0]), nil
 	case "read":
+		g.usesNet = true
 		return fmt.Sprintf("mfl_read(%s)", args[0]), nil
 	case "write":
+		g.usesNet = true
 		return fmt.Sprintf("mfl_write(%s, %s)", args[0], args[1]), nil
 	case "close":
 		if g.c.NodeKind(g.curFn, ex.Args[0]) == KChan {
 			return fmt.Sprintf("mfl_chan_close(%s)", args[0]), nil
 		}
+		g.usesNet = true
 		return fmt.Sprintf("mfl_close(%s)", args[0]), nil
 	case "input":
 		return "mfl_input()", nil

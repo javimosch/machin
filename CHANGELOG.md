@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.50.0
+
+- **`--target wasm` — machin compiles to WebAssembly (frontend / in-browser).**
+  `machin build app.mfl --target wasm` cross-compiles the emitted C to a
+  `wasm32-wasi` **reactor** module via `zig cc` (zig bundles clang + a wasi-libc,
+  so it is a single-binary C→wasm toolchain — no emscripten/wasi-sdk; override
+  with `ZIG=`). The module loads in a bare browser; the bridge is machin's own
+  **FFI, both ways**:
+  - **`export func name(...)`** — a new keyword that marks a function as a wasm
+    **export** (and a reachability root, kept even if `main` never calls it). The
+    host calls `instance.exports.name(...)`; the export carries an `export_name`
+    attribute so JS sees the clean source name, not the mangled C symbol. A wasm
+    module needs **no `main`** — an export is its own entry point.
+  - **`extern "env" { fn set_html(string) }`** — under the wasm target a headerless
+    extern becomes a wasm **import** (`import_module`/`import_name`) the host (JS)
+    supplies, e.g. a DOM call. The `extern "<lib>"` name is the import module
+    (default `env`).
+  - Marshaling: machin ints are i64 ⇒ `BigInt` across the boundary; strings cross
+    as a pointer into the exported `memory` (decode NUL-terminated UTF-8 host-side).
+- **The POSIX socket/tty runtime is now pay-as-you-go.** The networking
+  (`listen`/`accept`/`dial`/`read`/`write`/`close`) and terminal
+  (`raw_mode`/`read_key`) runtimes are split out of the always-on core. The
+  **native** target is unchanged (it always carries them, and still emits `int
+  main`); the **wasm** target emits each only when the program actually uses it,
+  so a frontend module references no `socket()`/`termios` symbols (which wasi-libc
+  doesn't fully provide) and compiles clean — the same `usesX` gating machin
+  already does for TLS/WebSocket/regex/math/SQLite. Drove
+  [machin-demo-wasm](https://github.com/javimosch/machin-demo-wasm); see
+  `docs/NORTH-STAR-WEB.md`. Still ahead for a richer frontend: package-level
+  globals (state lives host-side today) and a shipped JS string/array runtime.
+
 ## v0.49.0
 
 - **`noise2` / `noise3` — native Perlin gradient noise.** Deterministic, ~`[-1,1]`,

@@ -9,7 +9,7 @@ import (
 
 // machinVersion is the single version string for the toolchain. Bump it when
 // cutting a release (alongside README badge / SPEC / CHANGELOG).
-const machinVersion = "0.49.0"
+const machinVersion = "0.50.0"
 
 // ---- the source-of-truth feature catalog ----
 //
@@ -55,7 +55,7 @@ func machinGuide() guideCatalog {
 		Keywords: []string{
 			"func", "return", "if", "else", "while", "for", "range", "break", "continue",
 			"select", "go", "chan", "make", "map", "struct", "type", "var", "arena",
-			"extern", "true", "false", "nil",
+			"extern", "export", "true", "false", "nil",
 		},
 		Types: []guideNote{
 			{"int", "64-bit signed"},
@@ -264,6 +264,7 @@ func main() { println(str(sqrt(2.0))) }`},
 			{"no-tls-without-https", "There is no raw TLS socket; use https_get/https_post (REST) and wss_* (WebSocket). Plain dial/listen are TCP without TLS."},
 			{"floats-over-chan-json", "A slice/map channel element round-trips through JSON, which formats floats with %g (not bit-exact for pathological doubles)."},
 			{"memory", "Per-goroutine arena, reclaimed in bulk when the goroutine returns; wrap a hot allocating loop in `arena { ... }` to keep peak memory flat. Build with --safe for bounds/overflow/div-zero checks."},
+			{"wasm-target", "`machin build app.mfl --target wasm` compiles to a WebAssembly reactor module (needs `zig` as the C->wasm compiler; override with ZIG=). Mark host-callable functions `export func name(...)` — they become wasm exports under their clean name (and are reachability roots, so a wasm module needs no main). A headerless `extern \"env\" { fn dom_set(string) }` becomes a wasm IMPORT the JS host supplies (the `extern \"<lib>\"` name is the import module). Marshaling host-side: machin ints are i64 -> pass/return BigInt; strings are a pointer into the exported `memory` (decode NUL-terminated UTF-8). No package globals yet, so app state lives host-side. See docs/NORTH-STAR-WEB.md."},
 		},
 	}
 }

@@ -37,32 +37,34 @@ north star is to make it first-class.
 
 | capability | repo | what it proved |
 |---|---|---|
-| **MFL in the browser** | [machin-demo-wasm](https://github.com/javimosch/machin-demo-wasm) | MFL → C → `zig cc` wasm; FFI-as-import DOM bridge; string marshaling; verified on-screen in Chrome |
+| **`--target wasm` (first-class, v0.50.0)** | this repo | `machin build --target wasm` → a `wasm32-wasi` reactor module via `zig cc`; `export func` + FFI-as-import bridge built into codegen; lean pay-as-you-go runtime |
+| **MFL in the browser** | [machin-demo-wasm](https://github.com/javimosch/machin-demo-wasm) | MFL → C → wasm; FFI-as-import DOM bridge; string marshaling; verified on-screen in Chrome |
 | backend web framework | [`framework/machweb.src`](../framework) | `serve(port, handler)` → self-contained native server |
 
 ## The feature roadmap (gaps, in rough dependency order)
 
-Each is a candidate to be *driven by a demo*, not built speculatively. The demo
-above already names the first four — its `build.sh` papers over each:
+Each is a candidate to be *driven by a demo*, not built speculatively. The first
+five shipped in **v0.50.0** (`--target wasm`); the rest remain.
 
-1. **A `--target wasm` codegen mode.** The core C runtime unconditionally
-   references POSIX **networking/tty** symbols (`socket`, `SO_REUSEADDR`,
-   `termios`, pthreads). A frontend app calls none of them. Make that runtime
-   **pay-as-you-go** — machin already gates `usesWSS` / `usesRegex` / `usesMath` /
-   `usesNoise` / `usesSQLite` this way, so the same pattern applied to
-   networking/tty/goroutines yields a lean, freestanding-friendly emit. This is
-   the keystone; everything else is small.
-2. **Emit wasm-import attributes.** Under the wasm target, an FFI `extern` should
-   emit `__attribute__((import_module("env"), import_name("...")))` instead of a
-   bare prototype, so host functions become proper wasm imports automatically.
-3. **An `export` annotation.** Mark which MFL functions are wasm exports (and keep
-   them through tree-shaking) without needing a dummy `main` to reference them.
-4. **Package-level mutable state.** MFL has no top-level `var`; today the JS host
+1. ~~**A `--target wasm` codegen mode.**~~ **Done (v0.50.0).** The POSIX
+   networking (`listen`/`accept`/`dial`/`read`/`write`/`close`) and tty
+   (`raw_mode`/`read_key`) runtimes are split out of the always-on core and made
+   **pay-as-you-go** — the same `usesX` gating used for TLS/WSS/regex/math/SQLite.
+   Native is unchanged; a wasm build references no `socket()`/`termios`, so it
+   links clean. The keystone.
+2. ~~**Emit wasm-import attributes.**~~ **Done (v0.50.0).** Under the wasm target a
+   headerless `extern "<mod>"` emits `__attribute__((import_module, import_name))`,
+   so host functions are proper wasm imports automatically.
+3. ~~**An `export` annotation.**~~ **Done (v0.50.0).** `export func` marks a wasm
+   export (under its clean source name via `export_name`) and a reachability root,
+   so a module needs no dummy `main`.
+4. ~~**A `machin build --target wasm` driver.**~~ **Done (v0.50.0).** The `zig cc`
+   invocation is folded into the compiler (`BuildWasm`), so `app.wasm` falls out of
+   one command (`ZIG=` overrides the toolchain).
+5. **Package-level mutable state.** MFL has no top-level `var`; today the JS host
    owns app state. Either add globals, or settle on a **handle-based** pattern
-   (`alloc` a state struct, return the pointer, pass it back into each call).
-5. **A `machin build --target wasm` driver.** Fold the `zig cc` invocation into
-   the compiler (like `BuildBinary` does for native), auto-detecting/honoring a
-   `zig`/wasi toolchain, so `app.wasm` falls out of one command.
+   (`alloc` a state struct, return the pointer, pass it back into each call). The
+   next gap to drive.
 6. **String/array marshaling helpers.** A small JS runtime shipped with the
    target (decode/encode strings, pass slices) so apps don't re-roll `readCString`.
 
@@ -92,8 +94,10 @@ is written once. A stretch goal, listed as a direction, not a plan.
 ## Method
 
 Same loop as the rest of machin: build a real thing, hit the wall, fill it in the
-language, release, record. The frontend's first wall is already standing and
-named — the unconditionally-POSIX core runtime (gap #1). Be honest about
+language, release, record. The frontend's first wall — the unconditionally-POSIX
+core runtime — was hit by [machin-demo-wasm](https://github.com/javimosch/machin-demo-wasm)
+and filled in **v0.50.0** (`--target wasm`); the next wall is package-level state
+(gap #5), to be named by the next demo. Be honest about
 **composition vs. new feature**: that the FFI *already* doubles as the wasm
 import/export bridge is composition, and itself the headline result — machin
 reaches the browser with no new language primitive, only a leaner emit.

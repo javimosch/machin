@@ -108,6 +108,27 @@ type Checker struct {
 	closureInst map[string]map[*MakeClosure]string // enclosing instance -> closure node -> lambda instance
 	cnameOf     map[string]string                 // instance -> C function name (deduped)
 	reps        []string                          // representative instances (one C function each)
+	exportSrc   map[string]bool                   // source names declared `export func`
+	hasMainFn   bool                              // program defines a main function
+}
+
+// HasMain reports whether the program defines a main function.
+func (c *Checker) HasMain() bool { return c.hasMainFn }
+
+// ExportNames returns the source names of every `export func` that survived to a
+// representative instance — the names a wasm build exports to the host (each C
+// function carries an export_name attribute, so JS sees the clean name).
+func (c *Checker) ExportNames() []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, inst := range c.reps {
+		src := c.instFn[inst].Name
+		if c.exportSrc[src] && !seen[src] {
+			seen[src] = true
+			out = append(out, src)
+		}
+	}
+	return out
 }
 
 // rangeUse defers a for-range: once base resolves, key/val are bound to the
@@ -609,11 +630,21 @@ func Check(p *Program) (*Checker, error) {
 	}
 
 	// 1. register functions
+	var exported []string
+	c.exportSrc = map[string]bool{}
 	for _, fn := range p.Funcs {
 		c.funcs[fn.Name] = fn
+		if fn.Exported {
+			exported = append(exported, fn.Name)
+			c.exportSrc[fn.Name] = true
+		}
 	}
-	if _, ok := c.funcs["main"]; !ok {
-		return nil, fmt.Errorf("no main function defined")
+	_, hasMain := c.funcs["main"]
+	c.hasMainFn = hasMain
+	// A program needs an entry point: a main, or — for a library target (wasm) —
+	// at least one `export func`. Exported functions are reachability roots too.
+	if !hasMain && len(exported) == 0 {
+		return nil, fmt.Errorf("no main function defined (and no exported functions)")
 	}
 	// register foreign (extern) functions; their signatures are fixed, not inferred
 	ffiTypeOK := func(t string) bool {
@@ -665,10 +696,19 @@ func Check(p *Program) (*Checker, error) {
 			c.externs[f.Name] = &f
 		}
 	}
-	// 2. instantiate from main; every reachable function is specialized per
-	//    concrete call-site type (monomorphization).
-	if _, err := c.instantiate("main"); err != nil {
-		return nil, err
+	// 2. instantiate from the roots; every reachable function is specialized per
+	//    concrete call-site type (monomorphization). main is a root when present;
+	//    each `export func` is also a root (kept even if main never calls it), with
+	//    its parameter types inferred from the function body.
+	if hasMain {
+		if _, err := c.instantiate("main"); err != nil {
+			return nil, err
+		}
+	}
+	for _, name := range exported {
+		if _, err := c.instantiate(name); err != nil {
+			return nil, err
+		}
 	}
 	// 3. solve
 	if err := c.solve(); err != nil {

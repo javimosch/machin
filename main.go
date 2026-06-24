@@ -57,6 +57,7 @@ func usage() {
 usage:
   machin run   <file.mfl>            compile to native + execute
   machin build <file.mfl> [-o out]   compile to a native binary
+  machin build <file.mfl> --target wasm  compile to a WebAssembly module (needs zig; mark exports with export func)
   machin build <file.mfl> --emit-c   print the generated C and stop
   machin build|run <file.mfl> --safe  insert bounds / div-zero / overflow checks
   machin encode <src>                mint canonical MFL from loose Go-like text
@@ -154,7 +155,7 @@ func cmdRun(args []string) error {
 }
 
 func cmdBuild(args []string) error {
-	var src, out string
+	var src, out, target string
 	emitC, safe := false, false
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -164,6 +165,12 @@ func cmdBuild(args []string) error {
 			}
 			i++
 			out = args[i]
+		case "--target":
+			if i+1 >= len(args) {
+				return fmt.Errorf("build: --target needs a value (native|wasm)")
+			}
+			i++
+			target = args[i]
 		case "--emit-c":
 			emitC = true
 		case "--safe":
@@ -175,16 +182,33 @@ func cmdBuild(args []string) error {
 	if src == "" {
 		return fmt.Errorf("build: need a .mfl file")
 	}
+	switch target {
+	case "", "native":
+		target = "native"
+	case "wasm":
+	default:
+		return fmt.Errorf("build: unknown --target %q (want native or wasm)", target)
+	}
 	prog, err := loadMFL(src)
 	if err != nil {
 		return err
 	}
 	if emitC {
-		c, err := CompileToC(prog, safe)
+		c, _, err := CompileToCTarget(prog, safe, target)
 		if err != nil {
 			return err
 		}
 		fmt.Print(c)
+		return nil
+	}
+	if target == "wasm" {
+		if out == "" {
+			out = strings.TrimSuffix(filepath.Base(src), filepath.Ext(src)) + ".wasm"
+		}
+		if err := BuildWasm(prog, out, safe); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "built %s (wasm)\n", out)
 		return nil
 	}
 	if out == "" {

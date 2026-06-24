@@ -1,6 +1,6 @@
 # The MFL Language Specification
 
-Version 0.49.0
+Version 0.50.0
 
 MFL (Machine-First Language) is a statically-typed, Go-flavored backend language
 **shaped for machine authoring**: minimal syntax, no type annotations, one
@@ -80,7 +80,7 @@ The decoded text of a declaration is tokenized as follows.
 - **Float literals.** digits with a `.`, e.g. `3.14`, `0.5`.
 - **String literals.** `"..."` with escapes `\n \t \r \" \\`.
 - **Keywords.** `func return if else while for range true false nil var go type
-  struct chan make map arena extern break continue select`.
+  struct chan make map arena extern export break continue select`.
 - **Operators and punctuation.** `+ - * / % & | ^ << >> == != < <= > >= && || ! = := <- .
   : , ; ( ) { } [ ]`.
 
@@ -439,19 +439,30 @@ id(42); id("hi"); id(3.14)   // → three native functions
 
 ```
 .mfl (canonical text) ──▶ parse ──▶ lambda-lift ──▶ infer + monomorphize ──▶ emit C ──▶ cc -O2 ──▶ native binary
+                                                                                   └──▶ zig cc (wasm32-wasi) ──▶ .wasm
 ```
 
 - **Inference** is unification over a union-find; deferred resolution handles
   `x[i]`, `x.f`, and `range` once the base type is known.
-- **Monomorphization** instantiates the reachable call graph from `main`,
-  specializing each function per concrete type and deduplicating identical
-  instances.
+- **Monomorphization** instantiates the reachable call graph from `main` and from
+  every `export func` root, specializing each function per concrete type and
+  deduplicating identical instances.
 - **Codegen** emits one C function per instance with unboxed value types, plus a
   small C runtime (slices, maps, channels, closures, sockets, JSON, strings).
   `https_get`/`https_post` and `wss_open`/`wss_send`/`wss_recv`/`wss_close`
   additionally emit a TLS runtime (HTTPS and/or RFC 6455 WebSocket framing over a
   shared TLS core) and link OpenSSL (`-lssl -lcrypto`) — but only when used, so
   programs that touch neither stay libc-only.
+- **Targets.** The default target is a native binary via `cc -O2`. `machin build
+  --target wasm` instead emits a WebAssembly module (`wasm32-wasi`, reactor model)
+  via `zig cc` — zig bundles clang + a wasi-libc, so it is a single-binary C→wasm
+  toolchain (override with `ZIG=`). For the wasm target: each `export func`
+  becomes a wasm export (under its source name, via an `export_name` attribute)
+  and a reachability root, so a module needs no `main`; a headerless `extern
+  "<mod>"` becomes a wasm import the host supplies (`import_module`/`import_name`);
+  and the POSIX socket/tty runtime is emitted only when used (so a frontend module
+  references no `socket()`/`termios`). machin ints are i64 (`BigInt` across the JS
+  boundary); strings are pointers into the exported `memory`.
 
 ---
 
