@@ -1902,6 +1902,21 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 			return 0, fmt.Errorf("pi: no args")
 		}
 		return c.cFloat, nil
+	case "noise2":
+		if len(argSlots) != 2 {
+			return 0, fmt.Errorf("noise2: 2 args (x, y)")
+		}
+		c.addPair(argSlots[0], newSlot(c, KNum))
+		c.addPair(argSlots[1], newSlot(c, KNum))
+		return c.cFloat, nil
+	case "noise3":
+		if len(argSlots) != 3 {
+			return 0, fmt.Errorf("noise3: 3 args (x, y, z)")
+		}
+		c.addPair(argSlots[0], newSlot(c, KNum))
+		c.addPair(argSlots[1], newSlot(c, KNum))
+		c.addPair(argSlots[2], newSlot(c, KNum))
+		return c.cFloat, nil
 	// raw heap memory: pointers are ints. For building C buffers/structs to hand
 	// to a foreign API (e.g. a GPU vertex buffer via the FFI).
 	case "alloc":

@@ -1,6 +1,6 @@
 # The MFL Language Specification
 
-Version 0.48.0
+Version 0.49.0
 
 MFL (Machine-First Language) is a statically-typed, Go-flavored backend language
 **shaped for machine authoring**: minimal syntax, no type annotations, one
@@ -256,6 +256,7 @@ throughout the function body).
 | `int` | `(number) -> int` | truncate to int |
 | `float` | `(number) -> float` | `int` → `float` (identity on `float`); there is no implicit `int`→`float`, so a concrete `int` needs this to enter float arithmetic |
 | math | `(number[, number]) -> float` | native libm (linked `-lm` only when used): `sin` `cos` `tan` `asin` `acos` `atan` `atan2` `sqrt` `cbrt` `pow` `exp` `log` `log2` `log10` `floor` `ceil` `round` `trunc` `abs` `fmod` `hypot`, and `pi()`. Numeric in, `float` out. An `extern` of the same name shadows the builtin. |
+| `noise2`/`noise3` | `(number, ...) -> float` | Perlin gradient noise (2D / 3D), deterministic, ~`[-1,1]`, smooth. Layer it (fbm) for procedural terrain. Links `-lm`; emitted only when used. |
 | `append` | `([]T, T) -> []T` | grow a slice |
 | `has`, `delete` | `(map, K) -> bool` / `-> ` | membership / removal |
 | `keys` | `(map[K]V) -> []K` | a map's keys |

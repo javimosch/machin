@@ -9,7 +9,7 @@ import (
 
 // machinVersion is the single version string for the toolchain. Bump it when
 // cutting a release (alongside README badge / SPEC / CHANGELOG).
-const machinVersion = "0.48.0"
+const machinVersion = "0.49.0"
 
 // ---- the source-of-truth feature catalog ----
 //
@@ -113,6 +113,8 @@ func machinGuide() guideCatalog {
 			{"abs", "(number) -> float", "absolute value (float; fabs)", "math"},
 			{"fmod", "(number, number) -> float", "floating-point remainder of x/y", "math"},
 			{"pi", "() -> float", "the constant pi", "math"},
+			{"noise2", "(number, number) -> float", "Perlin gradient noise (2D), deterministic, ~[-1,1], smooth. Layer it (fbm) by summing octaves at scaled freq/amp", "math"},
+			{"noise3", "(number, number, number) -> float", "Perlin gradient noise (3D) — animate 2D noise over time, or volumetric", "math"},
 			// raw memory (pointers are ints) — build C buffers/structs for the FFI
 			{"alloc", "(int) -> int", "allocate n zeroed bytes; returns a pointer (as int). For C buffers/structs to hand to an extern fn", "memory"},
 			{"free", "(int) ->", "free a pointer returned by alloc", "memory"},
@@ -209,6 +211,8 @@ func machinGuide() guideCatalog {
 			{"bytes", `func main() { b := from_hex("deadbeef")  b = bytes_concat(b, bytes("!"))  println(to_hex(b) + " len=" + str(len(b)) + " b0=" + str(byte_at(b, 0))) }`},
 			{"bitwise", `func main() { x := 0xa5  println(str(x >> 4 & 0x0f) + " " + str(x | 0x100) + " " + str(^x & 0xff)) }`},
 			{"terminal-input", `func main() { raw_mode(1)  esc := bytes_str(from_hex("1b"))  k := read_key()  if k == "q" { print(esc + "[2J") }  raw_mode(0) }`},
+			{"fbm-noise", `func fbm(x, y) (s) { s = 0.0  amp := 1.0  fr := 1.0  o := 0  while o < 5 { s = s + amp * noise2(x * fr, y * fr)  amp = amp * 0.5  fr = fr * 2.0  o = o + 1 } }
+func main() { println(str(fbm(1.5, 2.5))) }`},
 			{"types", `type P struct { name string  age int }
 func main() { p := P{name: "ada", age: 36}  xs := []int{1, 2, 3}  m := make(map[string]int)  m["k"] = 1  println(p.name + " " + str(len(xs)) + " " + str(m["k"])) }`},
 			{"goroutine-channel", `func work(ch) { ch <- 42 }

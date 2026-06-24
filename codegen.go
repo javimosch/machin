@@ -68,6 +68,7 @@ type cgen struct {
 	usesCrypto bool  // program calls crypto builtins -> emit crypto runtime + link -lcrypto
 	usesXEdDSA bool  // program calls xeddsa_* -> emit XEdDSA runtime + link -lsodium -lcrypto
 	usesMath  bool   // program calls math builtins (sin/cos/sqrt/...) -> emit math runtime + link -lm
+	usesNoise bool   // program calls noise2/noise3 -> emit Perlin noise runtime + link -lm
 }
 
 const cRuntime = `#define _GNU_SOURCE
@@ -1498,6 +1499,40 @@ static int64_t mfl_wss_close(int64_t h) {
 }
 `
 
+// noiseRuntime is Ken Perlin's improved gradient noise (3D; noise2 is the z=0
+// slice), emitted (and linked -lm for floor) only when a program calls noise*.
+// Deterministic — a fixed permutation. Range ~[-1, 1]. Layer it (fbm) in MFL.
+const noiseRuntime = `#include <math.h>
+static int mfl_nperm[512];
+static int mfl_nperm_done = 0;
+static void mfl_noise_init(void) {
+    static const int p[256] = {151,160,137,91,90,15,131,13,201,95,96,53,194,233,7,225,140,36,103,30,69,142,8,99,37,240,21,10,23,190,6,148,247,120,234,75,0,26,197,62,94,252,219,203,117,35,11,32,57,177,33,88,237,149,56,87,174,20,125,136,171,168,68,175,74,165,71,134,139,48,27,166,77,146,158,231,83,111,229,122,60,211,133,230,220,105,92,41,55,46,245,40,244,102,143,54,65,25,63,161,1,216,80,73,209,76,132,187,208,89,18,169,200,196,135,130,116,188,159,86,164,100,109,198,173,186,3,64,52,217,226,250,124,123,5,202,38,147,118,126,255,82,85,212,207,206,59,227,47,16,58,17,182,189,28,42,223,183,170,213,119,248,152,2,44,154,163,70,221,153,101,155,167,43,172,9,129,22,39,253,19,98,108,110,79,113,224,232,178,185,112,104,218,246,97,228,251,34,242,193,238,210,144,12,191,179,162,241,81,51,145,235,249,14,239,107,49,192,214,31,181,199,106,157,184,84,204,176,115,121,50,45,127,4,150,254,138,236,205,93,222,114,67,29,24,72,243,141,128,195,78,66,215,61,156,180};
+    for (int i = 0; i < 256; i++) { mfl_nperm[i] = p[i]; mfl_nperm[256 + i] = p[i]; }
+    mfl_nperm_done = 1;
+}
+static double mfl_nfade(double t) { return t * t * t * (t * (t * 6 - 15) + 10); }
+static double mfl_nlerp(double t, double a, double b) { return a + t * (b - a); }
+static double mfl_ngrad(int hash, double x, double y, double z) {
+    int h = hash & 15;
+    double u = h < 8 ? x : y;
+    double v = h < 4 ? y : (h == 12 || h == 14 ? x : z);
+    return ((h & 1) == 0 ? u : -u) + ((h & 2) == 0 ? v : -v);
+}
+static double mfl_noise3(double x, double y, double z) {
+    if (!mfl_nperm_done) mfl_noise_init();
+    int X = (int)floor(x) & 255, Y = (int)floor(y) & 255, Z = (int)floor(z) & 255;
+    x -= floor(x); y -= floor(y); z -= floor(z);
+    double u = mfl_nfade(x), v = mfl_nfade(y), w = mfl_nfade(z);
+    int A = mfl_nperm[X] + Y, AA = mfl_nperm[A] + Z, AB = mfl_nperm[A + 1] + Z;
+    int B = mfl_nperm[X + 1] + Y, BA = mfl_nperm[B] + Z, BB = mfl_nperm[B + 1] + Z;
+    return mfl_nlerp(w, mfl_nlerp(v, mfl_nlerp(u, mfl_ngrad(mfl_nperm[AA], x, y, z), mfl_ngrad(mfl_nperm[BA], x - 1, y, z)),
+                                     mfl_nlerp(u, mfl_ngrad(mfl_nperm[AB], x, y - 1, z), mfl_ngrad(mfl_nperm[BB], x - 1, y - 1, z))),
+                        mfl_nlerp(v, mfl_nlerp(u, mfl_ngrad(mfl_nperm[AA + 1], x, y, z - 1), mfl_ngrad(mfl_nperm[BA + 1], x - 1, y, z - 1)),
+                                     mfl_nlerp(u, mfl_ngrad(mfl_nperm[AB + 1], x, y - 1, z - 1), mfl_ngrad(mfl_nperm[BB + 1], x - 1, y - 1, z - 1))));
+}
+static double mfl_noise2(double x, double y) { return mfl_noise3(x, y, 0.0); }
+`
+
 // mathRuntime is the native floating-point math suite over libm's <math.h>,
 // emitted (and linked -lm) only when a program calls a math builtin. Each is a
 // thin wrapper named mfl_math_<libm-name> on a double; machin's float is double,
@@ -2082,6 +2117,11 @@ func (g *cgen) program(p *Program) (string, error) {
 		// native math (libm) — emitted and linked (-lm) only when a program calls a
 		// math builtin, so math-free programs keep machin's libc-only footprint.
 		out.WriteString(mathRuntime)
+		out.WriteByte('\n')
+	}
+	if g.usesNoise {
+		// Perlin noise (libm for floor) — emitted only when noise2/noise3 is used.
+		out.WriteString(noiseRuntime)
 		out.WriteByte('\n')
 	}
 	if g.usesRegex {
@@ -3706,6 +3746,12 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 	case "pi":
 		g.usesMath = true
 		return "mfl_math_pi()", nil
+	case "noise2":
+		g.usesNoise = true
+		return fmt.Sprintf("mfl_noise2((double)(%s), (double)(%s))", args[0], args[1]), nil
+	case "noise3":
+		g.usesNoise = true
+		return fmt.Sprintf("mfl_noise3((double)(%s), (double)(%s), (double)(%s))", args[0], args[1], args[2]), nil
 	case "alloc":
 		return fmt.Sprintf("mfl_raw_alloc(%s)", args[0]), nil
 	case "free":

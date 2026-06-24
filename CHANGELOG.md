@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.49.0
+
+- **`noise2` / `noise3` — native Perlin gradient noise.** Deterministic, ~`[-1,1]`,
+  smooth/continuous; 2D and 3D. The backbone of procedural worlds — layer it (fbm,
+  in MFL) for terrain, animate 2D noise over time with `noise3`. Pure C + libm's
+  `floor`; the runtime is emitted and `-lm` linked only when used. Drove a full
+  procedural planet ([machin-demo-cyberpunk](https://github.com/javimosch/machin-demo-cyberpunk)):
+  infinite chunk-streamed terrain + procedurally placed buildings, all from noise.
+
 ## v0.48.0
 
 - **Pointer-bearing `cstruct` fields + inout `T*` params.** Two follow-ups to the
