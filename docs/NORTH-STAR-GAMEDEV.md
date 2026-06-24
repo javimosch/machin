@@ -25,6 +25,7 @@ Native binaries through raylib's C FFI (and a terminal track):
 | 3D + per-object rotation | [machin-demo-3d](https://github.com/javimosch/machin-demo-3d) | FFI **nested cstructs** (v0.45.0) → drove **native math** (v0.46.0); rlgl matrix stack |
 | 2D procedural animation | [machin-demo-anim](https://github.com/javimosch/machin-demo-anim) | composition on native math |
 | procedural mesh (immediate mode) | [machin-demo-terrain](https://github.com/javimosch/machin-demo-terrain) | rlgl `rlVertex3f` stream; flat shading in MFL |
+| **static GPU mesh** | [machin-demo-planet](https://github.com/javimosch/machin-demo-planet) | **pointer/array FFI** (v0.47.0): raw memory + `*T` deref param → `UploadMesh`/`LoadModelFromMesh` |
 
 The how-to substrate is [`skills/machin-gamedev/SKILL.md`](../skills/machin-gamedev/SKILL.md):
 setup, the FFI surface, the **headerless-extern trick** (reach any scalar/`void`
@@ -41,11 +42,14 @@ transforms, immediate-mode procedural geometry, native math. Missing for comfort
 a small **vector/matrix helper layer** (vec3/mat4 ops as MFL or builtins) and
 **texture-mapped** meshes.
 
-**Tier 2 — real GPU meshes.** Build a mesh once and upload it to a GPU vertex
-buffer (`Mesh` + `UploadMesh`/`DrawMesh`), instead of re-emitting every frame.
-This is the first hard gap: it needs **pointer/array FFI** (raw C `float*`
-buffers, struct-by-pointer). Unlocks large **static** terrain, models, and
-`DrawMeshInstanced` for fields of objects.
+**Tier 2 — real GPU meshes (reached, v0.47.0).** Build a mesh once and upload it
+to a GPU vertex buffer (`Mesh` + `UploadMesh` + `LoadModelFromMesh`/`DrawModel`),
+instead of re-emitting every frame. This was the first hard gap — it needed
+**pointer/array FFI** (raw C buffers, struct-by-pointer), now done: `alloc`/`poke_*`
+raw memory + the `*T` deref param ([machin-demo-planet](https://github.com/javimosch/machin-demo-planet)).
+Still rough: struct fields are poked at **hard-coded byte offsets** (a future
+*pointer-bearing `cstruct` field* would let the C compiler compute the layout),
+and `DrawMeshInstanced` (fields of objects) needs a `Matrix` **array** parameter.
 
 **Tier 3 — procedural worlds.**
 - **Planet / terrain generation:** chunked height fields with level-of-detail,
@@ -70,9 +74,11 @@ hand-rolled. Listed as a direction, not a plan.
 
 Each is a candidate to be *driven by a demo*, not built speculatively:
 
-1. **Pointer / array FFI** — pass raw C buffers (`float*`, `unsigned short*`) and
-   structs **by pointer** (`UploadMesh(Mesh*)`). The single biggest unlock
-   (Tier 2+). Probably a `cbuffer`/`carray` concept + `&struct` marshaling.
+1. ~~**Pointer / array FFI**~~ — **done (v0.47.0):** raw memory (`alloc`/`poke_*`/
+   `peek_*`/`free`, pointers as `int`) + the `*T` deref param + `ptr` for
+   pass-by-pointer. Follow-ups: **pointer-bearing `cstruct` fields** (so the C
+   compiler lays out `Mesh` instead of hard-coded offsets) and **typed array
+   params** (`Matrix*` for `DrawMeshInstanced`).
 2. **A vector/matrix layer** — vec2/vec3/vec4 + mat4 ops. Could be a vendored MFL
    module first; promote hot paths to builtins if measured.
 3. **Shaders / uniforms** — `LoadShader`, `SetShaderValue` (needs pointer FFI for
