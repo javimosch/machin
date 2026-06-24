@@ -8,7 +8,9 @@ description: Build native games and interactive desktop/terminal apps in machin 
 machin (MFL) compiles to a native binary through C, and reaches real games two ways:
 
 - **Terminal (TUI):** ANSI escapes for drawing + `raw_mode`/`read_key` for input. A no-dependency single binary. → [machin-game-snake](https://github.com/javimosch/machin-game-snake) (Snake).
-- **GUI / audio:** [raylib](https://www.raylib.com/) through machin's C **FFI** — a real OpenGL window, textures, sound. Links the system graphics/audio stack, so **not** self-contained. → [machin-game-2048](https://github.com/javimosch/machin-game-2048) (shapes+text), [machin-game-flappy](https://github.com/javimosch/machin-game-flappy) (sprites/textures), [machin-game-simon](https://github.com/javimosch/machin-game-simon) (audio), [machin-demo-3d](https://github.com/javimosch/machin-demo-3d) (3D + per-object rotation), [machin-demo-anim](https://github.com/javimosch/machin-demo-anim) (2D procedural).
+- **GUI / audio:** [raylib](https://www.raylib.com/) through machin's C **FFI** — a real OpenGL window, textures, sound. Links the system graphics/audio stack, so **not** self-contained. → [machin-game-2048](https://github.com/javimosch/machin-game-2048) (shapes+text), [machin-game-flappy](https://github.com/javimosch/machin-game-flappy) (sprites/textures), [machin-game-simon](https://github.com/javimosch/machin-game-simon) (audio), [machin-demo-3d](https://github.com/javimosch/machin-demo-3d) (3D + per-object rotation), [machin-demo-anim](https://github.com/javimosch/machin-demo-anim) (2D procedural), [machin-demo-terrain](https://github.com/javimosch/machin-demo-terrain) (procedural mesh).
+
+Where this domain is heading: [`docs/NORTH-STAR-GAMEDEV.md`](../../docs/NORTH-STAR-GAMEDEV.md) (tiers + the gap roadmap: pointer/array FFI for real GPU meshes, a vector/matrix layer, a noise builtin, shaders, callbacks).
 
 Each game is its own public repo with a `build.sh` (`machin encode src.src > app.mfl && machin build app.mfl -o app`), a `README.md`, a repo-root `SKILL.md`, and committed `assets/`. This skill is the shared substrate; each game's SKILL.md has its specifics.
 
@@ -64,7 +66,9 @@ extern "rlgl" { fn rlPushMatrix() fn rlPopMatrix() fn rlTranslatef(f32,f32,f32) 
 rlPushMatrix()  rlTranslatef(x,y,z)  rlRotatef(deg, 0.0,1.0,0.0)  DrawCube(v3(0.0,0.0,0.0), s,s,s, c)  rlPopMatrix()
 ```
 
-(The same stack works in 2D between `BeginDrawing`/`EndDrawing`. The **headerless-extern** trick is general: any `libraylib.a`/system-lib symbol that's scalar/`void` can be reached this way without its header.) **Math:** machin has **native** math builtins (v0.46.0) — `sin cos tan asin acos atan atan2 sqrt cbrt pow exp log log2 log10 floor ceil round trunc abs fmod hypot` and `pi()` (numeric in, `float` out; `-lm` linked only when used). So an orbit is just `v3(R*cos(a), h, R*sin(a))`. (An `extern "m"` of the same name still shadows the builtin if you want a specific libm signature.)
+(The same stack works in 2D between `BeginDrawing`/`EndDrawing`. The **headerless-extern** trick is general: any `libraylib.a`/system-lib symbol that's scalar/`void` can be reached this way without its header.)
+
+**Procedural meshes (immediate mode)** — see [machin-demo-terrain](https://github.com/javimosch/machin-demo-terrain). Compute geometry in MFL and stream it triangle-by-triangle with rlgl: `extern "rlgl" { fn rlBegin(i32) fn rlEnd() fn rlColor4ub(u8,u8,u8,u8) fn rlVertex3f(f32,f32,f32) fn rlDisableBackfaceCulling() }`; `rlBegin(4)` (= `RL_TRIANGLES`), one `rlColor4ub` then three `rlVertex3f` per triangle, `rlEnd()` — inside `BeginMode3D`. **Flat-shade in MFL** (no light shader otherwise): face normal = cross of two edges, `sh = 0.4 + 0.6*clamp(dot(n_unit, lightDir),0,1)` (`sqrt` to normalize), multiply color by `sh`. `rlDisableBackfaceCulling()` if the surface is seen from both sides (else winding-dependent triangles vanish → thin sliver). ~10–15k `rlVertex3f`/frame is fine. The *static* GPU-VBO path (`Mesh`+`UploadMesh`, `float*` arrays) needs pointer/array FFI machin doesn't have yet — the next real feature; see the north-star doc. **Math:** machin has **native** math builtins (v0.46.0) — `sin cos tan asin acos atan atan2 sqrt cbrt pow exp log log2 log10 floor ceil round trunc abs fmod hypot` and `pi()` (numeric in, `float` out; `-lm` linked only when used). So an orbit is just `v3(R*cos(a), h, R*sin(a))`. (An `extern "m"` of the same name still shadows the builtin if you want a specific libm signature.)
 
 Sprite tricks: a **sprite sheet** is one PNG; pick a frame with a source `Rectangle{float(frame*48), 0, 48, 48}` and rotate via `DrawTexturePro` around `origin = Vector2{w/2, h/2}`. **Flip** with a negative source height (`Rectangle{0,0,88,-600}`) — reuse one texture for both orientations. **Center text** with `MeasureText`.
 
@@ -95,6 +99,7 @@ Rule of thumb: keep each value in one numeric world; cross the boundary explicit
 - **A GUI binary is not self-contained** — it links `libGL`/`libX11`/raylib/audio and needs a display (and an audio device for sound). machin's no-dependency-binary property holds for the headless domain only. Say so in the README.
 - **`str(bool)` works** as of machin **v0.42.0** (`"true"`/`"false"`); on older compilers it was a type error, so keep bools in control flow there.
 - **No slice ranges** (`s[1:]` doesn't parse) — rebuild with a loop (e.g. snake's `drop_first`).
+- **`a < -b` is a lexer trap.** `encode` tightens `< -` to `<-`, which lexes as the channel-receive token (`expected "{", got "<-"`). Write `a < 0.0 - b` or flip the comparison. (Common with negative thresholds: `if h < -0.7` → `if h < 0.0 - 0.7`.)
 - **Random:** there's no PRNG builtin; `byte_at(rand_bytes(1), 0) % N` picks a value (a second byte `< 26` ≈ a 10% branch).
 - **Frame timing:** immediate-mode means never `sleep` mid-game (it freezes the window). Drive animations/state with a per-frame tick counter and `SetTargetFPS`. (Terminal games *do* `sleep(ms)` per tick — they own the loop.)
 - **Mutating shared state:** slices are reference-ish — `f(board)` then `board[i] = v` is visible to the caller (return only summaries). Structs are value types (a copy), so a function can't mutate a caller's struct.
@@ -109,5 +114,6 @@ Rule of thumb: keep each value in one numeric world; cross the boundary explicit
 | simon | audio: pointer-bearing `Sound` by value | FFI **opaque handles** `cstruct Name {}` (v0.44.0) |
 | 3d demo | 3D: `Camera3D` (struct of `Vector3`s); per-object rotation (rlgl matrix stack, headerless extern) | FFI **nested cstructs** (v0.45.0); its libm orbit then drove **native math** builtins (v0.46.0); rotation = composition (no new feature) |
 | anim | 2D procedural flow field (sin/cos/atan2/hypot over time) | composition on native math + 2D FFI (no new feature) |
+| terrain | procedural mesh: per-vertex heights, flat-shaded, streamed via rlgl immediate mode | composition (no new feature); points at the **pointer/array FFI** gap for real GPU VBOs |
 
 When a new game hits a wall, that's the point: fill the gap in the language, release, and note it here.
