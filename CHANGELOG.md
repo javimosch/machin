@@ -16,6 +16,13 @@
   API, **byte-identical patch behavior** (verified), ~9 fewer globals, the dispatch
   gone. (Re-confirmed gotcha: a parameter named like a builtin — `keys` — is
   shadowed at call sites; `each`'s param was renamed `keyfn`.)
+- **`framework/router.src` — a client-side router** (composes with reactive, enabled
+  by the cleaner `reaction()` primitive). The active route is a signal (an int
+  index): `route(path)` registers pages, `navigate(i)` / `nav(path)` switch,
+  `link(path, label)` renders an anchor, and `outlet(id, render)` re-renders the
+  active page (a reaction over a new `dom_html` host import) and syncs the address
+  bar (`nav_url`). `nav` takes the path string from the host via `ptr_str`. For
+  multi-page admin apps / SPAs.
 
 ## v0.58.0
 

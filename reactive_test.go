@@ -168,6 +168,50 @@ func main() {
 	}
 }
 
+// The router (framework/router.src, on top of reactive) switches pages by route
+// index: navigate() re-renders the outlet (via dom_html) and syncs the URL.
+func TestRouter(t *testing.T) {
+	rv, err := os.ReadFile("framework/reactive.src")
+	if err != nil {
+		t.Skip("framework/reactive.src not found")
+	}
+	rt, err := os.ReadFile("framework/router.src")
+	if err != nil {
+		t.Skip("framework/router.src not found")
+	}
+	strip := regexp.MustCompile(`(?s)extern "env" \{.*?\}\n`)
+	runtime := strip.ReplaceAllString(string(rv), "") + strip.ReplaceAllString(string(rt), "")
+	host := `
+func dom_mount(r, h) {}
+func dom_patch(s, v) {}
+func list_insert(c, k, h) {}
+func list_remove(c, k) {}
+func list_order(c, ks) {}
+func dom_html(id, html) { println("OUT " + html) }
+func nav_url(path) { println("URL " + path) }`
+	app := `
+func page() (h) { r := current_route()  h = "?"  if r == 0 { h = "home" }  if r == 1 { h = "users" } }
+func main() {
+    router_init(0)
+    route("/")  route("/users")
+    outlet("outlet", func() { return page() })
+    navigate(1)
+    navigate(0)
+}`
+	prog, perr := progFromSrcErr(runtime + host + app)
+	if perr != nil {
+		t.Fatalf("parse: %v", perr)
+	}
+	out, err := RunCaptured(prog)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	want := "OUT home\nOUT users\nURL /users\nOUT home\nURL /\n"
+	if out != want {
+		t.Fatalf("router output:\n%q\nwant:\n%q", out, want)
+	}
+}
+
 // progFromSrcErr is like progFromSrc but returns the error (for table tests).
 func progFromSrcErr(src string) (*Program, error) {
 	blocks, err := splitFunctions(src)

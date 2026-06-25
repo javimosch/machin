@@ -1,0 +1,83 @@
+// router.src — a tiny client-side router for machin web UIs (composes with
+// reactive.src). The active route is a signal (an int index); navigating updates
+// it, an outlet re-renders the matching page, and the address bar stays in sync.
+//
+//   machin encode framework/reactive.src framework/router.src yourapp.src > app.mfl
+//
+// Usage in a component:
+//   export func start() {
+//       router_init(0)                     // active route is a signal
+//       route("/")  route("/users")        // register paths, in index order
+//       mount("app", nav_bar() + "<div id=outlet></div>")
+//       outlet("outlet", func() { return page() })   // page() switches on current_route()
+//   }
+//   func page() (h) {
+//       r := current_route()
+//       if r == 0 { h = home_html() }
+//       if r == 1 { h = users_html() }
+//   }
+//   func nav_bar() (h) { h = link("/", "home") + link("/users", "users") }
+//
+// The host implements two imports — dom_html(id, html) (set an element's innerHTML)
+// and nav_url(path) (history.pushState + address bar) — and forwards [data-nav]
+// link clicks + popstate to nav() (writing the path string into wasm).
+
+extern "env" {
+    fn dom_html(string, string)
+    fn nav_url(string)
+}
+
+var route_now = 0           // signal id: the active route index
+var route_paths = []string{}
+var route_n = 0
+
+// router_init creates the active-route signal (call first, with the initial index).
+func router_init(initial) {
+    route_now = signal(initial)
+}
+
+// route registers a path and returns its index (call once per page, in order).
+func route(path) (i) {
+    i = route_n
+    route_paths = append(route_paths, path)
+    route_n = route_n + 1
+}
+
+func path_index(path) (i) {
+    i = 0
+    j := 0
+    while j < route_n {
+        if route_paths[j] == path { i = j }
+        j = j + 1
+    }
+}
+
+// current_route returns the active index — read it in your page render so the outlet
+// re-renders on navigation.
+func current_route() (i) { i = get(route_now) }
+
+// navigate switches to a route index and syncs the address bar.
+func navigate(i) {
+    set(route_now, i)
+    nav_url(route_paths[i])
+}
+
+// nav switches by PATH; the host calls it for a link click / popstate, writing the
+// path string into the buffer nav_buf returns.
+export func nav_buf(nbytes) (p) { p = alloc(nbytes + 1) }
+export func nav(p) {
+    path := ptr_str(p)
+    free(p)
+    navigate(path_index(path))
+}
+
+// link renders a navigation anchor; the host intercepts [data-nav] clicks.
+func link(path, label) (h) {
+    h = "<a href=\"" + path + "\" data-nav=\"" + path + "\">" + label + "</a>"
+}
+
+// outlet re-renders the active page into a container whenever the route — or any
+// signal the page reads — changes.
+func outlet(id, render) {
+    reaction(func() { dom_html(id, render()) })
+}
