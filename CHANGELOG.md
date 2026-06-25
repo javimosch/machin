@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.56.0
+
+- **`framework/reactive.src`: `hydrate` + a value-embedding `slot` — isomorphic
+  apps.** A server can SSR-render a component's markup and the wasm client now
+  attaches its reactivity to that **existing DOM** instead of re-rendering it:
+  - **`slot(name, compute)`** now embeds the current value in its markup
+    (`<span data-s="name">VALUE</span>`), so `mount` paints filled markup (no
+    first-paint flash) and so SSR markup and client markup agree.
+  - **`hydrate(html)`** flushes the queued bindings/lists **without** a `dom_mount`
+    — it connects them to the SSR elements by their `data-s` / container names.
+    `mount` is now `dom_mount` + `hydrate`.
+
+  So one component renders on the server (first paint, works with JS off) and
+  hydrates in the browser with no re-render. Drove
+  [boilerplate-cli-ui-machin-isomorphic](https://github.com/javimosch/boilerplate-cli-ui-machin-isomorphic)
+  — a single binary that is a CLI + HTTP server + JSON API + reactive wasm UI, the
+  full-stack-MFL capstone.
+
 ## v0.55.0
 
 - **`framework/reactive.src` gains a templating layer** — a component declares its
