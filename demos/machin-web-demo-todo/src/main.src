@@ -1,0 +1,122 @@
+// machin-web-demo-todo — full-stack TODO list app using machweb.
+//
+// Compose with the framework:
+//   machin encode ../../framework/machweb.src src/main.src > app.mfl
+//   machin build app.mfl -o app
+//   ./app   → http://localhost:48080
+//
+// API:
+//   GET  /                  → HTML frontend (single-page, no JS framework)
+//   GET  /todos             → JSON array of all todos
+//   POST /todos             → create todo from JSON body {title, done} → created todo
+//   GET  /todos/{id}        → single todo
+//   PUT  /todos/{id}        → update todo from JSON body → updated todo
+//   DELETE /todos/{id}      → delete todo → {"ok":true}
+//
+// Exercises: global []T slice, parse/json round-trips, inline HTML frontend.
+
+type Todo struct {
+    id    int
+    title string
+    done  bool
+}
+
+var todos = []Todo{}
+var next_id = 0
+
+func find_idx(id) (idx) {
+    idx = 0 - 1
+    i := 0
+    while i < len(todos) {
+        if todos[i].id == id { idx = i }
+        i = i + 1
+    }
+}
+
+func todo_page() (h) {
+    h = "<!DOCTYPE html>\n<html>\n<head><title>machin TODO</title>"
+    h = h + "<style>body{font-family:sans-serif;max-width:600px;margin:40px auto}li{margin:6px 0}"
+    h = h + "input{margin-right:6px;padding:4px}button{padding:4px 8px;cursor:pointer}</style>"
+    h = h + "</head>\n<body>\n<h1>machin TODO demo</h1>"
+    h = h + "<p><input id='inp' placeholder='new todo title...'>"
+    h = h + "<button onclick='add()'>Add</button></p>"
+    h = h + "<ul id='list'></ul>"
+    h = h + "<script>\n"
+    h = h + "let cursor=0;\n"
+    h = h + "async function load(){const r=await fetch('/todos');const d=await r.json();\n"
+    h = h + "document.getElementById('list').innerHTML=d.map(t=>"
+    h = h + "`<li><input type='checkbox' ${t.done?'checked':''} onchange='toggle(${t.id},this.checked)'>`"
+    h = h + "+ ` <span>${t.title}</span> <button onclick='del(${t.id})'>x</button></li>`"
+    h = h + ").join('');}\n"
+    h = h + "async function add(){const v=document.getElementById('inp').value.trim();if(!v)return;\n"
+    h = h + "await fetch('/todos',{method:'POST',body:JSON.stringify({title:v,done:false,id:0})});"
+    h = h + "document.getElementById('inp').value='';load();}\n"
+    h = h + "async function toggle(id,done){\n"
+    h = h + "const r=await fetch('/todos/'+id);const t=await r.json();\n"
+    h = h + "t.done=done;await fetch('/todos/'+id,{method:'PUT',body:JSON.stringify(t)});load();}\n"
+    h = h + "async function del(id){await fetch('/todos/'+id,{method:'DELETE'});load();}\n"
+    h = h + "load();\n</script>\n</body></html>\n"
+}
+
+func todo_handler(req) (res) {
+    p := req.path
+    m := req.method
+    if p == "/" {
+        res = ok_html(todo_page())
+        return
+    }
+    if p == "/todos" || p == "/todos/" {
+        if m == "GET" {
+            res = ok_json(json(todos))
+        } else if m == "POST" {
+            t := parse(req.body, Todo{})
+            t.id = next_id
+            next_id = next_id + 1
+            todos = append(todos, t)
+            res = ok_json(json(t))
+        } else {
+            res = bad_request("use GET or POST for /todos")
+        }
+        return
+    }
+    if has_prefix(p, "/todos/") {
+        id := parse_int(param(p, "/todos/"))
+        idx := find_idx(id)
+        if idx < 0 {
+            res = not_found()
+            return
+        }
+        if m == "GET" {
+            res = ok_json(json(todos[idx]))
+        } else if m == "PUT" || m == "PATCH" {
+            updated := parse(req.body, Todo{})
+            updated.id = id
+            todos[idx] = updated
+            res = ok_json(json(todos[idx]))
+        } else if m == "DELETE" {
+            new_list := []Todo{}
+            i := 0
+            while i < len(todos) {
+                if i != idx { new_list = append(new_list, todos[i]) }
+                i = i + 1
+            }
+            todos = new_list
+            res = ok_json("{\"ok\":true}")
+        } else {
+            res = bad_request("use GET PUT PATCH DELETE for /todos/{id}")
+        }
+        return
+    }
+    res = not_found()
+}
+
+func main() {
+    todos = append(todos, Todo{id: next_id, title: "learn machin", done: true})
+    next_id = next_id + 1
+    todos = append(todos, Todo{id: next_id, title: "build a web demo", done: false})
+    next_id = next_id + 1
+    todos = append(todos, Todo{id: next_id, title: "add it to awesome-machin", done: false})
+    next_id = next_id + 1
+    println("machin-web-demo-todo on http://localhost:48080")
+    serve(48080, func(req) { return todo_handler(req) })
+}

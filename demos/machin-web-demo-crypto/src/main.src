@@ -1,0 +1,286 @@
+// machin-web-demo-crypto — cryptography REST API using machweb.
+//
+// Compose with the framework:
+//   machin encode ../../framework/machweb.src src/main.src > app.mfl
+//   machin build app.mfl -o app
+//   ./app   → http://localhost:48080
+//
+// API:
+//   GET  /                   → HTML playground page (JS forms for each endpoint)
+//   POST /hash               → body: raw text → {"hash":"<sha256hex>"}
+//   POST /hmac               → JSON {key, msg} → {"hmac":"<hex>"}
+//   POST /encrypt            → JSON {key_hex, plaintext} (key_hex empty → random 32-byte key)
+//                              → {"key_hex":"...","iv_hex":"...","ct_hex":"..."}
+//   POST /decrypt            → JSON {key_hex, iv_hex, ct_hex} → {"plaintext":"..."} or 400
+//   GET  /keygen/ed25519     → {"priv_hex":"...","pub_hex":"..."}
+//   POST /sign               → JSON {priv_hex, msg} → {"sig_hex":"..."}
+//   POST /verify             → JSON {pub_hex, msg, sig_hex} → {"valid":true|false}
+//   GET  /keygen/x25519      → {"priv_hex":"...","pub_hex":"..."}
+//   POST /dh                 → JSON {my_priv_hex, their_pub_hex} → {"shared_hex":"..."}
+//
+// Exercises: crypto builtins (sha256, hmac_sha256, aes_gcm_*, ed25519_*, x25519_*),
+// hex encode/decode, random key generation, struct-based request parsing.
+
+// Single combined request struct — MFL's parse() is monomorphic (one type per call site).
+type CryptoReq struct {
+    key           string
+    msg           string
+    key_hex       string
+    plaintext     string
+    iv_hex        string
+    ct_hex        string
+    priv_hex      string
+    pub_hex       string
+    sig_hex       string
+    my_priv_hex   string
+    their_pub_hex string
+}
+
+func crypto_page() (h) {
+    h = "<!DOCTYPE html>\n<html><head><title>machin crypto demo</title>"
+    h = h + "<style>body{font-family:monospace;max-width:720px;margin:40px auto;line-height:1.5}"
+    h = h + "h1{font-size:1.3em}h2{font-size:1em;margin-top:1.6em;border-bottom:1px solid #ccc}"
+    h = h + "input,textarea{width:100%;box-sizing:border-box;padding:4px;margin:2px 0;font-family:monospace}"
+    h = h + "button{padding:4px 12px;cursor:pointer;margin-top:4px}"
+    h = h + "pre{background:#f4f4f4;padding:8px;overflow-x:auto;white-space:pre-wrap;word-break:break-all}"
+    h = h + "</style></head><body>"
+    h = h + "<h1>machin crypto demo</h1>"
+
+    // SHA-256
+    h = h + "<h2>POST /hash — SHA-256</h2>"
+    h = h + "<textarea id='hash_in' rows='2' placeholder='raw text to hash'></textarea>"
+    h = h + "<button onclick='doHash()'>Hash</button>"
+    h = h + "<pre id='hash_out'></pre>"
+
+    // HMAC
+    h = h + "<h2>POST /hmac — HMAC-SHA-256</h2>"
+    h = h + "<input id='hmac_key' placeholder='key'>"
+    h = h + "<input id='hmac_msg' placeholder='message'>"
+    h = h + "<button onclick='doHmac()'>HMAC</button>"
+    h = h + "<pre id='hmac_out'></pre>"
+
+    // AES-GCM encrypt
+    h = h + "<h2>POST /encrypt — AES-256-GCM encrypt</h2>"
+    h = h + "<input id='enc_key' placeholder='key_hex (leave empty to generate random key)'>"
+    h = h + "<input id='enc_pt' placeholder='plaintext'>"
+    h = h + "<button onclick='doEncrypt()'>Encrypt</button>"
+    h = h + "<pre id='enc_out'></pre>"
+
+    // AES-GCM decrypt
+    h = h + "<h2>POST /decrypt — AES-256-GCM decrypt</h2>"
+    h = h + "<input id='dec_key' placeholder='key_hex'>"
+    h = h + "<input id='dec_iv' placeholder='iv_hex'>"
+    h = h + "<input id='dec_ct' placeholder='ct_hex'>"
+    h = h + "<button onclick='doDecrypt()'>Decrypt</button>"
+    h = h + "<pre id='dec_out'></pre>"
+
+    // Ed25519 keygen
+    h = h + "<h2>GET /keygen/ed25519 — Ed25519 key pair</h2>"
+    h = h + "<button onclick='doEd25519Keygen()'>Generate</button>"
+    h = h + "<pre id='ed_keygen_out'></pre>"
+
+    // Sign
+    h = h + "<h2>POST /sign — Ed25519 sign</h2>"
+    h = h + "<input id='sign_priv' placeholder='priv_hex'>"
+    h = h + "<input id='sign_msg' placeholder='message'>"
+    h = h + "<button onclick='doSign()'>Sign</button>"
+    h = h + "<pre id='sign_out'></pre>"
+
+    // Verify
+    h = h + "<h2>POST /verify — Ed25519 verify</h2>"
+    h = h + "<input id='verify_pub' placeholder='pub_hex'>"
+    h = h + "<input id='verify_msg' placeholder='message'>"
+    h = h + "<input id='verify_sig' placeholder='sig_hex'>"
+    h = h + "<button onclick='doVerify()'>Verify</button>"
+    h = h + "<pre id='verify_out'></pre>"
+
+    // X25519 keygen
+    h = h + "<h2>GET /keygen/x25519 — X25519 key pair</h2>"
+    h = h + "<button onclick='doX25519Keygen()'>Generate</button>"
+    h = h + "<pre id='x25519_keygen_out'></pre>"
+
+    // DH
+    h = h + "<h2>POST /dh — X25519 Diffie-Hellman</h2>"
+    h = h + "<input id='dh_mypriv' placeholder='my_priv_hex'>"
+    h = h + "<input id='dh_theirpub' placeholder='their_pub_hex'>"
+    h = h + "<button onclick='doDh()'>Compute shared</button>"
+    h = h + "<pre id='dh_out'></pre>"
+
+    h = h + "<script>\n"
+    h = h + "async function post(url,body){\n"
+    h = h + "  const r=await fetch(url,{method:'POST',body:body});\n"
+    h = h + "  return r.text();\n"
+    h = h + "}\n"
+    h = h + "async function get(url){\n"
+    h = h + "  const r=await fetch(url);\n"
+    h = h + "  return r.text();\n"
+    h = h + "}\n"
+    h = h + "function fmt(s){try{return JSON.stringify(JSON.parse(s),null,2);}catch(e){return s;}}\n"
+    h = h + "async function doHash(){\n"
+    h = h + "  const t=document.getElementById('hash_in').value;\n"
+    h = h + "  document.getElementById('hash_out').textContent=fmt(await post('/hash',t));\n"
+    h = h + "}\n"
+    h = h + "async function doHmac(){\n"
+    h = h + "  const k=document.getElementById('hmac_key').value;\n"
+    h = h + "  const m=document.getElementById('hmac_msg').value;\n"
+    h = h + "  document.getElementById('hmac_out').textContent=fmt(await post('/hmac',JSON.stringify({key:k,msg:m})));\n"
+    h = h + "}\n"
+    h = h + "async function doEncrypt(){\n"
+    h = h + "  const k=document.getElementById('enc_key').value;\n"
+    h = h + "  const p=document.getElementById('enc_pt').value;\n"
+    h = h + "  const res=fmt(await post('/encrypt',JSON.stringify({key_hex:k,plaintext:p})));\n"
+    h = h + "  document.getElementById('enc_out').textContent=res;\n"
+    h = h + "  try{\n"
+    h = h + "    const d=JSON.parse(res);\n"
+    h = h + "    document.getElementById('dec_key').value=d.key_hex||'';\n"
+    h = h + "    document.getElementById('dec_iv').value=d.iv_hex||'';\n"
+    h = h + "    document.getElementById('dec_ct').value=d.ct_hex||'';\n"
+    h = h + "  }catch(e){}\n"
+    h = h + "}\n"
+    h = h + "async function doDecrypt(){\n"
+    h = h + "  const k=document.getElementById('dec_key').value;\n"
+    h = h + "  const iv=document.getElementById('dec_iv').value;\n"
+    h = h + "  const ct=document.getElementById('dec_ct').value;\n"
+    h = h + "  document.getElementById('dec_out').textContent=fmt(await post('/decrypt',JSON.stringify({key_hex:k,iv_hex:iv,ct_hex:ct})));\n"
+    h = h + "}\n"
+    h = h + "async function doEd25519Keygen(){\n"
+    h = h + "  const res=fmt(await get('/keygen/ed25519'));\n"
+    h = h + "  document.getElementById('ed_keygen_out').textContent=res;\n"
+    h = h + "  try{\n"
+    h = h + "    const d=JSON.parse(res);\n"
+    h = h + "    document.getElementById('sign_priv').value=d.priv_hex||'';\n"
+    h = h + "    document.getElementById('verify_pub').value=d.pub_hex||'';\n"
+    h = h + "  }catch(e){}\n"
+    h = h + "}\n"
+    h = h + "async function doSign(){\n"
+    h = h + "  const p=document.getElementById('sign_priv').value;\n"
+    h = h + "  const m=document.getElementById('sign_msg').value;\n"
+    h = h + "  const res=fmt(await post('/sign',JSON.stringify({priv_hex:p,msg:m})));\n"
+    h = h + "  document.getElementById('sign_out').textContent=res;\n"
+    h = h + "  try{\n"
+    h = h + "    const d=JSON.parse(res);\n"
+    h = h + "    document.getElementById('verify_sig').value=d.sig_hex||'';\n"
+    h = h + "    document.getElementById('verify_msg').value=m;\n"
+    h = h + "  }catch(e){}\n"
+    h = h + "}\n"
+    h = h + "async function doVerify(){\n"
+    h = h + "  const p=document.getElementById('verify_pub').value;\n"
+    h = h + "  const m=document.getElementById('verify_msg').value;\n"
+    h = h + "  const s=document.getElementById('verify_sig').value;\n"
+    h = h + "  document.getElementById('verify_out').textContent=fmt(await post('/verify',JSON.stringify({pub_hex:p,msg:m,sig_hex:s})));\n"
+    h = h + "}\n"
+    h = h + "async function doX25519Keygen(){\n"
+    h = h + "  const res=fmt(await get('/keygen/x25519'));\n"
+    h = h + "  document.getElementById('x25519_keygen_out').textContent=res;\n"
+    h = h + "  try{\n"
+    h = h + "    const d=JSON.parse(res);\n"
+    h = h + "    document.getElementById('dh_mypriv').value=d.priv_hex||'';\n"
+    h = h + "  }catch(e){}\n"
+    h = h + "}\n"
+    h = h + "async function doDh(){\n"
+    h = h + "  const mp=document.getElementById('dh_mypriv').value;\n"
+    h = h + "  const tp=document.getElementById('dh_theirpub').value;\n"
+    h = h + "  document.getElementById('dh_out').textContent=fmt(await post('/dh',JSON.stringify({my_priv_hex:mp,their_pub_hex:tp})));\n"
+    h = h + "}\n"
+    h = h + "</script></body></html>\n"
+}
+
+func crypto_handler(req) (res) {
+    p := req.path
+    m := req.method
+
+    if p == "/" {
+        res = ok_html(crypto_page())
+        return
+    }
+
+    if p == "/hash" && m == "POST" {
+        h := sha256(req.body)
+        res = ok_json("{\"hash\":\"" + h + "\"}")
+        return
+    }
+
+    if p == "/hmac" && m == "POST" {
+        r := parse(req.body, CryptoReq{})
+        h := hmac_sha256(r.key, r.msg)
+        res = ok_json("{\"hmac\":\"" + h + "\"}")
+        return
+    }
+
+    if p == "/encrypt" && m == "POST" {
+        r := parse(req.body, CryptoReq{})
+        key_bytes := from_hex(r.key_hex)
+        if len(key_bytes) != 32 {
+            key_bytes = rand_bytes(32)
+        }
+        iv := rand_bytes(12)
+        ct := aes_gcm_encrypt(key_bytes, iv, bytes(r.plaintext), bytes(""))
+        res = ok_json("{\"key_hex\":\"" + to_hex(key_bytes) + "\",\"iv_hex\":\"" + to_hex(iv) + "\",\"ct_hex\":\"" + to_hex(ct) + "\"}")
+        return
+    }
+
+    if p == "/decrypt" && m == "POST" {
+        r := parse(req.body, CryptoReq{})
+        key_bytes := from_hex(r.key_hex)
+        iv := from_hex(r.iv_hex)
+        ct := from_hex(r.ct_hex)
+        pt := aes_gcm_decrypt(key_bytes, iv, ct, bytes(""))
+        if len(pt) == 0 {
+            res = bad_request("decryption failed: wrong key, iv, or ciphertext")
+            return
+        }
+        res = ok_json("{\"plaintext\":\"" + bytes_str(pt) + "\"}")
+        return
+    }
+
+    if p == "/keygen/ed25519" && m == "GET" {
+        priv := rand_bytes(32)
+        pub := ed25519_pub(priv)
+        res = ok_json("{\"priv_hex\":\"" + to_hex(priv) + "\",\"pub_hex\":\"" + to_hex(pub) + "\"}")
+        return
+    }
+
+    if p == "/sign" && m == "POST" {
+        r := parse(req.body, CryptoReq{})
+        priv := from_hex(r.priv_hex)
+        sig := ed25519_sign(priv, bytes(r.msg))
+        res = ok_json("{\"sig_hex\":\"" + to_hex(sig) + "\"}")
+        return
+    }
+
+    if p == "/verify" && m == "POST" {
+        r := parse(req.body, CryptoReq{})
+        pub := from_hex(r.pub_hex)
+        sig := from_hex(r.sig_hex)
+        valid := ed25519_verify(pub, bytes(r.msg), sig)
+        if valid {
+            res = ok_json("{\"valid\":true}")
+        } else {
+            res = ok_json("{\"valid\":false}")
+        }
+        return
+    }
+
+    if p == "/keygen/x25519" && m == "GET" {
+        priv := rand_bytes(32)
+        pub := x25519_pub(priv)
+        res = ok_json("{\"priv_hex\":\"" + to_hex(priv) + "\",\"pub_hex\":\"" + to_hex(pub) + "\"}")
+        return
+    }
+
+    if p == "/dh" && m == "POST" {
+        r := parse(req.body, CryptoReq{})
+        mypriv := from_hex(r.my_priv_hex)
+        theirpub := from_hex(r.their_pub_hex)
+        shared := x25519_shared(mypriv, theirpub)
+        res = ok_json("{\"shared_hex\":\"" + to_hex(shared) + "\"}")
+        return
+    }
+
+    res = not_found()
+}
+
+func main() {
+    println("machin-web-demo-crypto on http://localhost:48080")
+    serve(48080, func(req) { return crypto_handler(req) })
+}

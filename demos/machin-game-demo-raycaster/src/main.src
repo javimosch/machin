@@ -1,0 +1,567 @@
+// machin-game-demo-raycaster — ASCII Wolfenstein-style raycaster.
+//
+// Build and run:
+//   machin encode src/main.src > app.mfl && machin build app.mfl -o app && ./app
+//
+// Controls: W=forward S=backward A=turn left D=turn right Q=quit
+
+var SCR_W = 80
+var SCR_H = 24
+
+var scr = []string{}
+
+func scr_init() {
+    scr = []string{}
+    i := 0
+    while i < SCR_W * SCR_H {
+        scr = append(scr, " ")
+        i = i + 1
+    }
+}
+
+func scr_cls() {
+    i := 0
+    while i < SCR_W * SCR_H {
+        scr[i] = " "
+        i = i + 1
+    }
+}
+
+func scr_put(x, y, c) {
+    if x >= 0 && x < SCR_W && y >= 0 && y < SCR_H {
+        scr[y * SCR_W + x] = c
+    }
+}
+
+func scr_text(x, y, s) {
+    i := 0
+    while i < len(s) {
+        scr_put(x + i, y, charat(s, i))
+        i = i + 1
+    }
+}
+
+func scr_frame(ESC) (f) {
+    f = ESC + "[H"
+    y := 0
+    while y < SCR_H {
+        x := 0
+        while x < SCR_W {
+            f = f + scr[y * SCR_W + x]
+            x = x + 1
+        }
+        f = f + "\n"
+        y = y + 1
+    }
+}
+
+// --- map data (16x16) ---
+var map_data = []int{}
+
+func map_init() {
+    map_data = []int{}
+    // row 0
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 1)
+    // row 1
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 1)
+    // row 2
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 1)
+    // row 3
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 1)
+    // row 4
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 1)
+    // row 5
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 1)
+    // row 6
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 1)
+    // row 7
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 1)
+    // row 8
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 1)
+    // row 9
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 1)
+    // row 10
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 1)
+    // row 11
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 1)
+    // row 12
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 1)
+    // row 13
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 1)
+    // row 14
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 0)
+    map_data = append(map_data, 1)
+    // row 15
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 1)
+    map_data = append(map_data, 1)
+}
+
+// --- player state ---
+var pos_x = 2.0
+var pos_y = 2.0
+var angle = 0.0
+
+func map_at(xi, yi) (v) {
+    v = 0
+    if xi >= 0 && xi < 16 && yi >= 0 && yi < 16 {
+        v = map_data[yi * 16 + xi]
+    } else {
+        v = 1
+    }
+}
+
+func cast_column(col) (perp, side) {
+    ray_ang := angle - 0.5 + float(col) * (1.0 / 79.0)
+    ray_dx := cos(ray_ang)
+    ray_dy := sin(ray_ang)
+
+    map_xi := int(pos_x)
+    map_yi := int(pos_y)
+
+    delta_x := 1000000.0
+    if ray_dx != 0.0 {
+        delta_x = abs(1.0 / ray_dx)
+    }
+    delta_y := 1000000.0
+    if ray_dy != 0.0 {
+        delta_y = abs(1.0 / ray_dy)
+    }
+
+    step_x := 1
+    sdx := (float(map_xi) + 1.0 - pos_x) * delta_x
+    if ray_dx < 0.0 {
+        step_x = 0 - 1
+        sdx = (pos_x - float(map_xi)) * delta_x
+    }
+
+    step_y := 1
+    sdy := (float(map_yi) + 1.0 - pos_y) * delta_y
+    if ray_dy < 0.0 {
+        step_y = 0 - 1
+        sdy = (pos_y - float(map_yi)) * delta_y
+    }
+
+    side = 0
+    hit := 0
+    while hit == 0 {
+        if sdx < sdy {
+            sdx = sdx + delta_x
+            map_xi = map_xi + step_x
+            side = 0
+        } else {
+            sdy = sdy + delta_y
+            map_yi = map_yi + step_y
+            side = 1
+        }
+        if map_xi >= 0 && map_xi < 16 && map_yi >= 0 && map_yi < 16 {
+            if map_data[map_yi * 16 + map_xi] == 1 {
+                hit = 1
+            }
+        } else {
+            hit = 1
+        }
+    }
+
+    perp = sdx - delta_x
+    if side == 1 {
+        perp = sdy - delta_y
+    }
+    if perp < 0.1 {
+        perp = 0.1
+    }
+}
+
+func wall_char(perp, side) (c) {
+    if side == 0 {
+        // x-wall (brighter)
+        if perp < 1.5 {
+            c = "#"
+        } else {
+            if perp < 3.0 {
+                c = "|"
+            } else {
+                c = ":"
+            }
+        }
+    } else {
+        // y-wall (darker)
+        if perp < 1.5 {
+            c = "@"
+        } else {
+            if perp < 3.0 {
+                c = "="
+            } else {
+                c = "-"
+            }
+        }
+    }
+}
+
+func render_view() {
+    col := 0
+    while col < SCR_W {
+        perp, side := cast_column(col)
+
+        wall_h := int(22.0 / perp)
+        if wall_h > 22 {
+            wall_h = 22
+        }
+
+        top := 11 - wall_h / 2
+        bot := 11 + wall_h / 2
+
+        // sky: rows 0..top-1
+        row := 0
+        while row < top {
+            scr_put(col, row, ".")
+            row = row + 1
+        }
+
+        // wall: rows top..bot-1
+        wc := wall_char(perp, side)
+        row = top
+        while row < bot {
+            if row >= 0 && row < 23 {
+                scr_put(col, row, wc)
+            }
+            row = row + 1
+        }
+
+        // floor: rows bot..22
+        row = bot
+        while row < 23 {
+            scr_put(col, row, ",")
+            row = row + 1
+        }
+
+        col = col + 1
+    }
+}
+
+func render_minimap() {
+    py := int(pos_y)
+    px := int(pos_x)
+    j := 0
+    while j < 16 {
+        if j == px {
+            scr_put(j, 23, "@")
+        } else {
+            if map_data[py * 16 + j] == 1 {
+                scr_put(j, 23, "#")
+            } else {
+                scr_put(j, 23, ".")
+            }
+        }
+        j = j + 1
+    }
+}
+
+func render_hud() {
+    // truncate pos to 1 decimal — use int for simplicity
+    px := int(pos_x * 10.0)
+    py := int(pos_y * 10.0)
+    hud := "machin ASCII Raycaster | WASD=move/turn Q=quit | pos:(" + str(px / 10) + "." + str(px - (px / 10) * 10) + "," + str(py / 10) + "." + str(py - (py / 10) * 10) + ")"
+    scr_text(0, 0, hud)
+}
+
+func try_move(nx, ny) {
+    nxi := int(nx)
+    nyi := int(ny)
+    if map_at(nxi, nyi) == 0 {
+        pos_x = nx
+        pos_y = ny
+    }
+}
+
+func main() {
+    ESC := bytes_str(from_hex("1b"))
+    // hide cursor
+    print(ESC + "[?25l")
+    // clear screen
+    print(ESC + "[2J")
+
+    scr_init()
+    map_init()
+
+    raw_mode(1)
+
+    running := 1
+    while running == 1 {
+        key := read_key()
+
+        if key == "q" || key == "Q" {
+            running = 0
+        }
+        if key == "a" || key == "A" {
+            angle = angle - 0.08
+        }
+        if key == "d" || key == "D" {
+            angle = angle + 0.08
+        }
+        if key == "w" || key == "W" {
+            nx := pos_x + cos(angle) * 0.15
+            ny := pos_y + sin(angle) * 0.15
+            try_move(nx, ny)
+        }
+        if key == "s" || key == "S" {
+            nx := pos_x - cos(angle) * 0.15
+            ny := pos_y - sin(angle) * 0.15
+            try_move(nx, ny)
+        }
+
+        scr_cls()
+        render_view()
+        render_minimap()
+        render_hud()
+
+        frame := scr_frame(ESC)
+        print(frame)
+        flush()
+        sleep(33)
+    }
+
+    raw_mode(0)
+    // show cursor
+    print(ESC + "[?25h")
+    print(ESC + "[2J")
+    print(ESC + "[H")
+    println("Thanks for playing machin ASCII Raycaster!")
+}

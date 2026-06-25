@@ -1,0 +1,189 @@
+// machin-game-demo-life — Conway's Game of Life
+//
+// Build:
+//   machin encode src/main.src > app.mfl && machin build app.mfl -o app
+//   ./app
+//
+// Controls: SPACE=pause/resume  N=step(paused)  R=randomize  Q=quit
+// Layout: 80x24 terminal
+//   Row  0 : header bar
+//   Rows 1-22 : game grid (78x22)
+//   Row 23 : empty
+
+// ── grid dimensions ───────────────────────────────────────────────────────────
+
+func WW() (n) { n = 78 }
+func HH() (n) { n = 22 }
+
+// ── global state ──────────────────────────────────────────────────────────────
+
+var grid     = []int{}
+var next_gen = []int{}
+var running  = 1
+var gen      = 0
+
+// ── grid helpers ──────────────────────────────────────────────────────────────
+
+func get_cell(x, y) (v) {
+    v = 0
+    if x >= 0 && x < WW() && y >= 0 && y < HH() {
+        v = grid[y * WW() + x]
+    }
+}
+
+func count_nb(x, y) (n) {
+    n = 0
+    dy := 0 - 1
+    while dy <= 1 {
+        dx := 0 - 1
+        while dx <= 1 {
+            if dx != 0 || dy != 0 {
+                n = n + get_cell(x + dx, y + dy)
+            }
+            dx = dx + 1
+        }
+        dy = dy + 1
+    }
+}
+
+func step_life() {
+    idx := 0
+    while idx < WW() * HH() {
+        next_gen[idx] = 0
+        idx = idx + 1
+    }
+    y := 0
+    while y < HH() {
+        x := 0
+        while x < WW() {
+            nb  := count_nb(x, y)
+            cur := get_cell(x, y)
+            nxt := 0
+            if cur == 1 {
+                if nb == 2 || nb == 3 { nxt = 1 }
+            }
+            if cur == 0 {
+                if nb == 3 { nxt = 1 }
+            }
+            next_gen[y * WW() + x] = nxt
+            x = x + 1
+        }
+        y = y + 1
+    }
+    // swap: copy next_gen → grid
+    idx = 0
+    while idx < WW() * HH() {
+        grid[idx] = next_gen[idx]
+        idx = idx + 1
+    }
+    gen = gen + 1
+}
+
+func rand_grid() {
+    rb := rand_bytes(WW() * HH())
+    idx := 0
+    while idx < WW() * HH() {
+        if byte_at(rb, idx) % 4 == 0 {
+            grid[idx] = 1
+        }
+        if byte_at(rb, idx) % 4 != 0 {
+            grid[idx] = 0
+        }
+        idx = idx + 1
+    }
+    gen = 0
+}
+
+// ── render ────────────────────────────────────────────────────────────────────
+
+func render_life(ESC) (frame) {
+    // Header bar
+    state_str := "RUNNING"
+    if running == 0 { state_str = "PAUSED " }
+    header := "machin Game of Life | gen:" + str(gen) + " | " + state_str + " | SPACE=pause N=step R=rand Q=quit"
+    frame = ESC + "[H"
+    // pad/truncate header to SW=80
+    hx := 0
+    while hx < 80 {
+        if hx < len(header) {
+            frame = frame + charat(header, hx)
+        }
+        if hx >= len(header) {
+            frame = frame + " "
+        }
+        hx = hx + 1
+    }
+    frame = frame + "\n"
+
+    // Grid rows 1..22
+    y := 0
+    while y < HH() {
+        x := 0
+        while x < WW() {
+            if get_cell(x, y) == 1 {
+                frame = frame + "#"
+            }
+            if get_cell(x, y) == 0 {
+                frame = frame + " "
+            }
+            x = x + 1
+        }
+        // pad to 80 (WW=78, add 2 spaces)
+        frame = frame + "  \n"
+        y = y + 1
+    }
+
+    // Row 23: empty
+    frame = frame + "\n"
+}
+
+// ── main ──────────────────────────────────────────────────────────────────────
+
+func main() {
+    ESC := bytes_str(from_hex("1b"))
+
+    // Initialize grids
+    grid     = []int{}
+    next_gen = []int{}
+    idx := 0
+    while idx < WW() * HH() {
+        grid     = append(grid, 0)
+        next_gen = append(next_gen, 0)
+        idx = idx + 1
+    }
+
+    rand_grid()
+
+    print(ESC + "[2J" + ESC + "[?25l")
+    raw_mode(1)
+
+    alive := 1
+    while alive == 1 {
+        k := read_key()
+
+        if k == "q" { alive = 0 }
+        if k == " " {
+            was := running
+            if was == 1 { running = 0 }
+            if was == 0 { running = 1 }
+        }
+        if k == "n" && running == 0 {
+            step_life()
+        }
+        if k == "r" {
+            rand_grid()
+        }
+
+        if alive == 1 {
+            if running == 1 { step_life() }
+            frame := render_life(ESC)
+            print(frame)
+            flush()
+            sleep(100)
+        }
+    }
+
+    raw_mode(0)
+    print(ESC + "[2J" + ESC + "[?25h" + ESC + "[H")
+    println("machin Game of Life stopped.")
+}

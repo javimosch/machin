@@ -1,0 +1,128 @@
+// machin-web-demo-sqlite — persistent notes app using SQLite and machweb.
+//
+// Compose with the framework:
+//   machin encode ../../framework/machweb.src src/main.src > app.mfl
+//   machin build app.mfl -o app
+//   ./app   → http://localhost:48080
+//
+// API:
+//   GET    /           → HTML frontend (list, add, delete notes)
+//   GET    /notes      → JSON array of all notes
+//   POST   /notes      → JSON {title, body} → created note JSON
+//   GET    /notes/{id} → single note JSON
+//   DELETE /notes/{id} → {"ok":true}
+//
+// Exercises: sqlite_open/exec/query/close, parameterized queries, global DB handle,
+// init function pattern, JSON rows from sqlite_query.
+
+type Note struct {
+    id      int
+    title   string
+    body    string
+    created int
+}
+
+var db = 0
+
+func init_db() {
+    db = sqlite_open("notes.db")
+    sqlite_exec(db, "CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, body TEXT NOT NULL, created INTEGER NOT NULL)", []string{})
+}
+
+func notes_page() (h) {
+    h = "<!DOCTYPE html>\n<html><head><title>machin notes</title>"
+    h = h + "<style>body{font-family:sans-serif;max-width:640px;margin:40px auto;line-height:1.5}"
+    h = h + "h1{font-size:1.3em}h2{font-size:1em;margin-top:1.4em}"
+    h = h + "input,textarea{width:100%;box-sizing:border-box;padding:6px;margin:3px 0;font-family:sans-serif}"
+    h = h + "button{padding:5px 12px;cursor:pointer;margin-top:4px}"
+    h = h + ".note{border:1px solid #ddd;padding:10px;margin:8px 0;border-radius:4px;background:#fafafa}"
+    h = h + ".note h3{margin:0 0 4px 0;font-size:1em}.note p{margin:0 0 6px 0;color:#444}"
+    h = h + ".note small{color:#999}.del{float:right;color:#c00;cursor:pointer;border:none;background:none;font-size:1em}"
+    h = h + "</style></head><body>"
+    h = h + "<h1>machin notes demo</h1>"
+    h = h + "<h2>Add note</h2>"
+    h = h + "<input id='title' placeholder='Title'>"
+    h = h + "<textarea id='body' rows='3' placeholder='Body...'></textarea>"
+    h = h + "<button onclick='addNote()'>Add Note</button>"
+    h = h + "<h2>Notes</h2>"
+    h = h + "<div id='notes'></div>"
+    h = h + "<script>\n"
+    h = h + "async function load(){\n"
+    h = h + "  const r=await fetch('/notes');\n"
+    h = h + "  const notes=await r.json();\n"
+    h = h + "  const el=document.getElementById('notes');\n"
+    h = h + "  if(!notes||notes.length===0){el.innerHTML='<p style=\"color:#999\">No notes yet.</p>';return;}\n"
+    h = h + "  el.innerHTML=notes.map(n=>"
+    h = h + "`<div class='note'><button class='del' onclick='del(${n.id})'>x</button>`"
+    h = h + "+`<h3>${n.title}</h3><p>${n.body}</p>`"
+    h = h + "+`<small>id:${n.id} &nbsp; ${new Date(n.created*1000).toLocaleString()}</small></div>`"
+    h = h + ").join('');\n"
+    h = h + "}\n"
+    h = h + "async function addNote(){\n"
+    h = h + "  const title=document.getElementById('title').value.trim();\n"
+    h = h + "  const body=document.getElementById('body').value.trim();\n"
+    h = h + "  if(!title)return;\n"
+    h = h + "  await fetch('/notes',{method:'POST',body:JSON.stringify({title:title,body:body,id:0,created:0})});\n"
+    h = h + "  document.getElementById('title').value='';\n"
+    h = h + "  document.getElementById('body').value='';\n"
+    h = h + "  load();\n"
+    h = h + "}\n"
+    h = h + "async function del(id){\n"
+    h = h + "  await fetch('/notes/'+id,{method:'DELETE'});\n"
+    h = h + "  load();\n"
+    h = h + "}\n"
+    h = h + "load();\n"
+    h = h + "</script></body></html>\n"
+}
+
+func sqlite_handler(req) (res) {
+    p := req.path
+    m := req.method
+
+    if p == "/" {
+        res = ok_html(notes_page())
+        return
+    }
+
+    if p == "/notes" || p == "/notes/" {
+        if m == "GET" {
+            rows := sqlite_query(db, "SELECT id, title, body, created FROM notes ORDER BY id DESC", []string{})
+            res = ok_json(rows)
+        } else if m == "POST" {
+            n := parse(req.body, Note{})
+            sqlite_exec(db, "INSERT INTO notes (title, body, created) VALUES (?, ?, ?)", []string{n.title, n.body, str(now())})
+            rows := sqlite_query(db, "SELECT id, title, body, created FROM notes ORDER BY id DESC LIMIT 1", []string{})
+            res = ok_json(rows)
+        } else {
+            res = bad_request("use GET or POST for /notes")
+        }
+        return
+    }
+
+    if has_prefix(p, "/notes/") {
+        id_str := param(p, "/notes/")
+        id := parse_int(id_str)
+        if m == "GET" {
+            rows := sqlite_query(db, "SELECT id, title, body, created FROM notes WHERE id = ?", []string{id_str})
+            if rows == "[]" || rows == "" {
+                res = not_found()
+            } else {
+                res = ok_json(rows)
+            }
+        } else if m == "DELETE" {
+            sqlite_exec(db, "DELETE FROM notes WHERE id = ?", []string{str(id)})
+            res = ok_json("{\"ok\":true}")
+        } else {
+            res = bad_request("use GET or DELETE for /notes/{id}")
+        }
+        return
+    }
+
+    res = not_found()
+}
+
+func main() {
+    init_db()
+    println("machin-web-demo-sqlite on http://localhost:48080")
+    serve(48080, func(req) { return sqlite_handler(req) })
+}

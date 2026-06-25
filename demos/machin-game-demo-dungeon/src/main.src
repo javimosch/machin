@@ -1,0 +1,242 @@
+// machin-game-demo-dungeon — simple roguelike dungeon crawler
+//
+// Build:
+//   machin encode src/main.src > app.mfl && machin build app.mfl -o app
+//   ./app
+//
+// Controls: W=up  A=left  S=down  D=right  Q=quit
+// Layout: 80x24 terminal
+//   Row  0 : status bar
+//   Row  1 : separator
+//   Rows 2-21 : map (40x20)
+//   Row 22 : message
+//   Row 23 : empty
+
+// ── tile constants ────────────────────────────────────────────────────────────
+// 0=floor  1=wall  2=goblin  3=gold
+
+// ── global state ──────────────────────────────────────────────────────────────
+
+var map_data  = []int{}
+var player_x  = 2
+var player_y  = 2
+var player_hp = 10
+var gold      = 0
+var msg       = "Find the gold! WASD=move Q=quit"
+var MAP_W     = 40
+var MAP_H     = 20
+
+// ── map helpers ───────────────────────────────────────────────────────────────
+
+func tile_at(x, y) (v) {
+    v = 1
+    if x >= 0 && x < MAP_W && y >= 0 && y < MAP_H {
+        v = map_data[y * MAP_W + x]
+    }
+}
+
+func set_tile(x, y, v) {
+    if x >= 0 && x < MAP_W && y >= 0 && y < MAP_H {
+        map_data[y * MAP_W + x] = v
+    }
+}
+
+// ── movement ──────────────────────────────────────────────────────────────────
+
+func try_move(dx, dy) {
+    nx := player_x + dx
+    ny := player_y + dy
+    t  := tile_at(nx, ny)
+
+    // wall — blocked
+    if t == 1 { return }
+
+    // goblin — fight
+    if t == 2 {
+        set_tile(nx, ny, 0)
+        msg = "Killed a goblin!"
+        return
+    }
+
+    // gold — collect
+    if t == 3 {
+        set_tile(nx, ny, 0)
+        gold = gold + 1
+        msg = "Got gold! Total: " + str(gold)
+        player_x = nx
+        player_y = ny
+        return
+    }
+
+    // floor — move
+    player_x = nx
+    player_y = ny
+}
+
+// ── map initialization ────────────────────────────────────────────────────────
+
+func parse_map_char(c) (v) {
+    v = 1
+    if c == "." { v = 0 }
+    if c == "#" { v = 1 }
+    if c == "G" { v = 2 }
+    if c == "$" { v = 3 }
+    if c == " " { v = 1 }
+}
+
+func init_map() {
+    // 20 rows of exactly 40 chars
+    rows := []string{}
+    rows = append(rows, "########################################")
+    rows = append(rows, "#..............................G.......#")
+    rows = append(rows, "#.######.......................#.......#")
+    rows = append(rows, "#.#..................................$.#")
+    rows = append(rows, "#.#.####.......####......######........#")
+    rows = append(rows, "#.#.#..#.......#..#......#.............#")
+    rows = append(rows, "#...#..########..##......#..G..........#")
+    rows = append(rows, "#.................#.......#............#")
+    rows = append(rows, "#.....G...........#.######.............#")
+    rows = append(rows, "#.................#.#.......$..........#")
+    rows = append(rows, "######.###........#.#..................#")
+    rows = append(rows, "#.......#.........###.....G............#")
+    rows = append(rows, "#.......#..............................#")
+    rows = append(rows, "#.......####.............######........#")
+    rows = append(rows, "#...........................#.......$..#")
+    rows = append(rows, "#..G........................#..........#")
+    rows = append(rows, "#...........................#..........#")
+    rows = append(rows, "########.###########.#######...........#")
+    rows = append(rows, "#.$.............................G......#")
+    rows = append(rows, "########################################")
+
+    map_data = []int{}
+    y := 0
+    while y < MAP_H {
+        row := rows[y]
+        x := 0
+        while x < MAP_W {
+            ch := " "
+            if x < len(row) {
+                ch = charat(row, x)
+            }
+            map_data = append(map_data, parse_map_char(ch))
+            x = x + 1
+        }
+        y = y + 1
+    }
+}
+
+// ── render ────────────────────────────────────────────────────────────────────
+
+func tile_char(x, y) (c) {
+    if x == player_x && y == player_y {
+        c = "@"
+        return
+    }
+    t := tile_at(x, y)
+    c = "#"
+    if t == 0 { c = "." }
+    if t == 1 { c = "#" }
+    if t == 2 { c = "G" }
+    if t == 3 { c = "$" }
+}
+
+func render_dun(ESC) (frame) {
+    frame = ESC + "[H"
+
+    // Row 0: status bar
+    status := "machin Dungeon | HP:" + str(player_hp) + " Gold:" + str(gold) + " | WASD=move Q=quit"
+    sx := 0
+    while sx < 80 {
+        if sx < len(status) {
+            frame = frame + charat(status, sx)
+        }
+        if sx >= len(status) {
+            frame = frame + " "
+        }
+        sx = sx + 1
+    }
+    frame = frame + "\n"
+
+    // Row 1: separator
+    si := 0
+    while si < 80 {
+        frame = frame + "-"
+        si = si + 1
+    }
+    frame = frame + "\n"
+
+    // Rows 2-21: map (40 wide, centered in 80 = offset 20)
+    MAP_OFF := 20
+    y := 0
+    while y < MAP_H {
+        // left padding
+        px := 0
+        while px < MAP_OFF {
+            frame = frame + " "
+            px = px + 1
+        }
+        // map row
+        x := 0
+        while x < MAP_W {
+            frame = frame + tile_char(x, y)
+            x = x + 1
+        }
+        // right padding
+        rx := MAP_OFF + MAP_W
+        while rx < 80 {
+            frame = frame + " "
+            rx = rx + 1
+        }
+        frame = frame + "\n"
+        y = y + 1
+    }
+
+    // Row 22: current message
+    mx := 0
+    while mx < 80 {
+        if mx < len(msg) {
+            frame = frame + charat(msg, mx)
+        }
+        if mx >= len(msg) {
+            frame = frame + " "
+        }
+        mx = mx + 1
+    }
+    frame = frame + "\n"
+
+    // Row 23: empty
+    frame = frame + "\n"
+}
+
+// ── main ──────────────────────────────────────────────────────────────────────
+
+func main() {
+    ESC := bytes_str(from_hex("1b"))
+
+    init_map()
+
+    print(ESC + "[2J" + ESC + "[?25l")
+    raw_mode(1)
+
+    alive := 1
+    while alive == 1 {
+        k := read_key()
+
+        if k == "q" { alive = 0 }
+        if k == "w" { try_move(0, 0 - 1) }
+        if k == "s" { try_move(0, 1) }
+        if k == "a" { try_move(0 - 1, 0) }
+        if k == "d" { try_move(1, 0) }
+
+        if alive == 1 {
+            frame := render_dun(ESC)
+            print(frame)
+            flush()
+            sleep(50)
+        }
+    }
+
+    raw_mode(0)
+    print(ESC + "[2J" + ESC + "[?25h" + ESC + "[H")
+    println("Thanks for playing machin Dungeon!")
+}

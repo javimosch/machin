@@ -1,0 +1,105 @@
+// machin-web-demo-chat — polling chat server using machweb.
+//
+// Compose with the framework:
+//   machin encode ../../framework/machweb.src src/main.src > app.mfl
+//   machin build app.mfl -o app
+//   ./app   → http://localhost:48080
+//
+// API:
+//   GET  /                  → HTML frontend (polls /msgs/{since} every second)
+//   POST /post              → publish message {from, text} → {"ok":true,"n":<total>}
+//   GET  /msgs/{since}      → messages since index → {from,msgs:[...]}
+//   GET  /msgs              → all messages
+//
+// Exercises: global []T slice, JSON serialization, polling-based real-time chat,
+// concurrent goroutine requests (machweb).
+
+type ChatMsg struct {
+    from string
+    text string
+    ts   int
+}
+
+var chat_log = []ChatMsg{}
+
+func chat_page() (h) {
+    h = "<!DOCTYPE html>\n<html><head><title>machin chat</title>"
+    h = h + "<style>body{font-family:monospace;max-width:600px;margin:40px auto}"
+    h = h + "#log{border:1px solid #ccc;height:350px;overflow-y:auto;padding:10px;margin-bottom:8px;background:#f9f9f9}"
+    h = h + "#log p{margin:2px 0}</style></head>"
+    h = h + "<body><h2>machin chat demo</h2><div id='log'></div>"
+    h = h + "<input id='from' placeholder='name' style='width:18%;padding:4px'>"
+    h = h + "<input id='msg' placeholder='message...' style='width:60%;padding:4px'>"
+    h = h + "<button onclick='send()' style='padding:4px 8px'>Send</button>"
+    h = h + "<script>\nlet since=0;\n"
+    h = h + "async function poll(){\n"
+    h = h + "  try{\n"
+    h = h + "    const r=await fetch('/msgs/'+since);\n"
+    h = h + "    const d=await r.json();\n"
+    h = h + "    if(d&&d.msgs&&d.msgs.length>0){\n"
+    h = h + "      since+=d.msgs.length;\n"
+    h = h + "      const log=document.getElementById('log');\n"
+    h = h + "      d.msgs.forEach(m=>{\n"
+    h = h + "        const p=document.createElement('p');\n"
+    h = h + "        p.textContent='['+m.from+']: '+m.text;\n"
+    h = h + "        log.appendChild(p);\n"
+    h = h + "      });\n"
+    h = h + "      log.scrollTop=log.scrollHeight;\n"
+    h = h + "    }\n"
+    h = h + "  }catch(e){}\n"
+    h = h + "}\n"
+    h = h + "async function send(){\n"
+    h = h + "  const from=document.getElementById('from').value||'anon';\n"
+    h = h + "  const text=document.getElementById('msg').value.trim();\n"
+    h = h + "  if(!text)return;\n"
+    h = h + "  await fetch('/post',{method:'POST',body:JSON.stringify({from:from,text:text,ts:0})});\n"
+    h = h + "  document.getElementById('msg').value='';\n"
+    h = h + "  await poll();\n"
+    h = h + "}\n"
+    h = h + "document.getElementById('msg').addEventListener('keydown',e=>{\n"
+    h = h + "  if(e.key==='Enter')send();\n"
+    h = h + "});\n"
+    h = h + "setInterval(poll,1000);poll();\n"
+    h = h + "</script></body></html>\n"
+}
+
+func chat_handler(req) (res) {
+    p := req.path
+    m := req.method
+    if p == "/" {
+        res = ok_html(chat_page())
+        return
+    }
+    if p == "/post" && m == "POST" {
+        msg := parse(req.body, ChatMsg{})
+        msg.ts = now()
+        chat_log = append(chat_log, msg)
+        res = ok_json("{\"ok\":true,\"n\":" + str(len(chat_log)) + "}")
+        return
+    }
+    if p == "/msgs" {
+        res = ok_json("{\"from\":0,\"msgs\":" + json(chat_log) + "}")
+        return
+    }
+    if has_prefix(p, "/msgs/") {
+        since := parse_int(param(p, "/msgs/"))
+        if since < 0 { since = 0 }
+        n := len(chat_log)
+        if since > n { since = n }
+        out := []ChatMsg{}
+        i := since
+        while i < n {
+            out = append(out, chat_log[i])
+            i = i + 1
+        }
+        res = ok_json("{\"from\":" + str(since) + ",\"msgs\":" + json(out) + "}")
+        return
+    }
+    res = not_found()
+}
+
+func main() {
+    chat_log = append(chat_log, ChatMsg{from: "system", text: "welcome to machin chat — open in two tabs!", ts: now()})
+    println("machin-web-demo-chat on http://localhost:48080")
+    serve(48080, func(req) { return chat_handler(req) })
+}
