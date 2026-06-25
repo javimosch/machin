@@ -2219,6 +2219,12 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		}
 		c.addPair(argSlots[0], c.cString)
 		return c.cInt, nil
+	case "system":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("system: 1 arg (command string)")
+		}
+		c.addPair(argSlots[0], c.cString)
+		return c.cInt, nil
 	case "https_get":
 		if len(argSlots) != 1 {
 			return 0, fmt.Errorf("https_get: 1 arg (url string)")

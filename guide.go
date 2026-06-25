@@ -9,7 +9,7 @@ import (
 
 // machinVersion is the single version string for the toolchain. Bump it when
 // cutting a release (alongside README badge / SPEC / CHANGELOG).
-const machinVersion = "0.68.0"
+const machinVersion = "0.69.0"
 
 // ---- the source-of-truth feature catalog ----
 //
@@ -101,6 +101,7 @@ func machinGuide() guideCatalog {
 			{"args", "() -> []string", "command-line args (args()[0] is program path)", "cli"},
 			{"env", "(string) -> string", "environment variable (\"\" if unset)", "cli"},
 			{"exit", "(int) ->", "terminate the process with a status code", "cli"},
+			{"system", "(string) -> int", "run a shell command, return its exit code (-1 if unlaunchable). For process orchestration, e.g. spawning a detached daemon: system(\"./app serve >log 2>&1 &\")", "cli"},
 			// time
 			{"now", "() -> int", "wall-clock Unix seconds", "time"},
 			{"now_ms", "() -> int", "wall-clock milliseconds", "time"},
