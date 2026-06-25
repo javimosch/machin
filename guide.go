@@ -9,7 +9,7 @@ import (
 
 // machinVersion is the single version string for the toolchain. Bump it when
 // cutting a release (alongside README badge / SPEC / CHANGELOG).
-const machinVersion = "0.59.0"
+const machinVersion = "0.59.1"
 
 // ---- the source-of-truth feature catalog ----
 //
@@ -191,7 +191,7 @@ func machinGuide() guideCatalog {
 			// sqlite (libsqlite3, linked only when used)
 			{"sqlite_open", "(string) -> int", "open/create a SQLite db file -> handle (0 on fail); \":memory:\" for in-memory", "db"},
 			{"sqlite_exec", "(int, string[, []string]) -> int", "run SQL with no result; optional []string binds the ? params (injection-safe); 0 ok", "db"},
-			{"sqlite_query", "(int, string[, []string]) -> string", "run a SELECT -> JSON array of rows; optional []string binds the ? params; composes with json_get", "db"},
+			{"sqlite_query", "(int, string[, []string]) -> string", "run a SELECT -> a JSON-array-of-rows STRING; optional []string binds the ? params. Decode N rows with parse(rows, []T{}) for a typed slice; json_get for one field", "db"},
 			{"sqlite_close", "(int) -> int", "close the database", "db"},
 			// regex (POSIX extended)
 			{"regex_match", "(string, string) -> bool", "does the ERE pattern match anywhere in s", "regex"},
@@ -200,8 +200,8 @@ func machinGuide() guideCatalog {
 			{"regex_replace", "(string, string, string) -> string", "replace all ERE matches in s with repl", "regex"},
 			// json
 			{"json", "(any) -> string", "serialize a value to JSON", "json"},
-			{"parse", "(string, T{}) -> T", "parse JSON into T (T{} is a type witness)", "json"},
-			{"json_get", "(string, string) -> (string, string)", "jq-style path -> (value, err); err \"\"/notfound/path/parse. MULTI-ASSIGN ONLY", "json"},
+			{"parse", "(string, T{}) -> T", "parse JSON into T (T{} is a type witness); accepts a SLICE witness: parse(jsonArray, []T{}) -> []T (decode whole rows/arrays)", "json"},
+			{"json_get", "(string, string) -> (string, string)", "jq-style path -> (value, err); err \"\"/notfound/path/parse. Returns the RAW JSON token: a string value comes back QUOTED (\"Ada\") — strip the quotes, or prefer parse() for whole objects. MULTI-ASSIGN ONLY", "json"},
 			{"http_body", "(string) -> string", "body of a raw HTTP message", "json"},
 			// net
 			{"dial", "(string, int) -> int", "TCP connect host:port -> fd (-1 on fail)", "net"},
@@ -267,7 +267,8 @@ func main() { println(str(sqrt(2.0))) }`},
 			{"build", "Author loose Go-like .src, then `machin encode a.src > a.mfl` and `machin build a.mfl -o app`. The .mfl is canonical plain text (one decl/line)."},
 			{"struct-value-semantics", "Structs are VALUE types: passing or assigning one copies it, so a function cannot mutate a caller's struct (and a builder must return the updated struct). For shared mutable state use a map — a reference type, so m[k]=v survives the holder being passed by value (see framework/flags.src)."},
 			{"map-comma-ok", "There is no map comma-ok: `v, ok := m[k]` does NOT compile. A read of an absent key returns the value type's zero value; use has(m, k) to test presence. (comma-ok is for channel receives: `v, ok := <-ch`.)"},
-			{"parse-witness", "parse(s, T{}) needs a value of T as a type witness, e.g. `u := parse(body, User{})`. For schemaless extraction use json_get(s, path); json(x) serializes any value."},
+			{"parse-witness", "parse(s, T{}) needs a value of T as a type witness, e.g. `u := parse(body, User{})`. A SLICE witness decodes an array: `parse(jsonArray, []T{}) -> []T`. For schemaless extraction use json_get(s, path); json(x) serializes any value."},
+			{"sqlite-rows-decode", "sqlite_query returns a JSON-array-of-rows STRING — decode the whole result with parse(rows, []T{}) to get a typed []T you can range over (this is the row-iteration idiom; columns map to struct fields by name). Reach for json_get only to pull ONE field, and remember json_get returns the raw JSON token: a string field comes back QUOTED. Always use parameterized sqlite_exec/query (?, []string{...}) — never string-concat user input into SQL."},
 			{"multi-assign-only", "http_get and json_get return multiple values; use `a, b, c := http_get(u)`. Calling them as a single value is a compile error."},
 			{"int-float-no-implicit", "There is NO implicit int->float. Only a flexible numeric LITERAL (e.g. 5) promotes against a float; a CONCRETE int — a fn return, byte_at, len, a typed param, or an int-slice element — is a hard `int vs float` mismatch with a float. Wrap it: float(byte_at(b,0)) / 2.0. (int() goes the other way.) This also applies to f32/f64 struct fields in FFI cstructs."},
 			{"ffi-opaque-handle", "For a by-value C struct that contains pointers (raylib Sound/Music/Font/Texture with internals, FILE wrappers, ...), declare an OPAQUE cstruct with an empty body: `cstruct Sound {}`. machin holds the real C struct by value and passes it back to fns without naming its fields — receive it from a fn, store it (incl. []Sound), pass it on; no construct or .field. (A single pointer is simpler: the `ptr` FFI type, held as an int.)"},

@@ -39,6 +39,14 @@ add it to [awesome-machin](https://github.com/javimosch/awesome-machin)** (the
 curated ecosystem list). Each app is its own public repo under `javimosch` with
 a `build.sh` (`machin encode src/*.src > app.mfl && machin build app.mfl`).
 
+Building a **web app** (HTTP server, JSON API, SSR, a reactive wasm UI, or a
+CRUD back-office)? Read [`skills/machin-web/SKILL.md`](skills/machin-web/SKILL.md)
+first — the machweb/reactive/router frameworks, the wasm bridge + host↔wasm
+marshaling, the SQLite data layer (`parse(rows, []T{})` to decode rows), build-and-
+verify, and the gotchas. A runnable data-layer reference is
+[`examples/complex/sqlite_crud.mfl`](examples/complex/sqlite_crud.mfl); direction
+and gap roadmap live in [`docs/NORTH-STAR-WEB.md`](docs/NORTH-STAR-WEB.md).
+
 Building a **game** (terminal TUI or raylib GUI/audio)? Read
 [`skills/machin-gamedev/SKILL.md`](skills/machin-gamedev/SKILL.md) first — the
 canonical setup, build-and-verify workflow, raylib FFI surface, and accumulated

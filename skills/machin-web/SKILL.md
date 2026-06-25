@@ -66,8 +66,18 @@ func main() { serve(48080, func(req) { return handle(req) }) }
   is NUL-safe (a `.wasm` has NUL bytes a string body would truncate).
 - **A database:** machin has SQLite builtins — `sqlite_open(path)` / `sqlite_exec(db,
   sql)` / `sqlite_exec(db, sql, []string params)` (`?`-bind, injection-safe) /
-  `sqlite_query(db, sql[, params]) -> []string` rows / `sqlite_close(db)`. Perfect
-  for a users table behind a JSON API.
+  `sqlite_query(db, sql[, params]) -> string` (a **JSON-array-of-rows string**) /
+  `sqlite_close(db)`. Perfect for a users table behind a JSON API. **Decode rows with
+  `parse`, not `json_get`:**
+  ```go
+  type User struct { id int  name string  email string }
+  rows  := sqlite_query(db, "SELECT id, name, email FROM users ORDER BY id")
+  users := parse(rows, []User{})            // a typed []User to range over — values decoded
+  ```
+  A **slice witness** (`[]User{}`) is the row-iteration idiom. Reach for `json_get(rows,
+  "[0].name")` only to pull ONE field — and note **it returns the raw JSON token, so a
+  string comes back quoted** (`"Ada"`); strip the quotes (`substr(s, 1, len(s)-1)`) or
+  just use `parse`. Always parameterize (`?`, `[]string{...}`); never concat user input.
 - **A CLI:** compose `framework/flags.src` — `new_flags` / `flag_int` / `flag_str` /
   `flag_bool` / `parse_flags(fs, args())` / `flag_int_val` / `flag_on(fs,"help")`
   (auto `--help`).
@@ -178,8 +188,22 @@ instance.exports.start();
 2. **Server** (`server.src`): `sqlite_open("users.db")`, create the table; routes —
    `GET /` SSR-renders the user list (matching `data-s` names so the client
    hydrates), `GET /app.wasm` serves the client, `GET /api/users` returns rows as
-   JSON, `POST /api/users` inserts (parse the body), `DELETE`/`POST /api/users/del`
+   JSON (`ok_json(json(parse(sqlite_query(...), []User{})))` or just the raw query
+   string), `POST /api/users` inserts (parse the body), `DELETE`/`POST /api/users/del`
    removes. Use parameterized `sqlite_exec(db, sql, params)` — never string-concat SQL.
+   - **The POST body shape depends on the sender.** A `fetch` with a JSON body →
+     `parse(req.body, User{})` or `json_get`. A browser `<form>` (non-JS fallback, or
+     `Content-Type: application/x-www-form-urlencoded`) → the body is `name=Ada&email=a%40b`;
+     decode each field with the **`url_decode` builtin** (don't hand-roll it — a function
+     named `url_decode` is a compile error, it shadows the builtin). A tiny helper:
+     ```go
+     func form_field(body, key) (v) {           // body: "a=1&b=2"; key: "a"
+         for _, kv := range split(body, "&") {
+             eq := index(kv, "=")
+             if eq > 0 && substr(kv, 0, eq) == key { v = url_decode(substr(kv, eq+1, len(kv))) }
+         }
+     }
+     ```
 3. **Client** (`client.src`): signals hold the rows; `each` renders the table
    (re-key on any mutable field); a **form** (`<input>` + `ptr_str`) adds a user and
    `POST`s; row buttons toggle/delete and call the API. A `computed` shows the count.
@@ -194,6 +218,7 @@ reactive over the API. One binary, one language.
 
 ## Pointers
 
+- Runnable in-tree: [`examples/complex/sqlite_crud.mfl`](../../examples/complex/sqlite_crud.mfl) — the SQLite data layer end to end (open → parameterized insert → `parse([]User{})` → update/delete → JSON), no server, runs under `machin run`.
 - Frameworks: [`framework/machweb.src`](../../framework) · `reactive.src` · `router.src` · `flags.src`.
 - Boilerplate: [boilerplate-cli-ui-machin-isomorphic](https://github.com/javimosch/boilerplate-cli-ui-machin-isomorphic).
 - Focused demos: [machin-web-demo-wasm](https://github.com/javimosch/machin-web-demo-wasm) (the bridge) · [machin-web-demo-ssr](https://github.com/javimosch/machin-web-demo-ssr) (isomorphic SSR) · [machin-web-demo-reactive](https://github.com/javimosch/machin-web-demo-reactive) (signals/computed/lists/templating) · [machin-web-demo-todo](https://github.com/javimosch/machin-web-demo-todo) (forms / text input).

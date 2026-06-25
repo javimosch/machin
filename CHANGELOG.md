@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.59.1
+
+Agent-discovery polish — fixes surfaced by dogfooding the north-star flow ("learn
+machin and build a users back-office" from a cold start). No language changes.
+
+- **`machin guide` clarified** where a fresh agent silently shipped a bug:
+  `json_get` now states it returns the **raw JSON token** (a string field comes
+  back **quoted**); `parse` documents its **slice witness** (`parse(jsonArray,
+  []T{}) -> []T`); `sqlite_query` points at `parse(rows, []T{})` as the
+  row-iteration idiom; a new `sqlite-rows-decode` gotcha ties it together.
+- **`skills/machin-web/SKILL.md`**: fixed the wrong `sqlite_query -> []string`
+  signature (it returns a JSON-array string); led the CRUD recipe with
+  `parse(rows, []User{})`; documented the form-encoded POST-body path (use the
+  `url_decode` builtin + a `form_field` helper — don't hand-roll `url_decode`,
+  it's a builtin and shadowing it is a compile error).
+- **New runnable example** `examples/complex/sqlite_crud.mfl` — the SQLite data
+  layer end to end (the repo had no in-tree SQLite example before).
+- **`AGENTS.md`** dogfood section now points web-building agents at the
+  `machin-web` skill (previously only game-dev was signposted).
+
 ## v0.59.0
 
 - **Fix: a closure can capture and mutate an aggregate local** (a slice, map, or
