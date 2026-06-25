@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.58.0
+
+- **Fix: a captured closure can be CALLED inside a lambda.** `func(){ fn() }` where
+  `fn` is a captured variable now works — previously it failed to compile (`call to
+  undefined function`), because closure conversion's free-variable scan ignored a
+  call's *callee*, so the closure was never captured. This is the higher-order
+  function building block: functions that return closures calling their arguments,
+  and the clean reactive shape `effect(func(){ compute() })` (a stored `func()`
+  thunk that calls a captured compute). Top-level functions/builtins are unaffected
+  (they were never in the enclosing scope, so they're still not captured). One-line
+  fix in `freeIdents`; no regressions.
+
 ## v0.57.0
 
 - **`ptr_str(ptr) -> string` — host→wasm strings (text input / forms).** Reads a
