@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.68.0
+
+- **`parse_float(string) -> float`** — parse a floating-point number (strtod; 0.0 on
+  non-numeric), the float counterpart to `parse_int`. Lets a tool turn a textual number
+  (a SQLite REAL read as JSON, a CLI arg) into an MFL float — e.g. carry REAL columns
+  into Mongo doubles in `machin-db-migrate`.
+
 ## v0.67.0
 
 - **MongoDB client v2** (`framework/mongo.src` + `bson.src`): **SCRAM-SHA-256 auth**

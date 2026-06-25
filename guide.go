@@ -9,7 +9,7 @@ import (
 
 // machinVersion is the single version string for the toolchain. Bump it when
 // cutting a release (alongside README badge / SPEC / CHANGELOG).
-const machinVersion = "0.67.0"
+const machinVersion = "0.68.0"
 
 // ---- the source-of-truth feature catalog ----
 //
@@ -114,6 +114,7 @@ func machinGuide() guideCatalog {
 			{"int", "(number) -> int", "truncate to int", "convert"},
 			{"float", "(number) -> float", "int -> float (identity on float). MFL has no implicit int->float, so a concrete int (fn return, byte_at, len, ...) needs this to enter float math", "convert"},
 			{"parse_int", "(string) -> int", "parse an integer (0 if non-numeric)", "convert"},
+			{"parse_float", "(string) -> float", "parse a floating-point number (strtod; 0.0 if non-numeric)", "convert"},
 			{"f64_bits", "(float) -> int", "reinterpret a double's IEEE-754 bits as an int64 (for byte-level (de)serialization, e.g. BSON doubles); inverse f64_from_bits", "convert"},
 			{"f64_from_bits", "(int) -> float", "reinterpret an int64 bit pattern as a double (inverse of f64_bits)", "convert"},
 			// math (libm, linked -lm only when used; numeric in, float out)

@@ -2175,6 +2175,12 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		}
 		c.addPair(argSlots[0], c.cString)
 		return c.cInt, nil
+	case "parse_float":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("parse_float: 1 arg (string)")
+		}
+		c.addPair(argSlots[0], c.cString)
+		return c.cFloat, nil
 	case "read_file":
 		if len(argSlots) != 1 {
 			return 0, fmt.Errorf("read_file: 1 arg (path)")

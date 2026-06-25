@@ -861,6 +861,7 @@ static char* mfl_time_format_utc(int64_t unix, const char* fmt) {
     return out;
 }
 static int64_t mfl_parse_int(const char* s) { return (int64_t)strtoll(s, NULL, 10); }
+static double mfl_parse_float(const char* s) { return strtod(s, NULL); }
 
 /* file system: read/write whole files, list a directory, make a directory */
 static char* mfl_read_file(const char* path) {
@@ -4065,6 +4066,8 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("mfl_time_make(%s, %s, %s, %s, %s, %s)", args[0], args[1], args[2], args[3], args[4], args[5]), nil
 	case "parse_int":
 		return fmt.Sprintf("mfl_parse_int(%s)", args[0]), nil
+	case "parse_float":
+		return fmt.Sprintf("mfl_parse_float(%s)", args[0]), nil
 	case "read_file":
 		return fmt.Sprintf("mfl_read_file(%s)", args[0]), nil
 	case "read_file_bytes":
