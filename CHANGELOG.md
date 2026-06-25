@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.62.0
+
+- **Cookies + signed sessions in machweb** (`framework/machweb.src`) — the auth
+  foundation. Request: `cookie(req, name)` reads a request cookie. Response (a value
+  type — the helpers return a new `Response`): `set_cookie` / `clear_cookie` add a
+  `Set-Cookie` with safe defaults (`Path=/; HttpOnly; SameSite=Lax`). Login sessions:
+  `set_session(res, secret, name, value)` stores `value` + an HMAC-SHA256 tag the
+  client can't forge, and `get_session(req, secret, name) -> (value, ok)` returns
+  `ok == 1` only if it verifies (rejects a tampered tag or the wrong secret). The
+  `Response` struct gained a `cookies []string` field; `machweb_handle` emits the
+  `Set-Cookie` lines. Keep `secret` server-side; the value is signed, not encrypted.
+
 ## v0.61.0
 
 - **Postgres parameterized queries** — `pg_exec(sql, []string params)` in

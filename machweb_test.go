@@ -111,6 +111,46 @@ func main() {
 	}
 }
 
+// Cookies: parse named values from the request's Cookie header. Signed sessions:
+// value + HMAC tag; verify accepts the intact cookie and rejects a tampered tag or
+// the wrong secret — the client can read the value but cannot forge it.
+func TestMachwebCookiesAndSessions(t *testing.T) {
+	app := `
+func main() {
+    req := parse_request("GET / HTTP/1.1\r\nCookie: sid=abc; theme=dark\r\n\r\n")
+    println("sid=" + cookie(req, "sid"))
+    println("theme=" + cookie(req, "theme"))
+    println("missing=[" + cookie(req, "nope") + "]")
+    signed := session_sign("k", "user:42")
+    v, ok := session_verify("k", signed)
+    println("verify=" + v + ":" + str(ok))
+    bad := substr(signed, 0, len(signed) - 1) + "0"
+    _, t2 := session_verify("k", bad)
+    println("tampered=" + str(t2))
+    _, w := session_verify("wrong", signed)
+    println("wrongsecret=" + str(w))
+    // a Set-Cookie line carries the signed value + safe attributes
+    r := set_session(ok_html("x"), "k", "sid", "user:42")
+    println("setcookie=" + cookie_lines(r))
+}`
+	out, err := RunCaptured(machwebProg(t, app))
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	for _, want := range []string{
+		"sid=abc", "theme=dark", "missing=[]",
+		"verify=user:42:1", // intact cookie verifies, value recovered
+		"tampered=0",       // a flipped tag byte fails
+		"wrongsecret=0",    // a different secret fails
+		"setcookie=Set-Cookie: sid=user:42.", // signed value embeds the cleartext
+		"HttpOnly; SameSite=Lax",             // safe defaults
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in:\n%s", want, out)
+		}
+	}
+}
+
 // The map-based router dispatches "METHOD PATH" to its handler closure and falls
 // back to 404 for an unregistered route.
 func TestMachwebRouterDispatch(t *testing.T) {
