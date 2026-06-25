@@ -64,6 +64,45 @@ func main() {
 	}
 }
 
+// End-to-end cookie round-trip over the socket: the client sends a Cookie header,
+// the server reads it with cookie(), verifies it as a session, and responds with a
+// fresh Set-Cookie — which must appear in the raw wire response.
+func TestMachwebCookieRoundTrip(t *testing.T) {
+	app := loopbackHelpers + `
+func handle(req) (res) {
+    got := cookie(req, "sid")
+    res = set_session(ok_text("saw=" + got), "secret", "sid", "user:7")
+}
+func main() {
+    port := 48235
+    srv := listen(port)
+    if srv < 0 { println("listen-failed")  return }
+    go serve_one(srv, func(req) { return handle(req) })
+    sleep(50)
+    c := dial("127.0.0.1", port)
+    if c < 0 { println("dial-failed")  return }
+    write(c, "GET / HTTP/1.1\r\nHost: x\r\nCookie: sid=incoming\r\n\r\n")
+    resp := read_all(c)
+    close(c)
+    println(resp)
+}`
+	out, err := RunCaptured(machwebProg(t, app))
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if strings.Contains(out, "listen-failed") || strings.Contains(out, "dial-failed") {
+		t.Fatalf("loopback setup failed:\n%s", out)
+	}
+	// the server read the inbound cookie...
+	if !strings.Contains(out, "saw=incoming") {
+		t.Fatalf("server should read the inbound cookie; got:\n%s", out)
+	}
+	// ...and the response carries a Set-Cookie with the signed session value
+	if !strings.Contains(out, "Set-Cookie: sid=user:7.") || !strings.Contains(out, "HttpOnly") {
+		t.Fatalf("response should carry the signed Set-Cookie; got:\n%s", out)
+	}
+}
+
 // The binary response path (is_bin=1) writes the headers then write_bytes(conn,
 // bin) — NUL-safe. The body here starts with a 0x00 byte, so a text/strlen path
 // would report Content-Length 0; the binary path reports the true byte count (4).

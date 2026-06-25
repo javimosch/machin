@@ -16,11 +16,12 @@ type Request struct {
 }
 
 type Response struct {
-    status string
-    ctype  string
-    body   string
-    bin    bytes      // binary body, used when is_bin == 1 (NUL-safe; body is ignored)
-    is_bin int        // 1 = serve bin (raw bytes), 0 = serve body (text)
+    status  string
+    ctype   string
+    body    string
+    bin     bytes      // binary body, used when is_bin == 1 (NUL-safe; body is ignored)
+    is_bin  int        // 1 = serve bin (raw bytes), 0 = serve body (text)
+    cookies []string   // Set-Cookie values (added via set_cookie); empty for most responses
 }
 
 // ---- response builders ----
@@ -93,6 +94,68 @@ func param(path, prefix) (v) {
     }
 }
 
+// ---- cookies ----
+
+// cookie returns a request cookie value by name (from the Cookie header), or "".
+func cookie(req, name) (v) {
+    v = ""
+    for _, part := range split(header(req, "cookie"), ";") {
+        kv := trim(part)
+        eq := index(kv, "=")
+        if eq > 0 {
+            if substr(kv, 0, eq) == name { v = substr(kv, eq + 1, len(kv)) }
+        }
+    }
+}
+
+// set_cookie returns res with a Set-Cookie added (Path=/, HttpOnly, SameSite=Lax —
+// safe defaults for a session). Structs are values, so use the returned copy:
+//   return set_cookie(ok_html(page()), "sid", token)
+func set_cookie(res, name, value) (r) {
+    r = res
+    r.cookies = append(r.cookies, name + "=" + value + "; Path=/; HttpOnly; SameSite=Lax")
+}
+
+// clear_cookie returns res with a cookie expired (for logout).
+func clear_cookie(res, name) (r) {
+    r = res
+    r.cookies = append(r.cookies, name + "=; Path=/; Max-Age=0")
+}
+
+// cookie_lines renders the Set-Cookie header block for a response.
+func cookie_lines(res) (h) {
+    h = ""
+    for _, c := range res.cookies { h = h + "Set-Cookie: " + c + "\r\n" }
+}
+
+// ---- signed sessions ----
+//
+// A session cookie the client cannot forge: value + "." + HMAC-SHA256(secret, value)
+// (a 64-char hex tag). set_session stores it; get_session returns (value, ok=1) only
+// if the tag verifies. Keep `secret` server-side (e.g. from env). The value is
+// readable by the client (signed, not encrypted) — store an id/handle, not secrets.
+
+func session_sign(secret, value) (s) { s = value + "." + hmac_sha256(secret, value) }
+
+func session_verify(secret, signed) (value, ok) {
+    value = ""
+    ok = 0
+    n := len(signed)
+    if n < 65 { return }                          // "." + 64-hex tag minimum
+    if charat(signed, n - 65) != "." { return }
+    v := substr(signed, 0, n - 65)
+    if hmac_sha256(secret, v) == substr(signed, n - 64, n) {
+        value = v
+        ok = 1
+    }
+}
+
+// set_session returns res with a signed session cookie set.
+func set_session(res, secret, name, value) (r) { r = set_cookie(res, name, session_sign(secret, value)) }
+
+// get_session reads + verifies a signed session cookie: (value, ok).
+func get_session(req, secret, name) (value, ok) { value, ok = session_verify(secret, cookie(req, name)) }
+
 // ---- server ----
 
 // content_length parses the Content-Length header value from a request's headers.
@@ -130,11 +193,11 @@ func machweb_handle(conn, handler) {
     res := handler(req)
     if res.is_bin == 1 {
         // binary body: write the headers, then the raw bytes (NUL-safe).
-        head := "HTTP/1.1 " + res.status + "\r\nContent-Type: " + res.ctype + "\r\nContent-Length: " + str(len(res.bin)) + "\r\nConnection: close\r\n\r\n"
+        head := "HTTP/1.1 " + res.status + "\r\nContent-Type: " + res.ctype + "\r\nContent-Length: " + str(len(res.bin)) + "\r\n" + cookie_lines(res) + "Connection: close\r\n\r\n"
         write(conn, head)
         write_bytes(conn, res.bin)
     } else {
-        out := "HTTP/1.1 " + res.status + "\r\nContent-Type: " + res.ctype + "\r\nContent-Length: " + str(len(res.body)) + "\r\nConnection: close\r\n\r\n" + res.body
+        out := "HTTP/1.1 " + res.status + "\r\nContent-Type: " + res.ctype + "\r\nContent-Length: " + str(len(res.body)) + "\r\n" + cookie_lines(res) + "Connection: close\r\n\r\n" + res.body
         write(conn, out)
     }
     close(conn)

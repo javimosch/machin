@@ -48,7 +48,7 @@ compiler — a single binary, no emscripten). The frameworks live in
 
 A handler is `func(Request) Response`. `serve(port, handler)` runs it (one
 goroutine per connection). `req.method` / `req.path` (path carries the query
-string) / `req.body` / `header(req, name)`.
+string) / `req.body` / `header(req, name)` / `cookie(req, name)`.
 
 Response builders: `ok_text` · `ok_html` · `ok_json` · `ok_bytes(ctype, b)` ·
 **`ok_wasm(b)`** · `created` · `bad_request` · `not_found`.
@@ -81,6 +81,25 @@ func main() { serve(48080, func(req) { return handle(req) }) }
 - **A CLI:** compose `framework/flags.src` — `new_flags` / `flag_int` / `flag_str` /
   `flag_bool` / `parse_flags(fs, args())` / `flag_int_val` / `flag_on(fs,"help")`
   (auto `--help`).
+- **Cookies & login sessions:** `cookie(req, name)` reads a request cookie;
+  `set_cookie(res, name, value)` / `clear_cookie(res, name)` return a `Response` with
+  a `Set-Cookie` (safe defaults: `Path=/; HttpOnly; SameSite=Lax`). For login, use a
+  **signed** session the client can't forge: `set_session(res, secret, "sid", userID)`
+  stores `userID` + an HMAC tag, and `get_session(req, secret, "sid") -> (value, ok)`
+  returns `ok == 1` only if it verifies. `Response` is a value, so chain the helper:
+  ```go
+  func login(req) (res) {
+      // ...check credentials...
+      res = set_session(ok_html(dashboard()), secret, "sid", "user:42")
+  }
+  func page(req) (res) {
+      uid, ok := get_session(req, secret, "sid")
+      if ok == 0 { return set_cookie(not_found(), "x", "")  /* or redirect to /login */ }
+      res = ok_html(home(uid))
+  }
+  ```
+  Keep `secret` server-side (e.g. `env("SESSION_SECRET")`). The value is signed, not
+  encrypted — store an id/handle, not secrets.
 
 ## The client — `framework/reactive.src` (signals + a patch list)
 

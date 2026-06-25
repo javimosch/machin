@@ -23,7 +23,7 @@ paid for two: `read_bytes` and binary-safe base64.
 | HTTP server | ✅ | `framework/machweb.src` (router, body, response builders, binary path) |
 | HTTP/TLS client | ✅ | `https_get`/`https_post`/`http_request`; `wss_*` WebSocket |
 | Crypto | ✅ | sha256, hmac, hkdf, ed25519, x25519, aes-gcm/cbc, rand_bytes; bitwise ops |
-| Sessions / cookies | ❌ | machweb parses headers but has no `Set-Cookie`/cookie helpers |
+| Sessions / cookies | ✅ | `cookie(req,name)` + `set_cookie`/`clear_cookie`; signed sessions `set_session`/`get_session` (HMAC tag, unforgeable) |
 | SSO / OAuth2 / OIDC | ❌ | buildable on the HTTP client + crypto (HS256 = hmac_sha256); RS256 needs RSA (gap) |
 | Email / SMTP | ❌ | SMTP over `dial()`/TLS |
 | Background jobs / cron | ❌ | a scheduler loop + goroutines; persistence via the DB |
@@ -35,16 +35,14 @@ paid for two: `read_bytes` and binary-safe base64.
 
 ## Roadmap (dogfood order)
 
-1. **Sessions/cookies in machweb.** `Set-Cookie` + cookie parsing + a signed-cookie
-   session helper (HMAC over `hmac_sha256_bytes`). Foundational for anything with login.
-2. **SSO library.** OAuth2 authorization-code login (Google/Microsoft) on top of (1):
-   `https_post` token exchange + `https_get` userinfo + `rand_bytes` state. Surfaces the
-   RSA/RS256 gap (sidestep via the userinfo endpoint for v1).
-3. **Redis client.** RESP over `dial()` — cache, sessions, rate-limit, simple queues.
+1. **SSO library.** OAuth2 authorization-code login (Google/Microsoft) on top of the
+   session helpers: `https_post` token exchange + `https_get` userinfo + `rand_bytes`
+   state. Surfaces the RSA/RS256 gap (sidestep via the userinfo endpoint for v1).
+2. **Redis client.** RESP over `dial()` — cache, sessions, rate-limit, simple queues.
    Proves the same "pure-MFL client" pattern Postgres established; small and high-value.
-4. **Connection pooling / reuse** for the Postgres client (keep a connection open
+3. **Connection pooling / reuse** for the Postgres client (keep a connection open
    across requests instead of dial-per-query), plus COPY and TLS when an app needs them.
-5. **The rest as pulled by real apps** — SMTP, a job scheduler, a `.env`/config loader,
+4. **The rest as pulled by real apps** — SMTP, a job scheduler, a `.env`/config loader,
    migrations, a JSON logger. Build when a dogfood app needs them.
 
 ## Milestones
@@ -53,7 +51,9 @@ paid for two: `read_bytes` and binary-safe base64.
 |---|---|
 | **PostgreSQL client** ([`framework/postgres.src`](../framework/postgres.src), v0.60.0) | First networked datastore: wire v3 + SCRAM-SHA-256, simple query → JSON rows that `parse([]T{})` decodes. Surfaced + filled `read_bytes` (NUL-safe socket read) and `base64_*_bytes` (binary base64). Pure MFL, no cgo. |
 | **Postgres parameterized queries** (`pg_exec`, v0.61.0) | Extended query protocol (Parse/Bind/Describe/Execute/Sync): `$1`/`$2` params bound server-side, injection-safe; SELECT + INSERT/UPDATE/DELETE. Closes the top v0.60.0 follow-up. |
+| **Cookies + signed sessions** (machweb, v0.62.0) | `cookie`/`set_cookie`/`clear_cookie` + unforgeable HMAC sessions (`set_session`/`get_session`). The auth foundation — the half of login that isn't the identity provider. |
 
-The language is now close to a single-binary SME backend: HTTP server + SSR/wasm UI +
-**SQLite or Postgres** (with safe parameterized queries) + a rich crypto kit. The main
-gap left is **auth** — sessions/cookies, then SSO — next on the roadmap.
+The language is now close to a single-binary SME backend: HTTP server (with cookies +
+signed sessions) + SSR/wasm UI + **SQLite or Postgres** (safe parameterized queries) +
+a rich crypto kit. The remaining auth piece is **SSO** (an identity provider on top of
+sessions) — next on the roadmap.
