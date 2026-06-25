@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.53.0
+
+- **Slices of functions — `[]func`.** A slice literal may now have `func` as its
+  element type (`fns := []func{}`), so closures can be stored, appended, indexed,
+  and called from a slice — the dispatch-table / callback-list / effect-registry
+  primitive. (Each element is an `mfl_closure`; the slice machinery already handled
+  by-value structs, so this was a one-token parser fix.)
+- **`framework/reactive.src` — a fine-grained reactive runtime for web UIs** (the
+  Solid/Leptos model, in MFL). Built on `[]func` (a binding registry of compute
+  closures) and package globals (the signal store): **signals** hold state
+  (`signal`/`get`/`set`), **bindings** are compute closures tied to a DOM slot
+  (`bind(slot, func(){...})`) whose signal reads are auto-tracked as dependencies,
+  and on `set` only the bindings that read that signal recompute — emitting a
+  **patch** (`dom_patch(slot, value)`) only when the rendered text actually
+  changed. The host sets the text of the handful of changed slots; no innerHTML
+  replacement, no vdom diff. Drove [machin-web-demo-reactive](https://github.com/javimosch/machin-web-demo-reactive).
+  - Gotcha it surfaced: a user function named like a builtin (e.g. `flush`) is
+    silently shadowed by the builtin — the runtime's internal `commit` was renamed
+    to avoid it. Lambda **named returns** aren't supported yet (`func() (s) {…}`);
+    use `func() { return … }`.
+
 ## v0.52.0
 
 - **Package-level variables — `var name = expr` at top level.** A mutable global

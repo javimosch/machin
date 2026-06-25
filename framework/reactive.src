@@ -1,0 +1,98 @@
+// reactive.src — a tiny fine-grained reactive runtime for machin web UIs.
+//
+// Compose it ahead of your app and compile to wasm:
+//   machin encode framework/reactive.src yourapp.src > app.mfl
+//   machin build app.mfl --target wasm -o app.wasm
+//
+// The model is signals + a patch list (Solid/Leptos-style fine-grained reactivity):
+//   - a SIGNAL holds a value: `c := signal(0)`, `get(c)`, `set(c, v)`.
+//   - a BINDING is a compute closure tied to a DOM slot: `bind("count", func(){ return str(get(c)) })`.
+//     While it runs the first time, every signal it reads is recorded as a dependency.
+//   - on `set`, only the bindings that READ that signal recompute, and only those
+//     whose rendered TEXT actually changed emit a patch (`dom_patch(slot, value)`).
+// So the host never replaces innerHTML and never diffs a vdom — it sets the text of
+// the handful of slots that changed. State and view logic live entirely in machin.
+//
+// Needs machin v0.53.0+ (slices of functions, `[]func`) and the wasm target.
+// Signals are int-valued; bindings format them to text. The host supplies dom_patch.
+
+extern "env" {
+    fn dom_patch(string, string)   // (slot, value): host sets [data-s=slot]'s text content
+}
+
+var sig_val = []int{}              // signal values, indexed by signal id
+var n_sig = 0
+
+var bind_slot = []string{}         // each binding's DOM slot id
+var bind_fn = []func{}             // each binding's compute closure: func() -> string
+var bind_last = []string{}         // last rendered text (for diffing)
+var bind_dirty = []int{}
+var n_bind = 0
+
+var edge_sig = []int{}             // dependency edges (signal id -> binding id),
+var edge_bind = []int{}            //   recorded while a binding first computes
+var tracking = 0 - 1               // binding id currently computing (auto-tracking), or -1
+
+// signal creates a state cell with an initial value and returns its id.
+func signal(init) (id) {
+    id = n_sig
+    sig_val = append(sig_val, init)
+    n_sig = n_sig + 1
+}
+
+// get reads a signal. If a binding is currently computing, the read is recorded
+// as a dependency edge, so a later set() knows which bindings to recompute.
+func get(id) (v) {
+    if tracking >= 0 {
+        edge_sig = append(edge_sig, id)
+        edge_bind = append(edge_bind, tracking)
+    }
+    v = sig_val[id]
+}
+
+// commit recomputes every dirty binding and emits a patch for each whose text
+// actually changed (the minimal patch list).
+func commit() {
+    i := 0
+    while i < n_bind {
+        if bind_dirty[i] == 1 {
+            f := bind_fn[i]
+            nv := f()
+            if nv != bind_last[i] {
+                bind_last[i] = nv
+                dom_patch(bind_slot[i], nv)
+            }
+            bind_dirty[i] = 0
+        }
+        i = i + 1
+    }
+}
+
+// set updates a signal. If the value changed, every binding that depends on it is
+// marked dirty and the dirty set is committed (recomputed + patched).
+func set(id, v) {
+    if sig_val[id] == v { return }
+    sig_val[id] = v
+    i := 0
+    while i < len(edge_sig) {
+        if edge_sig[i] == id { bind_dirty[edge_bind[i]] = 1 }
+        i = i + 1
+    }
+    commit()
+}
+
+// bind ties a compute closure to a DOM slot, runs it once (recording its signal
+// dependencies), and paints the initial value.
+func bind(slot, fn) {
+    id := n_bind
+    bind_slot = append(bind_slot, slot)
+    bind_fn = append(bind_fn, fn)
+    bind_last = append(bind_last, "")
+    bind_dirty = append(bind_dirty, 0)
+    n_bind = n_bind + 1
+    tracking = id
+    v := fn()
+    tracking = 0 - 1
+    bind_last[id] = v
+    dom_patch(slot, v)
+}
