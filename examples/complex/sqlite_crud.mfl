@@ -1,0 +1,8 @@
+type User struct{id int  name string  email string}
+
+func render_row(u)(h){h=str(u.id)+" | "+u.name+" | "+u.email}
+
+func list_users(db)(us){rows:=sqlite_query(db,"SELECT id, name, email FROM users ORDER BY id")us=parse(rows,[]User{})}
+
+func main(){db:=sqlite_open(":memory:")sqlite_exec(db,"CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT)")sqlite_exec(db,"INSERT INTO users (name, email) VALUES (?, ?)",[]string{"Ada Lovelace","ada@example.com"})sqlite_exec(db,"INSERT INTO users (name, email) VALUES (?, ?)",[]string{"Alan Turing","alan@example.com"})us:=list_users(db)println("-- users --")i:=0 while i<len(us){println(render_row(us[i]))i=i+1}println("json: "+json(us))name,_:=json_get(sqlite_query(db,"SELECT name FROM users WHERE id = ?",[]string{"1"}),"[0].name")println("json_get name (raw token, quoted): "+name)sqlite_exec(db,"UPDATE users SET email = ? WHERE id = ?",[]string{"ada@machin.dev","1"})sqlite_exec(db,"DELETE FROM users WHERE id = ?",[]string{"2"})after:=list_users(db)println("-- after update+delete --")j:=0 while j<len(after){println(render_row(after[j]))j=j+1}sqlite_close(db)}
+
