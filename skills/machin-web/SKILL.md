@@ -87,6 +87,16 @@ the DOM (no `innerHTML` churn, no vdom diff).
 | `mount(root, html)` | set the root's innerHTML once, then activate the queued slots/lists (client-side render) |
 | `hydrate(html)` | activate them against an **already-SSR'd DOM** (no re-render) — for isomorphic pages |
 
+**Multi-page (`framework/router.src`).** For an admin app with several pages, compose
+the router too. The active route is a signal (an int index): `router_init(0)`,
+`route(path)` registers pages in order, `link(path, label)` renders a nav anchor,
+`current_route()` reads the active index, and `outlet(id, render)` re-renders the
+active page (a reaction over a `dom_html` host import) and syncs the address bar.
+`page()` switches on `current_route()` and must be a **pure render** (read signals,
+never `set` — that loops). The host adds `dom_html`/`nav_url`, forwards `[data-nav]`
+clicks to `nav(path)` (path in via `ptr_str`) + `popstate`, and a catch-all server
+serves the shell for any path (deep-links). See [machin-web-demo-router](https://github.com/javimosch/machin-web-demo-router).
+
 A whole component is one expression:
 
 ```go
@@ -184,7 +194,7 @@ reactive over the API. One binary, one language.
 
 ## Pointers
 
-- Frameworks: [`framework/machweb.src`](../../framework) · `reactive.src` · `flags.src`.
+- Frameworks: [`framework/machweb.src`](../../framework) · `reactive.src` · `router.src` · `flags.src`.
 - Boilerplate: [boilerplate-cli-ui-machin-isomorphic](https://github.com/javimosch/boilerplate-cli-ui-machin-isomorphic).
 - Focused demos: [machin-web-demo-wasm](https://github.com/javimosch/machin-web-demo-wasm) (the bridge) · [machin-web-demo-ssr](https://github.com/javimosch/machin-web-demo-ssr) (isomorphic SSR) · [machin-web-demo-reactive](https://github.com/javimosch/machin-web-demo-reactive) (signals/computed/lists/templating) · [machin-web-demo-todo](https://github.com/javimosch/machin-web-demo-todo) (forms / text input).
 - Direction & the dogfood record: [`docs/NORTH-STAR-WEB.md`](../../docs/NORTH-STAR-WEB.md).
