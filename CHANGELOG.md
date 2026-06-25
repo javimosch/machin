@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.63.0
+
+- **SSO — OAuth2 / OpenID Connect** (`framework/sso.src`): "log in with Google /
+  Microsoft / …" in pure MFL on top of machweb's signed sessions. Fill an
+  `OAuthProvider`, then `sso_begin(p, secret)` (302 to the provider + a signed
+  CSRF-state cookie) and `sso_complete(p, secret, req) -> (profile, ok)` (verify
+  state, exchange the code via `http_request`, fetch the userinfo JSON). Identity
+  comes from the userinfo endpoint, so no JWT/RSA is needed. Verified end to end
+  against an in-process mock IdP (token exchange + userinfo + CSRF rejection).
+- **machweb: `redirect(url)`** (302 + `Location`) and **`query(req, name)`** (a
+  `?`-query-string parameter, url-decoded) — both general-purpose, needed by SSO.
+- **Compiler fix — an omitted string struct-literal field is now `""`, not a NULL
+  pointer.** A string's zero value is `""`, but C zeroes an omitted compound-literal
+  field to `NULL`, which crashed every string op (compare/concat/len/substr/print).
+  `structLit` now fills omitted string fields (recursing nested structs) with `""`,
+  and the string operators (`+`, `==`/`!=`) are NULL-tolerant as defense. Surfaced by
+  the SSO dogfood: a machweb handler returning a `Response` with an unset `location`
+  segfaulted on `!= ""`. Regression tests added.
+
 ## v0.62.0
 
 - **Cookies + signed sessions in machweb** (`framework/machweb.src`) — the auth

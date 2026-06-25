@@ -100,6 +100,15 @@ func main() { serve(48080, func(req) { return handle(req) }) }
   ```
   Keep `secret` server-side (e.g. `env("SESSION_SECRET")`). The value is signed, not
   encrypted — store an id/handle, not secrets.
+- **SSO — "log in with Google/Microsoft/…"** (`framework/sso.src`, OAuth2 + OIDC). Fill
+  an `OAuthProvider{auth_url, token_url, userinfo_url, client_id, client_secret,
+  redirect_uri, scope}`, then two routes: `GET /login` → `sso_begin(p, secret)` (302 to
+  the provider + a signed `oauth_state` cookie for CSRF); `GET /callback` →
+  `profile, ok := sso_complete(p, secret, req)` (verifies state, exchanges the code,
+  fetches the userinfo JSON). On `ok` read `json_get(profile, ".sub")`/`".email"` and
+  `set_session(...)` your own login cookie, then `redirect("/")`. Identity comes from the
+  provider's **userinfo endpoint** (so no JWT/RSA needed). Also uses `redirect(url)` and
+  `query(req, name)` (now in machweb). See `examples`/the SSO test for the full flow.
 
 ## The client — `framework/reactive.src` (signals + a patch list)
 
