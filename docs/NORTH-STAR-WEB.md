@@ -75,9 +75,20 @@ five shipped in **v0.50.0** (`--target wasm`); the rest remain.
    to DOM slots with auto-tracked deps; on `set`, only the bindings that read the
    changed signal recompute, and only those whose text changed emit a patch. Drove
    **`[]func`** (slices of closures). The core of the reactive tier.
-8. **Derived/computed signals + list reconciliation.** First-class computed
-   signals (memoized), and keyed reconciliation for dynamic lists (the part the
-   counter doesn't exercise) — toward components with collections.
+8. ~~**Derived/computed signals + list reconciliation.**~~ **Done (v0.54.0).**
+   `computed(fn)` (memoized derived signals) and `each(container, keys, item)`
+   (keyed list reconciliation — emits only insert/remove/reorder deltas, never
+   re-rendering unchanged items). [machin-web-demo-reactive](https://github.com/javimosch/machin-web-demo-reactive)
+   is now a reactive list with a computed sum.
+9. **A templating helper / component ergonomics.** Today a component hand-writes
+   its HTML skeleton and wires `data-s` slots by hand. A small helper (a compile-
+   time or runtime templating pass) so a component declares its markup + slots in
+   one place — the main gap before small modular apps (≈30 components, <500 LOC/file)
+   are comfortable to write, and the precursor to rewriting the
+   [boilerplate](https://github.com/javimosch/boilerplate-cli-ui-machin) as an
+   isomorphic machin app.
+10. **Builtin-shadowing is a hard error (v0.54.0).** A safety net for app authors:
+    a user function named like a builtin is rejected, not silently ignored.
 
 ## The vision, in tiers (near → far)
 
