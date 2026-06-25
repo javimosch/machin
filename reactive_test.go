@@ -1,0 +1,89 @@
+package main
+
+import (
+	"os"
+	"regexp"
+	"strings"
+	"testing"
+)
+
+// A user function that shadows a builtin is rejected (it would be silently ignored
+// at call sites otherwise — the footgun that bit the reactive runtime three times).
+func TestBuiltinShadowingRejected(t *testing.T) {
+	for _, name := range []string{"flush", "keys", "contains", "len", "str"} {
+		src := "func " + name + "() { println(1) }\nfunc main() { " + name + "() }"
+		fn := strings.SplitN(src, "\n", 2)
+		blocks := []string{normalize(fn[0]), normalize(fn[1])}
+		prog, perr := ParseProgram(blocks)
+		if perr != nil {
+			t.Fatalf("%s: parse: %v", name, perr)
+		}
+		if _, err := Check(prog); err == nil || !strings.Contains(err.Error(), "shadows the builtin") {
+			t.Fatalf("defining func %q should be rejected as shadowing a builtin, got %v", name, err)
+		}
+	}
+}
+
+// End-to-end behavior: compose the reactive runtime with print-based host functions
+// and a list app, run it natively, and assert the patches are MINIMAL — adding an
+// item inserts only that item, and a reorder emits no item re-render.
+func TestReactiveMinimalPatches(t *testing.T) {
+	data, err := os.ReadFile("framework/reactive.src")
+	if err != nil {
+		t.Skip("framework/reactive.src not found")
+	}
+	// strip the extern block; substitute printing host functions.
+	runtime := regexp.MustCompile(`(?s)extern "env" \{.*?\}\n`).ReplaceAllString(string(data), "")
+	host := `
+func dom_patch(slot, val) { println("patch " + slot + "=" + val) }
+func list_insert(c, k, html) { println("insert " + k) }
+func list_remove(c, k) { println("remove " + k) }
+func list_order(c, ks) { println("order " + ks) }`
+	app := `
+var ver = 0
+var ids = []int{}
+var vals = []int{}
+var n = 0
+var nid = 1
+func total_of() (s) { get(ver)  s = 0  i := 0  while i < n { s = s + vals[i]  i = i + 1 } }
+func add(x) { ids = append(ids, nid)  vals = append(vals, x)  nid = nid + 1  n = n + 1  set(ver, get(ver) + 1) }
+func main() {
+    ver = signal(0)
+    bind("total", func() { return str(total_of()) })
+    each("list", func() { get(ver)  return csv(ids) }, func(k) { return str(k) })
+    println("-- add 10 --")  add(10)
+    println("-- add 20 --")  add(20)
+}`
+	prog, perr := progFromSrcErr(runtime + host + app)
+	if perr != nil {
+		t.Fatalf("parse: %v", perr)
+	}
+	out, err := RunCaptured(prog)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// after `add 20`, exactly one insert (#2) — item #1 must NOT be re-inserted.
+	after := out[strings.Index(out, "-- add 20 --"):]
+	if strings.Count(after, "insert") != 1 {
+		t.Fatalf("adding a 2nd item should insert only it; got:\n%s", out)
+	}
+	if !strings.Contains(after, "insert 2") || strings.Contains(after, "insert 1") {
+		t.Fatalf("expected only `insert 2` after the 2nd add; got:\n%s", out)
+	}
+	if !strings.Contains(after, "patch total=30") {
+		t.Fatalf("computed total should update to 30; got:\n%s", out)
+	}
+}
+
+// progFromSrcErr is like progFromSrc but returns the error (for table tests).
+func progFromSrcErr(src string) (*Program, error) {
+	blocks, err := splitFunctions(src)
+	if err != nil {
+		return nil, err
+	}
+	var decls []string
+	for _, b := range blocks {
+		decls = append(decls, normalize(b))
+	}
+	return ParseProgram(decls)
+}

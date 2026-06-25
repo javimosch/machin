@@ -1,98 +1,213 @@
-// reactive.src — a tiny fine-grained reactive runtime for machin web UIs.
-//
-// Compose it ahead of your app and compile to wasm:
-//   machin encode framework/reactive.src yourapp.src > app.mfl
-//   machin build app.mfl --target wasm -o app.wasm
-//
-// The model is signals + a patch list (Solid/Leptos-style fine-grained reactivity):
-//   - a SIGNAL holds a value: `c := signal(0)`, `get(c)`, `set(c, v)`.
-//   - a BINDING is a compute closure tied to a DOM slot: `bind("count", func(){ return str(get(c)) })`.
-//     While it runs the first time, every signal it reads is recorded as a dependency.
-//   - on `set`, only the bindings that READ that signal recompute, and only those
-//     whose rendered TEXT actually changed emit a patch (`dom_patch(slot, value)`).
-// So the host never replaces innerHTML and never diffs a vdom — it sets the text of
-// the handful of slots that changed. State and view logic live entirely in machin.
-//
-// Needs machin v0.53.0+ (slices of functions, `[]func`) and the wasm target.
-// Signals are int-valued; bindings format them to text. The host supplies dom_patch.
-
 extern "env" {
-    fn dom_patch(string, string)   // (slot, value): host sets [data-s=slot]'s text content
+    fn dom_patch(string, string)
+    fn list_insert(string, string, string)
+    fn list_remove(string, string)
+    fn list_order(string, string)
 }
 
-var sig_val = []int{}              // signal values, indexed by signal id
+var sval = []int{}
 var n_sig = 0
 
-var bind_slot = []string{}         // each binding's DOM slot id
-var bind_fn = []func{}             // each binding's compute closure: func() -> string
-var bind_last = []string{}         // last rendered text (for diffing)
-var bind_dirty = []int{}
-var n_bind = 0
+var r_kind = []int{}     // reaction kind: 0 computed, 1 bind, 2 each
+var r_sub = []int{}      // index into the per-kind arrays
+var r_dirty = []int{}
+var n_r = 0
 
-var edge_sig = []int{}             // dependency edges (signal id -> binding id),
-var edge_bind = []int{}            //   recorded while a binding first computes
-var tracking = 0 - 1               // binding id currently computing (auto-tracking), or -1
+var c_fn = []func{}      // computed compute: func() -> int
+var c_sig = []int{}      // its backing signal id
 
-// signal creates a state cell with an initial value and returns its id.
+var b_fn = []func{}      // bind compute: func() -> string
+var b_slot = []string{}
+var b_last = []string{}
+
+var e_kf = []func{}      // each keys: func() -> string (csv of the ordered keys)
+var e_if = []func{}      // each item: func(int) -> string
+var e_cont = []string{}
+var e_old = []string{}   // last key set, csv
+
+var edge_sig = []int{}
+var edge_r = []int{}
+var tracking = 0 - 1
+var flushing = 0
+
 func signal(init) (id) {
     id = n_sig
-    sig_val = append(sig_val, init)
+    sval = append(sval, init)
     n_sig = n_sig + 1
 }
 
-// get reads a signal. If a binding is currently computing, the read is recorded
-// as a dependency edge, so a later set() knows which bindings to recompute.
 func get(id) (v) {
     if tracking >= 0 {
         edge_sig = append(edge_sig, id)
-        edge_bind = append(edge_bind, tracking)
+        edge_r = append(edge_r, tracking)
     }
-    v = sig_val[id]
+    v = sval[id]
 }
 
-// commit recomputes every dirty binding and emits a patch for each whose text
-// actually changed (the minimal patch list).
-func commit() {
+func clear_edges(rid) {
+    ns := []int{}
+    nr := []int{}
     i := 0
-    while i < n_bind {
-        if bind_dirty[i] == 1 {
-            f := bind_fn[i]
-            nv := f()
-            if nv != bind_last[i] {
-                bind_last[i] = nv
-                dom_patch(bind_slot[i], nv)
-            }
-            bind_dirty[i] = 0
+    while i < len(edge_sig) {
+        if edge_r[i] != rid {
+            ns = append(ns, edge_sig[i])
+            nr = append(nr, edge_r[i])
         }
+        i = i + 1
+    }
+    edge_sig = ns
+    edge_r = nr
+}
+
+func in_list(xs, k) (yes) {
+    yes = 0
+    i := 0
+    while i < len(xs) {
+        if xs[i] == k { yes = 1 }
         i = i + 1
     }
 }
 
-// set updates a signal. If the value changed, every binding that depends on it is
-// marked dirty and the dirty set is committed (recomputed + patched).
+func csv(xs) (s) {
+    s = ""
+    i := 0
+    while i < len(xs) {
+        if i > 0 { s = s + "," }
+        s = s + str(xs[i])
+        i = i + 1
+    }
+}
+
+func parse_csv(s) (xs) {
+    xs = []int{}
+    if s == "" { return }
+    parts := split(s, ",")
+    i := 0
+    while i < len(parts) {
+        xs = append(xs, parse_int(parts[i]))
+        i = i + 1
+    }
+}
+
+// A reaction runs its stored compute closure with dependency tracking on, then
+// applies its effect. Each kind has its own runner (one closure signature per
+// function — combining them in one scope confuses inference). run_reaction routes.
+
+func run_computed(s, rid) {
+    prev := tracking
+    tracking = rid
+    cf := c_fn[s]
+    cv := cf()
+    tracking = prev
+    set(c_sig[s], cv)
+}
+
+func run_bind(s, rid) {
+    prev := tracking
+    tracking = rid
+    bf := b_fn[s]
+    bv := bf()
+    tracking = prev
+    if bv != b_last[s] {
+        b_last[s] = bv
+        dom_patch(b_slot[s], bv)
+    }
+}
+
+// A keys closure returns the ordered keys as a CSV STRING (build it with the
+// exported `csv` helper: `func() { get(ver)  return csv(my_ids) }`). Using a
+// string keeps the closure's return type pinned via parse_csv, so an app that
+// registers no list still type-checks (an empty []int closure would not).
+func run_each(s, rid) {
+    prev := tracking
+    tracking = rid
+    kf := e_kf[s]
+    cs := kf()
+    tracking = prev
+    ks := parse_csv(cs)
+    cont := e_cont[s]
+    old := parse_csv(e_old[s])
+    i := 0
+    while i < len(old) {
+        if in_list(ks, old[i]) == 0 { list_remove(cont, str(old[i])) }
+        i = i + 1
+    }
+    itf := e_if[s]
+    i = 0
+    while i < len(ks) {
+        if in_list(old, ks[i]) == 0 { list_insert(cont, str(ks[i]), itf(ks[i])) }
+        i = i + 1
+    }
+    list_order(cont, cs)
+    e_old[s] = cs
+}
+
+func run_reaction(rid) {
+    clear_edges(rid)
+    k := r_kind[rid]
+    s := r_sub[rid]
+    if k == 0 { run_computed(s, rid) }
+    if k == 1 { run_bind(s, rid) }
+    if k == 2 { run_each(s, rid) }
+}
+
+func register(kind, sub) (rid) {
+    rid = n_r
+    r_kind = append(r_kind, kind)
+    r_sub = append(r_sub, sub)
+    r_dirty = append(r_dirty, 0)
+    n_r = n_r + 1
+    run_reaction(rid)
+}
+
+func commit() {
+    if flushing == 1 { return }
+    flushing = 1
+    again := 1
+    while again == 1 {
+        again = 0
+        i := 0
+        while i < n_r {
+            if r_dirty[i] == 1 {
+                r_dirty[i] = 0
+                run_reaction(i)
+                again = 1
+            }
+            i = i + 1
+        }
+    }
+    flushing = 0
+}
+
 func set(id, v) {
-    if sig_val[id] == v { return }
-    sig_val[id] = v
+    if sval[id] == v { return }
+    sval[id] = v
     i := 0
     while i < len(edge_sig) {
-        if edge_sig[i] == id { bind_dirty[edge_bind[i]] = 1 }
+        if edge_sig[i] == id { r_dirty[edge_r[i]] = 1 }
         i = i + 1
     }
     commit()
 }
 
-// bind ties a compute closure to a DOM slot, runs it once (recording its signal
-// dependencies), and paints the initial value.
+func computed(fn) (id) {
+    c_fn = append(c_fn, fn)
+    id = signal(0)
+    c_sig = append(c_sig, id)
+    register(0, len(c_fn) - 1)
+}
+
 func bind(slot, fn) {
-    id := n_bind
-    bind_slot = append(bind_slot, slot)
-    bind_fn = append(bind_fn, fn)
-    bind_last = append(bind_last, "")
-    bind_dirty = append(bind_dirty, 0)
-    n_bind = n_bind + 1
-    tracking = id
-    v := fn()
-    tracking = 0 - 1
-    bind_last[id] = v
-    dom_patch(slot, v)
+    b_fn = append(b_fn, fn)
+    b_slot = append(b_slot, slot)
+    b_last = append(b_last, "")
+    register(1, len(b_fn) - 1)
+}
+
+func each(cont, kf, itf) {
+    e_kf = append(e_kf, kf)
+    e_if = append(e_if, itf)
+    e_cont = append(e_cont, cont)
+    e_old = append(e_old, "")
+    register(2, len(e_kf) - 1)
 }

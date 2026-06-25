@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.54.0
+
+- **`framework/reactive.src` grows computed signals + keyed list reconciliation.**
+  - **`computed(func(){ return … })`** — a memoized derived signal (backed by a
+    real signal, kept current by a reaction); read it with `get` and depend on it
+    like any signal. Transitive: a change recomputes the computed, which updates
+    its own dependents.
+  - **`each(container, keys, item)`** — keyed list reconciliation. `keys()` returns
+    the ordered keys as a CSV string (`func(){ get(ver)  return csv(ids) }`),
+    `item(key)` returns an item's HTML. On a change it emits only the deltas —
+    `list_insert` for new keys (rendered once), `list_remove` for gone keys, and a
+    `list_order` directive — never re-rendering unchanged items. The unified
+    reaction graph means a computed/binding/list all recompute only when a signal
+    they read changes, and only changed text/keys patch.
+- **Defining a function named like a builtin is now a compile error** (it would be
+  silently shadowed by the builtin at call sites — a footgun that bit the reactive
+  runtime three times: `flush`, `keys`, `contains`). Rename it. An `extern` may
+  still shadow a builtin (intentional, for FFI). Drove
+  [machin-web-demo-reactive](https://github.com/javimosch/machin-web-demo-reactive)
+  (now a list + computed demo).
+
 ## v0.53.0
 
 - **Slices of functions — `[]func`.** A slice literal may now have `func` as its
