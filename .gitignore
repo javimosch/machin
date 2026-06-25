@@ -1,3 +1,7 @@
 /machin
 /bin/
 /framework/app.mfl
+
+# coverage reports (make cover)
+coverage.out
+coverage.html
