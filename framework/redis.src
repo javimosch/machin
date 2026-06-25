@@ -1,0 +1,202 @@
+// redis.src — a pure-MFL Redis client (RESP protocol) over dial(). Cache, sessions,
+// counters, rate-limits, and simple queues for a machin backend — no client library,
+// no cgo. Commands go out as RESP arrays of bulk strings; replies are parsed for all
+// five RESP types (+simple, -error, :integer, $bulk, *array).
+//
+//   redis_connect("127.0.0.1", 6379)
+//   redis_set("greeting", "hi")
+//   v, ok := redis_get("greeting")          // ok == 0 if the key is missing (nil)
+//   n := redis_incr("hits")
+//   redis_close()
+//
+// One connection at a time (state in package globals). String values only in v1 (a
+// value with an embedded NUL would truncate — use a bytes-aware command for binary).
+
+var redis_fd = 0
+var redis_buf = bytes("")
+
+// ---- socket framing (read_bytes-buffered, like the Postgres client) ----
+
+func redis_fill(need) {
+    while len(redis_buf) < need {
+        chunk := read_bytes(redis_fd)
+        if len(chunk) == 0 { return }
+        redis_buf = bytes_concat(redis_buf, chunk)
+    }
+}
+
+// redis_crlf returns the index of the next "\r\n" in the buffer, or -1.
+func redis_crlf() (idx) {
+    idx = 0 - 1
+    i := 0
+    while i + 1 < len(redis_buf) {
+        if byte_at(redis_buf, i) == 13 {
+            if byte_at(redis_buf, i + 1) == 10 {
+                idx = i
+                return
+            }
+        }
+        i = i + 1
+    }
+}
+
+// redis_line reads one CRLF-terminated protocol line (without the CRLF).
+func redis_line() (s) {
+    e := redis_crlf()
+    while e < 0 {
+        n := len(redis_buf)
+        redis_fill(n + 1)
+        if len(redis_buf) == n { break }       // connection closed
+        e = redis_crlf()
+    }
+    s = bytes_str(bytes_sub(redis_buf, 0, e))
+    redis_buf = bytes_sub(redis_buf, e + 2, len(redis_buf))
+}
+
+// redis_take removes and returns the next n bytes (a bulk-string body).
+func redis_take(n) (b) {
+    redis_fill(n)
+    b = bytes_sub(redis_buf, 0, n)
+    redis_buf = bytes_sub(redis_buf, n, len(redis_buf))
+}
+
+// ---- command + reply ----
+
+// redis_send writes a command as a RESP array of bulk strings.
+func redis_send(args) {
+    cmd := "*" + str(len(args)) + "\r\n"
+    for _, a := range args {
+        cmd = cmd + "$" + str(len(a)) + "\r\n" + a + "\r\n"
+    }
+    write(redis_fd, cmd)
+}
+
+func redis_jstr(s) (out) {
+    e := replace(s, "\\", "\\\\")
+    e = replace(e, "\"", "\\\"")
+    e = replace(e, "\n", "\\n")
+    out = "\"" + e + "\""
+}
+
+// redis_reply parses one reply -> (type, value). type is "+" / "-" / ":" / "$" / "*",
+// or "_" for a nil bulk/array. An array's value is a JSON-array string of its element
+// values (so KEYS/LRANGE/SMEMBERS compose with parse(val, []string{})).
+func redis_reply() (typ, val) {
+    typ = "_"
+    val = ""
+    line := redis_line()
+    if len(line) == 0 { return }
+    t := charat(line, 0)
+    rest := substr(line, 1, len(line))
+    if t == "+" { typ = "+"  val = rest  return }
+    if t == "-" { typ = "-"  val = rest  return }
+    if t == ":" { typ = ":"  val = rest  return }
+    if t == "$" {
+        n := parse_int(rest)
+        if n < 0 { return }                    // nil bulk -> "_"
+        b := redis_take(n)
+        redis_take(2)                           // trailing CRLF
+        typ = "$"
+        val = bytes_str(b)
+        return
+    }
+    if t == "*" {
+        n := parse_int(rest)
+        if n < 0 { return }                    // nil array -> "_"
+        parts := []string{}
+        i := 0
+        while i < n {
+            _, ev := redis_reply()
+            parts = append(parts, redis_jstr(ev))
+            i = i + 1
+        }
+        typ = "*"
+        val = "[" + join(parts, ",") + "]"
+        return
+    }
+}
+
+// redis_cmd sends a command (args as []string) and returns (value, ok). ok is 0 for a
+// Redis error (-...) or a nil reply ($-1 / *-1); the value is the reply as a string
+// (an integer as its digits, an array as a JSON-array string).
+func redis_cmd(args) (val, ok) {
+    redis_send(args)
+    typ, v := redis_reply()
+    val = v
+    ok = 1
+    if typ == "-" { ok = 0 }
+    if typ == "_" { ok = 0 }
+}
+
+// ---- connection ----
+
+func redis_connect(host, port) {
+    redis_fd = dial(host, port)
+    redis_buf = bytes("")
+}
+
+// redis_auth authenticates (Redis with requirepass / ACL). Returns ok.
+func redis_auth(password) (ok) {
+    v, k := redis_cmd([]string{"AUTH", password})
+    ok = k
+}
+
+func redis_close() { close(redis_fd) }
+
+// ---- typed helpers (the common commands) ----
+
+func redis_set(key, val) (ok) {
+    v, k := redis_cmd([]string{"SET", key, val})
+    ok = k
+}
+
+// redis_setex sets a key with a TTL in seconds (SET key val EX secs) — for sessions/cache.
+func redis_setex(key, secs, val) (ok) {
+    v, k := redis_cmd([]string{"SET", key, val, "EX", str(secs)})
+    ok = k
+}
+
+// redis_get returns (value, ok); ok == 0 means the key is missing (nil).
+func redis_get(key) (val, ok) {
+    val, ok = redis_cmd([]string{"GET", key})
+}
+
+func redis_del(key) (n) {
+    v, _ := redis_cmd([]string{"DEL", key})
+    n = parse_int(v)
+}
+
+func redis_exists(key) (yes) {
+    v, _ := redis_cmd([]string{"EXISTS", key})
+    yes = parse_int(v)
+}
+
+func redis_incr(key) (n) {
+    v, _ := redis_cmd([]string{"INCR", key})
+    n = parse_int(v)
+}
+
+func redis_expire(key, secs) (ok) {
+    v, _ := redis_cmd([]string{"EXPIRE", key, str(secs)})
+    ok = parse_int(v)
+}
+
+// list ops (queues): LPUSH/RPUSH return the new length; LRANGE/KEYS return a JSON
+// array string -> parse(val, []string{}).
+func redis_lpush(key, val) (n) {
+    v, _ := redis_cmd([]string{"LPUSH", key, val})
+    n = parse_int(v)
+}
+
+func redis_rpush(key, val) (n) {
+    v, _ := redis_cmd([]string{"RPUSH", key, val})
+    n = parse_int(v)
+}
+
+func redis_lrange(key, start, stop) (json, ok) {
+    json, ok = redis_cmd([]string{"LRANGE", key, str(start), str(stop)})
+}
+
+func redis_keys(pattern) (json, ok) {
+    json, ok = redis_cmd([]string{"KEYS", pattern})
+}

@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.64.0
+
+- **Redis client** (`framework/redis.src`) — a pure-MFL Redis client speaking the
+  RESP protocol over `dial()`, no client library. `redis_connect` (+ `redis_auth`),
+  typed helpers (`redis_set`/`redis_setex`/`redis_get`/`redis_del`/`redis_exists`/
+  `redis_incr`/`redis_expire`/`redis_rpush`/`redis_lpush`/`redis_lrange`/`redis_keys`),
+  and a general `redis_cmd(args []string) -> (val, ok)` (ok=0 on a `-error`/nil).
+  Parses all five RESP types; array replies come back as a JSON-array string, so
+  `parse(val, []string{})` decodes them. For cache, sessions, counters, rate-limits,
+  and simple queues. Verified against `redis:7`, plus a CI-runnable RESP test against
+  an in-process canned-reply mock. v1 is string values.
+
 ## v0.63.0
 
 - **SSO — OAuth2 / OpenID Connect** (`framework/sso.src`): "log in with Google /
