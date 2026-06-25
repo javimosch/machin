@@ -1891,6 +1891,11 @@ static mfl_bytes mfl_crypto_sha256(mfl_bytes m) {
     SHA256(m.data, (size_t)m.len, out.data);
     return out;
 }
+static mfl_bytes mfl_crypto_sha1(mfl_bytes m) {
+    mfl_bytes out = mfl_crypto_buf(20);
+    SHA1(m.data, (size_t)m.len, out.data);
+    return out;
+}
 static mfl_bytes mfl_crypto_hmac256(mfl_bytes key, mfl_bytes msg) {
     mfl_bytes out = mfl_crypto_buf(32);
     unsigned int n = 32;
@@ -3832,6 +3837,9 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 	case "sha256_bytes":
 		g.usesCrypto = true
 		return fmt.Sprintf("mfl_crypto_sha256(%s)", args[0]), nil
+	case "sha1_bytes":
+		g.usesCrypto = true
+		return fmt.Sprintf("mfl_crypto_sha1(%s)", args[0]), nil
 	case "hmac_sha256_bytes":
 		g.usesCrypto = true
 		return fmt.Sprintf("mfl_crypto_hmac256(%s, %s)", args[0], args[1]), nil

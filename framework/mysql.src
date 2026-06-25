@@ -1,0 +1,211 @@
+// mysql.src — a pure-MFL MySQL/MariaDB client over the wire protocol, no libmysql.
+// Connects with mysql_native_password auth (SHA-1 challenge), runs text-protocol
+// queries returning rows as a JSON-array string (same shape as sqlite_query /
+// pg_query, so parse(rows, []T{}) decodes — numeric columns come back unquoted).
+//
+//   mysql_connect("127.0.0.1", 3306, "root", "secret", "mydb")
+//   rows := mysql_query("SELECT id, name FROM users")
+//   mysql_exec("INSERT INTO users (name) VALUES ('" + mysql_escape(n) + "')")
+//   mysql_close()
+//
+// v1: a single connection; mysql_native_password (MariaDB's default; for MySQL 8
+// create the user `IDENTIFIED WITH mysql_native_password`). caching_sha2 is a follow-up.
+
+var mysql_fd = 0
+var mysql_buf = bytes("")
+
+func my_hx2(n) (s) { d := "0123456789abcdef"  s = charat(d, (n >> 4) & 15) + charat(d, n & 15) }
+func my_le4(n) (h) { h = my_hx2(n & 255) + my_hx2((n >> 8) & 255) + my_hx2((n >> 16) & 255) + my_hx2((n >> 24) & 255) }
+func my_zeros(n) (h) { h = ""  i := 0  while i < n { h = h + "00"  i = i + 1 } }
+
+func mysql_fill(need) {
+    while len(mysql_buf) < need {
+        ch := read_bytes(mysql_fd)
+        if len(ch) == 0 { return }
+        mysql_buf = bytes_concat(mysql_buf, ch)
+    }
+}
+
+// mysql_read reads one protocol packet: (payload, seq). Header = 3-byte length LE + seq.
+func mysql_read() (payload, seq) {
+    mysql_fill(4)
+    plen := byte_at(mysql_buf, 0) | (byte_at(mysql_buf, 1) << 8) | (byte_at(mysql_buf, 2) << 16)
+    seq = byte_at(mysql_buf, 3)
+    mysql_fill(4 + plen)
+    payload = bytes_sub(mysql_buf, 4, 4 + plen)
+    mysql_buf = bytes_sub(mysql_buf, 4 + plen, len(mysql_buf))
+}
+
+func mysql_write(seq, payload) {
+    n := len(payload)
+    hdr := from_hex(my_hx2(n & 255) + my_hx2((n >> 8) & 255) + my_hx2((n >> 16) & 255) + my_hx2(seq & 255))
+    write_bytes(mysql_fd, bytes_concat(hdr, payload))
+}
+
+// ---- length-encoded integers / strings ----
+
+func lenenc_int(b, off) (v, nxt) {
+    f := byte_at(b, off)
+    v = f
+    nxt = off + 1
+    if f == 252 { v = byte_at(b, off+1) | (byte_at(b, off+2) << 8)  nxt = off + 3 }
+    if f == 253 { v = byte_at(b, off+1) | (byte_at(b, off+2) << 8) | (byte_at(b, off+3) << 16)  nxt = off + 4 }
+    if f == 254 {
+        v = byte_at(b, off+1) | (byte_at(b, off+2) << 8) | (byte_at(b, off+3) << 16) | (byte_at(b, off+4) << 24) | (byte_at(b, off+5) << 32) | (byte_at(b, off+6) << 40) | (byte_at(b, off+7) << 48) | (byte_at(b, off+8) << 56)
+        nxt = off + 9
+    }
+}
+func lenenc_str(b, off) (s, nxt) {
+    l, o := lenenc_int(b, off)
+    s = bytes_str(bytes_sub(b, o, o + l))
+    nxt = o + l
+}
+func lenenc_skip(b, off) (nxt) { l, o := lenenc_int(b, off)  nxt = o + l }
+
+// ---- auth ----
+
+func my_xor20(a, b) (r) {
+    h := ""
+    i := 0
+    while i < 20 { h = h + my_hx2(byte_at(a, i) ^ byte_at(b, i))  i = i + 1 }
+    r = from_hex(h)
+}
+// mysql_native_password: SHA1(pw) XOR SHA1(scramble + SHA1(SHA1(pw)))
+func mysql_scramble(password, scramble) (token) {
+    s1 := sha1_bytes(bytes(password))
+    s2 := sha1_bytes(s1)
+    s3 := sha1_bytes(bytes_concat(scramble, s2))
+    token = my_xor20(s1, s3)
+}
+
+// ---- connect ----
+
+func mysql_connect(host, port, user, password, db) (ok) {
+    mysql_fd = dial(host, port)
+    mysql_buf = bytes("")
+    hs, hsq := mysql_read()                       // initial handshake (seq 0)
+    // skip: protocol version (1) + server version (NUL string)
+    i := 1
+    while byte_at(hs, i) != 0 { i = i + 1 }
+    i = i + 1
+    i = i + 4                                      // connection id
+    sc1 := bytes_sub(hs, i, i + 8)                 // scramble part 1
+    i = i + 8
+    i = i + 1                                      // filler
+    i = i + 2 + 1 + 2 + 2                           // cap-lo, charset, status, cap-hi
+    i = i + 1                                      // auth-plugin-data length
+    i = i + 10                                     // reserved
+    sc2 := bytes_sub(hs, i, i + 12)                // scramble part 2 (first 12)
+    scramble := bytes_concat(sc1, sc2)            // 20-byte challenge
+    token := mysql_scramble(password, scramble)
+    // capabilities: LONG_PASSWORD|CONNECT_WITH_DB|PROTOCOL_41|SECURE_CONNECTION|PLUGIN_AUTH
+    caps := 1 | 8 | 512 | 32768 | 524288
+    body := from_hex(my_le4(caps) + my_le4(16777216) + my_hx2(33) + my_zeros(23))
+    body = bytes_concat(body, bytes_concat(bytes(user), from_hex("00")))
+    body = bytes_concat(body, bytes_concat(from_hex(my_hx2(20)), token))
+    body = bytes_concat(body, bytes_concat(bytes(db), from_hex("00")))
+    body = bytes_concat(body, bytes_concat(bytes("mysql_native_password"), from_hex("00")))
+    mysql_write(1, body)
+    resp, rsq := mysql_read()
+    ok = 0
+    if byte_at(resp, 0) == 0 { ok = 1 }            // OK packet -> authenticated
+}
+
+func mysql_close() { mysql_write(0, from_hex("01"))  close(mysql_fd) }   // COM_QUIT
+
+// ---- query ----
+
+func jstr(s) (out) {
+    e := replace(s, "\\", "\\\\")
+    e = replace(e, "\"", "\\\"")
+    e = replace(e, "\n", "\\n")
+    out = "\"" + e + "\""
+}
+
+// mysql_escape escapes a value for inclusion in single-quoted SQL.
+func mysql_escape(s) (out) {
+    out = replace(s, "\\", "\\\\")
+    out = replace(out, "'", "\\'")
+}
+
+// a column definition packet -> (name, is-numeric). Numeric types come back unquoted.
+func coldef(b) (name, isnum) {
+    o := lenenc_skip(b, 0)        // catalog
+    o = lenenc_skip(b, o)         // schema
+    o = lenenc_skip(b, o)         // table
+    o = lenenc_skip(b, o)         // org_table
+    name, o = lenenc_str(b, o)    // name
+    o = lenenc_skip(b, o)         // org_name
+    _, o = lenenc_int(b, o)       // 0x0c = length of the fixed block (advance past the marker only)
+    t := byte_at(b, o + 6)        // type byte (after charset(2) + column_length(4))
+    isnum = 0
+    if t == 1 { isnum = 1 }
+    if t == 2 { isnum = 1 }
+    if t == 3 { isnum = 1 }
+    if t == 4 { isnum = 1 }
+    if t == 5 { isnum = 1 }
+    if t == 8 { isnum = 1 }
+    if t == 9 { isnum = 1 }
+}
+
+// mysql_query runs a SELECT and returns rows as a JSON-array string.
+func mysql_query(sql) (jsonrows) {
+    mysql_write(0, bytes_concat(from_hex("03"), bytes(sql)))   // COM_QUERY
+    p1, s1 := mysql_read()
+    fb := byte_at(p1, 0)
+    jsonrows = "[]"
+    if fb == 0 { return }                          // OK (no result set)
+    if fb == 255 { return }                        // ERR
+    ncol, _ := lenenc_int(p1, 0)
+    names := []string{}
+    nums := []int{}
+    i := 0
+    while i < ncol {
+        cp, cs := mysql_read()
+        nm, isn := coldef(cp)
+        names = append(names, nm)
+        nums = append(nums, isn)
+        i = i + 1
+    }
+    ev, es := mysql_read()                          // EOF after column defs
+    rows := []string{}
+    more := 1
+    while more == 1 {
+        rp, rs := mysql_read()
+        if byte_at(rp, 0) == 254 {                  // EOF -> end of rows
+            if len(rp) < 9 { more = 0 }
+        }
+        if more == 1 {
+            obj := "{"
+            off := 0
+            c := 0
+            while c < ncol {
+                if c > 0 { obj = obj + "," }
+                if byte_at(rp, off) == 251 {        // 0xfb -> NULL
+                    obj = obj + jstr(names[c]) + ":null"
+                    off = off + 1
+                } else {
+                    sval, no := lenenc_str(rp, off)
+                    off = no
+                    if nums[c] == 1 { obj = obj + jstr(names[c]) + ":" + sval } else { obj = obj + jstr(names[c]) + ":" + jstr(sval) }
+                }
+                c = c + 1
+            }
+            obj = obj + "}"
+            rows = append(rows, obj)
+        }
+    }
+    jsonrows = "[" + join(rows, ",") + "]"
+}
+
+// mysql_exec runs a statement with no result set (INSERT/UPDATE/DELETE/DDL) and returns
+// the affected-row count (-1 on error). Escape user values with mysql_escape.
+func mysql_exec(sql) (affected) {
+    mysql_write(0, bytes_concat(from_hex("03"), bytes(sql)))
+    p, s := mysql_read()
+    affected = 0 - 1
+    if byte_at(p, 0) == 0 {                          // OK packet
+        a, _ := lenenc_int(p, 1)                     // affected rows
+        affected = a
+    }
+}
