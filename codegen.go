@@ -534,6 +534,43 @@ static mfl_bytes mfl_bytes_concat(mfl_bytes a, mfl_bytes b) {
     memcpy(r.data + a.len, b.data, (size_t)b.len);
     return r;
 }
+/* binary-safe base64: encode raw bytes (incl. NUL), decode to raw bytes. The
+   string forms (mfl_base64_encode/decode) stop at a NUL; these carry an explicit
+   length, for binary protocols / crypto (e.g. SCRAM salts and proofs). */
+static char* mfl_base64_encode_bytes(mfl_bytes b) {
+    static const char t[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    size_t n = (size_t)b.len, j = 0, i = 0; const unsigned char* s = b.data;
+    char* out = (char*)mfl_alloc(4 * ((n + 2) / 3) + 1);
+    for (; i + 3 <= n; i += 3) {
+        uint32_t v = ((uint32_t)s[i] << 16) | ((uint32_t)s[i+1] << 8) | s[i+2];
+        out[j++] = t[(v >> 18) & 63]; out[j++] = t[(v >> 12) & 63];
+        out[j++] = t[(v >> 6) & 63];  out[j++] = t[v & 63];
+    }
+    if (n - i == 1) {
+        uint32_t v = (uint32_t)s[i] << 16;
+        out[j++] = t[(v >> 18) & 63]; out[j++] = t[(v >> 12) & 63];
+        out[j++] = '='; out[j++] = '=';
+    } else if (n - i == 2) {
+        uint32_t v = ((uint32_t)s[i] << 16) | ((uint32_t)s[i+1] << 8);
+        out[j++] = t[(v >> 18) & 63]; out[j++] = t[(v >> 12) & 63];
+        out[j++] = t[(v >> 6) & 63];  out[j++] = '=';
+    }
+    out[j] = 0;
+    return out;
+}
+static mfl_bytes mfl_base64_decode_bytes(const char* s) {
+    size_t n = strlen(s), j = 0;
+    mfl_bytes b; b.data = (uint8_t*)mfl_alloc(n ? n : 1);
+    int buf = 0, bits = 0;
+    for (size_t i = 0; i < n; i++) {
+        int v = mfl_b64val((unsigned char)s[i]);
+        if (v < 0) continue;
+        buf = (buf << 6) | v; bits += 6;
+        if (bits >= 8) { bits -= 8; b.data[j++] = (uint8_t)((buf >> bits) & 0xFF); }
+    }
+    b.len = (int64_t)j;
+    return b;
+}
 /* SHA-256 + HMAC-SHA256 (pure C, no dependency). Operate on NUL-terminated text
    and return a lowercase hex digest. */
 static uint32_t mfl_ror32(uint32_t x, int n) { return (x >> n) | (x << (32 - n)); }
@@ -1029,6 +1066,16 @@ static char* mfl_read(int64_t fd) {
     if (n < 0) n = 0;
     buf[n] = 0;
     return buf;
+}
+// mfl_read_bytes is the NUL-safe socket read: returns the raw bytes of one chunk
+// (empty at EOF / on error). For binary wire protocols where read() (a C string)
+// would truncate at the first 0 byte.
+static mfl_bytes mfl_read_bytes(int64_t fd) {
+    mfl_bytes b; b.data = (uint8_t*)mfl_alloc(65536);
+    ssize_t n = read((int)fd, b.data, 65536);
+    if (n < 0) n = 0;
+    b.len = (int64_t)n;
+    return b;
 }
 static int64_t mfl_write(int64_t fd, const char* s) { return (int64_t)write((int)fd, s, strlen(s)); }
 /* write the exact bytes of a buffer to an fd (NUL-safe, for binary responses). */
@@ -3828,6 +3875,10 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("mfl_base64_encode(%s)", args[0]), nil
 	case "base64_decode":
 		return fmt.Sprintf("mfl_base64_decode(%s)", args[0]), nil
+	case "base64_encode_bytes":
+		return fmt.Sprintf("mfl_base64_encode_bytes(%s)", args[0]), nil
+	case "base64_decode_bytes":
+		return fmt.Sprintf("mfl_base64_decode_bytes(%s)", args[0]), nil
 	case "url_encode":
 		return fmt.Sprintf("mfl_url_encode(%s)", args[0]), nil
 	case "url_decode":
@@ -3921,6 +3972,9 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 	case "read":
 		g.usesNet = true
 		return fmt.Sprintf("mfl_read(%s)", args[0]), nil
+	case "read_bytes":
+		g.usesNet = true
+		return fmt.Sprintf("mfl_read_bytes(%s)", args[0]), nil
 	case "write":
 		g.usesNet = true
 		return fmt.Sprintf("mfl_write(%s, %s)", args[0], args[1]), nil

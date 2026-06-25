@@ -2086,6 +2086,12 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		}
 		c.addPair(argSlots[0], c.cInt)
 		return c.cString, nil
+	case "read_bytes":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("read_bytes: 1 arg (fd)")
+		}
+		c.addPair(argSlots[0], c.cInt)
+		return c.cBytes, nil
 	case "input":
 		if len(argSlots) != 0 {
 			return 0, fmt.Errorf("input: no args")
@@ -2223,6 +2229,18 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		}
 		c.addPair(argSlots[0], c.cString)
 		return c.cString, nil
+	case "base64_encode_bytes":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("base64_encode_bytes: 1 arg (bytes)")
+		}
+		c.addPair(argSlots[0], c.cBytes)
+		return c.cString, nil
+	case "base64_decode_bytes":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("base64_decode_bytes: 1 arg (string)")
+		}
+		c.addPair(argSlots[0], c.cString)
+		return c.cBytes, nil
 	case "hmac_sha256":
 		if len(argSlots) != 2 {
 			return 0, fmt.Errorf("hmac_sha256: 2 args (key, message)")

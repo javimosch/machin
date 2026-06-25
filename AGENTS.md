@@ -47,6 +47,13 @@ verify, and the gotchas. A runnable data-layer reference is
 [`examples/complex/sqlite_crud.mfl`](examples/complex/sqlite_crud.mfl); direction
 and gap roadmap live in [`docs/NORTH-STAR-WEB.md`](docs/NORTH-STAR-WEB.md).
 
+Building an **SME backend** (a datastore client, auth, a service integration)? The
+direction and capability/gap matrix live in
+[`docs/NORTH-STAR-BACKEND.md`](docs/NORTH-STAR-BACKEND.md). machin already has embedded
+SQLite and a pure-MFL **PostgreSQL** client ([`framework/postgres.src`](framework/postgres.src)
+— wire protocol + SCRAM-SHA-256, no libpq); both return rows as JSON that
+`parse(rows, []T{})` decodes.
+
 Building a **game** (terminal TUI or raylib GUI/audio)? Read
 [`skills/machin-gamedev/SKILL.md`](skills/machin-gamedev/SKILL.md) first — the
 canonical setup, build-and-verify workflow, raylib FFI surface, and accumulated

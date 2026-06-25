@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.60.0
+
+A pure-MFL **PostgreSQL client** — the first networked datastore, and the start of
+the SME-backend dogfood (see `docs/NORTH-STAR-BACKEND.md`). Building it surfaced two
+binary primitives, now added to the language.
+
+- **`framework/postgres.src`** — a PostgreSQL client speaking wire protocol v3 over
+  `dial()`, with **SCRAM-SHA-256** auth (the modern Postgres default), in pure MFL
+  (no libpq, no cgo). `pg_connect(host, port, user, db, password)` / `pg_query(sql)` /
+  `pg_disconnect()`. `pg_query` returns a **JSON-array-of-rows string in the same
+  shape as `sqlite_query`**, so `parse(rows, []T{})` decodes it — numeric and bool
+  columns come back unquoted (typed via the result's column OIDs), NULL → `null`.
+  v1 is the simple-query protocol; `?`-parameter binding (extended protocol) is the
+  next milestone.
+- **`read_bytes(fd) -> bytes`** — NUL-safe socket read. `read()` returns a C string
+  and truncates at the first 0 byte; a binary wire protocol needs the raw bytes.
+- **`base64_encode_bytes(bytes) -> string` / `base64_decode_bytes(string) -> bytes`**
+  — binary-safe base64 (the string forms stop at a NUL), for SCRAM salts/proofs and
+  any binary token.
+- SCRAM's XOR folds (PBKDF2, ClientProof) use MFL's native bitwise operators
+  (`^ & | << >>`) — no new builtin needed.
+
 ## v0.59.1
 
 Agent-discovery polish — fixes surfaced by dogfooding the north-star flow ("learn
