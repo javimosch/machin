@@ -60,6 +60,56 @@ func main() {
 	}
 }
 
+// Mongo pool: 30 goroutines, 4 connections; each inserts + filtered-finds its own doc.
+func TestMongoPoolConcurrent(t *testing.T) {
+	if os.Getenv("MACHIN_MONGO_TEST") == "" {
+		t.Skip("set MACHIN_MONGO_TEST=1 (and run a MongoDB) to exercise the pool")
+	}
+	host := "127.0.0.1"
+	if v := os.Getenv("MACHIN_MONGO_HOST"); v != "" {
+		host = v
+	}
+	bson, err := os.ReadFile("framework/bson.src")
+	if err != nil {
+		t.Skip("framework/bson.src not found")
+	}
+	mongo, err := os.ReadFile("framework/mongo.src")
+	if err != nil {
+		t.Skip("framework/mongo.src not found")
+	}
+	app := `
+type R struct { i int }
+var done = make(chan int)
+func worker(id) {
+    c := mongo_acquire()
+    mins(c, "mpooltest", "items", bson_finish(bson_i32(bson_new(), "i", id)))
+    arr := mfind(c, "mpooltest", "items", bson_finish(bson_i32(bson_new(), "i", id)))
+    mongo_release(c)
+    rs := parse(arr, []R{})
+    ok := 0
+    if len(rs) == 1 { if rs[0].i == id { ok = 1 } }
+    done <- ok
+}
+func main() {
+    mongo_connect("` + host + `", 27017)  mongo_drop("mpooltest", "items")  mongo_close()
+    mongo_pool_init(4, "` + host + `", 27017, "", "")
+    n := 30
+    i := 0
+    while i < n { go worker(i)  i = i + 1 }
+    good := 0
+    j := 0
+    while j < n { good = good + <-done  j = j + 1 }
+    println("ok=" + str(good) + "/" + str(n))
+}`
+	out, err := RunCaptured(progFromSrcMust(t, string(bson)+string(mongo)+app))
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !strings.Contains(out, "ok=30/30") {
+		t.Fatalf("pool corrupted a result under concurrency; got:\n%s", out)
+	}
+}
+
 // Redis pool: 30 goroutines, 4 connections; each set/get its own key.
 func TestRedisPoolConcurrent(t *testing.T) {
 	if os.Getenv("MACHIN_REDIS_TEST") == "" {
