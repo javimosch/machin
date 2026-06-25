@@ -379,6 +379,10 @@ static char* mfl_cat(const char* a, const char* b) {
 }
 static char* mfl_str_i(int64_t v) { char* b = mfl_alloc(24); snprintf(b, 24, "%lld", (long long)v); return b; }
 static char* mfl_str_d(double v)  { char* b = mfl_alloc(32); snprintf(b, 32, "%g", v); return b; }
+/* reinterpret a double's IEEE-754 bits as an int64 and back — the byte-level access
+   needed to (de)serialize 64-bit floats (e.g. BSON doubles). */
+static int64_t mfl_f64_bits(double d) { int64_t i; memcpy(&i, &d, 8); return i; }
+static double mfl_f64_from_bits(int64_t i) { double d; memcpy(&d, &i, 8); return d; }
 static char* mfl_str_b(int64_t v) { return v ? "true" : "false"; }
 static char* mfl_dup(const char* s) { size_t n = strlen(s); char* r = mfl_alloc(n+1); memcpy(r, s, n+1); return r; }
 /* raw heap memory: a pointer is an int (intptr_t round-trip), as with the ptr
@@ -3982,6 +3986,10 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("((int64_t)(%s))", args[0]), nil
 	case "float":
 		return fmt.Sprintf("((double)(%s))", args[0]), nil
+	case "f64_bits":
+		return fmt.Sprintf("mfl_f64_bits((double)(%s))", args[0]), nil
+	case "f64_from_bits":
+		return fmt.Sprintf("mfl_f64_from_bits((int64_t)(%s))", args[0]), nil
 	case "sin", "cos", "tan", "asin", "acos", "atan", "exp", "log", "log2", "log10", "sqrt", "cbrt", "floor", "ceil", "round", "trunc", "abs":
 		g.usesMath = true
 		fn := ex.Callee

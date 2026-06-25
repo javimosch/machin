@@ -1983,6 +1983,20 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		}
 		c.addPair(argSlots[0], newSlot(c, KNum))
 		return c.cFloat, nil
+	case "f64_bits":
+		// reinterpret a double's IEEE-754 bits as an int64 (for byte serialization)
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("f64_bits: 1 arg (float)")
+		}
+		c.addPair(argSlots[0], newSlot(c, KNum))
+		return c.cInt, nil
+	case "f64_from_bits":
+		// the inverse: int64 bit pattern -> double
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("f64_from_bits: 1 arg (int)")
+		}
+		c.addPair(argSlots[0], newSlot(c, KNum))
+		return c.cFloat, nil
 	case "sin", "cos", "tan", "asin", "acos", "atan", "exp", "log", "log2", "log10", "sqrt", "cbrt", "floor", "ceil", "round", "trunc", "abs":
 		// native math (libm): numeric in, float out
 		if len(argSlots) != 1 {

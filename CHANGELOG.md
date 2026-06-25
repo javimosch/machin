@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.67.0
+
+- **MongoDB client v2** (`framework/mongo.src` + `bson.src`): **SCRAM-SHA-256 auth**
+  (`mongo_auth(authdb, user, password)` — the SASL conversation via `saslStart`/
+  `saslContinue`, same SCRAM math as the Postgres client), **doubles** (BSON 0x01,
+  encode + decode), and **cursor pagination** — `mongo_find_all` now follows the cursor
+  with `getMore`, so it returns *all* documents, not just the first batch. Also adds
+  BSON binary (used for the SCRAM payloads). Verified against an authenticated `mongo:7`
+  (login + a double + 250 docs across batches).
+- **`f64_bits(float) -> int` / `f64_from_bits(int) -> float`** — reinterpret a double's
+  IEEE-754 bits as an int64 and back, the byte-level access needed to (de)serialize
+  64-bit floats (e.g. BSON doubles). This unblocked Mongo doubles.
+
 ## v0.66.0
 
 - **MongoDB client** (`framework/mongo.src` + `framework/bson.src`) — a pure-MFL

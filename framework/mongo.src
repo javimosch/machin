@@ -18,6 +18,80 @@ var mongo_reqid = 0
 func mongo_connect(host, port) { mongo_fd = dial(host, port)  mongo_buf = bytes("") }
 func mongo_close() { close(mongo_fd) }
 
+// ---- SCRAM-SHA-256 authentication ----
+
+func m_unq(s) (r) {
+    r = s
+    if len(s) >= 2 {
+        if substr(s, 0, 1) == "\"" { r = substr(s, 1, len(s) - 1) }
+    }
+}
+func m_xor(a, b) (r) {
+    h := ""
+    i := 0
+    while i < len(a) { h = h + bs_hx2(byte_at(a, i) ^ byte_at(b, i))  i = i + 1 }
+    r = from_hex(h)
+}
+func m_pbkdf2(pw, salt, iter) (res) {
+    blk := bytes_concat(salt, from_hex("00000001"))
+    u := hmac_sha256_bytes(pw, blk)
+    res = u
+    k := 1
+    while k < iter { u = hmac_sha256_bytes(pw, u)  res = m_xor(res, u)  k = k + 1 }
+}
+func m_attr(s, key) (v) {
+    for _, part := range split(s, ",") {
+        if has_prefix(part, key + "=") { v = substr(part, len(key) + 1, len(part)) }
+    }
+}
+
+// mongo_auth authenticates the connection with SCRAM-SHA-256 (MongoDB's default).
+// authdb is where the user lives (usually "admin" for a root user). Call right after
+// mongo_connect; the authenticated connection can then operate on any database the
+// user is authorized for. Returns ok (1/0).
+func mongo_auth(authdb, user, password) (ok) {
+    ok = 0
+    nonce := base64_encode_bytes(rand_bytes(18))
+    cfirst_bare := "n=" + user + ",r=" + nonce
+    // saslStart: client-first as a binary payload
+    c := bson_i32(bson_new(), "saslStart", 1)
+    c = bson_str(c, "mechanism", "SCRAM-SHA-256")
+    c = bson_binary(c, "payload", bytes("n,," + cfirst_bare))
+    c = bson_str(c, "$db", authdb)
+    r1 := mongo_cmd_bson(bson_finish(c))
+    convid, _ := json_get(r1, ".conversationId")
+    sfp, _ := json_get(r1, ".payload")
+    sf := m_unq(sfp)                              // server-first text
+    rnonce := m_attr(sf, "r")
+    salt := base64_decode_bytes(m_attr(sf, "s"))
+    iter := parse_int(m_attr(sf, "i"))
+    // SCRAM proof (same math as Postgres SCRAM)
+    salted := m_pbkdf2(bytes(password), salt, iter)
+    ckey := hmac_sha256_bytes(salted, bytes("Client Key"))
+    skey := sha256_bytes(ckey)
+    cfinal_bare := "c=biws,r=" + rnonce
+    authmsg := cfirst_bare + "," + sf + "," + cfinal_bare
+    csig := hmac_sha256_bytes(skey, bytes(authmsg))
+    proof := base64_encode_bytes(m_xor(ckey, csig))
+    // saslContinue: client-final
+    c2 := bson_i32(bson_new(), "saslContinue", 1)
+    c2 = bson_i32(c2, "conversationId", parse_int(convid))
+    c2 = bson_binary(c2, "payload", bytes(cfinal_bare + ",p=" + proof))
+    c2 = bson_str(c2, "$db", authdb)
+    r2 := mongo_cmd_bson(bson_finish(c2))
+    okv, _ := json_get(r2, ".ok")
+    if okv == "1" { ok = 1 }
+    // some servers need a final empty saslContinue to reach done:true
+    done2, _ := json_get(r2, ".done")
+    if done2 != "true" {
+        c3 := bson_i32(bson_new(), "saslContinue", 1)
+        c3 = bson_i32(c3, "conversationId", parse_int(convid))
+        c3 = bson_binary(c3, "payload", bytes(""))
+        c3 = bson_str(c3, "$db", authdb)
+        r3 := mongo_cmd_bson(bson_finish(c3))
+    }
+}
+
 func mongo_fill(need) {
     while len(mongo_buf) < need {
         chunk := read_bytes(mongo_fd)
@@ -58,14 +132,38 @@ func mongo_insert_one(db, coll, doc) (ok) {
     if n == "1" { ok = 1 }
 }
 
-// mongo_find_all returns the first batch of docs in db.coll as a JSON-array string.
+// mongo_inner strips the surrounding [ ] from a JSON-array string (-> "" for []).
+func mongo_inner(arr) (s) {
+    s = ""
+    if len(arr) >= 2 { s = substr(arr, 1, len(arr) - 1) }
+}
+
+// mongo_find_all returns ALL docs in db.coll as a JSON-array string, following the
+// cursor with getMore until it's exhausted (so it handles collections larger than
+// one batch, not just the first ~101 docs).
 func mongo_find_all(db, coll) (docs) {
     c := bson_str(bson_new(), "find", coll)
     c = bson_subdoc(c, "filter", bson_finish(bson_new()))    // {} — match all
     c = bson_str(c, "$db", db)
     reply := mongo_cmd_bson(bson_finish(c))
-    docs, _ = json_get(reply, ".cursor.firstBatch")
-    if docs == "" { docs = "[]" }
+    batch, _ := json_get(reply, ".cursor.firstBatch")
+    cid, _ := json_get(reply, ".cursor.id")
+    inner := mongo_inner(batch)
+    while cid != "0" {
+        if cid == "" { cid = "0" } else {
+            g := bson_i64(bson_new(), "getMore", parse_int(cid))
+            g = bson_str(g, "collection", coll)
+            g = bson_str(g, "$db", db)
+            rep := mongo_cmd_bson(bson_finish(g))
+            nb, _ := json_get(rep, ".cursor.nextBatch")
+            cid, _ = json_get(rep, ".cursor.id")
+            ni := mongo_inner(nb)
+            if ni != "" {
+                if inner == "" { inner = ni } else { inner = inner + "," + ni }
+            }
+        }
+    }
+    docs = "[" + inner + "]"
 }
 
 // mongo_count returns the number of documents in db.coll.
