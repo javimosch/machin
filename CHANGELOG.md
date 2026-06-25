@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.61.0
+
+- **Postgres parameterized queries** — `pg_exec(sql, []string params)` in
+  `framework/postgres.src` runs the **extended query protocol**
+  (Parse/Bind/Describe/Execute/Sync): the SQL uses `$1, $2, …` placeholders and
+  params are bound server-side as text, never interpolated — **injection-safe**.
+  Works for `SELECT` (returns JSON rows like `pg_query`) and for
+  `INSERT`/`UPDATE`/`DELETE` (returns `[]`). `pg_query(sql)` remains for trusted/
+  constant SQL. Verified against `postgres:16`, including an injection param that
+  stays inert. This was the top backend-roadmap follow-up to the v0.60.0 client.
+
 ## v0.60.0
 
 A pure-MFL **PostgreSQL client** — the first networked datastore, and the start of

@@ -41,13 +41,21 @@ type Row struct { id int  name string  active bool }
 func main() {
     pg_connect("` + host + `", ` + port + `, "` + user + `", "` + db + `", "` + pass + `")
     pg_query("CREATE TEMP TABLE t (id int, name text, active bool)")
-    pg_query("INSERT INTO t VALUES (1, 'Ada', true), (2, 'O''Brien', false)")
+    // parameterized INSERT (extended protocol): a value with a quote, bound as data
+    pg_exec("INSERT INTO t VALUES ($1, $2, $3)", []string{"1", "Ada", "true"})
+    pg_exec("INSERT INTO t VALUES ($1, $2, $3)", []string{"2", "O'Brien", "false"})
     rows := pg_query("SELECT id, name, active FROM t ORDER BY id")
     println("rows=" + rows)
     rs := parse(rows, []Row{})
     println("n=" + str(len(rs)))
     println("r0=" + str(rs[0].id) + ":" + rs[0].name)
     println("r1active=" + str(rs[1].active))
+    // parameterized SELECT + an injection attempt that must stay inert
+    hit := pg_exec("SELECT id, name, active FROM t WHERE name = $1", []string{"Ada"})
+    println("hit=" + hit)
+    inj := pg_exec("SELECT id FROM t WHERE name = $1", []string{"x'; DROP TABLE t; --"})
+    println("inj=" + inj)
+    println("survived=" + pg_query("SELECT count(*) AS n FROM t"))
     pg_disconnect()
 }`
 	prog, perr := progFromSrcErr(string(data) + app)
@@ -64,6 +72,9 @@ func main() {
 		"n=2",
 		"r0=1:Ada",        // parse([]Row{}) decoded the typed fields
 		"r1active=false",  // bool column decoded
+		`hit=[{"id":1,"name":"Ada","active":true}]`, // pg_exec bound $1
+		"inj=[]",          // injection param matched nothing...
+		`survived=[{"n":2}]`, // ...and the table is intact (DROP did not run)
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q in:\n%s", want, out)
