@@ -22,6 +22,13 @@ type Response struct {
     bin     bytes      // binary body, used when is_bin == 1 (NUL-safe; body is ignored)
     is_bin  int        // 1 = serve bin (raw bytes), 0 = serve body (text)
     cookies []string   // Set-Cookie values (added via set_cookie); empty for most responses
+    location string    // Location header (set by redirect); empty for most responses
+}
+
+// redirect returns a 302 to url (a Location header). Compose with set_cookie /
+// set_session to redirect AND set state, e.g. after an OAuth login.
+func redirect(url) (r) {
+    r = Response{status: "302 Found", ctype: "text/html; charset=utf-8", body: "", is_bin: 0, location: url}
 }
 
 // ---- response builders ----
@@ -94,6 +101,20 @@ func param(path, prefix) (v) {
     }
 }
 
+// query returns a query-string parameter from the request path (url-decoded), or "":
+//   query(req, "state") for "/callback?code=abc&state=xyz" == "xyz"
+func query(req, name) (v) {
+    v = ""
+    qi := index(req.path, "?")
+    if qi < 0 { return }
+    for _, part := range split(substr(req.path, qi + 1, len(req.path)), "&") {
+        eq := index(part, "=")
+        if eq > 0 {
+            if substr(part, 0, eq) == name { v = url_decode(substr(part, eq + 1, len(part))) }
+        }
+    }
+}
+
 // ---- cookies ----
 
 // cookie returns a request cookie value by name (from the Cookie header), or "".
@@ -122,10 +143,11 @@ func clear_cookie(res, name) (r) {
     r.cookies = append(r.cookies, name + "=; Path=/; Max-Age=0")
 }
 
-// cookie_lines renders the Set-Cookie header block for a response.
+// cookie_lines renders the Set-Cookie (and Location) header block for a response.
 func cookie_lines(res) (h) {
     h = ""
     for _, c := range res.cookies { h = h + "Set-Cookie: " + c + "\r\n" }
+    if res.location != "" { h = h + "Location: " + res.location + "\r\n" }
 }
 
 // ---- signed sessions ----

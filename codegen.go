@@ -365,7 +365,13 @@ static mfl_slice mfl_map_keys(mfl_map* m) {
     return s;
 }
 
+// A string's zero value is "" — but an auto-zeroed string slot (an omitted struct
+// literal field, a grown slice element, a default map value) is a NULL char*. So
+// the string ops treat NULL as "" rather than dereferencing it.
+static const char* mfl_s(const char* s) { return s ? s : ""; }
+static int mfl_strcmp(const char* a, const char* b) { return strcmp(mfl_s(a), mfl_s(b)); }
 static char* mfl_cat(const char* a, const char* b) {
+    a = mfl_s(a); b = mfl_s(b);
     size_t la = strlen(a), lb = strlen(b);
     char* r = mfl_alloc(la + lb + 1);
     memcpy(r, a, la); memcpy(r + la, b, lb); r[la + lb] = 0;
@@ -3318,7 +3324,7 @@ func (g *cgen) binaryCombine(ex *Binary, l, r string) string {
 	// Compare strings by value, not by pointer. C's == on char* compares
 	// addresses, so equal-but-distinct strings would wrongly differ.
 	if (ex.Op == "==" || ex.Op == "!=") && g.c.NodeKind(g.curFn, ex.L) == KString {
-		return fmt.Sprintf("(strcmp(%s, %s) %s 0)", l, r, ex.Op)
+		return fmt.Sprintf("(mfl_strcmp(%s, %s) %s 0)", l, r, ex.Op)
 	}
 	// --safe: checked integer arithmetic (overflow) and division (by zero)
 	if g.safe && g.c.NodeKind(g.curFn, ex) == KInt {
@@ -3393,20 +3399,65 @@ func (g *cgen) sliceLit(ex *SliceLit) (string, error) {
 	})
 }
 
+// stringZeroInits returns designated initializers that set every string reachable in
+// a struct value to "" (recursing nested structs). A string's zero value is "", but
+// C zeroes an omitted compound-literal field to a NULL char* — which crashes the
+// string ops — so omitted string fields are made "" explicitly. Other field types
+// (int/float/slice/map/bytes/func) C-zero correctly and are left out.
+func (g *cgen) stringZeroInits(typeStr string) []string {
+	td, ok := g.c.StructTypes()[typeStr]
+	if !ok {
+		return nil
+	}
+	var inits []string
+	for _, f := range td.Fields {
+		if f.Type == "string" {
+			inits = append(inits, fmt.Sprintf(".f_%s = \"\"", f.Name))
+		} else if _, isStruct := g.c.StructTypes()[f.Type]; isStruct {
+			if sub := g.stringZeroInits(f.Type); len(sub) > 0 {
+				inits = append(inits, fmt.Sprintf(".f_%s = (mfl_%s){%s}", f.Name, f.Type, strings.Join(sub, ", ")))
+			}
+		}
+	}
+	return inits
+}
+
 // structLit emits a C compound literal: (mfl_Point){ .f_x = (1), .f_y = (2) }
-// for keyed literals, or positional (mfl_Point){ (1), (2) }.
+// for keyed literals, or positional (mfl_Point){ (1), (2) }. Omitted keyed fields
+// are zero-filled, with string fields explicitly "" (not NULL) per stringZeroInits.
 func (g *cgen) structLit(ex *StructLit) (string, error) {
 	return g.seqExprs(ex.Vals, func(names []string) (string, error) {
-		if len(names) == 0 {
-			return fmt.Sprintf("(mfl_%s){0}", ex.Type), nil
-		}
-		parts := make([]string, len(names))
-		for i, n := range names {
-			if len(ex.FieldNames) > 0 {
-				parts[i] = fmt.Sprintf(".f_%s = (%s)", ex.FieldNames[i], n)
-			} else {
+		// positional literal: every field supplied in order — emit verbatim.
+		if len(names) > 0 && len(ex.FieldNames) == 0 {
+			parts := make([]string, len(names))
+			for i, n := range names {
 				parts[i] = "(" + n + ")"
 			}
+			return fmt.Sprintf("(mfl_%s){%s}", ex.Type, strings.Join(parts, ", ")), nil
+		}
+		// keyed or empty literal: provided fields, plus "" for any omitted string field.
+		provided := make(map[string]bool, len(ex.FieldNames))
+		var parts []string
+		for i, fn := range ex.FieldNames {
+			provided[fn] = true
+			parts = append(parts, fmt.Sprintf(".f_%s = (%s)", fn, names[i]))
+		}
+		if td, ok := g.c.StructTypes()[ex.Type]; ok {
+			for _, f := range td.Fields {
+				if provided[f.Name] {
+					continue
+				}
+				if f.Type == "string" {
+					parts = append(parts, fmt.Sprintf(".f_%s = \"\"", f.Name))
+				} else if _, isStruct := g.c.StructTypes()[f.Type]; isStruct {
+					if sub := g.stringZeroInits(f.Type); len(sub) > 0 {
+						parts = append(parts, fmt.Sprintf(".f_%s = (mfl_%s){%s}", f.Name, f.Type, strings.Join(sub, ", ")))
+					}
+				}
+			}
+		}
+		if len(parts) == 0 {
+			return fmt.Sprintf("(mfl_%s){0}", ex.Type), nil
 		}
 		return fmt.Sprintf("(mfl_%s){%s}", ex.Type, strings.Join(parts, ", ")), nil
 	})

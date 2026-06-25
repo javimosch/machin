@@ -1,0 +1,106 @@
+// sso.src — OAuth2 / OpenID Connect single sign-on for machin web apps.
+// "Log in with Google / Microsoft / GitHub / …" using the authorization-code flow,
+// in pure MFL: http_request for the token exchange + userinfo, rand_bytes for the
+// CSRF state, and machweb's signed sessions to remember the user. Composes with
+// framework/machweb.src.
+//
+//   machin encode framework/machweb.src framework/sso.src yourapp.src > app.mfl
+//
+// Flow (two routes):
+//   GET /login    -> sso_begin(p, secret)            // 302 to the provider + stash state
+//   GET /callback -> profile, ok := sso_complete(p, secret, req)
+//                    then set your own session from profile and redirect home
+//
+// Identity comes from the provider's userinfo endpoint (an HTTPS GET with the access
+// token) — not from verifying the id_token's signature — so it needs no RSA/JWT
+// support and works with every OIDC provider. Keep client_secret + the session
+// secret server-side (e.g. from env()).
+
+type OAuthProvider struct {
+    auth_url      string   // authorization endpoint (where the user is sent)
+    token_url     string   // token endpoint (code -> access token)
+    userinfo_url  string   // userinfo endpoint (access token -> profile JSON)
+    client_id     string
+    client_secret string
+    redirect_uri  string   // your /callback URL, registered with the provider
+    scope         string   // e.g. "openid email profile"
+}
+
+// json_unq strips the surrounding quotes json_get leaves on a string value.
+func json_unq(s) (r) {
+    r = s
+    if len(s) >= 2 {
+        if charat(s, 0) == "\"" { r = substr(s, 1, len(s) - 1) }
+    }
+}
+
+// sso_login_url builds the authorization-endpoint URL to redirect the user to.
+func sso_login_url(p, state) (u) {
+    u = p.auth_url + "?response_type=code" +
+        "&client_id=" + url_encode(p.client_id) +
+        "&redirect_uri=" + url_encode(p.redirect_uri) +
+        "&scope=" + url_encode(p.scope) +
+        "&state=" + url_encode(state)
+}
+
+// sso_exchange swaps an authorization code for an access token at the token endpoint
+// (form-encoded POST). Returns (access_token, ok).
+func sso_exchange(p, code) (token, ok) {
+    token = ""
+    ok = 0
+    body := "grant_type=authorization_code" +
+        "&code=" + url_encode(code) +
+        "&redirect_uri=" + url_encode(p.redirect_uri) +
+        "&client_id=" + url_encode(p.client_id) +
+        "&client_secret=" + url_encode(p.client_secret)
+    hdrs := []string{"Content-Type: application/x-www-form-urlencoded", "Accept: application/json"}
+    status, resp, err := http_request("POST", p.token_url, hdrs, body)
+    if err == "" {
+        if status == 200 {
+            t, e := json_get(resp, ".access_token")
+            if e == "" {
+                token = json_unq(t)
+                ok = 1
+            }
+        }
+    }
+}
+
+// sso_userinfo fetches the user's profile JSON using the access token (Bearer GET).
+// Returns (profile_json, ok); read fields with json_get(profile, ".email") etc.
+func sso_userinfo(p, token) (profile, ok) {
+    profile = ""
+    ok = 0
+    hdrs := []string{"Authorization: Bearer " + token, "Accept: application/json"}
+    status, resp, err := http_request("GET", p.userinfo_url, hdrs, "")
+    if err == "" {
+        if status == 200 {
+            profile = resp
+            ok = 1
+        }
+    }
+}
+
+// sso_begin starts login: a 302 to the provider with a fresh random CSRF state,
+// stashed in a signed cookie so the callback can verify it. Map GET /login to this.
+func sso_begin(p, secret) (res) {
+    state := to_hex(rand_bytes(16))
+    res = set_session(redirect(sso_login_url(p, state)), secret, "oauth_state", state)
+}
+
+// sso_complete handles the provider's callback: verify the state (CSRF), exchange the
+// code, and fetch the profile. Returns (profile_json, ok). On ok the app reads the
+// identity (e.g. json_get(profile, ".sub")) and sets its own session. Map GET
+// /callback to this.
+func sso_complete(p, secret, req) (profile, ok) {
+    profile = ""
+    ok = 0
+    saved, sok := get_session(req, secret, "oauth_state")
+    if sok == 0 { return }                         // no/invalid state cookie
+    if query(req, "state") != saved { return }     // CSRF: state must match
+    code := query(req, "code")
+    if code == "" { return }                       // provider returned an error
+    token, tok := sso_exchange(p, code)
+    if tok == 0 { return }
+    profile, ok = sso_userinfo(p, token)
+}
