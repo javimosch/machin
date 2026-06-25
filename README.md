@@ -27,10 +27,22 @@ func main(){println(fib(10))}
 
 Why not base64 (the old design)? Measured with [`tools/tokcost.py`](tools/tokcost.py), base64 costs an agent ~2.5× the output tokens to write/edit. A dense `machin pack` form still exists for distribution; `machin run` reads either.
 
+## Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/javimosch/machin/main/install.sh | sh
+machin guide                             # learn the language (version-exact catalog, JSON)
+```
+
+Installs the latest release binary to `~/.local/bin` (override with `MACHIN_INSTALL`).
+machin compiles MFL through C, so building programs needs a **C compiler** (`cc`); the
+`--target wasm` web target additionally needs [`zig`](https://ziglang.org). Building
+web apps? See the [`machin-web` skill](skills/machin-web/SKILL.md).
+
 ## Use
 
 ```bash
-make build                               # → bin/machin   (needs Go 1.22 + a C compiler)
+make build                               # …or build from source (needs Go 1.22 + a C compiler)
 bin/machin run    examples/demo.mfl      # compile to native + execute
 bin/machin build  app.mfl -o app         # standalone native binary
 bin/machin build  app.mfl --emit-c       # print the generated C
