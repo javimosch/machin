@@ -37,6 +37,9 @@ func bson_str(acc, key, val) (out) {
 func bson_i32(acc, key, n) (out) { out = bytes_concat(acc, bs_el(16, key, from_hex(bs_le32h(n)))) }
 func bson_i64(acc, key, n) (out) { out = bytes_concat(acc, bs_el(18, key, from_hex(bs_le64h(n)))) }
 func bson_double(acc, key, v) (out) { out = bytes_concat(acc, bs_el(1, key, from_hex(bs_le64h(f64_bits(v))))) }
+// bson_oid: an ObjectId field from its 24-char hex (the form bson_to_json decodes to).
+// Lets you query/delete by _id: bson_oid(bson_new(), "_id", idhex).
+func bson_oid(acc, key, hex) (out) { out = bytes_concat(acc, bs_el(7, key, from_hex(hex))) }
 // bson_binary: a binary value (subtype 0x00). Used for SCRAM auth payloads.
 func bson_binary(acc, key, bin) (out) {
     vb := bytes_concat(from_hex(bs_le32h(len(bin))), bytes_concat(from_hex("00"), bin))

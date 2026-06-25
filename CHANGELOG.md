@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.70.0
+
+- **MongoDB: query by `_id` (ObjectId) + filtered finds/deletes.** `bson_oid(acc, key,
+  idhex)` encodes an ObjectId from its 24-char hex (the form the decoder produces), so
+  you can query by `_id`. New driver helpers: `mongo_find(db, coll, filter)` (an explicit
+  BSON filter), `mongo_find_by_id`, `mongo_delete(db, coll, filter)`, `mongo_delete_by_id`.
+  `mongo_find_all` is now `mongo_find` with a match-all filter. Closes the ObjectId gap
+  the machin-cms dogfood hit (get/delete a document by its id).
+
 ## v0.69.0
 
 - **`system(string) -> int`** — run a shell command, returning its exit code (-1 if
