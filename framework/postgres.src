@@ -22,6 +22,7 @@ func hx2(n) (s) {
     d := "0123456789abcdef"
     s = charat(d, (n >> 4) & 15) + charat(d, n & 15)
 }
+func hx_i16(n) (s) { s = hx2((n >> 8) & 255) + hx2(n & 255) }
 func hx_i32(n) (s) {
     s = hx2((n >> 24) & 255) + hx2((n >> 16) & 255) + hx2((n >> 8) & 255) + hx2(n & 255)
 }
@@ -175,9 +176,10 @@ func json_str(s) (out) {
     out = "\"" + e + "\""
 }
 
-// pg_query runs a simple text query and returns the rows as a JSON-array string.
-func pg_query(sql) (out) {
-    pg_send("Q", hx_str(sql) + "00")
+// pg_collect reads the backend response stream until ReadyForQuery and returns the
+// DataRows as a JSON-array string. Shared by the simple (pg_query) and extended
+// (pg_exec) paths — RowDescription/DataRow are identical in both protocols.
+func pg_collect() (out) {
     names := []string{}
     oids := []int{}
     rows := []string{}
@@ -232,4 +234,35 @@ func pg_query(sql) (out) {
         if typ == 69 { done = 1 }             // 'E' ErrorResponse
     }
     out = "[" + join(rows, ",") + "]"
+}
+
+// pg_query runs a SIMPLE text query (no parameters) and returns the rows as a
+// JSON-array string. Use it for trusted/constant SQL; for anything with user
+// input use pg_exec, which binds parameters server-side (injection-safe).
+func pg_query(sql) (out) {
+    pg_send("Q", hx_str(sql) + "00")
+    out = pg_collect()
+}
+
+// pg_exec runs a PARAMETERIZED statement via the extended query protocol
+// (Parse/Bind/Describe/Execute/Sync): the SQL uses $1, $2, ... placeholders and
+// params ([]string) are bound server-side as text — never interpolated, so it is
+// injection-safe. Returns rows as a JSON-array string ([] for INSERT/UPDATE/DELETE).
+//
+//   pg_exec("SELECT * FROM users WHERE email = $1", []string{addr})
+//   pg_exec("INSERT INTO users (name, email) VALUES ($1, $2)", []string{n, e})
+func pg_exec(sql, params) (out) {
+    pg_send("P", "00" + hx_str(sql) + "00" + "0000")     // Parse: unnamed stmt, server infers types
+    b := "00" + "00" + "0000" + hx_i16(len(params))      // Bind: unnamed portal/stmt, text params
+    i := 0
+    while i < len(params) {
+        b = b + hx_i32(len(params[i])) + hx_str(params[i])
+        i = i + 1
+    }
+    b = b + "0000"                                        // result columns: text
+    pg_send("B", b)
+    pg_send("D", hx_str("P") + "00")                     // Describe the portal -> RowDescription
+    pg_send("E", "00" + hx_i32(0))                       // Execute: all rows
+    pg_send("S", "")                                      // Sync
+    out = pg_collect()
 }
