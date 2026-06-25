@@ -9,7 +9,7 @@ import (
 
 // machinVersion is the single version string for the toolchain. Bump it when
 // cutting a release (alongside README badge / SPEC / CHANGELOG).
-const machinVersion = "0.52.0"
+const machinVersion = "0.53.0"
 
 // ---- the source-of-truth feature catalog ----
 //
@@ -63,7 +63,7 @@ func machinGuide() guideCatalog {
 			{"bool", "true/false"},
 			{"string", "immutable UTF-8 bytes; zero value \"\""},
 			{"bytes", "NUL-safe binary buffer (ptr+len); from bytes()/from_hex(); inspect with len/byte_at/to_hex. For binary protocols & crypto (strings truncate at NUL)"},
-			{"[]T", "slice (append to grow); for i, v := range"},
+			{"[]T", "slice (append to grow); for i, v := range. T can be a struct, another slice, or `func` (`[]func{}` — a slice of closures, for dispatch tables / effect lists)"},
 			{"map[K]V", "K is int or string; make(map[K]V); has/delete/keys"},
 			{"struct", "type T struct { f T ... }; value semantics; T{f: v}"},
 			{"chan T", "make(chan T); ch <- v; <-ch; close; for v := range ch; v, ok := <-ch"},
@@ -268,6 +268,7 @@ func main() { println(str(sqrt(2.0))) }`},
 			{"memory", "Per-goroutine arena, reclaimed in bulk when the goroutine returns; wrap a hot allocating loop in `arena { ... }` to keep peak memory flat. Build with --safe for bounds/overflow/div-zero checks."},
 			{"wasm-target", "`machin build app.mfl --target wasm` compiles to a WebAssembly reactor module (needs `zig` as the C->wasm compiler; override with ZIG=). Mark host-callable functions `export func name(...)` — they become wasm exports under their clean name (and are reachability roots, so a wasm module needs no main). A headerless `extern \"env\" { fn dom_set(string) }` becomes a wasm IMPORT the JS host supplies (the `extern \"<lib>\"` name is the import module). Marshaling host-side: machin ints are i64 -> pass/return BigInt; strings are a pointer into the exported `memory` (decode NUL-terminated UTF-8). App state can live in machin via package globals (`var count = 0`), which persist across export calls. See docs/NORTH-STAR-WEB.md."},
 			{"package-globals", "A top-level `var name = expr` is a package GLOBAL: mutable, shared by every function, type inferred from the initializer + uses. It PERSISTS across calls (unlike a local), so a wasm export can hold state between host calls (`var count = 0` + `export func bump(d){count=count+d}`). `=` assigns the global; `:=` makes a local (and may shadow it). Globals work everywhere incl. closures (a captured global is referenced directly), and for any type incl. make-maps and slices. Init runs before main / at wasm `_initialize`."},
+			{"lambda-and-builtin-names", "Two footguns when defining functions/closures: (1) a lambda (`func(){...}`) has NO named returns — `func() (s) { s = x }` does NOT parse; use `func() { return x }`. (2) A user function named the same as a builtin (e.g. `flush`, `len`, `str`) is silently SHADOWED by the builtin at call sites — pick a different name (this bit framework/reactive.src, whose internal `flush` was renamed `commit`)."},
 		},
 	}
 }

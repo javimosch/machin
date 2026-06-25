@@ -1113,8 +1113,8 @@ func (p *Parser) parseSliceLit() (Expr, error) {
 	if _, err := p.expect(TPunct, "]"); err != nil {
 		return nil, err
 	}
-	elemTok := p.next() // element type name
-	if elemTok.Kind != TIdent {
+	elemTok := p.next() // element type name (an identifier, or the `func` keyword)
+	if elemTok.Kind != TIdent && !(elemTok.Kind == TKeyword && elemTok.Val == "func") {
 		return nil, fmt.Errorf("slice element type must be a name, got %q", elemTok.Val)
 	}
 	if _, err := p.expect(TPunct, "{"); err != nil {
