@@ -23,6 +23,7 @@ func main() {
     d = bson_null(d, "note")
     d = bson_double(d, "score", 2.5)              // double (f64_bits round-trip)
     d = bson_binary(d, "blob", bytes("hi"))       // binary -> string
+    d = bson_oid(d, "ref", "0123456789abcdef01234567")   // ObjectId from hex -> hex
     println("flat=" + bson_to_json(bson_finish(d)))
     sub := bson_finish(bson_str(bson_new(), "x", "hi"))
     a := bson_i32(bson_i32(bson_new(), "0", 10), "1", 20)
@@ -34,7 +35,7 @@ func main() {
 		t.Fatalf("run: %v", err)
 	}
 	for _, want := range []string{
-		`flat={"name":"Ada \"Lovelace\"","age":36,"big":9000000000,"active":true,"note":null,"score":2.5,"blob":"hi"}`,
+		`flat={"name":"Ada \"Lovelace\"","age":36,"big":9000000000,"active":true,"note":null,"score":2.5,"blob":"hi","ref":"0123456789abcdef01234567"}`,
 		`nested={"n":1,"sub":{"x":"hi"},"arr":[10,20]}`,
 	} {
 		if !strings.Contains(out, want) {
@@ -73,13 +74,21 @@ func main() {
     docs := mongo_find_all("machintest", "people")
     ps := parse(docs, []Person{})
     println("n=" + str(len(ps)) + " a0=" + str(ps[0].age) + " name1=" + ps[1].name)
+    // ObjectId: find + delete by _id (the hex the decoder produced)
+    idv, _ := json_get(docs, "[0]._id")
+    id := idv
+    if len(id) >= 2 { id = substr(id, 1, len(id) - 1) }   // strip quotes
+    one := mongo_find_by_id("machintest", "people", id)
+    fn, _ := json_get(one, ".name")
+    println("byid=" + fn)
+    println("del=" + str(mongo_delete_by_id("machintest", "people", id)) + " left=" + str(mongo_count("machintest", "people")))
     mongo_close()
 }`
 	out, err := RunCaptured(progFromSrcMust(t, string(bson)+string(mongo)+app))
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	for _, want := range []string{"count=2", "n=2 a0=36 name1=O'Brien"} {
+	for _, want := range []string{"count=2", "n=2 a0=36 name1=O'Brien", `byid="Ada"`, "del=1 left=1"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q in:\n%s", want, out)
 		}

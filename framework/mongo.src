@@ -138,12 +138,12 @@ func mongo_inner(arr) (s) {
     if len(arr) >= 2 { s = substr(arr, 1, len(arr) - 1) }
 }
 
-// mongo_find_all returns ALL docs in db.coll as a JSON-array string, following the
-// cursor with getMore until it's exhausted (so it handles collections larger than
-// one batch, not just the first ~101 docs).
-func mongo_find_all(db, coll) (docs) {
+// mongo_find runs a find with an explicit filter (a finished BSON document, e.g.
+// bson_finish(bson_str(bson_new(), "name", "Ada"))) and returns ALL matching docs as a
+// JSON-array string, following the cursor with getMore so big results aren't truncated.
+func mongo_find(db, coll, filter) (docs) {
     c := bson_str(bson_new(), "find", coll)
-    c = bson_subdoc(c, "filter", bson_finish(bson_new()))    // {} — match all
+    c = bson_subdoc(c, "filter", filter)
     c = bson_str(c, "$db", db)
     reply := mongo_cmd_bson(bson_finish(c))
     batch, _ := json_get(reply, ".cursor.firstBatch")
@@ -164,6 +164,33 @@ func mongo_find_all(db, coll) (docs) {
         }
     }
     docs = "[" + inner + "]"
+}
+
+// mongo_find_all returns every doc in db.coll (match-all filter).
+func mongo_find_all(db, coll) (docs) { docs = mongo_find(db, coll, bson_finish(bson_new())) }
+
+// mongo_find_by_id returns the doc whose _id matches the 24-char hex ObjectId, or "".
+func mongo_find_by_id(db, coll, idhex) (doc) {
+    arr := mongo_find(db, coll, bson_finish(bson_oid(bson_new(), "_id", idhex)))
+    d, e := json_get(arr, "[0]")
+    doc = ""
+    if e == "" { doc = d }
+}
+
+// mongo_delete deletes all docs matching filter (a finished BSON document) -> count.
+func mongo_delete(db, coll, filter) (n) {
+    one := bson_finish(bson_i32(bson_subdoc(bson_new(), "q", filter), "limit", 0))
+    arr := bson_finish(bson_subdoc(bson_new(), "0", one))
+    c := bson_subarr(bson_str(bson_new(), "delete", coll), "deletes", arr)
+    c = bson_str(c, "$db", db)
+    reply := mongo_cmd_bson(bson_finish(c))
+    nv, _ := json_get(reply, ".n")
+    n = parse_int(nv)
+}
+
+// mongo_delete_by_id deletes the doc with the given _id (24-char hex) -> count (0/1).
+func mongo_delete_by_id(db, coll, idhex) (n) {
+    n = mongo_delete(db, coll, bson_finish(bson_oid(bson_new(), "_id", idhex)))
 }
 
 // mongo_count returns the number of documents in db.coll.
