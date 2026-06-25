@@ -35,7 +35,7 @@ mkdir -p "$dest"
 curl -fSL --progress-bar "$url" -o "$dest/machin"
 chmod +x "$dest/machin"
 
-ver=$("$dest/machin" guide 2>/dev/null | sed -n 's/.*"version":"\([^"]*\)".*/\1/p' | head -1)
+ver=$("$dest/machin" guide 2>/dev/null | sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' | head -1)
 echo "machin: installed $dest/machin ${ver:+(v$ver)}"
 case ":$PATH:" in
   *":$dest:"*) echo "machin: run 'machin guide' to learn the language" ;;
