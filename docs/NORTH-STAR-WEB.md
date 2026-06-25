@@ -40,6 +40,7 @@ north star is to make it first-class.
 | **`--target wasm` (first-class, v0.50.0)** | this repo | `machin build --target wasm` → a `wasm32-wasi` reactor module via `zig cc`; `export func` + FFI-as-import bridge built into codegen; lean pay-as-you-go runtime |
 | **MFL in the browser** | [machin-web-demo-wasm](https://github.com/javimosch/machin-web-demo-wasm) | MFL → C → wasm; FFI-as-import DOM bridge; string marshaling; verified on-screen in Chrome |
 | **isomorphic SSR** | [machin-web-demo-ssr](https://github.com/javimosch/machin-web-demo-ssr) | one `view.src` compiled into both a native machweb server (HTML per request) and the wasm client — server HTML and client re-render byte-identical |
+| **fine-grained reactivity** | [machin-web-demo-reactive](https://github.com/javimosch/machin-web-demo-reactive) · [`framework/reactive.src`](../framework) | signals + a patch list (Solid/Leptos model) in MFL: auto-tracked deps, only changed bindings recompute, only changed text patches — drove `[]func` (v0.53.0) |
 | backend web framework | [`framework/machweb.src`](../framework) | `serve(port, handler)` → self-contained native server |
 
 ## The feature roadmap (gaps, in rough dependency order)
@@ -69,9 +70,14 @@ five shipped in **v0.50.0** (`--target wasm`); the rest remain.
    type — scalars, strings, make-maps, slices — and visible inside closures.
 6. **String/array marshaling helpers.** A small JS runtime shipped with the
    target (decode/encode strings, pass slices) so apps don't re-roll `readCString`.
-7. **Signals + a patch-list runtime.** Fine-grained reactivity in MFL: state cells
-   (now expressible as globals), derived views, and a diff/patch the JS host
-   applies — the core of the reactive-framework tier.
+7. ~~**Signals + a patch-list runtime.**~~ **Done (v0.53.0).** `framework/reactive.src`
+   — signals hold state, bindings are compute closures (a `[]func` registry) tied
+   to DOM slots with auto-tracked deps; on `set`, only the bindings that read the
+   changed signal recompute, and only those whose text changed emit a patch. Drove
+   **`[]func`** (slices of closures). The core of the reactive tier.
+8. **Derived/computed signals + list reconciliation.** First-class computed
+   signals (memoized), and keyed reconciliation for dynamic lists (the part the
+   counter doesn't exercise) — toward components with collections.
 
 ## The vision, in tiers (near → far)
 
@@ -84,12 +90,15 @@ call an MFL `render(state) -> html string`, set `innerHTML`. Event handlers rout
 back into exported MFL reducers. Enough to write a real single-page widget with
 **all logic in machin** and no framework.
 
-**Tier 3 — a reactive framework (the Leptos/Yew analog).** Components, signals,
-and a **virtual-DOM diff** (or fine-grained reactive nodes) living in MFL;
-JS becomes a tiny host that applies a patch list machin computes. This is where
-"machin on the frontend" becomes ergonomic rather than a proof. Wants the
-vector/array marshaling layer and probably FFI **callbacks** (host → MFL, shared
-with the game-dev roadmap's Phase-4 callbacks).
+**Tier 3 — a reactive framework, the Leptos/Yew analog (core reached, v0.53.0).**
+Signals + **fine-grained reactive nodes** (not a vdom diff) live in MFL; JS is a
+tiny host that applies the patch list machin computes —
+[`framework/reactive.src`](../framework) + [machin-web-demo-reactive](https://github.com/javimosch/machin-web-demo-reactive).
+A signal change recomputes only its dependent bindings and patches only the slots
+whose text changed. Still ahead toward ergonomic: **computed/memoized** signals,
+**keyed list reconciliation** (dynamic children), a templating helper so a
+component declares its slots without hand-written HTML, and probably FFI
+**callbacks** (host → MFL, shared with the game-dev roadmap's Phase-4 callbacks).
 
 **Tier 4 — full-stack MFL (under way).** One language across the wire: a component
 written once in MFL, run on the [`machweb`](../framework) server for first paint
