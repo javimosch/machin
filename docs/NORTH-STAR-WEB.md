@@ -49,6 +49,7 @@ north star is to make it first-class.
 | **fine-grained reactivity** | [machin-web-demo-reactive](https://github.com/javimosch/machin-web-demo-reactive) · [`framework/reactive.src`](../framework) | signals + a patch list (Solid/Leptos model) in MFL: auto-tracked deps, only changed bindings recompute, only changed text patches — drove `[]func` (v0.53.0), computed + keyed lists (v0.54.0), templating (v0.55.0) |
 | **reactive forms (text input)** | [machin-web-demo-todo](https://github.com/javimosch/machin-web-demo-todo) | a todo app — typed text flows into wasm via `ptr_str` (v0.57.0); signals + computed + keyed list + templating |
 | **CRUD back-office** | [machin-web-demo-users](https://github.com/javimosch/machin-web-demo-users) | one binary = CLI + HTTP server + **SQLite** JSON API + reactive view; `sqlite_query`→JSON + `json_get` + `ptr_str` |
+| **multi-page SPA / routing** | [machin-web-demo-router](https://github.com/javimosch/machin-web-demo-router) · [`framework/router.src`](../framework) | client-side router (the active route is a signal); no-reload nav, back/forward, deep-links; built on the `reaction()` primitive (v0.59.0) |
 | **isomorphic app boilerplate** | [boilerplate-cli-ui-machin-isomorphic](https://github.com/javimosch/boilerplate-cli-ui-machin-isomorphic) | one binary = CLI + HTTP server + JSON API + reactive wasm UI; SSR + hydrate (v0.56.0); shared `models.src` |
 | backend web framework | [`framework/machweb.src`](../framework) | `serve(port, handler)` → self-contained native server |
 
