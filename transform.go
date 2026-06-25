@@ -233,6 +233,13 @@ func freeIdents(body []Stmt, params []string) map[string]bool {
 			we(ex.L)
 			we(ex.R)
 		case *Call:
+			// The callee may be a captured closure variable (`fn()` where fn is a
+			// captured param/local), not a top-level function — mark it free so it is
+			// captured. Top-level function names and builtins aren't bound in the
+			// enclosing scope either, so this never captures them by mistake.
+			if !bound[ex.Callee] {
+				free[ex.Callee] = true
+			}
 			for _, a := range ex.Args {
 				we(a)
 			}
