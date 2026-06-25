@@ -120,6 +120,7 @@ const cRuntime = `#define _GNU_SOURCE
 #include <errno.h>
 #include <termios.h>
 #include <sys/select.h>
+#include <sys/wait.h>
 
 /* slices: a Go-style header over an unboxed backing array */
 typedef struct { void* data; int64_t len; int64_t cap; } mfl_slice;
@@ -909,6 +910,13 @@ static int64_t mfl_mkdir(const char* path) {
     int r = mkdir(path, 0755);
     if (r < 0 && errno == EEXIST) return 0;
     return r;
+}
+/* run a shell command, return its exit code (-1 if it could not be launched). For
+   process orchestration — e.g. spawning a detached daemon with a trailing "&". */
+static int64_t mfl_system(const char* cmd) {
+    int r = system(cmd);
+    if (r == -1) return -1;
+    return (int64_t)WEXITSTATUS(r);
 }
 
 /* copy n bytes into a fresh NUL-terminated arena string */
@@ -4079,6 +4087,8 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("mfl_write_file(%s, %s)", args[0], args[1]), nil
 	case "list_dir":
 		return fmt.Sprintf("mfl_list_dir(%s)", args[0]), nil
+	case "system":
+		return fmt.Sprintf("mfl_system(%s)", args[0]), nil
 	case "mkdir":
 		return fmt.Sprintf("mfl_mkdir(%s)", args[0]), nil
 	case "https_get":

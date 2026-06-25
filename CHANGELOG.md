@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.69.0
+
+- **`system(string) -> int`** — run a shell command, returning its exit code (-1 if
+  unlaunchable). For process orchestration — e.g. a CLI spawning a detached daemon
+  (`system("./app serve >log 2>&1 &")`). Surfaced by the machin-cms dogfood (a
+  daemon start/stop mode).
+
 ## v0.68.0
 
 - **`parse_float(string) -> float`** — parse a floating-point number (strtod; 0.0 on
