@@ -2061,6 +2061,12 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		c.addPair(argSlots[0], c.cInt)
 		c.addPair(argSlots[1], c.cInt)
 		return c.cInt, nil
+	case "ptr_str":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("ptr_str: 1 arg (pointer to NUL-terminated bytes)")
+		}
+		c.addPair(argSlots[0], c.cInt)
+		return c.cString, nil
 	case "listen", "accept":
 		if len(argSlots) != 1 {
 			return 0, fmt.Errorf("%s: 1 arg", ex.Callee)
