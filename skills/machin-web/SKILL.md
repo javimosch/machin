@@ -180,6 +180,8 @@ instance.exports.start();
 The state lives in machin; the server is the source of truth (SQLite); the client is
 reactive over the API. One binary, one language.
 
+> Worked implementation: [machin-web-demo-users](https://github.com/javimosch/machin-web-demo-users) — the exact app above, end to end. (For the *isomorphic* shape instead, see the boilerplate.)
+
 ## Pointers
 
 - Frameworks: [`framework/machweb.src`](../../framework) · `reactive.src` · `flags.src`.

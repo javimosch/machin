@@ -48,6 +48,7 @@ north star is to make it first-class.
 | **isomorphic SSR** | [machin-web-demo-ssr](https://github.com/javimosch/machin-web-demo-ssr) | one `view.src` compiled into both a native machweb server (HTML per request) and the wasm client — server HTML and client re-render byte-identical |
 | **fine-grained reactivity** | [machin-web-demo-reactive](https://github.com/javimosch/machin-web-demo-reactive) · [`framework/reactive.src`](../framework) | signals + a patch list (Solid/Leptos model) in MFL: auto-tracked deps, only changed bindings recompute, only changed text patches — drove `[]func` (v0.53.0), computed + keyed lists (v0.54.0), templating (v0.55.0) |
 | **reactive forms (text input)** | [machin-web-demo-todo](https://github.com/javimosch/machin-web-demo-todo) | a todo app — typed text flows into wasm via `ptr_str` (v0.57.0); signals + computed + keyed list + templating |
+| **CRUD back-office** | [machin-web-demo-users](https://github.com/javimosch/machin-web-demo-users) | one binary = CLI + HTTP server + **SQLite** JSON API + reactive view; `sqlite_query`→JSON + `json_get` + `ptr_str` |
 | **isomorphic app boilerplate** | [boilerplate-cli-ui-machin-isomorphic](https://github.com/javimosch/boilerplate-cli-ui-machin-isomorphic) | one binary = CLI + HTTP server + JSON API + reactive wasm UI; SSR + hydrate (v0.56.0); shared `models.src` |
 | backend web framework | [`framework/machweb.src`](../framework) | `serve(port, handler)` → self-contained native server |
 
