@@ -1,20 +1,34 @@
 // postgres.src — a pure-MFL PostgreSQL client (wire protocol v3) over dial().
-// Connects, authenticates with SCRAM-SHA-256 (the modern Postgres default), and
-// runs simple text queries, returning rows as a JSON-array string — the SAME shape
-// as sqlite_query, so it composes with parse(rows, []T{}) and json_get.
+// SCRAM-SHA-256 auth; simple + parameterized queries returning rows as a JSON-array
+// string (the same shape as sqlite_query, so parse(rows, []T{}) decodes them).
 //
-//   pg_connect("127.0.0.1", 5432, "postgres", "machindb", "secret")
-//   rows := pg_query("SELECT id, name, email FROM users ORDER BY id")
-//   users := parse(rows, []User{})
-//   pg_disconnect()
+// Two ways to use it:
 //
-// No libpq, no cgo — just dial/read_bytes/write_bytes and the crypto builtins
-// (hmac_sha256_bytes / sha256_bytes / rand_bytes / base64_*_bytes). One connection
-// at a time (state in package globals). Text format; values typed via the result's
-// column OIDs so numeric/bool columns come back unquoted (valid JSON).
+//   • Single connection (simple scripts / one request at a time):
+//       pg_connect("127.0.0.1", 5432, "postgres", "machindb", "secret")
+//       rows := pg_query("SELECT id, name FROM users")          // or pg_exec(sql, params)
+//       pg_disconnect()
+//
+//   • A CONNECTION POOL (a concurrent server — machweb runs each request in its own
+//     goroutine, so they must not share one connection):
+//       pg_pool_init(8, "127.0.0.1", 5432, "postgres", "machindb", "secret")  // once, in main
+//       c := pg_acquire()                                       // per request
+//       rows := pgx(c, "SELECT id, name FROM users WHERE id = $1", []string{id})
+//       pg_release(c)
+//     The pool is an async channel of authenticated fds (a semaphore); each acquired
+//     connection has its own read buffer, so concurrent requests never interleave.
+//
+// No libpq, no cgo — just dial/read_bytes/write_bytes and the crypto builtins.
 
-var pg_fd = 0
-var pg_buf = bytes("")
+// A connection: the socket fd + a one-element read-buffer "box" ([]bytes whose [0] is
+// mutated in place, so the buffer persists across calls though PgConn is a value).
+type PgConn struct { fd int  buf []bytes }
+
+func pg_attach(fd) (c) {
+    bx := []bytes{}
+    bx = append(bx, bytes(""))
+    c = PgConn{fd: fd, buf: bx}
+}
 
 // ---- hex / byte helpers (build wire messages as hex, then from_hex) ----
 
@@ -33,7 +47,6 @@ func be32(b, off) (v) {
     v = (byte_at(b, off) << 24) | (byte_at(b, off + 1) << 16) | (byte_at(b, off + 2) << 8) | byte_at(b, off + 3)
 }
 
-// xor two equal-length byte buffers
 func xor_bytes(a, b) (r) {
     h := ""
     i := 0
@@ -44,7 +57,6 @@ func xor_bytes(a, b) (r) {
     r = from_hex(h)
 }
 
-// read a NUL-terminated string from a bytes buffer at off; returns (string, next-offset)
 func cstr_at(b, off) (s, next) {
     e := off
     while byte_at(b, e) != 0 { e = e + 1 }
@@ -52,39 +64,37 @@ func cstr_at(b, off) (s, next) {
     next = e + 1
 }
 
-// ---- socket framing ----
+// ---- socket framing (on a PgConn) ----
 
-func pg_fill(need) {
-    while len(pg_buf) < need {
-        chunk := read_bytes(pg_fd)
+func pg_fill(c, need) {
+    while len(c.buf[0]) < need {
+        chunk := read_bytes(c.fd)
         if len(chunk) == 0 { return }
-        pg_buf = bytes_concat(pg_buf, chunk)
+        c.buf[0] = bytes_concat(c.buf[0], chunk)
     }
 }
 
-// pg_msg reads one backend message: returns (type-byte, payload-bytes after the
-// 5-byte header). Length in the header counts itself but not the type byte.
-func pg_msg() (typ, payload) {
-    pg_fill(5)
-    typ = byte_at(pg_buf, 0)
-    mlen := be32(pg_buf, 1)
+// pg_msg reads one backend message: (type-byte, payload after the 5-byte header).
+func pg_msg(c) (typ, payload) {
+    pg_fill(c, 5)
+    typ = byte_at(c.buf[0], 0)
+    mlen := be32(c.buf[0], 1)
     total := 1 + mlen
-    pg_fill(total)
-    payload = bytes_sub(pg_buf, 5, total)
-    pg_buf = bytes_sub(pg_buf, total, len(pg_buf))
+    pg_fill(c, total)
+    payload = bytes_sub(c.buf[0], 5, total)
+    c.buf[0] = bytes_sub(c.buf[0], total, len(c.buf[0]))
 }
 
-func pg_send_hex(h) { write_bytes(pg_fd, from_hex(h)) }
+func pg_send_hex(c, h) { write_bytes(c.fd, from_hex(h)) }
 
 // a typed frontend message: type byte + int32(len incl. itself) + body
-func pg_send(typ, body_hex) {
+func pg_send(c, typ, body_hex) {
     total := 4 + (len(body_hex) / 2)
-    pg_send_hex(hx_str(typ) + hx_i32(total) + body_hex)
+    pg_send_hex(c, hx_str(typ) + hx_i32(total) + body_hex)
 }
 
 // ---- SCRAM-SHA-256 ----
 
-// PBKDF2-HMAC-SHA256, one 32-byte block (dkLen = hLen): fold U1..Uiter with XOR.
 func pbkdf2(pw, salt, iter) (res) {
     blk := bytes_concat(salt, from_hex("00000001"))
     u := hmac_sha256_bytes(pw, blk)
@@ -97,22 +107,20 @@ func pbkdf2(pw, salt, iter) (res) {
     }
 }
 
-// value of a "k=v" SCRAM attribute (returns v)
 func scram_attr(s, key) (v) {
     for _, part := range split(s, ",") {
         if has_prefix(part, key + "=") { v = substr(part, len(key) + 1, len(part)) }
     }
 }
 
-func pg_scram(user, password) {
+func pg_scram(c, user, password) {
     nonce := base64_encode_bytes(rand_bytes(18))
     cfirst_bare := "n=,r=" + nonce
     cfirst := "n,," + cfirst_bare
-    // SASLInitialResponse: mechanism name + NUL + int32(len) + client-first
-    pg_send("p", hx_str("SCRAM-SHA-256") + "00" + hx_i32(len(cfirst)) + hx_str(cfirst))
+    pg_send(c, "p", hx_str("SCRAM-SHA-256") + "00" + hx_i32(len(cfirst)) + hx_str(cfirst))
 
-    typ, pl := pg_msg()                       // expect 'R' (82) AuthenticationSASLContinue
-    sf := bytes_str(bytes_sub(pl, 4, len(pl)))  // skip the int32 auth code -> server-first text
+    typ, pl := pg_msg(c)                       // 'R' AuthenticationSASLContinue
+    sf := bytes_str(bytes_sub(pl, 4, len(pl)))
     rnonce := scram_attr(sf, "r")
     salt := base64_decode_bytes(scram_attr(sf, "s"))
     iter := parse_int(scram_attr(sf, "i"))
@@ -124,40 +132,37 @@ func pg_scram(user, password) {
     auth_msg := cfirst_bare + "," + sf + "," + cfinal_bare
     client_sig := hmac_sha256_bytes(stored_key, bytes(auth_msg))
     proof := base64_encode_bytes(xor_bytes(client_key, client_sig))
-    // SASLResponse: client-final
-    pg_send("p", hx_str(cfinal_bare + ",p=" + proof))
+    pg_send(c, "p", hx_str(cfinal_bare + ",p=" + proof))
 
-    // drain AuthenticationSASLFinal / Ok / ParameterStatus / BackendKeyData until ReadyForQuery
     done := 0
     while done == 0 {
-        mt, mp := pg_msg()
-        if mt == 90 { done = 1 }              // 'Z' ReadyForQuery
-        if mt == 69 { done = 1 }              // 'E' ErrorResponse (auth failed)
+        mt, mp := pg_msg(c)
+        if mt == 90 { done = 1 }               // 'Z' ReadyForQuery
+        if mt == 69 { done = 1 }               // 'E' ErrorResponse
     }
 }
 
-// ---- connect / query ----
+// ---- open / close a connection ----
 
-func pg_connect(host, port, user, db, password) {
-    pg_fd = dial(host, port)
-    pg_buf = bytes("")
+// pg_open dials, runs the startup + SCRAM handshake, and returns an authenticated
+// PgConn ready for pgq/pgx.
+func pg_open(host, port, user, db, password) (c) {
+    c = pg_attach(dial(host, port))
     params := hx_str("user") + "00" + hx_str(user) + "00" + hx_str("database") + "00" + hx_str(db) + "00" + "00"
-    body := hx_i32(196608) + params         // protocol 3.0
+    body := hx_i32(196608) + params            // protocol 3.0
     total := 4 + (len(body) / 2)
-    pg_send_hex(hx_i32(total) + body)        // StartupMessage has no type byte
-
-    typ, pl := pg_msg()                      // 'R' AuthenticationSASL (10) -> do SCRAM
-    pg_scram(user, password)
+    pg_send_hex(c, hx_i32(total) + body)        // StartupMessage (no type byte)
+    typ, pl := pg_msg(c)                        // 'R' AuthenticationSASL
+    pg_scram(c, user, password)
 }
 
-func pg_disconnect() {
-    pg_send_hex(hx_str("X") + hx_i32(4))     // Terminate
-    close(pg_fd)
+func pg_close(c) {
+    pg_send_hex(c, hx_str("X") + hx_i32(4))     // Terminate
+    close(c.fd)
 }
 
-// a numeric/bool column OID emits an unquoted JSON value; everything else is a
-// quoted, escaped string. (int2 21, int4 23, int8 20, oid 26, float4 700,
-// float8 701, numeric 1700, bool 16.)
+// ---- result parsing ----
+
 func pg_is_number(oid) (yes) {
     yes = 0
     if oid == 21 { yes = 1 }
@@ -176,17 +181,15 @@ func json_str(s) (out) {
     out = "\"" + e + "\""
 }
 
-// pg_collect reads the backend response stream until ReadyForQuery and returns the
-// DataRows as a JSON-array string. Shared by the simple (pg_query) and extended
-// (pg_exec) paths — RowDescription/DataRow are identical in both protocols.
-func pg_collect() (out) {
+// pg_collect reads the response stream until ReadyForQuery -> JSON-array-of-rows string.
+func pg_collect(c) (out) {
     names := []string{}
     oids := []int{}
     rows := []string{}
     done := 0
     while done == 0 {
-        typ, pl := pg_msg()
-        if typ == 84 {                       // 'T' RowDescription
+        typ, pl := pg_msg(c)
+        if typ == 84 {                          // 'T' RowDescription
             nf := be16(pl, 0)
             off := 2
             names = []string{}
@@ -195,27 +198,27 @@ func pg_collect() (out) {
             while i < nf {
                 nm, nx := cstr_at(pl, off)
                 names = append(names, nm)
-                oids = append(oids, be32(pl, nx + 6))  // typeOID is 6 bytes past the name
+                oids = append(oids, be32(pl, nx + 6))
                 off = nx + 18
                 i = i + 1
             }
         }
-        if typ == 68 {                       // 'D' DataRow
+        if typ == 68 {                          // 'D' DataRow
             nc := be16(pl, 0)
             off := 2
             obj := "{"
-            c := 0
-            while c < nc {
+            col := 0
+            while col < nc {
                 vlen := be32(pl, off)
                 off = off + 4
                 val := "null"
-                if vlen != 4294967295 {        // -1 as unsigned int32 = SQL NULL
+                if vlen != 4294967295 {          // -1 = SQL NULL
                     raw := bytes_str(bytes_sub(pl, off, off + vlen))
                     off = off + vlen
-                    if pg_is_number(oids[c]) == 1 {
+                    if pg_is_number(oids[col]) == 1 {
                         val = raw
                     } else {
-                        if oids[c] == 16 {     // bool: 't'/'f' -> true/false
+                        if oids[col] == 16 {
                             val = "false"
                             if raw == "t" { val = "true" }
                         } else {
@@ -223,46 +226,70 @@ func pg_collect() (out) {
                         }
                     }
                 }
-                if c > 0 { obj = obj + "," }
-                obj = obj + json_str(names[c]) + ":" + val
-                c = c + 1
+                if col > 0 { obj = obj + "," }
+                obj = obj + json_str(names[col]) + ":" + val
+                col = col + 1
             }
             obj = obj + "}"
             rows = append(rows, obj)
         }
-        if typ == 90 { done = 1 }             // 'Z' ReadyForQuery
-        if typ == 69 { done = 1 }             // 'E' ErrorResponse
+        if typ == 90 { done = 1 }               // 'Z' ReadyForQuery
+        if typ == 69 { done = 1 }               // 'E' ErrorResponse
     }
     out = "[" + join(rows, ",") + "]"
 }
 
-// pg_query runs a SIMPLE text query (no parameters) and returns the rows as a
-// JSON-array string. Use it for trusted/constant SQL; for anything with user
-// input use pg_exec, which binds parameters server-side (injection-safe).
-func pg_query(sql) (out) {
-    pg_send("Q", hx_str(sql) + "00")
-    out = pg_collect()
+// ---- queries on an explicit connection ----
+
+// pgq runs a SIMPLE text query (no parameters) on c. Trusted/constant SQL only.
+func pgq(c, sql) (out) {
+    pg_send(c, "Q", hx_str(sql) + "00")
+    out = pg_collect(c)
 }
 
-// pg_exec runs a PARAMETERIZED statement via the extended query protocol
-// (Parse/Bind/Describe/Execute/Sync): the SQL uses $1, $2, ... placeholders and
-// params ([]string) are bound server-side as text — never interpolated, so it is
-// injection-safe. Returns rows as a JSON-array string ([] for INSERT/UPDATE/DELETE).
-//
-//   pg_exec("SELECT * FROM users WHERE email = $1", []string{addr})
-//   pg_exec("INSERT INTO users (name, email) VALUES ($1, $2)", []string{n, e})
-func pg_exec(sql, params) (out) {
-    pg_send("P", "00" + hx_str(sql) + "00" + "0000")     // Parse: unnamed stmt, server infers types
-    b := "00" + "00" + "0000" + hx_i16(len(params))      // Bind: unnamed portal/stmt, text params
+// pgx runs a PARAMETERIZED statement on c via the extended protocol ($1, $2, …
+// bound server-side as text — injection-safe). Rows for SELECT, [] otherwise.
+func pgx(c, sql, params) (out) {
+    pg_send(c, "P", "00" + hx_str(sql) + "00" + "0000")
+    b := "00" + "00" + "0000" + hx_i16(len(params))
     i := 0
     while i < len(params) {
         b = b + hx_i32(len(params[i])) + hx_str(params[i])
         i = i + 1
     }
-    b = b + "0000"                                        // result columns: text
-    pg_send("B", b)
-    pg_send("D", hx_str("P") + "00")                     // Describe the portal -> RowDescription
-    pg_send("E", "00" + hx_i32(0))                       // Execute: all rows
-    pg_send("S", "")                                      // Sync
-    out = pg_collect()
+    b = b + "0000"
+    pg_send(c, "B", b)
+    pg_send(c, "D", hx_str("P") + "00")
+    pg_send(c, "E", "00" + hx_i32(0))
+    pg_send(c, "S", "")
+    out = pg_collect(c)
 }
+
+// ---- connection pool (for concurrent servers) ----
+
+var pg_pool = make(chan int)
+
+// pg_pool_init opens n authenticated connections and parks their fds in the pool.
+// Call once at startup; then pg_acquire/pg_release per request.
+func pg_pool_init(n, host, port, user, db, password) {
+    i := 0
+    while i < n {
+        c := pg_open(host, port, user, db, password)
+        pg_pool <- c.fd
+        i = i + 1
+    }
+}
+
+// pg_acquire takes a connection from the pool (blocks until one is free) and wraps it
+// with a fresh read buffer. pg_release returns it.
+func pg_acquire() (c) { c = pg_attach(<-pg_pool) }
+func pg_release(c) { pg_pool <- c.fd }
+
+// ---- single-connection convenience API (one implicit connection) ----
+
+var pg_default = PgConn{}
+
+func pg_connect(host, port, user, db, password) { pg_default = pg_open(host, port, user, db, password) }
+func pg_query(sql) (out) { out = pgq(pg_default, sql) }
+func pg_exec(sql, params) (out) { out = pgx(pg_default, sql, params) }
+func pg_disconnect() { pg_close(pg_default) }

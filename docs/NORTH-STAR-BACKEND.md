@@ -35,10 +35,8 @@ paid for two: `read_bytes` and binary-safe base64.
 
 ## Roadmap (dogfood order)
 
-1. **Connection pooling / reuse** for the Postgres + Redis clients (keep a connection
-   open across requests instead of dial-per-call), plus Postgres COPY and TLS as needed.
-2. **The rest as pulled by real apps** — SMTP, a job scheduler, a `.env`/config loader,
-   migrations, a JSON logger. Build when a dogfood app needs them.
+1. **The rest as pulled by real apps** — SMTP, a job scheduler, a `.env`/config loader,
+   migrations, a JSON logger, plus Postgres COPY/TLS. Build when a dogfood app needs them.
 
 ## Milestones
 
@@ -49,9 +47,11 @@ paid for two: `read_bytes` and binary-safe base64.
 | **Cookies + signed sessions** (machweb, v0.62.0) | `cookie`/`set_cookie`/`clear_cookie` + unforgeable HMAC sessions (`set_session`/`get_session`). The auth foundation — the half of login that isn't the identity provider. |
 | **SSO — OAuth2/OIDC** (`framework/sso.src`, v0.63.0) | "Log in with Google/Microsoft" on top of the sessions: `sso_begin`/`sso_complete`, identity via userinfo (no JWT/RSA). Surfaced + fixed a compiler bug — an omitted string struct field was NULL (now `""`). Added machweb `redirect`/`query`. |
 | **Redis client** (`framework/redis.src`, v0.64.0) | RESP over `dial()`, no client lib; typed helpers + `redis_cmd`; arrays → JSON → `parse([]string{})`. Cache, sessions, counters, queues. Same pure-MFL-client pattern as Postgres. |
+| **Connection pooling** (Postgres + Redis, v0.65.0) | Handle-based connections + an async-channel pool (`pg_pool_init`/`pg_acquire`/`pg_release`, `redis_pool_init`/…). Makes the datastore clients concurrency-safe under machweb's per-request goroutines — the gap the SaaS demo surfaced. No new language feature: machin channels are already unbounded queues (a semaphore). |
 
 The language is now a credible single-binary SME backend: HTTP server (cookies, signed
 sessions, **SSO login**) + SSR/wasm UI + **SQLite / Postgres / Redis** (safe parameterized
-queries, cache/queues) + a rich crypto kit. Auth is end-to-end and the core datastores
-are covered. What's left is operational polish — connection pooling, then SMTP / jobs /
-config / migrations / logging, built as real apps pull them in.
+queries, cache/queues, **pooled for concurrency**) + a rich crypto kit. Auth is end-to-end,
+the core datastores are covered, and a [worked SaaS demo](https://github.com/javimosch/machin-saas-demo)
+ties it together under concurrent load. What's left is breadth — SMTP / jobs / config /
+migrations / logging, built as real apps pull them in.

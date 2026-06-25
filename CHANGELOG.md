@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.65.0
+
+- **Connection pooling for the Postgres + Redis clients** — the gap the SaaS demo
+  surfaced (machweb runs each request in its own goroutine, so a shared single
+  connection would interleave). The clients are now **handle-based**: a connection is
+  a `PgConn`/`RedisConn` (an fd + a one-element read-buffer box that persists across
+  calls though the struct is a value). A **pool** is an async channel of authenticated
+  fds (machin channels are unbounded queues → a natural semaphore, no new language
+  feature needed): `pg_pool_init(n, …)` / `pg_acquire()` / `pgq`/`pgx`/`pg_release`,
+  and `redis_pool_init(n, …)` / `redis_acquire()` / `r*` helpers / `redis_release`.
+  Each acquired connection has its own buffer, so concurrent requests never interleave.
+  The single-connection API (`pg_connect`/`pg_query`/`pg_exec`; `redis_connect`/
+  `redis_set`/…) is unchanged (thin wrappers over one default connection). Verified:
+  30 goroutines over 4 pooled connections, every result correct (gated tests); the
+  [SaaS demo](https://github.com/javimosch/machin-saas-demo) handles 40 concurrent
+  requests cleanly.
+
 ## v0.64.0
 
 - **Redis client** (`framework/redis.src`) — a pure-MFL Redis client speaking the
