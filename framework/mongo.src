@@ -1,0 +1,85 @@
+// mongo.src — a pure-MFL MongoDB client over the wire protocol (OP_MSG, opcode 2013),
+// on top of bson.src. Commands are BSON documents; replies come back decoded to JSON
+// (so json_get / parse read them). For a local dev MongoDB; v1 is unauthenticated.
+//
+//   mongo_connect("127.0.0.1", 27017)
+//   d := bson_str(bson_i32(bson_new(), "age", 36), "name", "Ada")
+//   mongo_insert_one("mydb", "people", bson_finish(d))
+//   docs := mongo_find_all("mydb", "people")     // a JSON array string -> parse([]T{})
+//   mongo_close()
+//
+// Encode is little-endian. find_all returns the first batch (~101 docs); cursor
+// pagination (getMore) is a follow-up.
+
+var mongo_fd = 0
+var mongo_buf = bytes("")
+var mongo_reqid = 0
+
+func mongo_connect(host, port) { mongo_fd = dial(host, port)  mongo_buf = bytes("") }
+func mongo_close() { close(mongo_fd) }
+
+func mongo_fill(need) {
+    while len(mongo_buf) < need {
+        chunk := read_bytes(mongo_fd)
+        if len(chunk) == 0 { return }
+        mongo_buf = bytes_concat(mongo_buf, chunk)
+    }
+}
+
+// mongo_cmd_bson sends a command (a finished BSON document) as an OP_MSG and returns
+// the reply document decoded to JSON.
+func mongo_cmd_bson(cmd) (replyJson) {
+    mongo_reqid = mongo_reqid + 1
+    // body = flagBits(0) + section kind 0 + command document
+    body := bytes_concat(from_hex(bs_le32h(0)), bytes_concat(from_hex("00"), cmd))
+    msglen := 16 + len(body)
+    // header = messageLength, requestID, responseTo(0), opCode(2013)
+    header := bytes_concat(from_hex(bs_le32h(msglen)),
+        bytes_concat(from_hex(bs_le32h(mongo_reqid)),
+        bytes_concat(from_hex(bs_le32h(0)), from_hex(bs_le32h(2013)))))
+    write_bytes(mongo_fd, bytes_concat(header, body))
+
+    mongo_fill(4)
+    rlen := bs_le32(mongo_buf, 0)
+    mongo_fill(rlen)
+    replyJson, _ = bson_to_json_at(mongo_buf, 21)   // skip 16 header + 4 flagBits + 1 section kind
+    mongo_buf = bytes_sub(mongo_buf, rlen, len(mongo_buf))
+}
+
+// mongo_insert_one inserts one finished BSON document into db.coll. Returns ok (1/0).
+func mongo_insert_one(db, coll, doc) (ok) {
+    docs := bson_finish(bson_subdoc(bson_new(), "0", doc))   // documents: [doc] (array {"0": doc})
+    c := bson_str(bson_new(), "insert", coll)
+    c = bson_subarr(c, "documents", docs)
+    c = bson_str(c, "$db", db)
+    reply := mongo_cmd_bson(bson_finish(c))
+    n, _ := json_get(reply, ".n")
+    ok = 0
+    if n == "1" { ok = 1 }
+}
+
+// mongo_find_all returns the first batch of docs in db.coll as a JSON-array string.
+func mongo_find_all(db, coll) (docs) {
+    c := bson_str(bson_new(), "find", coll)
+    c = bson_subdoc(c, "filter", bson_finish(bson_new()))    // {} — match all
+    c = bson_str(c, "$db", db)
+    reply := mongo_cmd_bson(bson_finish(c))
+    docs, _ = json_get(reply, ".cursor.firstBatch")
+    if docs == "" { docs = "[]" }
+}
+
+// mongo_count returns the number of documents in db.coll.
+func mongo_count(db, coll) (n) {
+    c := bson_str(bson_new(), "count", coll)
+    c = bson_str(c, "$db", db)
+    reply := mongo_cmd_bson(bson_finish(c))
+    ns, _ := json_get(reply, ".n")
+    n = parse_int(ns)
+}
+
+// mongo_drop removes a collection (ignores "doesn't exist"). For idempotent re-runs.
+func mongo_drop(db, coll) {
+    c := bson_str(bson_new(), "drop", coll)
+    c = bson_str(c, "$db", db)
+    r := mongo_cmd_bson(bson_finish(c))
+}

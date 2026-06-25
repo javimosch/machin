@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.66.0
+
+- **MongoDB client** (`framework/mongo.src` + `framework/bson.src`) — a pure-MFL
+  client speaking the **OP_MSG wire protocol** over `dial()`, with a **BSON codec**,
+  no driver and no cgo. `bson.src` builds a document (`bson_new` + `bson_str`/`bson_i32`/
+  `bson_i64`/`bson_bool`/`bson_null`/`bson_subdoc`/`bson_subarr` + `bson_finish`) and
+  decodes one to a JSON string (`bson_to_json`). `mongo.src`: `mongo_connect`,
+  `mongo_insert_one`, `mongo_find_all` (→ a JSON-array string, so `parse(docs, []T{})`
+  decodes; `_id` ObjectId comes back as a hex string), `mongo_count`, `mongo_drop`,
+  `mongo_close`. Verified against `mongo:7`. v1: unauthenticated local Mongo,
+  int/string/bool/null/ObjectId (doubles decode to null), first-batch finds.
+
 ## v0.65.0
 
 - **Connection pooling for the Postgres + Redis clients** — the gap the SaaS demo

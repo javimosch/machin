@@ -1,0 +1,120 @@
+// bson.src — a minimal BSON codec (the binary format MongoDB speaks). Encode is a
+// builder (you add typed fields); decode walks a BSON document into a JSON string so
+// the rest of machin (json_get / parse) can read it. Little-endian throughout.
+//
+// v1 types: string, int32, int64, bool, null, ObjectId (decode → hex string),
+// embedded document, array. Doubles (BSON 0x01) are decoded as null (no f64 byte
+// access yet) — fine when you control the data (e.g. SQLite int/text ⇄ Mongo).
+
+// ---- little-endian hex helpers (build bytes via hex, then from_hex) ----
+
+func bs_hx2(n) (s) {
+    d := "0123456789abcdef"
+    s = charat(d, (n >> 4) & 15) + charat(d, n & 15)
+}
+func bs_le32h(n) (h) { h = bs_hx2(n & 255) + bs_hx2((n >> 8) & 255) + bs_hx2((n >> 16) & 255) + bs_hx2((n >> 24) & 255) }
+func bs_le64h(n) (h) { h = bs_le32h(n) + bs_le32h(n >> 32) }
+
+func bs_le32(b, i) (v) {
+    v = byte_at(b, i) | (byte_at(b, i + 1) << 8) | (byte_at(b, i + 2) << 16) | (byte_at(b, i + 3) << 24)
+}
+func bs_le64(b, i) (v) {
+    v = bs_le32(b, i) | (byte_at(b, i + 4) << 32) | (byte_at(b, i + 5) << 40) | (byte_at(b, i + 6) << 48) | (byte_at(b, i + 7) << 56)
+}
+
+// ---- encoder (a builder over a bytes accumulator of elements) ----
+
+func bson_new() (acc) { acc = bytes("") }
+
+// one element: type byte + key + NUL + value bytes
+func bs_el(t, key, vb) (e) {
+    e = bytes_concat(from_hex(bs_hx2(t)), bytes_concat(bytes_concat(bytes(key), from_hex("00")), vb))
+}
+
+func bson_str(acc, key, val) (out) {
+    vb := bytes_concat(from_hex(bs_le32h(len(val) + 1)), bytes_concat(bytes(val), from_hex("00")))
+    out = bytes_concat(acc, bs_el(2, key, vb))
+}
+func bson_i32(acc, key, n) (out) { out = bytes_concat(acc, bs_el(16, key, from_hex(bs_le32h(n)))) }
+func bson_i64(acc, key, n) (out) { out = bytes_concat(acc, bs_el(18, key, from_hex(bs_le64h(n)))) }
+func bson_bool(acc, key, v) (out) { out = bytes_concat(acc, bs_el(8, key, from_hex(bs_hx2(v)))) }
+func bson_null(acc, key) (out) { out = bytes_concat(acc, bs_el(10, key, bytes(""))) }
+func bson_subdoc(acc, key, doc) (out) { out = bytes_concat(acc, bs_el(3, key, doc)) }
+func bson_subarr(acc, key, arr) (out) { out = bytes_concat(acc, bs_el(4, key, arr)) }
+
+// bson_finish wraps the accumulated elements into a complete document.
+func bson_finish(acc) (doc) {
+    total := len(acc) + 5
+    doc = bytes_concat(from_hex(bs_le32h(total)), bytes_concat(acc, from_hex("00")))
+}
+
+// ---- decoder (BSON document/array bytes -> JSON string) ----
+
+func bs_jstr(s) (out) {
+    e := replace(s, "\\", "\\\\")
+    e = replace(e, "\"", "\\\"")
+    e = replace(e, "\n", "\\n")
+    out = "\"" + e + "\""
+}
+
+// bs_val parses one value of type t at offset i -> (json, next-offset).
+func bs_val(b, i, t) (vj, nxt) {
+    vj = "null"
+    nxt = i
+    if t == 2 {                                  // string
+        slen := bs_le32(b, i)
+        vj = bs_jstr(bytes_str(bytes_sub(b, i + 4, i + 4 + slen - 1)))
+        nxt = i + 4 + slen
+    }
+    if t == 16 { vj = str(bs_le32(b, i))  nxt = i + 4 }          // int32
+    if t == 18 { vj = str(bs_le64(b, i))  nxt = i + 8 }          // int64
+    if t == 9  { vj = str(bs_le64(b, i))  nxt = i + 8 }          // datetime (ms) -> number
+    if t == 8  { vj = "false"  if byte_at(b, i) == 1 { vj = "true" }  nxt = i + 1 }
+    if t == 10 { vj = "null"  nxt = i }                          // null
+    if t == 7  { vj = bs_jstr(to_hex(bytes_sub(b, i, i + 12)))  nxt = i + 12 }  // ObjectId -> hex
+    if t == 1  { vj = "null"  nxt = i + 8 }                      // double (unsupported -> null)
+    if t == 3  { vj, nxt = bson_to_json_at(b, i) }              // embedded document
+    if t == 4  { vj, nxt = bs_arr(b, i) }                       // array
+}
+
+// bson_to_json_at parses a document at offset off -> (json object string, next-offset).
+func bson_to_json_at(b, off) (j, nxt) {
+    dlen := bs_le32(b, off)
+    end := off + dlen
+    i := off + 4
+    parts := []string{}
+    while i < end - 1 {
+        t := byte_at(b, i)
+        i = i + 1
+        ks := i
+        while byte_at(b, i) != 0 { i = i + 1 }
+        key := bytes_str(bytes_sub(b, ks, i))
+        i = i + 1
+        vj, ni := bs_val(b, i, t)
+        i = ni
+        parts = append(parts, bs_jstr(key) + ":" + vj)
+    }
+    j = "{" + join(parts, ",") + "}"
+    nxt = end
+}
+
+func bs_arr(b, off) (j, nxt) {
+    dlen := bs_le32(b, off)
+    end := off + dlen
+    i := off + 4
+    parts := []string{}
+    while i < end - 1 {
+        t := byte_at(b, i)
+        i = i + 1
+        while byte_at(b, i) != 0 { i = i + 1 }
+        i = i + 1
+        vj, ni := bs_val(b, i, t)
+        i = ni
+        parts = append(parts, vj)
+    }
+    j = "[" + join(parts, ",") + "]"
+    nxt = end
+}
+
+// bson_to_json decodes a top-level BSON document to a JSON object string.
+func bson_to_json(b) (j) { j, nx := bson_to_json_at(b, 0)  j = j }
