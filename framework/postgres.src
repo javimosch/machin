@@ -1,0 +1,235 @@
+// postgres.src — a pure-MFL PostgreSQL client (wire protocol v3) over dial().
+// Connects, authenticates with SCRAM-SHA-256 (the modern Postgres default), and
+// runs simple text queries, returning rows as a JSON-array string — the SAME shape
+// as sqlite_query, so it composes with parse(rows, []T{}) and json_get.
+//
+//   pg_connect("127.0.0.1", 5432, "postgres", "machindb", "secret")
+//   rows := pg_query("SELECT id, name, email FROM users ORDER BY id")
+//   users := parse(rows, []User{})
+//   pg_disconnect()
+//
+// No libpq, no cgo — just dial/read_bytes/write_bytes and the crypto builtins
+// (hmac_sha256_bytes / sha256_bytes / rand_bytes / base64_*_bytes). One connection
+// at a time (state in package globals). Text format; values typed via the result's
+// column OIDs so numeric/bool columns come back unquoted (valid JSON).
+
+var pg_fd = 0
+var pg_buf = bytes("")
+
+// ---- hex / byte helpers (build wire messages as hex, then from_hex) ----
+
+func hx2(n) (s) {
+    d := "0123456789abcdef"
+    s = charat(d, (n >> 4) & 15) + charat(d, n & 15)
+}
+func hx_i32(n) (s) {
+    s = hx2((n >> 24) & 255) + hx2((n >> 16) & 255) + hx2((n >> 8) & 255) + hx2(n & 255)
+}
+func hx_str(s) (h) { h = to_hex(bytes(s)) }
+
+func be16(b, off) (v) { v = (byte_at(b, off) << 8) | byte_at(b, off + 1) }
+func be32(b, off) (v) {
+    v = (byte_at(b, off) << 24) | (byte_at(b, off + 1) << 16) | (byte_at(b, off + 2) << 8) | byte_at(b, off + 3)
+}
+
+// xor two equal-length byte buffers
+func xor_bytes(a, b) (r) {
+    h := ""
+    i := 0
+    while i < len(a) {
+        h = h + hx2(byte_at(a, i) ^ byte_at(b, i))
+        i = i + 1
+    }
+    r = from_hex(h)
+}
+
+// read a NUL-terminated string from a bytes buffer at off; returns (string, next-offset)
+func cstr_at(b, off) (s, next) {
+    e := off
+    while byte_at(b, e) != 0 { e = e + 1 }
+    s = bytes_str(bytes_sub(b, off, e))
+    next = e + 1
+}
+
+// ---- socket framing ----
+
+func pg_fill(need) {
+    while len(pg_buf) < need {
+        chunk := read_bytes(pg_fd)
+        if len(chunk) == 0 { return }
+        pg_buf = bytes_concat(pg_buf, chunk)
+    }
+}
+
+// pg_msg reads one backend message: returns (type-byte, payload-bytes after the
+// 5-byte header). Length in the header counts itself but not the type byte.
+func pg_msg() (typ, payload) {
+    pg_fill(5)
+    typ = byte_at(pg_buf, 0)
+    mlen := be32(pg_buf, 1)
+    total := 1 + mlen
+    pg_fill(total)
+    payload = bytes_sub(pg_buf, 5, total)
+    pg_buf = bytes_sub(pg_buf, total, len(pg_buf))
+}
+
+func pg_send_hex(h) { write_bytes(pg_fd, from_hex(h)) }
+
+// a typed frontend message: type byte + int32(len incl. itself) + body
+func pg_send(typ, body_hex) {
+    total := 4 + (len(body_hex) / 2)
+    pg_send_hex(hx_str(typ) + hx_i32(total) + body_hex)
+}
+
+// ---- SCRAM-SHA-256 ----
+
+// PBKDF2-HMAC-SHA256, one 32-byte block (dkLen = hLen): fold U1..Uiter with XOR.
+func pbkdf2(pw, salt, iter) (res) {
+    blk := bytes_concat(salt, from_hex("00000001"))
+    u := hmac_sha256_bytes(pw, blk)
+    res = u
+    k := 1
+    while k < iter {
+        u = hmac_sha256_bytes(pw, u)
+        res = xor_bytes(res, u)
+        k = k + 1
+    }
+}
+
+// value of a "k=v" SCRAM attribute (returns v)
+func scram_attr(s, key) (v) {
+    for _, part := range split(s, ",") {
+        if has_prefix(part, key + "=") { v = substr(part, len(key) + 1, len(part)) }
+    }
+}
+
+func pg_scram(user, password) {
+    nonce := base64_encode_bytes(rand_bytes(18))
+    cfirst_bare := "n=,r=" + nonce
+    cfirst := "n,," + cfirst_bare
+    // SASLInitialResponse: mechanism name + NUL + int32(len) + client-first
+    pg_send("p", hx_str("SCRAM-SHA-256") + "00" + hx_i32(len(cfirst)) + hx_str(cfirst))
+
+    typ, pl := pg_msg()                       // expect 'R' (82) AuthenticationSASLContinue
+    sf := bytes_str(bytes_sub(pl, 4, len(pl)))  // skip the int32 auth code -> server-first text
+    rnonce := scram_attr(sf, "r")
+    salt := base64_decode_bytes(scram_attr(sf, "s"))
+    iter := parse_int(scram_attr(sf, "i"))
+
+    salted := pbkdf2(bytes(password), salt, iter)
+    client_key := hmac_sha256_bytes(salted, bytes("Client Key"))
+    stored_key := sha256_bytes(client_key)
+    cfinal_bare := "c=biws,r=" + rnonce
+    auth_msg := cfirst_bare + "," + sf + "," + cfinal_bare
+    client_sig := hmac_sha256_bytes(stored_key, bytes(auth_msg))
+    proof := base64_encode_bytes(xor_bytes(client_key, client_sig))
+    // SASLResponse: client-final
+    pg_send("p", hx_str(cfinal_bare + ",p=" + proof))
+
+    // drain AuthenticationSASLFinal / Ok / ParameterStatus / BackendKeyData until ReadyForQuery
+    done := 0
+    while done == 0 {
+        mt, mp := pg_msg()
+        if mt == 90 { done = 1 }              // 'Z' ReadyForQuery
+        if mt == 69 { done = 1 }              // 'E' ErrorResponse (auth failed)
+    }
+}
+
+// ---- connect / query ----
+
+func pg_connect(host, port, user, db, password) {
+    pg_fd = dial(host, port)
+    pg_buf = bytes("")
+    params := hx_str("user") + "00" + hx_str(user) + "00" + hx_str("database") + "00" + hx_str(db) + "00" + "00"
+    body := hx_i32(196608) + params         // protocol 3.0
+    total := 4 + (len(body) / 2)
+    pg_send_hex(hx_i32(total) + body)        // StartupMessage has no type byte
+
+    typ, pl := pg_msg()                      // 'R' AuthenticationSASL (10) -> do SCRAM
+    pg_scram(user, password)
+}
+
+func pg_disconnect() {
+    pg_send_hex(hx_str("X") + hx_i32(4))     // Terminate
+    close(pg_fd)
+}
+
+// a numeric/bool column OID emits an unquoted JSON value; everything else is a
+// quoted, escaped string. (int2 21, int4 23, int8 20, oid 26, float4 700,
+// float8 701, numeric 1700, bool 16.)
+func pg_is_number(oid) (yes) {
+    yes = 0
+    if oid == 21 { yes = 1 }
+    if oid == 23 { yes = 1 }
+    if oid == 20 { yes = 1 }
+    if oid == 26 { yes = 1 }
+    if oid == 700 { yes = 1 }
+    if oid == 701 { yes = 1 }
+    if oid == 1700 { yes = 1 }
+}
+
+func json_str(s) (out) {
+    e := replace(s, "\\", "\\\\")
+    e = replace(e, "\"", "\\\"")
+    e = replace(e, "\n", "\\n")
+    out = "\"" + e + "\""
+}
+
+// pg_query runs a simple text query and returns the rows as a JSON-array string.
+func pg_query(sql) (out) {
+    pg_send("Q", hx_str(sql) + "00")
+    names := []string{}
+    oids := []int{}
+    rows := []string{}
+    done := 0
+    while done == 0 {
+        typ, pl := pg_msg()
+        if typ == 84 {                       // 'T' RowDescription
+            nf := be16(pl, 0)
+            off := 2
+            names = []string{}
+            oids = []int{}
+            i := 0
+            while i < nf {
+                nm, nx := cstr_at(pl, off)
+                names = append(names, nm)
+                oids = append(oids, be32(pl, nx + 6))  // typeOID is 6 bytes past the name
+                off = nx + 18
+                i = i + 1
+            }
+        }
+        if typ == 68 {                       // 'D' DataRow
+            nc := be16(pl, 0)
+            off := 2
+            obj := "{"
+            c := 0
+            while c < nc {
+                vlen := be32(pl, off)
+                off = off + 4
+                val := "null"
+                if vlen != 4294967295 {        // -1 as unsigned int32 = SQL NULL
+                    raw := bytes_str(bytes_sub(pl, off, off + vlen))
+                    off = off + vlen
+                    if pg_is_number(oids[c]) == 1 {
+                        val = raw
+                    } else {
+                        if oids[c] == 16 {     // bool: 't'/'f' -> true/false
+                            val = "false"
+                            if raw == "t" { val = "true" }
+                        } else {
+                            val = json_str(raw)
+                        }
+                    }
+                }
+                if c > 0 { obj = obj + "," }
+                obj = obj + json_str(names[c]) + ":" + val
+                c = c + 1
+            }
+            obj = obj + "}"
+            rows = append(rows, obj)
+        }
+        if typ == 90 { done = 1 }             // 'Z' ReadyForQuery
+        if typ == 69 { done = 1 }             // 'E' ErrorResponse
+    }
+    out = "[" + join(rows, ",") + "]"
+}

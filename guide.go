@@ -9,7 +9,7 @@ import (
 
 // machinVersion is the single version string for the toolchain. Bump it when
 // cutting a release (alongside README badge / SPEC / CHANGELOG).
-const machinVersion = "0.59.1"
+const machinVersion = "0.60.0"
 
 // ---- the source-of-truth feature catalog ----
 //
@@ -160,6 +160,8 @@ func machinGuide() guideCatalog {
 			{"join", "([]string, string) -> string", "join with a separator", "string"},
 			{"base64_encode", "(string) -> string", "base64-encode text (standard, padded)", "string"},
 			{"base64_decode", "(string) -> string", "base64-decode (lenient: standard + url-safe; ignores padding)", "string"},
+			{"base64_encode_bytes", "(bytes) -> string", "base64-encode raw bytes (binary-safe, unlike base64_encode) — for crypto/wire payloads", "bytes"},
+			{"base64_decode_bytes", "(string) -> bytes", "base64-decode to raw bytes (binary-safe; lenient) — e.g. a SCRAM salt or a binary token", "bytes"},
 			{"url_encode", "(string) -> string", "percent-encode for URLs (RFC 3986; keeps A-Za-z0-9-._~, space -> %20)", "string"},
 			{"url_decode", "(string) -> string", "percent-decode a URL component (lenient: + -> space, bad %XX passes through)", "string"},
 			{"sha256", "(string) -> string", "SHA-256 of text, lowercase hex", "crypto"},
@@ -207,7 +209,8 @@ func machinGuide() guideCatalog {
 			{"dial", "(string, int) -> int", "TCP connect host:port -> fd (-1 on fail)", "net"},
 			{"listen", "(int) -> int", "open a listening TCP socket on a port", "net"},
 			{"accept", "(int) -> int", "accept a connection -> fd", "net"},
-			{"read", "(int) -> string", "read a chunk from an fd (blocks)", "net"},
+			{"read", "(int) -> string", "read a chunk from an fd (blocks); a C string, so it truncates at a NUL — use read_bytes for binary", "net"},
+			{"read_bytes", "(int) -> bytes", "read a chunk from an fd as raw bytes, NUL-safe (empty at EOF) — for binary wire protocols (Postgres/MySQL/Redis)", "net"},
 			{"write", "(int, string) -> int", "write to an fd", "net"},
 			{"write_bytes", "(int, bytes) -> int", "write raw bytes to an fd, NUL-safe — for binary HTTP responses", "net"},
 			{"close", "(int|chan) ->", "close an fd, or a channel (by argument type)", "net"},
@@ -269,6 +272,7 @@ func main() { println(str(sqrt(2.0))) }`},
 			{"map-comma-ok", "There is no map comma-ok: `v, ok := m[k]` does NOT compile. A read of an absent key returns the value type's zero value; use has(m, k) to test presence. (comma-ok is for channel receives: `v, ok := <-ch`.)"},
 			{"parse-witness", "parse(s, T{}) needs a value of T as a type witness, e.g. `u := parse(body, User{})`. A SLICE witness decodes an array: `parse(jsonArray, []T{}) -> []T`. For schemaless extraction use json_get(s, path); json(x) serializes any value."},
 			{"sqlite-rows-decode", "sqlite_query returns a JSON-array-of-rows STRING — decode the whole result with parse(rows, []T{}) to get a typed []T you can range over (this is the row-iteration idiom; columns map to struct fields by name). Reach for json_get only to pull ONE field, and remember json_get returns the raw JSON token: a string field comes back QUOTED. Always use parameterized sqlite_exec/query (?, []string{...}) — never string-concat user input into SQL."},
+			{"postgres-client", "framework/postgres.src is a pure-MFL PostgreSQL client (wire protocol v3 over dial(), SCRAM-SHA-256 auth) — no libpq/cgo. pg_connect(host, port, user, db, password); pg_query(sql) returns a JSON-array-of-rows STRING in the SAME shape as sqlite_query, so parse(rows, []T{}) decodes it (numeric/bool columns come back unquoted via their result OIDs); pg_disconnect(). Built on the binary primitives read_bytes + base64_*_bytes + the crypto builtins. v1 is the simple-query protocol (no ?-param binding yet — escape or use a trusted query); extended-protocol params are the next milestone. See docs/NORTH-STAR-BACKEND.md."},
 			{"multi-assign-only", "http_get and json_get return multiple values; use `a, b, c := http_get(u)`. Calling them as a single value is a compile error."},
 			{"int-float-no-implicit", "There is NO implicit int->float. Only a flexible numeric LITERAL (e.g. 5) promotes against a float; a CONCRETE int — a fn return, byte_at, len, a typed param, or an int-slice element — is a hard `int vs float` mismatch with a float. Wrap it: float(byte_at(b,0)) / 2.0. (int() goes the other way.) This also applies to f32/f64 struct fields in FFI cstructs."},
 			{"ffi-opaque-handle", "For a by-value C struct that contains pointers (raylib Sound/Music/Font/Texture with internals, FILE wrappers, ...), declare an OPAQUE cstruct with an empty body: `cstruct Sound {}`. machin holds the real C struct by value and passes it back to fns without naming its fields — receive it from a fn, store it (incl. []Sound), pass it on; no construct or .field. (A single pointer is simpler: the `ptr` FFI type, held as an int.)"},
