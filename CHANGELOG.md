@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.71.0
+
+- **MongoDB connection pooling** — the driver is now handle-based (a `MongoConn` =
+  fd + read-buffer box) with an async-channel pool, mirroring the Postgres/Redis
+  clients. `mongo_pool_init(n, host, port, user, pass)` once, then `mongo_acquire()` /
+  the `m*` handle ops (`mins`/`mfind`/`mfindall`/`mfindid`/`mdel`/`mdelid`/`mcount`/
+  `mdrop`/`mauth`/`mcmd`) / `mongo_release(c)` per request — so a concurrent server
+  (machweb's per-request goroutines) never interleaves on one connection. The global
+  `mongo_*` API is unchanged (thin wrappers over one default connection). Verified:
+  30 goroutines over 4 pooled connections, every result correct.
+
 ## v0.70.0
 
 - **MongoDB: query by `_id` (ObjectId) + filtered finds/deletes.** `bson_oid(acc, key,

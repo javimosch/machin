@@ -1,24 +1,67 @@
-// mongo.src — a pure-MFL MongoDB client over the wire protocol (OP_MSG, opcode 2013),
-// on top of bson.src. Commands are BSON documents; replies come back decoded to JSON
-// (so json_get / parse read them). For a local dev MongoDB; v1 is unauthenticated.
+// mongo.src — a pure-MFL MongoDB client (OP_MSG wire protocol, opcode 2013) on top of
+// bson.src. Commands are BSON documents; replies decode to JSON (json_get / parse).
+// SCRAM-SHA-256 auth, doubles, cursor pagination, query/delete by _id.
 //
-//   mongo_connect("127.0.0.1", 27017)
-//   d := bson_str(bson_i32(bson_new(), "age", 36), "name", "Ada")
-//   mongo_insert_one("mydb", "people", bson_finish(d))
-//   docs := mongo_find_all("mydb", "people")     // a JSON array string -> parse([]T{})
-//   mongo_close()
+// Two ways to use it:
 //
-// Encode is little-endian. find_all returns the first batch (~101 docs); cursor
-// pagination (getMore) is a follow-up.
+//   • Single connection:
+//       mongo_connect("127.0.0.1", 27017)         // + mongo_auth("admin", user, pw)
+//       mongo_insert_one("db", "people", bson_finish(bson_str(bson_new(), "name", "Ada")))
+//       docs := mongo_find_all("db", "people")     // JSON array -> parse([]T{})
+//       mongo_close()
+//
+//   • A CONNECTION POOL (a concurrent server — each request in its own goroutine must
+//     not share one connection):
+//       mongo_pool_init(8, "127.0.0.1", 27017, "", "")   // once; user "" = no auth
+//       c := mongo_acquire()                              // per request
+//       docs := mfindall(c, "db", "people")
+//       mongo_release(c)
+//     The pool is an async channel of connection fds (a semaphore); each acquired
+//     connection has its own read buffer, so concurrent requests never interleave.
 
-var mongo_fd = 0
-var mongo_buf = bytes("")
-var mongo_reqid = 0
+// A connection: socket fd + a one-element read-buffer box (mutated in place so it
+// persists across calls though MongoConn is a value type).
+type MongoConn struct { fd int  buf []bytes }
 
-func mongo_connect(host, port) { mongo_fd = dial(host, port)  mongo_buf = bytes("") }
-func mongo_close() { close(mongo_fd) }
+var mongo_reqid = 0     // request id; never validated (responseTo ignored), so global is fine
 
-// ---- SCRAM-SHA-256 authentication ----
+func mongo_attach(fd) (c) {
+    bx := []bytes{}
+    bx = append(bx, bytes(""))
+    c = MongoConn{fd: fd, buf: bx}
+}
+
+func mfill(c, need) {
+    while len(c.buf[0]) < need {
+        chunk := read_bytes(c.fd)
+        if len(chunk) == 0 { return }
+        c.buf[0] = bytes_concat(c.buf[0], chunk)
+    }
+}
+
+// mcmd sends a command (a finished BSON document) as an OP_MSG on c, returns the reply
+// document decoded to JSON.
+func mcmd(c, cmd) (replyJson) {
+    mongo_reqid = mongo_reqid + 1
+    body := bytes_concat(from_hex(bs_le32h(0)), bytes_concat(from_hex("00"), cmd))   // flagBits 0 + section 0 + cmd
+    msglen := 16 + len(body)
+    header := bytes_concat(from_hex(bs_le32h(msglen)),
+        bytes_concat(from_hex(bs_le32h(mongo_reqid)),
+        bytes_concat(from_hex(bs_le32h(0)), from_hex(bs_le32h(2013)))))
+    write_bytes(c.fd, bytes_concat(header, body))
+    mfill(c, 4)
+    rlen := bs_le32(c.buf[0], 0)
+    mfill(c, rlen)
+    replyJson, _ = bson_to_json_at(c.buf[0], 21)        // skip 16 header + 4 flagBits + 1 section kind
+    c.buf[0] = bytes_sub(c.buf[0], rlen, len(c.buf[0]))
+}
+
+func mongo_inner(arr) (s) {
+    s = ""
+    if len(arr) >= 2 { s = substr(arr, 1, len(arr) - 1) }
+}
+
+// ---- SCRAM-SHA-256 ----
 
 func m_unq(s) (r) {
     r = s
@@ -45,27 +88,23 @@ func m_attr(s, key) (v) {
     }
 }
 
-// mongo_auth authenticates the connection with SCRAM-SHA-256 (MongoDB's default).
-// authdb is where the user lives (usually "admin" for a root user). Call right after
-// mongo_connect; the authenticated connection can then operate on any database the
-// user is authorized for. Returns ok (1/0).
-func mongo_auth(authdb, user, password) (ok) {
+// mauth authenticates connection c with SCRAM-SHA-256. authdb is where the user lives
+// (usually "admin"). Returns ok (1/0).
+func mauth(c, authdb, user, password) (ok) {
     ok = 0
     nonce := base64_encode_bytes(rand_bytes(18))
     cfirst_bare := "n=" + user + ",r=" + nonce
-    // saslStart: client-first as a binary payload
-    c := bson_i32(bson_new(), "saslStart", 1)
-    c = bson_str(c, "mechanism", "SCRAM-SHA-256")
-    c = bson_binary(c, "payload", bytes("n,," + cfirst_bare))
-    c = bson_str(c, "$db", authdb)
-    r1 := mongo_cmd_bson(bson_finish(c))
+    s1 := bson_i32(bson_new(), "saslStart", 1)
+    s1 = bson_str(s1, "mechanism", "SCRAM-SHA-256")
+    s1 = bson_binary(s1, "payload", bytes("n,," + cfirst_bare))
+    s1 = bson_str(s1, "$db", authdb)
+    r1 := mcmd(c, bson_finish(s1))
     convid, _ := json_get(r1, ".conversationId")
     sfp, _ := json_get(r1, ".payload")
-    sf := m_unq(sfp)                              // server-first text
+    sf := m_unq(sfp)
     rnonce := m_attr(sf, "r")
     salt := base64_decode_bytes(m_attr(sf, "s"))
     iter := parse_int(m_attr(sf, "i"))
-    // SCRAM proof (same math as Postgres SCRAM)
     salted := m_pbkdf2(bytes(password), salt, iter)
     ckey := hmac_sha256_bytes(salted, bytes("Client Key"))
     skey := sha256_bytes(ckey)
@@ -73,79 +112,41 @@ func mongo_auth(authdb, user, password) (ok) {
     authmsg := cfirst_bare + "," + sf + "," + cfinal_bare
     csig := hmac_sha256_bytes(skey, bytes(authmsg))
     proof := base64_encode_bytes(m_xor(ckey, csig))
-    // saslContinue: client-final
-    c2 := bson_i32(bson_new(), "saslContinue", 1)
-    c2 = bson_i32(c2, "conversationId", parse_int(convid))
-    c2 = bson_binary(c2, "payload", bytes(cfinal_bare + ",p=" + proof))
-    c2 = bson_str(c2, "$db", authdb)
-    r2 := mongo_cmd_bson(bson_finish(c2))
+    s2 := bson_i32(bson_new(), "saslContinue", 1)
+    s2 = bson_i32(s2, "conversationId", parse_int(convid))
+    s2 = bson_binary(s2, "payload", bytes(cfinal_bare + ",p=" + proof))
+    s2 = bson_str(s2, "$db", authdb)
+    r2 := mcmd(c, bson_finish(s2))
     okv, _ := json_get(r2, ".ok")
     if okv == "1" { ok = 1 }
-    // some servers need a final empty saslContinue to reach done:true
     done2, _ := json_get(r2, ".done")
     if done2 != "true" {
-        c3 := bson_i32(bson_new(), "saslContinue", 1)
-        c3 = bson_i32(c3, "conversationId", parse_int(convid))
-        c3 = bson_binary(c3, "payload", bytes(""))
-        c3 = bson_str(c3, "$db", authdb)
-        r3 := mongo_cmd_bson(bson_finish(c3))
+        s3 := bson_i32(bson_new(), "saslContinue", 1)
+        s3 = bson_i32(s3, "conversationId", parse_int(convid))
+        s3 = bson_binary(s3, "payload", bytes(""))
+        s3 = bson_str(s3, "$db", authdb)
+        r3 := mcmd(c, bson_finish(s3))
     }
 }
 
-func mongo_fill(need) {
-    while len(mongo_buf) < need {
-        chunk := read_bytes(mongo_fd)
-        if len(chunk) == 0 { return }
-        mongo_buf = bytes_concat(mongo_buf, chunk)
-    }
-}
+// ---- handle-based operations ----
 
-// mongo_cmd_bson sends a command (a finished BSON document) as an OP_MSG and returns
-// the reply document decoded to JSON.
-func mongo_cmd_bson(cmd) (replyJson) {
-    mongo_reqid = mongo_reqid + 1
-    // body = flagBits(0) + section kind 0 + command document
-    body := bytes_concat(from_hex(bs_le32h(0)), bytes_concat(from_hex("00"), cmd))
-    msglen := 16 + len(body)
-    // header = messageLength, requestID, responseTo(0), opCode(2013)
-    header := bytes_concat(from_hex(bs_le32h(msglen)),
-        bytes_concat(from_hex(bs_le32h(mongo_reqid)),
-        bytes_concat(from_hex(bs_le32h(0)), from_hex(bs_le32h(2013)))))
-    write_bytes(mongo_fd, bytes_concat(header, body))
-
-    mongo_fill(4)
-    rlen := bs_le32(mongo_buf, 0)
-    mongo_fill(rlen)
-    replyJson, _ = bson_to_json_at(mongo_buf, 21)   // skip 16 header + 4 flagBits + 1 section kind
-    mongo_buf = bytes_sub(mongo_buf, rlen, len(mongo_buf))
-}
-
-// mongo_insert_one inserts one finished BSON document into db.coll. Returns ok (1/0).
-func mongo_insert_one(db, coll, doc) (ok) {
-    docs := bson_finish(bson_subdoc(bson_new(), "0", doc))   // documents: [doc] (array {"0": doc})
-    c := bson_str(bson_new(), "insert", coll)
-    c = bson_subarr(c, "documents", docs)
-    c = bson_str(c, "$db", db)
-    reply := mongo_cmd_bson(bson_finish(c))
+func mins(c, db, coll, doc) (ok) {
+    docs := bson_finish(bson_subdoc(bson_new(), "0", doc))
+    cmd := bson_str(bson_new(), "insert", coll)
+    cmd = bson_subarr(cmd, "documents", docs)
+    cmd = bson_str(cmd, "$db", db)
+    reply := mcmd(c, bson_finish(cmd))
     n, _ := json_get(reply, ".n")
     ok = 0
     if n == "1" { ok = 1 }
 }
 
-// mongo_inner strips the surrounding [ ] from a JSON-array string (-> "" for []).
-func mongo_inner(arr) (s) {
-    s = ""
-    if len(arr) >= 2 { s = substr(arr, 1, len(arr) - 1) }
-}
-
-// mongo_find runs a find with an explicit filter (a finished BSON document, e.g.
-// bson_finish(bson_str(bson_new(), "name", "Ada"))) and returns ALL matching docs as a
-// JSON-array string, following the cursor with getMore so big results aren't truncated.
-func mongo_find(db, coll, filter) (docs) {
-    c := bson_str(bson_new(), "find", coll)
-    c = bson_subdoc(c, "filter", filter)
-    c = bson_str(c, "$db", db)
-    reply := mongo_cmd_bson(bson_finish(c))
+func mfind(c, db, coll, filter) (docs) {
+    cmd := bson_str(bson_new(), "find", coll)
+    cmd = bson_subdoc(cmd, "filter", filter)
+    cmd = bson_str(cmd, "$db", db)
+    reply := mcmd(c, bson_finish(cmd))
     batch, _ := json_get(reply, ".cursor.firstBatch")
     cid, _ := json_get(reply, ".cursor.id")
     inner := mongo_inner(batch)
@@ -154,7 +155,7 @@ func mongo_find(db, coll, filter) (docs) {
             g := bson_i64(bson_new(), "getMore", parse_int(cid))
             g = bson_str(g, "collection", coll)
             g = bson_str(g, "$db", db)
-            rep := mongo_cmd_bson(bson_finish(g))
+            rep := mcmd(c, bson_finish(g))
             nb, _ := json_get(rep, ".cursor.nextBatch")
             cid, _ = json_get(rep, ".cursor.id")
             ni := mongo_inner(nb)
@@ -166,45 +167,76 @@ func mongo_find(db, coll, filter) (docs) {
     docs = "[" + inner + "]"
 }
 
-// mongo_find_all returns every doc in db.coll (match-all filter).
-func mongo_find_all(db, coll) (docs) { docs = mongo_find(db, coll, bson_finish(bson_new())) }
+func mfindall(c, db, coll) (docs) { docs = mfind(c, db, coll, bson_finish(bson_new())) }
 
-// mongo_find_by_id returns the doc whose _id matches the 24-char hex ObjectId, or "".
-func mongo_find_by_id(db, coll, idhex) (doc) {
-    arr := mongo_find(db, coll, bson_finish(bson_oid(bson_new(), "_id", idhex)))
+func mfindid(c, db, coll, idhex) (doc) {
+    arr := mfind(c, db, coll, bson_finish(bson_oid(bson_new(), "_id", idhex)))
     d, e := json_get(arr, "[0]")
     doc = ""
     if e == "" { doc = d }
 }
 
-// mongo_delete deletes all docs matching filter (a finished BSON document) -> count.
-func mongo_delete(db, coll, filter) (n) {
+func mdel(c, db, coll, filter) (n) {
     one := bson_finish(bson_i32(bson_subdoc(bson_new(), "q", filter), "limit", 0))
     arr := bson_finish(bson_subdoc(bson_new(), "0", one))
-    c := bson_subarr(bson_str(bson_new(), "delete", coll), "deletes", arr)
-    c = bson_str(c, "$db", db)
-    reply := mongo_cmd_bson(bson_finish(c))
+    cmd := bson_subarr(bson_str(bson_new(), "delete", coll), "deletes", arr)
+    cmd = bson_str(cmd, "$db", db)
+    reply := mcmd(c, bson_finish(cmd))
     nv, _ := json_get(reply, ".n")
     n = parse_int(nv)
 }
 
-// mongo_delete_by_id deletes the doc with the given _id (24-char hex) -> count (0/1).
-func mongo_delete_by_id(db, coll, idhex) (n) {
-    n = mongo_delete(db, coll, bson_finish(bson_oid(bson_new(), "_id", idhex)))
-}
+func mdelid(c, db, coll, idhex) (n) { n = mdel(c, db, coll, bson_finish(bson_oid(bson_new(), "_id", idhex))) }
 
-// mongo_count returns the number of documents in db.coll.
-func mongo_count(db, coll) (n) {
-    c := bson_str(bson_new(), "count", coll)
-    c = bson_str(c, "$db", db)
-    reply := mongo_cmd_bson(bson_finish(c))
+func mcount(c, db, coll) (n) {
+    cmd := bson_str(bson_new(), "count", coll)
+    cmd = bson_str(cmd, "$db", db)
+    reply := mcmd(c, bson_finish(cmd))
     ns, _ := json_get(reply, ".n")
     n = parse_int(ns)
 }
 
-// mongo_drop removes a collection (ignores "doesn't exist"). For idempotent re-runs.
-func mongo_drop(db, coll) {
-    c := bson_str(bson_new(), "drop", coll)
-    c = bson_str(c, "$db", db)
-    r := mongo_cmd_bson(bson_finish(c))
+func mdrop(c, db, coll) {
+    cmd := bson_str(bson_new(), "drop", coll)
+    cmd = bson_str(cmd, "$db", db)
+    r := mcmd(c, bson_finish(cmd))
 }
+
+// ---- open / pool ----
+
+func mongo_open(host, port, user, pass) (c) {
+    c = mongo_attach(dial(host, port))
+    if user != "" { au := mauth(c, "admin", user, pass) }
+}
+
+var mongo_pool = make(chan int)
+
+// mongo_pool_init opens n connections (auth'd if user != "") and parks their fds.
+func mongo_pool_init(n, host, port, user, pass) {
+    i := 0
+    while i < n {
+        c := mongo_open(host, port, user, pass)
+        mongo_pool <- c.fd
+        i = i + 1
+    }
+}
+
+func mongo_acquire() (c) { c = mongo_attach(<-mongo_pool) }
+func mongo_release(c) { mongo_pool <- c.fd }
+
+// ---- single-connection convenience API (one implicit connection) ----
+
+var mongo_default = MongoConn{}
+
+func mongo_connect(host, port) { mongo_default = mongo_attach(dial(host, port)) }
+func mongo_close() { close(mongo_default.fd) }
+func mongo_auth(authdb, user, password) (ok) { ok = mauth(mongo_default, authdb, user, password) }
+func mongo_cmd_bson(cmd) (replyJson) { replyJson = mcmd(mongo_default, cmd) }
+func mongo_insert_one(db, coll, doc) (ok) { ok = mins(mongo_default, db, coll, doc) }
+func mongo_find(db, coll, filter) (docs) { docs = mfind(mongo_default, db, coll, filter) }
+func mongo_find_all(db, coll) (docs) { docs = mfindall(mongo_default, db, coll) }
+func mongo_find_by_id(db, coll, idhex) (doc) { doc = mfindid(mongo_default, db, coll, idhex) }
+func mongo_delete(db, coll, filter) (n) { n = mdel(mongo_default, db, coll, filter) }
+func mongo_delete_by_id(db, coll, idhex) (n) { n = mdelid(mongo_default, db, coll, idhex) }
+func mongo_count(db, coll) (n) { n = mcount(mongo_default, db, coll) }
+func mongo_drop(db, coll) { mdrop(mongo_default, db, coll) }
