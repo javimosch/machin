@@ -55,12 +55,38 @@ func TestReactiveFrameworkCompiles(t *testing.T) {
 		t.Skip("framework/reactive.src not found")
 	}
 	runtime := string(data)
+	// exercise the full surface: a signal, a computed, a binding, and a keyed list.
 	app := `
 var c = 0
-export func start() { c = signal(0)  bind("count", func() { return str(get(c)) }) }
+var dbl = 0
+var ids = []int{}
+export func start() {
+    c = signal(0)
+    dbl = computed(func() { return get(c) * 2 })
+    bind("count", func() { return str(get(c)) })
+    bind("double", func() { return str(get(dbl)) })
+    each("list", func() { get(c)  return csv(ids) }, func(k) { return str(k) })
+}
 export func bump(d) { set(c, get(c) + d) }`
 	prog := progFromSrc(t, runtime+"\n"+app)
 	if _, _, err := CompileToCTarget(prog, false, targetWasm); err != nil {
 		t.Fatalf("reactive runtime failed to compile for wasm: %v", err)
+	}
+}
+
+// The runtime also compiles for an app that uses signals/bindings but NO list —
+// the keys closure's string return keeps `each` type-checkable even when unused.
+func TestReactiveNoListCompiles(t *testing.T) {
+	data, err := os.ReadFile("framework/reactive.src")
+	if err != nil {
+		t.Skip("framework/reactive.src not found")
+	}
+	app := `
+var c = 0
+export func start() { c = signal(0)  bind("count", func() { return str(get(c)) }) }
+export func bump(d) { set(c, get(c) + d) }`
+	prog := progFromSrc(t, string(data)+"\n"+app)
+	if _, _, err := CompileToCTarget(prog, false, targetWasm); err != nil {
+		t.Fatalf("reactive runtime (no list) failed to compile: %v", err)
 	}
 }

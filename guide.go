@@ -9,7 +9,7 @@ import (
 
 // machinVersion is the single version string for the toolchain. Bump it when
 // cutting a release (alongside README badge / SPEC / CHANGELOG).
-const machinVersion = "0.53.0"
+const machinVersion = "0.54.0"
 
 // ---- the source-of-truth feature catalog ----
 //
@@ -45,6 +45,20 @@ type guideCatalog struct {
 	Builtins []guideBuiltin `json:"builtins"`
 	Idioms   []guideIdiom   `json:"idioms"`
 	Gotchas  []guideNote    `json:"gotchas"`
+}
+
+// builtinNames is the set of builtin function names (from the catalog), memoized.
+// Used to reject a user function that would silently shadow a builtin.
+var builtinNames map[string]bool
+
+func isBuiltinName(n string) bool {
+	if builtinNames == nil {
+		builtinNames = map[string]bool{}
+		for _, b := range machinGuide().Builtins {
+			builtinNames[b.Name] = true
+		}
+	}
+	return builtinNames[n]
 }
 
 func machinGuide() guideCatalog {
@@ -268,7 +282,8 @@ func main() { println(str(sqrt(2.0))) }`},
 			{"memory", "Per-goroutine arena, reclaimed in bulk when the goroutine returns; wrap a hot allocating loop in `arena { ... }` to keep peak memory flat. Build with --safe for bounds/overflow/div-zero checks."},
 			{"wasm-target", "`machin build app.mfl --target wasm` compiles to a WebAssembly reactor module (needs `zig` as the C->wasm compiler; override with ZIG=). Mark host-callable functions `export func name(...)` — they become wasm exports under their clean name (and are reachability roots, so a wasm module needs no main). A headerless `extern \"env\" { fn dom_set(string) }` becomes a wasm IMPORT the JS host supplies (the `extern \"<lib>\"` name is the import module). Marshaling host-side: machin ints are i64 -> pass/return BigInt; strings are a pointer into the exported `memory` (decode NUL-terminated UTF-8). App state can live in machin via package globals (`var count = 0`), which persist across export calls. See docs/NORTH-STAR-WEB.md."},
 			{"package-globals", "A top-level `var name = expr` is a package GLOBAL: mutable, shared by every function, type inferred from the initializer + uses. It PERSISTS across calls (unlike a local), so a wasm export can hold state between host calls (`var count = 0` + `export func bump(d){count=count+d}`). `=` assigns the global; `:=` makes a local (and may shadow it). Globals work everywhere incl. closures (a captured global is referenced directly), and for any type incl. make-maps and slices. Init runs before main / at wasm `_initialize`."},
-			{"lambda-and-builtin-names", "Two footguns when defining functions/closures: (1) a lambda (`func(){...}`) has NO named returns — `func() (s) { s = x }` does NOT parse; use `func() { return x }`. (2) A user function named the same as a builtin (e.g. `flush`, `len`, `str`) is silently SHADOWED by the builtin at call sites — pick a different name (this bit framework/reactive.src, whose internal `flush` was renamed `commit`)."},
+			{"lambda-and-builtin-names", "Two rules when defining functions/closures: (1) a lambda (`func(){...}`) has NO named returns — `func() (s) { s = x }` does NOT parse; use `func() { return x }`. (2) A user function may NOT be named like a builtin (`flush`, `len`, `str`, `keys`, `contains`, ...) — it is a compile error (the builtin would win at call sites, silently ignoring your function). Pick another name. (An `extern` MAY shadow a builtin — that's intentional for FFI.)"},
+			{"reactive-runtime", "`framework/reactive.src` is a fine-grained reactive runtime (signals + a patch list) for wasm UIs. `signal(v)`/`get`/`set`; `computed(func(){ return ... })` is a memoized derived signal; `bind(slot, func(){ return str(...) })` patches a DOM text slot on change; `each(container, func(){ get(ver)  return csv(ids) }, func(k){ return html })` does keyed list reconciliation (keys as a CSV string; emits insert/remove/order). Only reactions that read a changed signal recompute, and only changed text/keys patch. Host supplies dom_patch/list_insert/list_remove/list_order. Drove `[]func` (v0.53.0)."},
 		},
 	}
 }

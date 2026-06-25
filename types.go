@@ -654,6 +654,12 @@ func Check(p *Program) (*Checker, error) {
 	var exported []string
 	c.exportSrc = map[string]bool{}
 	for _, fn := range p.Funcs {
+		// A user function may not shadow a builtin: at call sites the builtin wins,
+		// so the function would be silently ignored (a confusing footgun). Externs
+		// may shadow a builtin (intentional — the FFI symbol replaces it).
+		if isBuiltinName(fn.Name) {
+			return nil, fmt.Errorf("function %q shadows the builtin %q — it would be silently ignored at call sites; rename it", fn.Name, fn.Name)
+		}
 		c.funcs[fn.Name] = fn
 		if fn.Exported {
 			exported = append(exported, fn.Name)
