@@ -125,6 +125,49 @@ func main() {
 	}
 }
 
+// hydrate activates bindings against an already-rendered (SSR) DOM: it flushes the
+// queued slots WITHOUT a dom_mount, and a value-embedding `slot` means the markup
+// the component builds already carries the value.
+func TestReactiveHydrate(t *testing.T) {
+	data, err := os.ReadFile("framework/reactive.src")
+	if err != nil {
+		t.Skip("framework/reactive.src not found")
+	}
+	runtime := regexp.MustCompile(`(?s)extern "env" \{.*?\}\n`).ReplaceAllString(string(data), "")
+	host := `
+func dom_mount(root, html) { println("MOUNT") }
+func dom_patch(slot, val) { println("patch " + slot + "=" + val) }
+func list_insert(c, k, h) {}
+func list_remove(c, k) {}
+func list_order(c, ks) {}`
+	app := `
+var c = 0
+func main() {
+    c = signal(7)
+    m := slot("v", func() { return str(get(c)) })   // markup carries the value
+    println("markup=" + m)
+    hydrate(m)
+    set(c, 9)
+}`
+	prog, perr := progFromSrcErr(runtime + host + app)
+	if perr != nil {
+		t.Fatalf("parse: %v", perr)
+	}
+	out, err := RunCaptured(prog)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if strings.Contains(out, "MOUNT") {
+		t.Fatalf("hydrate must not call dom_mount; got:\n%s", out)
+	}
+	if !strings.Contains(out, `data-s="v">7</span>`) {
+		t.Fatalf("slot should embed its initial value (7); got:\n%s", out)
+	}
+	if !strings.Contains(out, "patch v=9") {
+		t.Fatalf("the hydrated binding should react to set(c, 9); got:\n%s", out)
+	}
+}
+
 // progFromSrcErr is like progFromSrc but returns the error (for table tests).
 func progFromSrcErr(src string) (*Program, error) {
 	blocks, err := splitFunctions(src)
