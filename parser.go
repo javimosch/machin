@@ -56,6 +56,7 @@ func ParseProgram(decls []string) (*Program, error) {
 	prog := &Program{}
 	structs := map[string]bool{}
 	var funcSrcs []string
+	var globalSrcs []string
 	for _, src := range decls {
 		toks, err := Lex(src)
 		if err != nil {
@@ -74,6 +75,8 @@ func ParseProgram(decls []string) (*Program, error) {
 				return nil, err
 			}
 			prog.Externs = append(prog.Externs, ed)
+		} else if toks[0].Kind == TKeyword && toks[0].Val == "var" {
+			globalSrcs = append(globalSrcs, src)
 		} else {
 			funcSrcs = append(funcSrcs, src)
 		}
@@ -108,6 +111,13 @@ func ParseProgram(decls []string) (*Program, error) {
 			structs[cs.Name] = true
 		}
 	}
+	for _, src := range globalSrcs {
+		gv, err := ParseGlobalWith(src, structs)
+		if err != nil {
+			return nil, err
+		}
+		prog.Globals = append(prog.Globals, gv)
+	}
 	for _, src := range funcSrcs {
 		fn, err := ParseFuncWith(src, structs)
 		if err != nil {
@@ -117,6 +127,37 @@ func ParseProgram(decls []string) (*Program, error) {
 	}
 	liftClosures(prog) // closure conversion: lift function literals to top level
 	return prog, nil
+}
+
+// ParseGlobal parses a top-level package variable: `var name = expr`.
+func ParseGlobal(src string) (*GlobalVar, error) { return ParseGlobalWith(src, nil) }
+
+// ParseGlobalWith parses a global with the program's struct names in scope, so an
+// initializer may be a struct composite literal (`var cfg = Config{...}`).
+func ParseGlobalWith(src string, structs map[string]bool) (*GlobalVar, error) {
+	toks, err := Lex(src)
+	if err != nil {
+		return nil, err
+	}
+	p := &Parser{toks: toks, structs: structs}
+	if _, err := p.expect(TKeyword, "var"); err != nil {
+		return nil, err
+	}
+	nameTok, err := p.expect(TIdent, "")
+	if err != nil {
+		return nil, err
+	}
+	if _, err := p.expect(TOp, "="); err != nil {
+		return nil, fmt.Errorf("global %q: expected `= <expr>` (a package var needs an initializer)", nameTok.Val)
+	}
+	val, err := p.parseExpr()
+	if err != nil {
+		return nil, err
+	}
+	if p.peek().Kind != TEOF {
+		return nil, fmt.Errorf("trailing tokens after global %q: %q", nameTok.Val, p.peek().Val)
+	}
+	return &GlobalVar{Name: nameTok.Val, Init: val}, nil
 }
 
 // ParseExtern parses a single extern declaration (foreign C functions).

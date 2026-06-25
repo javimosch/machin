@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.52.0
+
+- **Package-level variables — `var name = expr` at top level.** A mutable global
+  shared by every function, its type inferred from the initializer (and its uses).
+  Unlike a local it **persists across calls**, so a wasm module's exported
+  functions can finally hold state between host invocations — `var count = 0` +
+  `export func bump(d) { count = count + d }` accumulates across calls. The piece
+  that was missing for a component to own its state in machin (not the JS host).
+  - `=` to a global's name assigns the global; `:=` still introduces (and may
+    shadow with) a local. Globals are visible everywhere, including inside
+    closures — a captured global is referenced directly, not closed over.
+  - Works for any type: scalars, strings, **maps** (`var hits = make(map[string]int)`,
+    then `hits[k] = …`), and **slices** (`var log = []string{}`, then `append`).
+  - Implementation: each global is a C static `mfl_g_<name>`; the initializers run
+    in a `constructor` — before `main` (native) and at `_initialize` (wasm reactor).
+    `encode` keeps a brace-less top-level `var` as its own declaration.
+
 ## v0.51.0
 
 - **Binary HTTP bodies — a machweb server can serve its own wasm (and any binary

@@ -404,8 +404,12 @@ func splitFunctions(src string) ([]string, error) {
 				depth--
 			}
 		}
-		if started && depth == 0 && strings.Contains(cur.String(), "{") {
-			funcs = append(funcs, strings.TrimSpace(cur.String()))
+		// A block is complete when braces balance and it has a body ("{"), OR it is a
+		// brace-less top-level `var` declaration (a package global), which is a single
+		// logical line with no body to wait for.
+		body := strings.TrimSpace(cur.String())
+		if started && depth == 0 && (strings.Contains(body, "{") || strings.HasPrefix(body, "var ")) {
+			funcs = append(funcs, body)
 			cur.Reset()
 			started = false
 		}

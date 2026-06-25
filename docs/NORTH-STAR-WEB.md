@@ -62,12 +62,16 @@ five shipped in **v0.50.0** (`--target wasm`); the rest remain.
 4. ~~**A `machin build --target wasm` driver.**~~ **Done (v0.50.0).** The `zig cc`
    invocation is folded into the compiler (`BuildWasm`), so `app.wasm` falls out of
    one command (`ZIG=` overrides the toolchain).
-5. **Package-level mutable state.** MFL has no top-level `var`; today the JS host
-   owns app state. Either add globals, or settle on a **handle-based** pattern
-   (`alloc` a state struct, return the pointer, pass it back into each call). The
-   next gap to drive.
+5. ~~**Package-level mutable state.**~~ **Done (v0.52.0).** A top-level
+   `var name = expr` is a package global that persists across exported-function
+   calls, so a component owns its state in machin (`var count = 0` +
+   `export func bump(d){count=count+d}`) instead of the JS host holding it. Any
+   type — scalars, strings, make-maps, slices — and visible inside closures.
 6. **String/array marshaling helpers.** A small JS runtime shipped with the
    target (decode/encode strings, pass slices) so apps don't re-roll `readCString`.
+7. **Signals + a patch-list runtime.** Fine-grained reactivity in MFL: state cells
+   (now expressible as globals), derived views, and a diff/patch the JS host
+   applies — the core of the reactive-framework tier.
 
 ## The vision, in tiers (near → far)
 
