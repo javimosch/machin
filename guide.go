@@ -9,7 +9,7 @@ import (
 
 // machinVersion is the single version string for the toolchain. Bump it when
 // cutting a release (alongside README badge / SPEC / CHANGELOG).
-const machinVersion = "0.58.0"
+const machinVersion = "0.59.0"
 
 // ---- the source-of-truth feature catalog ----
 //

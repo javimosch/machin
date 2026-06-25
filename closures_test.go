@@ -33,3 +33,20 @@ func TestCapturedClosureCalledInLambda(t *testing.T) {
 		}
 	}
 }
+
+// A closure can capture and MUTATE an aggregate local (a slice/map/struct), and the
+// change persists across calls. The heap box for such a local is zeroed via calloc —
+// previously codegen emitted `*box = {0}`, invalid C for a slice. This is what lets
+// the reactive runtime's `each` capture its `old []int` key set.
+func TestCapturedSliceMutation(t *testing.T) {
+	prog := progFromSrc(t, `
+func acc() (push) { xs := []int{}  push = func(v) { xs = append(xs, v)  return len(xs) } }
+func main() { p := acc()  println(p(10))  println(p(20))  println(p(30)) }`)
+	out, err := RunCaptured(prog)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := strings.Join(strings.Fields(out), " "); got != "1 2 3" {
+		t.Fatalf("captured slice mutation = %q, want %q", got, "1 2 3")
+	}
+}

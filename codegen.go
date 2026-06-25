@@ -2468,7 +2468,9 @@ func (g *cgen) function(inst string) error {
 	for _, name := range g.c.Locals(inst) {
 		if fn.Boxed[name] {
 			ct := g.c.VarCType(inst, name)
-			fmt.Fprintf(&g.buf, "    %s* v_%s = mfl_alloc(sizeof(%s)); *v_%s = %s;\n", ct, name, ct, name, cZero(g.c.VarKind(inst, name)))
+			// Zero the heap cell via calloc — the body assigns the real value. (A
+			// `*p = {0}` assignment is invalid C for aggregate types like slices.)
+			fmt.Fprintf(&g.buf, "    %s* v_%s = mfl_calloc(1, sizeof(%s));\n", ct, name, ct)
 			continue
 		}
 		fmt.Fprintf(&g.buf, "    %s v_%s = %s;\n", g.c.VarCType(inst, name), name, cZero(g.c.VarKind(inst, name)))

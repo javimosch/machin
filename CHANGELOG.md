@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.59.0
+
+- **Fix: a closure can capture and mutate an aggregate local** (a slice, map, or
+  struct). The heap box for such a captured local is now zeroed via `calloc`;
+  codegen previously emitted `*box = {0}`, invalid C for an aggregate type (it
+  compiled only for scalars). So a closure that captures `xs := []int{}` and
+  `append`s to it across calls now works.
+- **`framework/reactive.src` rewritten on the simpler model** the captured-closure
+  fixes (v0.58.0 + this) unlock: a reaction is now just a **`func()` thunk that
+  captures its own compute closure** and applies its effect, in one `[]func`
+  registry — instead of typed per-kind arrays (`c_fn`/`b_fn`/`e_kf`/…) with a
+  `run_computed`/`run_bind`/`run_each` dispatch. `bind` captures its `last`, `each`
+  its `old` key set, `computed` is a signal kept current by a reaction. Same public
+  API, **byte-identical patch behavior** (verified), ~9 fewer globals, the dispatch
+  gone. (Re-confirmed gotcha: a parameter named like a builtin — `keys` — is
+  shadowed at call sites; `each`'s param was renamed `keyfn`.)
+
 ## v0.58.0
 
 - **Fix: a captured closure can be CALLED inside a lambda.** `func(){ fn() }` where
