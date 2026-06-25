@@ -2,9 +2,8 @@
 // builder (you add typed fields); decode walks a BSON document into a JSON string so
 // the rest of machin (json_get / parse) can read it. Little-endian throughout.
 //
-// v1 types: string, int32, int64, bool, null, ObjectId (decode → hex string),
-// embedded document, array. Doubles (BSON 0x01) are decoded as null (no f64 byte
-// access yet) — fine when you control the data (e.g. SQLite int/text ⇄ Mongo).
+// Types: string, int32, int64, double (via f64_bits/f64_from_bits), bool, null,
+// ObjectId (decode → hex string), binary (for SCRAM payloads), embedded document, array.
 
 // ---- little-endian hex helpers (build bytes via hex, then from_hex) ----
 
@@ -37,6 +36,12 @@ func bson_str(acc, key, val) (out) {
 }
 func bson_i32(acc, key, n) (out) { out = bytes_concat(acc, bs_el(16, key, from_hex(bs_le32h(n)))) }
 func bson_i64(acc, key, n) (out) { out = bytes_concat(acc, bs_el(18, key, from_hex(bs_le64h(n)))) }
+func bson_double(acc, key, v) (out) { out = bytes_concat(acc, bs_el(1, key, from_hex(bs_le64h(f64_bits(v))))) }
+// bson_binary: a binary value (subtype 0x00). Used for SCRAM auth payloads.
+func bson_binary(acc, key, bin) (out) {
+    vb := bytes_concat(from_hex(bs_le32h(len(bin))), bytes_concat(from_hex("00"), bin))
+    out = bytes_concat(acc, bs_el(5, key, vb))
+}
 func bson_bool(acc, key, v) (out) { out = bytes_concat(acc, bs_el(8, key, from_hex(bs_hx2(v)))) }
 func bson_null(acc, key) (out) { out = bytes_concat(acc, bs_el(10, key, bytes(""))) }
 func bson_subdoc(acc, key, doc) (out) { out = bytes_concat(acc, bs_el(3, key, doc)) }
@@ -72,7 +77,12 @@ func bs_val(b, i, t) (vj, nxt) {
     if t == 8  { vj = "false"  if byte_at(b, i) == 1 { vj = "true" }  nxt = i + 1 }
     if t == 10 { vj = "null"  nxt = i }                          // null
     if t == 7  { vj = bs_jstr(to_hex(bytes_sub(b, i, i + 12)))  nxt = i + 12 }  // ObjectId -> hex
-    if t == 1  { vj = "null"  nxt = i + 8 }                      // double (unsupported -> null)
+    if t == 1  { vj = str(f64_from_bits(bs_le64(b, i)))  nxt = i + 8 }          // double
+    if t == 5  {                                                 // binary (subtype byte then data)
+        blen := bs_le32(b, i)
+        vj = bs_jstr(bytes_str(bytes_sub(b, i + 5, i + 5 + blen)))
+        nxt = i + 5 + blen
+    }
     if t == 3  { vj, nxt = bson_to_json_at(b, i) }              // embedded document
     if t == 4  { vj, nxt = bs_arr(b, i) }                       // array
 }
