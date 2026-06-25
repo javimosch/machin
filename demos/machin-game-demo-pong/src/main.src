@@ -1,0 +1,249 @@
+// machin-game-demo-pong — single-player Pong vs AI
+//
+// Build:
+//   machin encode src/main.src > app.mfl && machin build app.mfl -o app
+//   ./app
+//
+// Controls: W=up  S=down  Q=quit
+// Layout: 80x24 terminal
+//   Row  0 : score bar
+//   Row  1 : top border
+//   Rows 2-22: play area (21 rows, play_y offset = 2)
+//   Row 23 : bottom border
+
+// ── screen buffer ─────────────────────────────────────────────────────────────
+
+var screen = []string{}
+
+func SW() (n) { n = 80 }
+func SH() (n) { n = 24 }
+
+func init_scr() {
+    screen = []string{}
+    i := 0
+    while i < SW() * SH() {
+        screen = append(screen, " ")
+        i = i + 1
+    }
+}
+
+func cls_scr() {
+    i := 0
+    while i < SW() * SH() {
+        screen[i] = " "
+        i = i + 1
+    }
+}
+
+func put(x, y, c) {
+    if x >= 0 && x < SW() && y >= 0 && y < SH() {
+        screen[y * SW() + x] = c
+    }
+}
+
+func frame_str(ESC) (f) {
+    f = ESC + "[H"
+    y := 0
+    while y < SH() {
+        x := 0
+        while x < SW() {
+            f = f + screen[y * SW() + x]
+            x = x + 1
+        }
+        f = f + "\n"
+        y = y + 1
+    }
+}
+
+// ── play-area geometry ────────────────────────────────────────────────────────
+// Play area: rows 2..22 (21 rows), cols 0..79
+// Row 0 = score bar, Row 1 = top border, Row 23 = bottom border
+// play_y = game_y + 2  (game_y ∈ [0,20])
+
+func GH_F() (n) { n = 21.0 }   // play area height (float)
+func GH_I() (n) { n = 21 }     // play area height (int)
+func GW_F() (n) { n = 80.0 }   // screen width (float)
+
+// Paddle height = 5
+func PADSZ_F() (n) { n = 5.0 }
+func PADSZ_I() (n) { n = 5 }
+
+// Paddle col positions
+func PADL_COL() (n) { n = 2 }
+func PADR_COL() (n) { n = 77 }
+
+// Max top-of-paddle game_y (0-based): 21 - 5 = 16
+func PAD_MAX_F() (n) { n = 16.0 }
+
+// ── global game state ─────────────────────────────────────────────────────────
+
+var ball_x  = 40.0
+var ball_y  = 10.0
+var ball_vx = 1.5
+var ball_vy = 0.8
+var pad_l   = 8.0
+var pad_r   = 8.0
+var score_l = 0
+var score_r = 0
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+
+func clamp_pad(v) (r) {
+    r = v
+    if r < 0.0 { r = 0.0 }
+    if r > PAD_MAX_F() { r = PAD_MAX_F() }
+}
+
+func abs_f(v) (r) {
+    r = v
+    if v < 0.0 { r = 0.0 - v }
+}
+
+func reset_ball() {
+    ball_x  = 40.0
+    ball_y  = 10.0
+    ball_vx = 1.5
+    ball_vy = 0.8
+}
+
+// ── update ────────────────────────────────────────────────────────────────────
+
+func update(key) {
+    // Player paddle (left)
+    if key == "w" { pad_l = clamp_pad(pad_l - 1.5) }
+    if key == "s" { pad_l = clamp_pad(pad_l + 1.5) }
+
+    // AI paddle (right) — track ball Y
+    ball_cy := ball_y
+    pad_r_cy := pad_r + PADSZ_F() / 2.0
+    diff := ball_cy - pad_r_cy
+    speed := 1.0
+    if diff > speed  { pad_r = clamp_pad(pad_r + speed) }
+    if diff < 0.0 - speed { pad_r = clamp_pad(pad_r - speed) }
+
+    // Move ball
+    ball_x = ball_x + ball_vx
+    ball_y = ball_y + ball_vy
+
+    // Bounce off top/bottom walls (game_y bounds: 0.0 .. GH_F()-1)
+    if ball_y < 0.0 {
+        ball_y = 0.0 - ball_y
+        ball_vy = abs_f(ball_vy)
+    }
+    if ball_y > GH_F() - 1.0 {
+        ball_y = 2.0 * (GH_F() - 1.0) - ball_y
+        ball_vy = 0.0 - abs_f(ball_vy)
+    }
+
+    // Paddle collision — left (col 2)
+    if ball_x <= float(PADL_COL()) + 1.0 && ball_vx < 0.0 {
+        pad_l_top := pad_l
+        pad_l_bot := pad_l + PADSZ_F()
+        if ball_y >= pad_l_top && ball_y <= pad_l_bot {
+            ball_x = float(PADL_COL()) + 1.0
+            ball_vx = abs_f(ball_vx)
+        }
+    }
+
+    // Paddle collision — right (col 77)
+    if ball_x >= float(PADR_COL()) - 1.0 && ball_vx > 0.0 {
+        pad_r_top := pad_r
+        pad_r_bot := pad_r + PADSZ_F()
+        if ball_y >= pad_r_top && ball_y <= pad_r_bot {
+            ball_x = float(PADR_COL()) - 1.0
+            ball_vx = 0.0 - abs_f(ball_vx)
+        }
+    }
+
+    // Score: ball past left edge
+    if ball_x < 0.0 {
+        score_r = score_r + 1
+        reset_ball()
+        ball_vx = 1.5
+    }
+
+    // Score: ball past right edge
+    if ball_x > GW_F() - 1.0 {
+        score_l = score_l + 1
+        reset_ball()
+        ball_vx = 0.0 - 1.5
+    }
+}
+
+// ── render ────────────────────────────────────────────────────────────────────
+
+func render(ESC) (frame) {
+    cls_scr()
+
+    // Row 0: score bar
+    bar := "P1: " + str(score_l) + "  AI: " + str(score_r) + "  W=up S=down Q=quit"
+    bx := 0
+    while bx < len(bar) && bx < SW() {
+        put(bx, 0, charat(bar, bx))
+        bx = bx + 1
+    }
+
+    // Row 1: top border
+    brd := 0
+    while brd < SW() {
+        put(brd, 1, "-")
+        brd = brd + 1
+    }
+
+    // Row 23: bottom border
+    brd = 0
+    while brd < SW() {
+        put(brd, 23, "-")
+        brd = brd + 1
+    }
+
+    // Left paddle (col 2), rows 2..22
+    pl_top := int(pad_l)
+    pi := 0
+    while pi < PADSZ_I() {
+        put(PADL_COL(), pl_top + pi + 2, "|")
+        pi = pi + 1
+    }
+
+    // Right paddle (col 77), rows 2..22
+    pr_top := int(pad_r)
+    pi = 0
+    while pi < PADSZ_I() {
+        put(PADR_COL(), pr_top + pi + 2, "|")
+        pi = pi + 1
+    }
+
+    // Ball
+    bx2 := int(ball_x)
+    by2 := int(ball_y) + 2
+    put(bx2, by2, "O")
+
+    frame = frame_str(ESC)
+}
+
+// ── main ──────────────────────────────────────────────────────────────────────
+
+func main() {
+    ESC := bytes_str(from_hex("1b"))
+    init_scr()
+
+    print(ESC + "[2J" + ESC + "[?25l")
+    raw_mode(1)
+
+    running := 1
+    while running == 1 {
+        k := read_key()
+        if k == "q" { running = 0 }
+        if running == 1 {
+            update(k)
+            frame := render(ESC)
+            print(frame)
+            flush()
+            sleep(40)
+        }
+    }
+
+    raw_mode(0)
+    print(ESC + "[2J" + ESC + "[?25h" + ESC + "[H")
+    println("Thanks for playing machin Pong!")
+}

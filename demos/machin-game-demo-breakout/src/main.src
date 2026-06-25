@@ -1,0 +1,322 @@
+// machin-game-demo-breakout — TUI Breakout clone.
+//
+// Build and run:
+//   machin encode src/main.src > app.mfl && machin build app.mfl -o app && ./app
+//
+// Controls: A=paddle left, D=paddle right, Q=quit
+
+var SCR_W = 80
+var SCR_H = 24
+
+var scr = []string{}
+
+func scr_init() {
+    scr = []string{}
+    i := 0
+    while i < SCR_W * SCR_H {
+        scr = append(scr, " ")
+        i = i + 1
+    }
+}
+
+func scr_cls() {
+    i := 0
+    while i < SCR_W * SCR_H {
+        scr[i] = " "
+        i = i + 1
+    }
+}
+
+func scr_put(x, y, c) {
+    if x >= 0 && x < SCR_W && y >= 0 && y < SCR_H {
+        scr[y * SCR_W + x] = c
+    }
+}
+
+func scr_text(x, y, s) {
+    i := 0
+    while i < len(s) {
+        scr_put(x + i, y, charat(s, i))
+        i = i + 1
+    }
+}
+
+func scr_hline(y, x0, x1, c) {
+    x := x0
+    while x < x1 {
+        scr_put(x, y, c)
+        x = x + 1
+    }
+}
+
+func scr_frame(ESC) (f) {
+    f = ESC + "[H"
+    y := 0
+    while y < SCR_H {
+        x := 0
+        while x < SCR_W {
+            f = f + scr[y * SCR_W + x]
+            x = x + 1
+        }
+        f = f + "\n"
+        y = y + 1
+    }
+}
+
+// --- game state ---
+
+var bricks = []int{}
+var ball_x = 40.0
+var ball_y = 18.0
+var ball_vx = 0.9
+var ball_vy = 0.0 - 1.1
+var pad_x = 35.0
+var score = 0
+var lives = 3
+var game_over = 0
+
+func bricks_init() {
+    bricks = []int{}
+    i := 0
+    while i < 50 {
+        bricks = append(bricks, 1)
+        i = i + 1
+    }
+}
+
+func reset_ball() {
+    ball_x = 40.0
+    ball_y = 18.0
+    ball_vx = 0.9
+    ball_vy = 0.0 - 1.1
+}
+
+func bricks_all_dead() (dead) {
+    dead = 1
+    i := 0
+    while i < 50 {
+        if bricks[i] == 1 { dead = 0 }
+        i = i + 1
+    }
+}
+
+func draw_hud() {
+    hud := "machin Breakout | Score:" + str(score) + " Lives:" + str(lives) + " | A=left D=right Q=quit"
+    // pad to 80
+    while len(hud) < SCR_W {
+        hud = hud + " "
+    }
+    scr_text(0, 0, hud)
+}
+
+func draw_walls() {
+    // top wall at row 1
+    scr_hline(1, 0, SCR_W, "=")
+    // bottom wall at row 23
+    scr_hline(23, 0, SCR_W, "=")
+}
+
+func draw_bricks() {
+    r := 0
+    while r < 5 {
+        c := 0
+        while c < 10 {
+            if bricks[r * 10 + c] == 1 {
+                sx := 5 + c * 7
+                sy := r + 2
+                scr_put(sx, sy, "[")
+                scr_put(sx + 1, sy, "=")
+                scr_put(sx + 2, sy, "=")
+                scr_put(sx + 3, sy, "=")
+                scr_put(sx + 4, sy, "=")
+                scr_put(sx + 5, sy, "=")
+                scr_put(sx + 6, sy, "]")
+            }
+            c = c + 1
+        }
+        r = r + 1
+    }
+}
+
+func draw_paddle() {
+    px := int(pad_x)
+    i := 0
+    while i < 9 {
+        scr_put(px + i, 22, "=")
+        i = i + 1
+    }
+}
+
+func draw_ball() {
+    scr_put(int(ball_x), int(ball_y), "O")
+}
+
+func update_ball() {
+    // check brick collision
+    bx := int(ball_x)
+    by := int(ball_y)
+    if by >= 2 && by <= 6 {
+        brick_row := by - 2
+        brick_col := (bx - 5) / 7
+        if brick_col >= 0 && brick_col < 10 && brick_row >= 0 && brick_row < 5 {
+            idx := brick_row * 10 + brick_col
+            if bricks[idx] == 1 {
+                bricks[idx] = 0
+                ball_vy = 0.0 - ball_vy
+                score = score + 1
+            }
+        }
+    }
+
+    // paddle collision: ball around row 22
+    if ball_y >= 21.5 && ball_y < 22.5 {
+        px := int(pad_x)
+        if bx >= px && bx < px + 9 {
+            // reverse vertical direction (make sure going up)
+            if ball_vy > 0.0 {
+                ball_vy = 0.0 - ball_vy
+            }
+            // add spin based on hit position
+            hit_pos := bx - px
+            spin := float(hit_pos - 4) * 0.12
+            ball_vx = ball_vx + spin
+            // clamp ball_vx
+            if ball_vx > 2.0 { ball_vx = 2.0 }
+            if ball_vx < 0.0 - 2.0 { ball_vx = 0.0 - 2.0 }
+        }
+    }
+
+    // move ball
+    ball_x = ball_x + ball_vx
+    ball_y = ball_y + ball_vy
+
+    // wall bounces
+    if ball_x < 0.0 {
+        ball_x = 0.0
+        ball_vx = 0.0 - ball_vx
+    }
+    if ball_x >= 79.0 {
+        ball_x = 79.0
+        ball_vx = 0.0 - ball_vx
+    }
+    // top wall at row 1
+    if ball_y <= 1.0 {
+        ball_y = 1.0
+        ball_vy = 0.0 - ball_vy
+    }
+
+    // ball off bottom
+    if ball_y >= 23.0 {
+        lives = lives - 1
+        if lives <= 0 {
+            game_over = 1
+        } else {
+            reset_ball()
+        }
+    }
+}
+
+func handle_input(key) {
+    if key == "a" || key == "A" {
+        pad_x = pad_x - 2.5
+        if pad_x < 0.0 { pad_x = 0.0 }
+    }
+    if key == "d" || key == "D" {
+        pad_x = pad_x + 2.5
+        if pad_x > 71.0 { pad_x = 71.0 }
+    }
+}
+
+func draw_game_over(ESC) (f) {
+    scr_cls()
+    draw_hud()
+    draw_walls()
+    draw_bricks()
+    msg := "*** GAME OVER *** Score: " + str(score)
+    scr_text((SCR_W - len(msg)) / 2, 12, msg)
+    sub := "Press Q to quit"
+    scr_text((SCR_W - len(sub)) / 2, 14, sub)
+    f = scr_frame(ESC)
+}
+
+func draw_you_win(ESC) (f) {
+    scr_cls()
+    draw_hud()
+    draw_walls()
+    msg := "*** YOU WIN *** Score: " + str(score)
+    scr_text((SCR_W - len(msg)) / 2, 12, msg)
+    sub := "Press Q to quit"
+    scr_text((SCR_W - len(sub)) / 2, 14, sub)
+    f = scr_frame(ESC)
+}
+
+func main() {
+    ESC := bytes_str(from_hex("1b"))
+    // hide cursor
+    print(ESC + "[?25l")
+    // clear screen
+    print(ESC + "[2J")
+
+    scr_init()
+    bricks_init()
+    reset_ball()
+
+    raw_mode(1)
+
+    running := 1
+    won := 0
+    while running == 1 {
+        key := read_key()
+        if key == "q" || key == "Q" {
+            running = 0
+        } else {
+            handle_input(key)
+        }
+
+        if game_over == 1 {
+            frame := draw_game_over(ESC)
+            print(frame)
+            flush()
+            // wait for Q
+            wkey := read_key()
+            while wkey != "q" && wkey != "Q" {
+                sleep(50)
+                wkey = read_key()
+            }
+            running = 0
+        } else {
+            // check win condition
+            if bricks_all_dead() == 1 {
+                won = 1
+                frame := draw_you_win(ESC)
+                print(frame)
+                flush()
+                wkey := read_key()
+                while wkey != "q" && wkey != "Q" {
+                    sleep(50)
+                    wkey = read_key()
+                }
+                running = 0
+            } else {
+                update_ball()
+                scr_cls()
+                draw_hud()
+                draw_walls()
+                draw_bricks()
+                draw_paddle()
+                draw_ball()
+                frame := scr_frame(ESC)
+                print(frame)
+                flush()
+                sleep(30)
+            }
+        }
+    }
+
+    raw_mode(0)
+    // show cursor
+    print(ESC + "[?25h")
+    print(ESC + "[2J")
+    print(ESC + "[H")
+    println("Thanks for playing machin Breakout!")
+}

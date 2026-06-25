@@ -1,0 +1,73 @@
+// machin-web-demo-kv — a REST key-value store using machweb.
+//
+// Compose with the framework:
+//   machin encode ../../framework/machweb.src src/main.src > app.mfl
+//   machin build app.mfl -o app
+//   ./app   → http://localhost:48080
+//
+// API:
+//   GET    /v1/keys           → {"keys":["a","b",...]}
+//   GET    /v1/key/{k}        → value string (200) or 404
+//   PUT    /v1/key/{k}        → set value from request body → {"ok":true}
+//   DELETE /v1/key/{k}        → remove key → {"ok":true}
+//
+// Exercises: top-level var globals, map[string]string, machweb router pattern,
+// goroutine-per-request concurrency (machweb does this automatically).
+// Note: concurrent writes to the global map are not serialized — acceptable for a demo.
+
+var store = make(map[string]string)
+
+func kv_handler(req) (res) {
+    p := req.path
+    m := req.method
+    if p == "/" {
+        res = ok_text("machin-web-demo-kv\nGET/PUT/DELETE /v1/key/{k}\nGET /v1/keys\n")
+        return
+    }
+    if p == "/v1/keys" {
+        ks := keys(store)
+        out := "["
+        i := 0
+        for _, k := range ks {
+            if i > 0 { out = out + "," }
+            out = out + "\"" + k + "\""
+            i = i + 1
+        }
+        out = out + "]"
+        res = ok_json("{\"keys\":" + out + "}")
+        return
+    }
+    if has_prefix(p, "/v1/key/") {
+        k := param(p, "/v1/key/")
+        if k == "" {
+            res = bad_request("key required in path")
+            return
+        }
+        if m == "GET" {
+            if has(store, k) {
+                res = ok_text(store[k])
+            } else {
+                res = not_found()
+            }
+        } else if m == "PUT" || m == "POST" {
+            store[k] = req.body
+            res = ok_json("{\"ok\":true}")
+        } else if m == "DELETE" {
+            delete(store, k)
+            res = ok_json("{\"ok\":true}")
+        } else {
+            res = bad_request("method not allowed: use GET PUT POST DELETE")
+        }
+        return
+    }
+    res = not_found()
+}
+
+func main() {
+    println("machin-web-demo-kv on http://localhost:48080")
+    println("  PUT  /v1/key/{k}  body=<value>")
+    println("  GET  /v1/key/{k}")
+    println("  GET  /v1/keys")
+    println("  DELETE /v1/key/{k}")
+    serve(48080, func(req) { return kv_handler(req) })
+}
