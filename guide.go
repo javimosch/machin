@@ -9,7 +9,7 @@ import (
 
 // machinVersion is the single version string for the toolchain. Bump it when
 // cutting a release (alongside README badge / SPEC / CHANGELOG).
-const machinVersion = "0.56.0"
+const machinVersion = "0.57.0"
 
 // ---- the source-of-truth feature catalog ----
 //
@@ -138,6 +138,7 @@ func machinGuide() guideCatalog {
 			{"poke_ptr", "(int, int, int) ->", "write an 8-byte pointer value at ptr+byteoffset (e.g. a buffer into a struct field)", "memory"},
 			{"peek_f32", "(int, int) -> float", "read a 32-bit float at ptr+byteoffset", "memory"},
 			{"peek_i32", "(int, int) -> int", "read a 32-bit int at ptr+byteoffset", "memory"},
+			{"ptr_str", "(int) -> string", "read a NUL-terminated string from a raw pointer into an MFL string — the host->wasm string direction (host writes UTF-8+NUL into wasm memory at an alloc'd ptr, passes it to an export). Pairs with alloc/free.", "memory"},
 			// collections
 			{"len", "(string|slice|map) -> int", "length", "collection"},
 			{"append", "([]T, T) -> []T", "grow a slice", "collection"},

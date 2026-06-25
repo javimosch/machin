@@ -380,6 +380,10 @@ static char* mfl_dup(const char* s) { size_t n = strlen(s); char* r = mfl_alloc(
    filling C buffers (vertex arrays) and structs to hand to a C API. */
 static int64_t mfl_raw_alloc(int64_t n) { return (int64_t)(intptr_t)calloc(1, (size_t)(n > 0 ? n : 0)); }
 static void mfl_raw_free(int64_t p) { free((void*)(intptr_t)p); }
+/* read a NUL-terminated string from a raw pointer into an MFL (arena) string — the
+   host->wasm direction: the JS host writes UTF-8 + a NUL into wasm memory at a
+   pointer the program alloc'd, then passes it here. */
+static char* mfl_ptr_str(int64_t p) { return p ? mfl_dup((const char*)(intptr_t)p) : mfl_dup(""); }
 static void mfl_poke_f32(int64_t p, int64_t o, double v) { *(float*)((char*)(intptr_t)p + o) = (float)v; }
 static void mfl_poke_i32(int64_t p, int64_t o, int64_t v) { *(int32_t*)((char*)(intptr_t)p + o) = (int32_t)v; }
 static void mfl_poke_u8(int64_t p, int64_t o, int64_t v) { *(uint8_t*)((char*)(intptr_t)p + o) = (uint8_t)v; }
@@ -3901,6 +3905,8 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("mfl_%s(%s, %s, %s)", ex.Callee, args[0], args[1], args[2]), nil
 	case "peek_f32", "peek_i32":
 		return fmt.Sprintf("mfl_%s(%s, %s)", ex.Callee, args[0], args[1]), nil
+	case "ptr_str":
+		return fmt.Sprintf("mfl_ptr_str(%s)", args[0]), nil
 	case "dial":
 		g.usesNet = true
 		return fmt.Sprintf("mfl_dial(%s, %s)", args[0], args[1]), nil

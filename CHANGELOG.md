@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.57.0
+
+- **`ptr_str(ptr) -> string` — host→wasm strings (text input / forms).** Reads a
+  NUL-terminated string out of raw memory into an MFL (arena) string. This is the
+  missing **into-wasm** string direction: the JS host writes UTF-8 + a NUL into the
+  module's memory at a pointer the program `alloc`'d, then calls an export passing
+  that pointer, and the program reads it with `ptr_str`. (Strings already flowed
+  *out* of wasm as a memory pointer the host decodes; ints flow both ways.) Pairs
+  with `alloc`/`free`. Verified round-trip incl. multi-byte UTF-8 (accents, emoji).
+  Unblocks forms — an `<input>`'s text can now reach a machin component.
+
+  ```go
+  export func input_buf(n) (p) { p = alloc(n + 1) }     // host writes n bytes + NUL here
+  export func submit(p) { add_todo(ptr_str(p))  free(p) }
+  ```
+
 ## v0.56.0
 
 - **`framework/reactive.src`: `hydrate` + a value-embedding `slot` — isomorphic
