@@ -1,4 +1,5 @@
 extern "env" {
+    fn dom_mount(string, string)            // (root, html): set root's innerHTML once
     fn dom_patch(string, string)
     fn list_insert(string, string, string)
     fn list_remove(string, string)
@@ -210,4 +211,59 @@ func each(cont, kf, itf) {
     e_cont = append(e_cont, cont)
     e_old = append(e_old, "")
     register(2, len(e_kf) - 1)
+}
+
+// ---- templating ----
+//
+// Let a component declare its markup AND its reactive bindings in ONE place, then
+// mount it. `slot`/`list` return the markup for a dynamic part and QUEUE its
+// reaction; `mount` sets the root's HTML once and then flushes the queue (so the
+// elements exist before their first paint). Static markup is plain string
+// concatenation. The host only needs to implement dom_mount + the patch ops.
+//
+//   mount("app",
+//       "<h1>Todos</h1>" +
+//       slot("count", func() { return str(get(n)) }) +
+//       list("items", func() { get(ver)  return csv(ids) }, func(id) { return row(id) }))
+
+var pend_slot = []string{}
+var pend_fn = []func{}       // func() -> string
+var pend_lc = []string{}     // list container ids
+var pend_lk = []func{}       // func() -> string (csv keys)
+var pend_li = []func{}       // func(int) -> string (item html)
+
+// slot returns the markup for a reactive text node and queues a binding for it.
+func slot(name, compute) (markup) {
+    pend_slot = append(pend_slot, name)
+    pend_fn = append(pend_fn, compute)
+    markup = "<span data-s=\"" + name + "\"></span>"
+}
+
+// list returns the markup for a keyed-list container and queues its reconciler.
+func list(name, keys, item) (markup) {
+    pend_lc = append(pend_lc, name)
+    pend_lk = append(pend_lk, keys)
+    pend_li = append(pend_li, item)
+    markup = "<div id=\"" + name + "\"></div>"
+}
+
+// mount sets the root element's HTML once, then registers every queued binding and
+// list (which paint their initial value now that the elements exist).
+func mount(root, html) {
+    dom_mount(root, html)
+    i := 0
+    while i < len(pend_slot) {
+        bind(pend_slot[i], pend_fn[i])
+        i = i + 1
+    }
+    i = 0
+    while i < len(pend_lc) {
+        each(pend_lc[i], pend_lk[i], pend_li[i])
+        i = i + 1
+    }
+    pend_slot = []string{}
+    pend_fn = []func{}
+    pend_lc = []string{}
+    pend_lk = []func{}
+    pend_li = []func{}
 }

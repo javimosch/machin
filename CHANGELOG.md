@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.55.0
+
+- **`framework/reactive.src` gains a templating layer** — a component declares its
+  markup *and* its reactive bindings in one place, instead of a hand-written HTML
+  skeleton plus manual `data-s` wiring:
+  - **`slot(name, compute)`** returns the markup for a reactive text node and
+    queues its binding.
+  - **`list(name, keys, item)`** returns the markup for a keyed-list container and
+    queues its reconciler.
+  - **`mount(root, html)`** sets the root element's HTML once (via a new
+    `dom_mount` host import), then flushes the queued bindings/lists so they paint
+    after their elements exist.
+
+  So a whole component is one expression: `mount("app", "<h1>…</h1>" + slot("count",
+  fn) + list("items", keys, item))`. Static markup is plain string concatenation;
+  the JS host shrinks to a `dom_mount` + the patch ops. Pure MFL (no compiler
+  change). Updated [machin-web-demo-reactive](https://github.com/javimosch/machin-web-demo-reactive)
+  to generate its own markup — `index.html` is now just `<div id="app"></div>`.
+
 ## v0.54.0
 
 - **`framework/reactive.src` grows computed signals + keyed list reconciliation.**
