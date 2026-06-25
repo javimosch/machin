@@ -40,7 +40,9 @@ north star is to make it first-class.
 | **`--target wasm` (first-class, v0.50.0)** | this repo | `machin build --target wasm` → a `wasm32-wasi` reactor module via `zig cc`; `export func` + FFI-as-import bridge built into codegen; lean pay-as-you-go runtime |
 | **MFL in the browser** | [machin-web-demo-wasm](https://github.com/javimosch/machin-web-demo-wasm) | MFL → C → wasm; FFI-as-import DOM bridge; string marshaling; verified on-screen in Chrome |
 | **isomorphic SSR** | [machin-web-demo-ssr](https://github.com/javimosch/machin-web-demo-ssr) | one `view.src` compiled into both a native machweb server (HTML per request) and the wasm client — server HTML and client re-render byte-identical |
-| **fine-grained reactivity** | [machin-web-demo-reactive](https://github.com/javimosch/machin-web-demo-reactive) · [`framework/reactive.src`](../framework) | signals + a patch list (Solid/Leptos model) in MFL: auto-tracked deps, only changed bindings recompute, only changed text patches — drove `[]func` (v0.53.0) |
+| **fine-grained reactivity** | [machin-web-demo-reactive](https://github.com/javimosch/machin-web-demo-reactive) · [`framework/reactive.src`](../framework) | signals + a patch list (Solid/Leptos model) in MFL: auto-tracked deps, only changed bindings recompute, only changed text patches — drove `[]func` (v0.53.0), computed + keyed lists (v0.54.0), templating (v0.55.0) |
+| **reactive forms (text input)** | [machin-web-demo-todo](https://github.com/javimosch/machin-web-demo-todo) | a todo app — typed text flows into wasm via `ptr_str` (v0.57.0); signals + computed + keyed list + templating |
+| **isomorphic app boilerplate** | [boilerplate-cli-ui-machin-isomorphic](https://github.com/javimosch/boilerplate-cli-ui-machin-isomorphic) | one binary = CLI + HTTP server + JSON API + reactive wasm UI; SSR + hydrate (v0.56.0); shared `models.src` |
 | backend web framework | [`framework/machweb.src`](../framework) | `serve(port, handler)` → self-contained native server |
 
 ## The feature roadmap (gaps, in rough dependency order)
@@ -68,8 +70,13 @@ five shipped in **v0.50.0** (`--target wasm`); the rest remain.
    calls, so a component owns its state in machin (`var count = 0` +
    `export func bump(d){count=count+d}`) instead of the JS host holding it. Any
    type — scalars, strings, make-maps, slices — and visible inside closures.
-6. **String/array marshaling helpers.** A small JS runtime shipped with the
-   target (decode/encode strings, pass slices) so apps don't re-roll `readCString`.
+6. **String marshaling — both directions (done, v0.50.0 + v0.57.0).** Out of wasm:
+   machin returns a memory pointer the host decodes (UTF-8 until NUL). Into wasm:
+   **`ptr_str(ptr)`** reads a NUL-terminated string the host wrote into an `alloc`'d
+   buffer — so a form `<input>`'s text reaches a component
+   ([machin-web-demo-todo](https://github.com/javimosch/machin-web-demo-todo)). Ints
+   cross both ways as `BigInt`. Still nice-to-have: a shipped JS helper so apps
+   don't re-roll the ~6-line decode/encode, and richer types (slices/structs).
 7. ~~**Signals + a patch-list runtime.**~~ **Done (v0.53.0).** `framework/reactive.src`
    — signals hold state, bindings are compute closures (a `[]func` registry) tied
    to DOM slots with auto-tracked deps; on `set`, only the bindings that read the
