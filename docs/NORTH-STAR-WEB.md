@@ -33,6 +33,12 @@ Two pieces of luck make it work with **no new heavy toolchain**:
 So the frontend is reachable **today** with a shell script of workarounds. The
 north star is to make it first-class.
 
+> **Building a web app?** The how-to substrate is
+> [`skills/machin-web/SKILL.md`](../skills/machin-web/SKILL.md) — the agent-facing
+> guide to the server (machweb), the reactive client, the wasm bridge + marshaling,
+> the generic JS host, build-and-verify, the gotchas, and a CRUD back-office recipe.
+> Start from the [boilerplate](https://github.com/javimosch/boilerplate-cli-ui-machin-isomorphic).
+
 ## Where it stands
 
 | capability | repo | what it proved |
