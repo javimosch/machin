@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.75.0
+
+- **A `machin-backend` skill** — the backend domain now has its own how-to (the five
+  pooled datastores + the uniform JSON-rows/`parse` idiom, connection pooling, signed
+  sessions + SSO, the agent-first CLI contract, daemons, build/verify, gotchas). Embedded
+  like the others: `machin guide --skill backend`. The `backend` domain in `machin guide`
+  now routes to it.
+
 ## v0.74.0
 
 - **Domain how-tos in the binary.** `machin guide` now leads with a **DOMAINS** section
