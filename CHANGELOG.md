@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.72.0
+
+- **MySQL / MariaDB client** (`framework/mysql.src`) — a pure-MFL client over the wire
+  protocol, no libmysql. `mysql_connect` (mysql_native_password / SHA-1 challenge auth),
+  `mysql_query` (text protocol → a JSON-array-of-rows string, numeric columns unquoted so
+  `parse(rows, []T{})` decodes), `mysql_exec` (→ affected rows), `mysql_escape`,
+  `mysql_close`. Verified against `mariadb:11`.
+- **`sha1_bytes(bytes) -> bytes`** — SHA-1 digest (OpenSSL), for legacy auth like MySQL's
+  native password. This unblocked the MySQL handshake.
+
 ## v0.71.0
 
 - **MongoDB connection pooling** — the driver is now handle-based (a `MongoConn` =

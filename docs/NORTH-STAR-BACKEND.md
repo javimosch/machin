@@ -19,6 +19,7 @@ paid for two: `read_bytes` and binary-safe base64.
 | **Networked SQL — Postgres** | ✅ | `framework/postgres.src`: wire v3 + SCRAM-SHA-256; `pg_query` (simple) + `pg_exec` (**parameterized**, `$1`/extended protocol, injection-safe) → JSON rows. **Gap left:** connection reuse/pool, COPY, TLS |
 | Networked SQL — MySQL | ❌ | needs SHA1 (mysql_native_password) or the caching_sha2 flow |
 | Redis | ✅ | `framework/redis.src`: RESP over `dial()`; typed helpers + `redis_cmd`; arrays → JSON → `parse([]string{})`. Cache/sessions/counters/queues |
+| MySQL / MariaDB | ✅ | `framework/mysql.src`: wire protocol + mysql_native_password (SHA-1) auth; typed JSON rows → `parse([]T{})`. **Gap left:** caching_sha2 auth, prepared statements, pooling |
 | MongoDB | ✅ | `framework/mongo.src` + `bson.src`: OP_MSG + BSON; insert/find/count/drop, docs → JSON → `parse([]T{})`. **SCRAM-SHA-256 auth**, doubles, cursor pagination, query/delete by `_id`, **connection pooling** |
 | HTTP server | ✅ | `framework/machweb.src` (router, body, response builders, binary path) |
 | HTTP/TLS client | ✅ | `https_get`/`https_post`/`http_request`; `wss_*` WebSocket |

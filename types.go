@@ -1783,7 +1783,7 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		}
 		c.addPair(argSlots[0], c.cInt)
 		return c.cBytes, nil
-	case "sha256_bytes", "x25519_pub", "ed25519_pub":
+	case "sha256_bytes", "sha1_bytes", "x25519_pub", "ed25519_pub":
 		if len(argSlots) != 1 {
 			return 0, fmt.Errorf("%s: 1 arg (bytes)", ex.Callee)
 		}
