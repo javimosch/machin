@@ -97,6 +97,16 @@ SQLite "pools" as several `sqlite_open` handles (use WAL + `PRAGMA busy_timeout`
 - A common pattern is **sessions in Redis** (`rsetex("sess:"+sid, 3600, email)`) keyed by
   a signed cookie — see the MachNotes app.
 
+## Sending email (`framework/smtp.src`)
+
+`smtp_send(host, port, from, to, subject, body, user, pass) -> (ok, errmsg)` sends a
+message over plaintext SMTP + `AUTH LOGIN` (`user=""` skips auth) — transactional email
+(password resets, receipts, alerts) with no library. The receiving side is here too:
+`smtp_recv(conn)` plays the server for one session, so you can build a catcher. Test with
+**zero external deps** against [machin-mail](https://github.com/javimosch/machin-mail)'s
+`sink` (a local SMTP catcher + web inbox). STARTTLS/implicit TLS isn't here yet — point it
+at a relay that accepts plaintext submission, or a local catcher.
+
 ## Crypto you'll reach for
 
 `sha256` / `hmac_sha256` (hex), `sha256_bytes` / `hmac_sha256_bytes` / `sha1_bytes`

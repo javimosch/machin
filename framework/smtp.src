@@ -1,0 +1,243 @@
+// smtp.src — a pure-MFL SMTP toolkit: a client that SENDS mail and the server side that
+// RECEIVES it, both over dial()/listen() + read/write. No external library, no cgo.
+//
+//   smtp_send(host, port, from, to, subject, body, user, pass) -> (ok, errmsg)   // a sender
+//   smtp_recv(conn) -> (Mail, ok)                                                 // one server session
+//
+// The protocol is line-oriented (CRLF), so reads go through a small buffered line reader
+// (the slice-box trick, so a line split across packets reassembles). This is plaintext
+// SMTP + AUTH LOGIN/PLAIN — enough to talk to a submission relay that doesn't force TLS,
+// and to a local catcher. (STARTTLS/implicit TLS would need a TLS-wrap-an-fd primitive.)
+
+// ---- a buffered line reader over a socket fd ----
+
+type LineReader struct {
+    fd  int
+    buf []bytes
+}
+
+func line_reader(fd) (r) {
+    bx := []bytes{}
+    bx = append(bx, bytes(""))
+    r = LineReader{fd: fd, buf: bx}
+}
+
+// read_line returns the next CRLF/LF-delimited line (without the terminator), ok=0 on EOF.
+func read_line(r) (line, ok) {
+    line = ""
+    ok = 0
+    while 1 == 1 {
+        idx := bytes_index(r.buf[0], bytes("\n"), 0)
+        if idx >= 0 {
+            raw := bytes_sub(r.buf[0], 0, idx)
+            r.buf[0] = bytes_sub(r.buf[0], idx + 1, len(r.buf[0]))
+            line = bytes_str(raw)
+            if len(line) > 0 { if charat(line, len(line) - 1) == "\r" { line = substr(line, 0, len(line) - 1) } }
+            ok = 1
+            return
+        }
+        chunk := read_bytes(r.fd)
+        if len(chunk) == 0 {
+            if len(r.buf[0]) > 0 { line = bytes_str(r.buf[0])  r.buf[0] = bytes("")  ok = 1 }
+            return
+        }
+        r.buf[0] = bytes_concat(r.buf[0], chunk)
+    }
+}
+
+// read_reply consumes a (possibly multi-line) SMTP reply and returns its 3-digit code.
+// Continuation lines have a '-' as the 4th char; the final line has a space.
+func read_reply(r) (code, ok) {
+    code = 0
+    ok = 0
+    while 1 == 1 {
+        line, good := read_line(r)
+        if good == 0 { return }
+        if len(line) >= 3 { code = parse_int(substr(line, 0, 3)) }
+        if len(line) >= 4 {
+            if charat(line, 3) == "-" { continue }   // continuation -> keep reading
+        }
+        ok = 1
+        return
+    }
+}
+
+// ---- the client ----
+
+// smtp_build assembles the DATA payload: headers + a blank line + the body, with
+// dot-stuffing (a line starting with "." gets an extra "." so it isn't read as the
+// end-of-data marker).
+func smtp_build(from, to, subject, body) (m) {
+    m = "From: " + from + "\r\n" +
+        "To: " + to + "\r\n" +
+        "Subject: " + subject + "\r\n" +
+        "MIME-Version: 1.0\r\n" +
+        "Content-Type: text/plain; charset=utf-8\r\n" +
+        "\r\n"
+    for _, raw := range split(body, "\n") {
+        l := raw
+        if len(l) > 0 { if charat(l, len(l) - 1) == "\r" { l = substr(l, 0, len(l) - 1) } }
+        if len(l) > 0 { if charat(l, 0) == "." { l = "." + l } }
+        m = m + l + "\r\n"
+    }
+}
+
+// smtp_send sends one message. user=="" skips AUTH. Returns (1,"") on success, else
+// (0, reason). Expects the standard 220/250/334/235/354/250 reply codes.
+func smtp_send(host, port, from, to, subject, body, user, pass) (ok, errmsg) {
+    ok = 0
+    errmsg = ""
+    conn := dial(host, port)
+    if conn < 0 { errmsg = "dial failed"  return }
+    r := line_reader(conn)
+
+    code, good := read_reply(r)
+    if good == 0 || code != 220 { errmsg = "no 220 greeting"  close(conn)  return }
+
+    w := write(conn, "EHLO machin-mail\r\n")
+    code, good = read_reply(r)
+    if code != 250 { errmsg = "EHLO rejected"  close(conn)  return }
+
+    if user != "" {
+        w = write(conn, "AUTH LOGIN\r\n")
+        code, good = read_reply(r)
+        if code != 334 { errmsg = "AUTH LOGIN unsupported"  close(conn)  return }
+        w = write(conn, base64_encode(user) + "\r\n")
+        code, good = read_reply(r)
+        if code != 334 { errmsg = "AUTH username rejected"  close(conn)  return }
+        w = write(conn, base64_encode(pass) + "\r\n")
+        code, good = read_reply(r)
+        if code != 235 { errmsg = "authentication failed"  close(conn)  return }
+    }
+
+    w = write(conn, "MAIL FROM:<" + from + ">\r\n")
+    code, good = read_reply(r)
+    if code != 250 { errmsg = "MAIL FROM rejected"  close(conn)  return }
+
+    for _, rcpt := range split(to, ",") {
+        addr := trim(rcpt)
+        if addr != "" {
+            w = write(conn, "RCPT TO:<" + addr + ">\r\n")
+            code, good = read_reply(r)
+            if code != 250 { errmsg = "RCPT rejected: " + addr  close(conn)  return }
+        }
+    }
+
+    w = write(conn, "DATA\r\n")
+    code, good = read_reply(r)
+    if code != 354 { errmsg = "DATA rejected"  close(conn)  return }
+
+    w = write(conn, smtp_build(from, to, subject, body))
+    w = write(conn, "\r\n.\r\n")
+    code, good = read_reply(r)
+    if code != 250 { errmsg = "message rejected"  close(conn)  return }
+
+    w = write(conn, "QUIT\r\n")
+    cq, gq := read_reply(r)
+    close(conn)
+    ok = 1
+}
+
+// ---- the server side (a catcher / sink) ----
+
+type Mail struct {
+    mail_from string
+    rcpt_to   string   // comma-joined recipients
+    data      string   // the raw message (headers + body)
+}
+
+// smtp_addr pulls the address out of "MAIL FROM:<a@b>" / "RCPT TO:<a@b>".
+func smtp_addr(line) (a) {
+    a = ""
+    lt := index(line, "<")
+    gt := index(line, ">")
+    if lt >= 0 {
+        if gt > lt { a = substr(line, lt + 1, gt)  return }
+    }
+    c := index(line, ":")
+    if c >= 0 { a = trim(substr(line, c + 1, len(line))) }
+}
+
+// smtp_recv plays the server side of ONE SMTP session on conn and returns the caught
+// Mail (ok=1) once the client finishes (QUIT, or EOF after a completed DATA). A catcher:
+// it accepts any AUTH and every recipient.
+func smtp_recv(conn) (mail, ok) {
+    mail = Mail{mail_from: "", rcpt_to: "", data: ""}
+    ok = 0
+    r := line_reader(conn)
+    w := write(conn, "220 machin-mail ESMTP ready\r\n")
+    rcpts := ""
+    got := 0
+    while 1 == 1 {
+        line, good := read_line(r)
+        if good == 0 {
+            if got == 1 { mail.rcpt_to = rcpts  ok = 1 }   // client dropped after a full message
+            return
+        }
+        up := to_upper(line)
+        if has_prefix(up, "EHLO") {
+            w = write(conn, "250-machin-mail\r\n250-AUTH LOGIN PLAIN\r\n250 OK\r\n")
+        } else if has_prefix(up, "HELO") {
+            w = write(conn, "250 machin-mail\r\n")
+        } else if has_prefix(up, "AUTH LOGIN") {
+            w = write(conn, "334 VXNlcm5hbWU6\r\n")          // base64("Username:")
+            u, _ := read_line(r)
+            w = write(conn, "334 UGFzc3dvcmQ6\r\n")          // base64("Password:")
+            p, _ := read_line(r)
+            w = write(conn, "235 2.7.0 Authentication successful\r\n")
+        } else if has_prefix(up, "AUTH PLAIN") {
+            w = write(conn, "235 2.7.0 Authentication successful\r\n")
+        } else if has_prefix(up, "MAIL FROM") {
+            mail.mail_from = smtp_addr(line)
+            w = write(conn, "250 2.1.0 OK\r\n")
+        } else if has_prefix(up, "RCPT TO") {
+            a := smtp_addr(line)
+            if rcpts == "" { rcpts = a } else { rcpts = rcpts + ", " + a }
+            w = write(conn, "250 2.1.5 OK\r\n")
+        } else if has_prefix(up, "DATA") {
+            w = write(conn, "354 End data with <CR><LF>.<CR><LF>\r\n")
+            body := ""
+            while 1 == 1 {
+                dl, dgood := read_line(r)
+                if dgood == 0 { break }
+                if dl == "." { break }
+                if len(dl) > 0 { if charat(dl, 0) == "." { dl = substr(dl, 1, len(dl)) } }   // un-dot-stuff
+                body = body + dl + "\n"
+            }
+            mail.data = body
+            got = 1
+            w = write(conn, "250 2.0.0 OK queued\r\n")
+        } else if has_prefix(up, "QUIT") {
+            w = write(conn, "221 2.0.0 Bye\r\n")
+            mail.rcpt_to = rcpts
+            if got == 1 { ok = 1 }
+            return
+        } else if has_prefix(up, "RSET") {
+            mail.mail_from = ""  rcpts = ""  mail.data = ""  got = 0
+            w = write(conn, "250 OK\r\n")
+        } else if has_prefix(up, "NOOP") {
+            w = write(conn, "250 OK\r\n")
+        } else {
+            w = write(conn, "250 OK\r\n")
+        }
+    }
+}
+
+// mail_header pulls a header value (e.g. "Subject") out of a raw message's header block.
+func mail_header(data, name) (v) {
+    v = ""
+    for _, line := range split(data, "\n") {
+        if line == "" { return }                 // blank line -> end of headers
+        ci := index(line, ":")
+        if ci > 0 {
+            if to_lower(substr(line, 0, ci)) == to_lower(name) { v = trim(substr(line, ci + 1, len(line)))  return }
+        }
+    }
+}
+
+// mail_body returns everything after the header block (the message body).
+func mail_body(data) (b) {
+    b = ""
+    i := index(data, "\n\n")
+    if i >= 0 { b = substr(data, i + 2, len(data)) } else { b = data }
+}
