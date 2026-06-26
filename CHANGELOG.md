@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.73.0
+
+- **MySQL connection pooling** — the MySQL/MariaDB client is now handle-based
+  (`MySQLConn`) with an async-channel pool, like the other drivers:
+  `mysql_pool_init(n, host, port, user, pass, db)` then `mysql_acquire()` + `myq`/`myx`
+  + `mysql_release(c)`. The global `mysql_*` API is unchanged. Verified: 30 goroutines
+  over 4 connections, all correct. **All five datastore drivers (Postgres/Redis/Mongo/
+  MySQL) are now poolable** (SQLite is embedded).
+
 ## v0.72.0
 
 - **MySQL / MariaDB client** (`framework/mysql.src`) — a pure-MFL client over the wire

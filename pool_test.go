@@ -156,3 +156,49 @@ func main() {
 		t.Fatalf("pool corrupted a result under concurrency; got:\n%s", out)
 	}
 }
+
+// MySQL pool: 30 goroutines, 4 connections; each inserts + finds its own row.
+func TestMySQLPoolConcurrent(t *testing.T) {
+	if os.Getenv("MACHIN_MYSQL_TEST") == "" {
+		t.Skip("set MACHIN_MYSQL_TEST=1 (and run a MariaDB/MySQL) to exercise the pool")
+	}
+	host := "127.0.0.1"
+	if v := os.Getenv("MACHIN_MYSQL_HOST"); v != "" {
+		host = v
+	}
+	data, err := os.ReadFile("framework/mysql.src")
+	if err != nil {
+		t.Skip("framework/mysql.src not found")
+	}
+	app := `
+type R struct { i int }
+var done = make(chan int)
+func worker(id) {
+    c := mysql_acquire()
+    myx(c, "INSERT INTO pooltest (i) VALUES (" + str(id) + ")")
+    rs := parse(myq(c, "SELECT i FROM pooltest WHERE i = " + str(id)), []R{})
+    mysql_release(c)
+    ok := 0
+    if len(rs) == 1 { if rs[0].i == id { ok = 1 } }
+    done <- ok
+}
+func main() {
+    mysql_connect("` + host + `", 3307, "root", "secret", "cms")
+    mysql_exec("DROP TABLE IF EXISTS pooltest")  mysql_exec("CREATE TABLE pooltest (i INT)")  mysql_close()
+    mysql_pool_init(4, "` + host + `", 3307, "root", "secret", "cms")
+    n := 30
+    i := 0
+    while i < n { go worker(i)  i = i + 1 }
+    good := 0
+    j := 0
+    while j < n { good = good + <-done  j = j + 1 }
+    println("ok=" + str(good) + "/" + str(n))
+}`
+	out, err := RunCaptured(progFromSrcMust(t, string(data)+app))
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !strings.Contains(out, "ok=30/30") {
+		t.Fatalf("mysql pool corrupted a result; got:\n%s", out)
+	}
+}
