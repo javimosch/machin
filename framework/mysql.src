@@ -1,48 +1,54 @@
 // mysql.src — a pure-MFL MySQL/MariaDB client over the wire protocol, no libmysql.
-// Connects with mysql_native_password auth (SHA-1 challenge), runs text-protocol
-// queries returning rows as a JSON-array string (same shape as sqlite_query /
-// pg_query, so parse(rows, []T{}) decodes — numeric columns come back unquoted).
+// mysql_native_password auth (SHA-1 challenge), text-protocol queries returning rows
+// as a JSON-array string (numeric columns unquoted, so parse(rows, []T{}) decodes).
 //
-//   mysql_connect("127.0.0.1", 3306, "root", "secret", "mydb")
-//   rows := mysql_query("SELECT id, name FROM users")
-//   mysql_exec("INSERT INTO users (name) VALUES ('" + mysql_escape(n) + "')")
-//   mysql_close()
-//
-// v1: a single connection; mysql_native_password (MariaDB's default; for MySQL 8
-// create the user `IDENTIFIED WITH mysql_native_password`). caching_sha2 is a follow-up.
+//   • Single connection:
+//       mysql_connect("127.0.0.1", 3306, "root", "secret", "mydb")
+//       rows := mysql_query("SELECT id, name FROM users")
+//       mysql_exec("INSERT INTO users (name) VALUES ('" + mysql_escape(n) + "')")
+//       mysql_close()
+//   • Pool (concurrent server):
+//       mysql_pool_init(8, "127.0.0.1", 3306, "root", "secret", "mydb")
+//       c := mysql_acquire();  myq(c, sql) / myx(c, sql);  mysql_release(c)
 
-var mysql_fd = 0
-var mysql_buf = bytes("")
+type MySQLConn struct { fd int  buf []bytes }
+
+func mysql_attach(fd) (c) {
+    bx := []bytes{}
+    bx = append(bx, bytes(""))
+    c = MySQLConn{fd: fd, buf: bx}
+}
 
 func my_hx2(n) (s) { d := "0123456789abcdef"  s = charat(d, (n >> 4) & 15) + charat(d, n & 15) }
 func my_le4(n) (h) { h = my_hx2(n & 255) + my_hx2((n >> 8) & 255) + my_hx2((n >> 16) & 255) + my_hx2((n >> 24) & 255) }
 func my_zeros(n) (h) { h = ""  i := 0  while i < n { h = h + "00"  i = i + 1 } }
 
-func mysql_fill(need) {
-    while len(mysql_buf) < need {
-        ch := read_bytes(mysql_fd)
+func myfill(c, need) {
+    while len(c.buf[0]) < need {
+        ch := read_bytes(c.fd)
         if len(ch) == 0 { return }
-        mysql_buf = bytes_concat(mysql_buf, ch)
+        c.buf[0] = bytes_concat(c.buf[0], ch)
     }
 }
 
-// mysql_read reads one protocol packet: (payload, seq). Header = 3-byte length LE + seq.
-func mysql_read() (payload, seq) {
-    mysql_fill(4)
-    plen := byte_at(mysql_buf, 0) | (byte_at(mysql_buf, 1) << 8) | (byte_at(mysql_buf, 2) << 16)
-    seq = byte_at(mysql_buf, 3)
-    mysql_fill(4 + plen)
-    payload = bytes_sub(mysql_buf, 4, 4 + plen)
-    mysql_buf = bytes_sub(mysql_buf, 4 + plen, len(mysql_buf))
+// myread reads one protocol packet: (payload, seq). Header = 3-byte length LE + seq.
+func myread(c) (payload, seq) {
+    myfill(c, 4)
+    b := c.buf[0]
+    plen := byte_at(b, 0) | (byte_at(b, 1) << 8) | (byte_at(b, 2) << 16)
+    seq = byte_at(b, 3)
+    myfill(c, 4 + plen)
+    payload = bytes_sub(c.buf[0], 4, 4 + plen)
+    c.buf[0] = bytes_sub(c.buf[0], 4 + plen, len(c.buf[0]))
 }
 
-func mysql_write(seq, payload) {
+func mywrite(c, seq, payload) {
     n := len(payload)
     hdr := from_hex(my_hx2(n & 255) + my_hx2((n >> 8) & 255) + my_hx2((n >> 16) & 255) + my_hx2(seq & 255))
-    write_bytes(mysql_fd, bytes_concat(hdr, payload))
+    write_bytes(c.fd, bytes_concat(hdr, payload))
 }
 
-// ---- length-encoded integers / strings ----
+// ---- length-encoded ints / strings (pure) ----
 
 func lenenc_int(b, off) (v, nxt) {
     f := byte_at(b, off)
@@ -62,7 +68,7 @@ func lenenc_str(b, off) (s, nxt) {
 }
 func lenenc_skip(b, off) (nxt) { l, o := lenenc_int(b, off)  nxt = o + l }
 
-// ---- auth ----
+// ---- auth (pure) ----
 
 func my_xor20(a, b) (r) {
     h := ""
@@ -70,7 +76,6 @@ func my_xor20(a, b) (r) {
     while i < 20 { h = h + my_hx2(byte_at(a, i) ^ byte_at(b, i))  i = i + 1 }
     r = from_hex(h)
 }
-// mysql_native_password: SHA1(pw) XOR SHA1(scramble + SHA1(SHA1(pw)))
 func mysql_scramble(password, scramble) (token) {
     s1 := sha1_bytes(bytes(password))
     s2 := sha1_bytes(s1)
@@ -78,42 +83,33 @@ func mysql_scramble(password, scramble) (token) {
     token = my_xor20(s1, s3)
 }
 
-// ---- connect ----
+// ---- open (connect + handshake + auth) ----
 
-func mysql_connect(host, port, user, password, db) (ok) {
-    mysql_fd = dial(host, port)
-    mysql_buf = bytes("")
-    hs, hsq := mysql_read()                       // initial handshake (seq 0)
-    // skip: protocol version (1) + server version (NUL string)
+func myopen(host, port, user, password, db) (c, ok) {
+    c = mysql_attach(dial(host, port))
+    ok = 0
+    hs, hsq := myread(c)                            // initial handshake
     i := 1
     while byte_at(hs, i) != 0 { i = i + 1 }
     i = i + 1
-    i = i + 4                                      // connection id
-    sc1 := bytes_sub(hs, i, i + 8)                 // scramble part 1
-    i = i + 8
-    i = i + 1                                      // filler
-    i = i + 2 + 1 + 2 + 2                           // cap-lo, charset, status, cap-hi
-    i = i + 1                                      // auth-plugin-data length
-    i = i + 10                                     // reserved
-    sc2 := bytes_sub(hs, i, i + 12)                // scramble part 2 (first 12)
-    scramble := bytes_concat(sc1, sc2)            // 20-byte challenge
+    i = i + 4
+    sc1 := bytes_sub(hs, i, i + 8)
+    i = i + 8 + 1 + 2 + 1 + 2 + 2 + 1 + 10
+    sc2 := bytes_sub(hs, i, i + 12)
+    scramble := bytes_concat(sc1, sc2)
     token := mysql_scramble(password, scramble)
-    // capabilities: LONG_PASSWORD|CONNECT_WITH_DB|PROTOCOL_41|SECURE_CONNECTION|PLUGIN_AUTH
-    caps := 1 | 8 | 512 | 32768 | 524288
+    caps := 1 | 8 | 512 | 32768 | 524288           // LONG_PW|CONNECT_DB|PROTO_41|SECURE|PLUGIN_AUTH
     body := from_hex(my_le4(caps) + my_le4(16777216) + my_hx2(33) + my_zeros(23))
     body = bytes_concat(body, bytes_concat(bytes(user), from_hex("00")))
     body = bytes_concat(body, bytes_concat(from_hex(my_hx2(20)), token))
     body = bytes_concat(body, bytes_concat(bytes(db), from_hex("00")))
     body = bytes_concat(body, bytes_concat(bytes("mysql_native_password"), from_hex("00")))
-    mysql_write(1, body)
-    resp, rsq := mysql_read()
-    ok = 0
-    if byte_at(resp, 0) == 0 { ok = 1 }            // OK packet -> authenticated
+    mywrite(c, 1, body)
+    resp, rsq := myread(c)
+    if byte_at(resp, 0) == 0 { ok = 1 }
 }
 
-func mysql_close() { mysql_write(0, from_hex("01"))  close(mysql_fd) }   // COM_QUIT
-
-// ---- query ----
+// ---- result helpers (pure) ----
 
 func jstr(s) (out) {
     e := replace(s, "\\", "\\\\")
@@ -121,23 +117,19 @@ func jstr(s) (out) {
     e = replace(e, "\n", "\\n")
     out = "\"" + e + "\""
 }
-
-// mysql_escape escapes a value for inclusion in single-quoted SQL.
 func mysql_escape(s) (out) {
     out = replace(s, "\\", "\\\\")
     out = replace(out, "'", "\\'")
 }
-
-// a column definition packet -> (name, is-numeric). Numeric types come back unquoted.
 func coldef(b) (name, isnum) {
-    o := lenenc_skip(b, 0)        // catalog
-    o = lenenc_skip(b, o)         // schema
-    o = lenenc_skip(b, o)         // table
-    o = lenenc_skip(b, o)         // org_table
-    name, o = lenenc_str(b, o)    // name
-    o = lenenc_skip(b, o)         // org_name
-    _, o = lenenc_int(b, o)       // 0x0c = length of the fixed block (advance past the marker only)
-    t := byte_at(b, o + 6)        // type byte (after charset(2) + column_length(4))
+    o := lenenc_skip(b, 0)
+    o = lenenc_skip(b, o)
+    o = lenenc_skip(b, o)
+    o = lenenc_skip(b, o)
+    name, o = lenenc_str(b, o)
+    o = lenenc_skip(b, o)
+    _, o = lenenc_int(b, o)
+    t := byte_at(b, o + 6)
     isnum = 0
     if t == 1 { isnum = 1 }
     if t == 2 { isnum = 1 }
@@ -148,48 +140,49 @@ func coldef(b) (name, isnum) {
     if t == 9 { isnum = 1 }
 }
 
-// mysql_query runs a SELECT and returns rows as a JSON-array string.
-func mysql_query(sql) (jsonrows) {
-    mysql_write(0, bytes_concat(from_hex("03"), bytes(sql)))   // COM_QUERY
-    p1, s1 := mysql_read()
+// ---- handle-based query / exec ----
+
+func myq(c, sql) (jsonrows) {
+    mywrite(c, 0, bytes_concat(from_hex("03"), bytes(sql)))
+    p1, s1 := myread(c)
     fb := byte_at(p1, 0)
     jsonrows = "[]"
-    if fb == 0 { return }                          // OK (no result set)
-    if fb == 255 { return }                        // ERR
+    if fb == 0 { return }
+    if fb == 255 { return }
     ncol, _ := lenenc_int(p1, 0)
     names := []string{}
     nums := []int{}
     i := 0
     while i < ncol {
-        cp, cs := mysql_read()
+        cp, cs := myread(c)
         nm, isn := coldef(cp)
         names = append(names, nm)
         nums = append(nums, isn)
         i = i + 1
     }
-    ev, es := mysql_read()                          // EOF after column defs
+    ev, es := myread(c)
     rows := []string{}
     more := 1
     while more == 1 {
-        rp, rs := mysql_read()
-        if byte_at(rp, 0) == 254 {                  // EOF -> end of rows
+        rp, rs := myread(c)
+        if byte_at(rp, 0) == 254 {
             if len(rp) < 9 { more = 0 }
         }
         if more == 1 {
             obj := "{"
             off := 0
-            c := 0
-            while c < ncol {
-                if c > 0 { obj = obj + "," }
-                if byte_at(rp, off) == 251 {        // 0xfb -> NULL
-                    obj = obj + jstr(names[c]) + ":null"
+            col := 0
+            while col < ncol {
+                if col > 0 { obj = obj + "," }
+                if byte_at(rp, off) == 251 {
+                    obj = obj + jstr(names[col]) + ":null"
                     off = off + 1
                 } else {
                     sval, no := lenenc_str(rp, off)
                     off = no
-                    if nums[c] == 1 { obj = obj + jstr(names[c]) + ":" + sval } else { obj = obj + jstr(names[c]) + ":" + jstr(sval) }
+                    if nums[col] == 1 { obj = obj + jstr(names[col]) + ":" + sval } else { obj = obj + jstr(names[col]) + ":" + jstr(sval) }
                 }
-                c = c + 1
+                col = col + 1
             }
             obj = obj + "}"
             rows = append(rows, obj)
@@ -198,14 +191,40 @@ func mysql_query(sql) (jsonrows) {
     jsonrows = "[" + join(rows, ",") + "]"
 }
 
-// mysql_exec runs a statement with no result set (INSERT/UPDATE/DELETE/DDL) and returns
-// the affected-row count (-1 on error). Escape user values with mysql_escape.
-func mysql_exec(sql) (affected) {
-    mysql_write(0, bytes_concat(from_hex("03"), bytes(sql)))
-    p, s := mysql_read()
+func myx(c, sql) (affected) {
+    mywrite(c, 0, bytes_concat(from_hex("03"), bytes(sql)))
+    p, s := myread(c)
     affected = 0 - 1
-    if byte_at(p, 0) == 0 {                          // OK packet
-        a, _ := lenenc_int(p, 1)                     // affected rows
+    if byte_at(p, 0) == 0 {
+        a, _ := lenenc_int(p, 1)
         affected = a
     }
 }
+
+// ---- pool ----
+
+var mysql_pool = make(chan int)
+
+func mysql_pool_init(n, host, port, user, pass, db) {
+    i := 0
+    while i < n {
+        c, ok := myopen(host, port, user, pass, db)
+        mysql_pool <- c.fd
+        i = i + 1
+    }
+}
+func mysql_acquire() (c) { c = mysql_attach(<-mysql_pool) }
+func mysql_release(c) { mysql_pool <- c.fd }
+
+// ---- single-connection convenience API ----
+
+var mysql_default = MySQLConn{}
+
+func mysql_connect(host, port, user, password, db) (ok) {
+    c, k := myopen(host, port, user, password, db)
+    mysql_default = c
+    ok = k
+}
+func mysql_close() { mywrite(mysql_default, 0, from_hex("01"))  close(mysql_default.fd) }
+func mysql_query(sql) (jsonrows) { jsonrows = myq(mysql_default, sql) }
+func mysql_exec(sql) (affected) { affected = myx(mysql_default, sql) }
