@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.77.0
+
+- **Streaming responses in machweb (Server-Sent Events).** A handler can now return
+  `sse(fn)` / `stream_response(status, ctype, fn)` instead of a whole `Response`: machweb
+  writes the headers (no `Content-Length`), then hands `fn` the connection so it writes
+  the body **incrementally over a long-lived socket** — live logs, metrics, progress, LLM
+  tokens. Helpers `sse_data(conn, msg)` / `sse_event(conn, name, msg)` /
+  `sse_comment(conn, keepalive)` format SSE frames and return the write result (`< 0`
+  once the client has gone, so a producer loop breaks cleanly). Normal (whole-Response)
+  handlers are unchanged — streaming and normal routes coexist on one port.
+- **SIGPIPE is ignored** in every binary's `main`, so writing to a peer that closed the
+  connection (an SSE client that navigated away) returns `-1`/`EPIPE` instead of killing
+  the process. (A latent hazard for any long-lived server, not just streaming.)
+- Dogfooded by **[machin-live](https://github.com/javimosch/machin-live)** — a
+  self-hostable live event/log stream hub: producers `POST /push/<topic>`, browsers watch
+  `GET /stream/<topic>` over SSE, fanned out across goroutines by a single hub goroutine
+  that owns the subscriber set (the idiomatic lock-free channel pattern — a `chan` inside
+  a struct, a `[]Sub` registry).
+
 ## v0.76.0
 
 - **File uploads in machweb (multipart/form-data).** Requests are now read **binary-safe**

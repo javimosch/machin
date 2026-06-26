@@ -22,7 +22,7 @@ var skillBackend string
 
 // machinVersion is the single version string for the toolchain. Bump it when
 // cutting a release (alongside README badge / SPEC / CHANGELOG).
-const machinVersion = "0.76.0"
+const machinVersion = "0.77.0"
 
 // ---- the source-of-truth feature catalog ----
 //

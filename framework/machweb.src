@@ -25,6 +25,8 @@ type Response struct {
     cookies []string   // Set-Cookie values (added via set_cookie); empty for most responses
     location string    // Location header (set by redirect); empty for most responses
     extra   []string   // extra header lines "Name: value" (added via with_header), e.g. Content-Disposition
+    is_stream int      // 1 = a streaming response: ignore body/bin, call stream(conn) instead
+    stream  func       // func(conn): writes the body incrementally over a long-lived socket (SSE / chunked)
 }
 
 // with_header returns res with an extra response header added (e.g. Content-Disposition
@@ -61,6 +63,44 @@ func ok_bytes(ctype, b) (r) {
 // ok_wasm serves a WebAssembly module with the correct content type, so a single
 // machin binary can ship both its SSR HTML and its own .wasm SPA bundle.
 func ok_wasm(b) (r) { r = ok_bytes("application/wasm", b) }
+
+// ---- streaming responses (Server-Sent Events / live tail) ----
+//
+// A normal handler computes a whole Response and machweb writes it, then closes. A
+// STREAMING handler instead returns stream_response(...)/sse(fn): machweb writes the
+// headers, then hands fn the connection so it can write the body incrementally over a
+// long-lived socket — live logs, metrics, progress, LLM tokens. There is no
+// Content-Length; the socket stays open until fn returns. Writing to a client that has
+// gone away returns < 0 (the runtime ignores SIGPIPE), so a stream loop should break on
+// a negative write to stop cleanly.
+
+// stream_response builds a streaming response driven by fn(conn).
+func stream_response(status, ctype, fn) (r) {
+    r = Response{status: status, ctype: ctype, body: "", is_bin: 0, is_stream: 1, stream: fn}
+}
+
+// sse builds a text/event-stream response — the browser consumes it with EventSource.
+func sse(fn) (r) { r = stream_response("200 OK", "text/event-stream; charset=utf-8", fn) }
+
+// sse_data sends one SSE message (a "data:" event). Multi-line text is split so each
+// line is its own data field (per the spec). Returns the write result — < 0 once the
+// client has disconnected, which a producer loop should treat as "stop".
+func sse_data(conn, data) (n) {
+    msg := ""
+    for _, line := range split(data, "\n") { msg = msg + "data: " + line + "\n" }
+    n = write(conn, msg + "\n")
+}
+
+// sse_event sends a named SSE event (dispatched by name on the client).
+func sse_event(conn, event, data) (n) {
+    msg := "event: " + event + "\n"
+    for _, line := range split(data, "\n") { msg = msg + "data: " + line + "\n" }
+    n = write(conn, msg + "\n")
+}
+
+// sse_comment sends a comment line — a keepalive ping browsers ignore (returns < 0 if
+// the client has gone, so it doubles as a liveness probe).
+func sse_comment(conn, c) (n) { n = write(conn, ": " + c + "\n\n") }
 
 // ---- request helpers ----
 
@@ -367,6 +407,15 @@ func machweb_handle(conn, handler) {
     raw := read_request_bytes(conn)
     req := parse_request_bytes(raw)
     res := handler(req)
+    if res.is_stream == 1 {
+        // streaming body: write the headers (no Content-Length), then let the handler
+        // write events over the open socket. X-Accel-Buffering disables nginx buffering.
+        shead := "HTTP/1.1 " + res.status + "\r\nContent-Type: " + res.ctype + "\r\nCache-Control: no-cache\r\nX-Accel-Buffering: no\r\n" + cookie_lines(res) + "Connection: close\r\n\r\n"
+        write(conn, shead)
+        res.stream(conn)
+        close(conn)
+        return
+    }
     if res.is_bin == 1 {
         // binary body: write the headers, then the raw bytes (NUL-safe).
         head := "HTTP/1.1 " + res.status + "\r\nContent-Type: " + res.ctype + "\r\nContent-Length: " + str(len(res.bin)) + "\r\n" + cookie_lines(res) + "Connection: close\r\n\r\n"

@@ -71,6 +71,14 @@ func main() { serve(48080, func(req) { return handle(req) }) }
   `write_file_bytes`); `multipart_field(req, "name")` reads a text field of the same form.
   `parse_multipart(req)` returns every part. The raw binary body is `req.body_bytes`. See
   [machin-share](https://github.com/javimosch/machin-share).
+- **Streaming / Server-Sent Events:** return `sse(func(conn) { ... })` instead of a whole
+  Response and write events over the open socket with `sse_data(conn, msg)` /
+  `sse_event(conn, name, msg)` / `sse_comment(conn, ping)` — for live logs, progress, or
+  LLM tokens. A write returns `< 0` once the client disconnects (break the loop). SIGPIPE
+  is ignored so a vanished client can't kill the server. For cross-goroutine fan-out
+  (one producer → many live subscribers) use a single hub goroutine that owns the
+  subscriber set (a `chan` field inside a struct, a `[]Sub` registry) — see
+  [machin-live](https://github.com/javimosch/machin-live).
 - **A database:** machin has SQLite builtins — `sqlite_open(path)` / `sqlite_exec(db,
   sql)` / `sqlite_exec(db, sql, []string params)` (`?`-bind, injection-safe) /
   `sqlite_query(db, sql[, params]) -> string` (a **JSON-array-of-rows string**) /

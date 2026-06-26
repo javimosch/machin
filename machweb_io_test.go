@@ -150,6 +150,56 @@ func main() {
 	}
 }
 
+// A streaming (SSE) response: the handler returns sse(fn), and machweb writes the
+// event-stream headers (no Content-Length) then lets fn write data events over the open
+// socket. The client reads until the server closes. Proven by the text/event-stream
+// content type + the three "data:" events arriving in the body.
+func TestMachwebSSEStream(t *testing.T) {
+	app := loopbackHelpers + `
+func emit(conn) {
+    i := 0
+    while i < 3 {
+        n := sse_data(conn, "tick " + str(i))
+        if n < 0 { return }
+        i = i + 1
+    }
+}
+func handle(req) (res) {
+    if req.path == "/events" { res = sse(func(conn) { emit(conn) })  return }
+    res = ok_text("home")
+}
+func main() {
+    port := 48237
+    srv := listen(port)
+    if srv < 0 { println("listen-failed")  return }
+    go serve_one(srv, func(req) { return handle(req) })
+    sleep(50)
+    c := dial("127.0.0.1", port)
+    if c < 0 { println("dial-failed")  return }
+    write(c, "GET /events HTTP/1.1\r\nHost: x\r\n\r\n")
+    resp := read_all(c)
+    close(c)
+    println(resp)
+}`
+	out, err := RunCaptured(machwebProg(t, app))
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if strings.Contains(out, "listen-failed") || strings.Contains(out, "dial-failed") {
+		t.Fatalf("loopback setup failed:\n%s", out)
+	}
+	if !strings.Contains(out, "Content-Type: text/event-stream") {
+		t.Fatalf("SSE response should carry the event-stream content type; got:\n%s", out)
+	}
+	// a streaming response has no Content-Length, and all three events arrived
+	if strings.Contains(out, "Content-Length:") {
+		t.Fatalf("a streaming response must not send Content-Length; got:\n%s", out)
+	}
+	if !strings.Contains(out, "data: tick 0") || !strings.Contains(out, "data: tick 1") || !strings.Contains(out, "data: tick 2") {
+		t.Fatalf("all three SSE events should stream through; got:\n%s", out)
+	}
+}
+
 // The binary response path (is_bin=1) writes the headers then write_bytes(conn,
 // bin) — NUL-safe. The body here starts with a 0x00 byte, so a text/strlen path
 // would report Content-Length 0; the binary path reports the true byte count (4).
