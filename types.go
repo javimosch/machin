@@ -1770,6 +1770,14 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		c.addPair(argSlots[1], c.cInt)
 		c.addPair(argSlots[2], c.cInt)
 		return c.cBytes, nil
+	case "bytes_index":
+		if len(argSlots) != 3 {
+			return 0, fmt.Errorf("bytes_index: 3 args (haystack bytes, needle bytes, from int)")
+		}
+		c.addPair(argSlots[0], c.cBytes)
+		c.addPair(argSlots[1], c.cBytes)
+		c.addPair(argSlots[2], c.cInt)
+		return c.cInt, nil
 	case "bytes_concat":
 		if len(argSlots) != 2 {
 			return 0, fmt.Errorf("bytes_concat: 2 args (bytes, bytes)")
@@ -2206,6 +2214,19 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		}
 		c.addPair(argSlots[0], c.cString)
 		c.addPair(argSlots[1], c.cString)
+		return c.cInt, nil
+	case "write_file_bytes":
+		if len(argSlots) != 2 {
+			return 0, fmt.Errorf("write_file_bytes: 2 args (path, bytes)")
+		}
+		c.addPair(argSlots[0], c.cString)
+		c.addPair(argSlots[1], c.cBytes)
+		return c.cInt, nil
+	case "remove":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("remove: 1 arg (path)")
+		}
+		c.addPair(argSlots[0], c.cString)
 		return c.cInt, nil
 	case "list_dir":
 		if len(argSlots) != 1 {

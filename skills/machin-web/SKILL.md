@@ -51,7 +51,8 @@ goroutine per connection). `req.method` / `req.path` (path carries the query
 string) / `req.body` / `header(req, name)` / `cookie(req, name)`.
 
 Response builders: `ok_text` · `ok_html` · `ok_json` · `ok_bytes(ctype, b)` ·
-**`ok_wasm(b)`** · `created` · `bad_request` · `not_found`.
+**`ok_wasm(b)`** · `created` · `bad_request` · `not_found`. Add any header with
+`with_header(res, name, value)` (e.g. `Content-Disposition` for a download filename).
 
 ```go
 func handle(req) (res) {
@@ -64,6 +65,12 @@ func main() { serve(48080, func(req) { return handle(req) }) }
 
 - **Serve your own wasm:** `ok_wasm(read_file_bytes("app.wasm"))` — `read_file_bytes`
   is NUL-safe (a `.wasm` has NUL bytes a string body would truncate).
+- **File uploads (`multipart/form-data`):** requests are read binary-safe, so a browser
+  file upload survives intact. `multipart_file(req, "file")` → `(part, ok)` with
+  `part.filename` / `part.ctype` / `part.data` (raw bytes — store with
+  `write_file_bytes`); `multipart_field(req, "name")` reads a text field of the same form.
+  `parse_multipart(req)` returns every part. The raw binary body is `req.body_bytes`. See
+  [machin-share](https://github.com/javimosch/machin-share).
 - **A database:** machin has SQLite builtins — `sqlite_open(path)` / `sqlite_exec(db,
   sql)` / `sqlite_exec(db, sql, []string params)` (`?`-bind, injection-safe) /
   `sqlite_query(db, sql[, params]) -> string` (a **JSON-array-of-rows string**) /

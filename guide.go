@@ -22,7 +22,7 @@ var skillBackend string
 
 // machinVersion is the single version string for the toolchain. Bump it when
 // cutting a release (alongside README badge / SPEC / CHANGELOG).
-const machinVersion = "0.75.0"
+const machinVersion = "0.76.0"
 
 // ---- the source-of-truth feature catalog ----
 //
@@ -124,7 +124,9 @@ func machinGuide() guideCatalog {
 			{"read_key", "() -> string", "non-blocking single-key read: a 1-char string, or \"\" if no key is waiting (needs raw_mode for live input)", "io"},
 			{"read_file", "(string) -> string", "read a whole file (\"\" on error)", "io"},
 			{"read_file_bytes", "(string) -> bytes", "read a whole file's raw bytes, NUL-safe (empty on error) — for binary assets", "io"},
-			{"write_file", "(string, string) -> int", "write a file (bytes; -1 on error)", "io"},
+			{"write_file", "(string, string) -> int", "write a file (text; -1 on error)", "io"},
+			{"write_file_bytes", "(string, bytes) -> int", "write raw bytes to a file, NUL-safe (-1 on error) — for binary uploads/assets", "io"},
+			{"remove", "(string) -> int", "delete a file (0 ok; -1 error)", "io"},
 			{"list_dir", "(string) -> []string", "directory entries (excludes . / ..)", "io"},
 			{"mkdir", "(string) -> int", "create a directory (0 ok; -1 error)", "io"},
 			// cli / process
@@ -207,6 +209,7 @@ func machinGuide() guideCatalog {
 			{"from_hex", "(string) -> bytes", "parse hex -> bytes (skips non-hex chars)", "bytes"},
 			{"byte_at", "(bytes, int) -> int", "byte value 0-255 at an index (-1 if out of range)", "bytes"},
 			{"bytes_sub", "(bytes, int, int) -> bytes", "sub-range [start, end) of a bytes value", "bytes"},
+			{"bytes_index", "(bytes, bytes, int) -> int", "find a needle in bytes at/after an offset, NUL-safe (-1 if absent); for binary protocols / multipart boundaries", "bytes"},
 			{"bytes_concat", "(bytes, bytes) -> bytes", "concatenate two bytes values", "bytes"},
 			// crypto over bytes (OpenSSL libcrypto, linked only when used)
 			{"rand_bytes", "(int) -> bytes", "n cryptographically-random bytes (CSPRNG)", "crypto"},
