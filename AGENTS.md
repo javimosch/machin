@@ -3,7 +3,9 @@
 Orientation for agents working on **machin** (the toolchain) / **MFL** (the
 language). Humans state intent; the machine reads and writes the code.
 
-> **Start here to learn the language: run `machin guide`.** It emits the
+> **Start here: run `machin guide`.** It leads with a DOMAINS map (web / gamedev / backend) and embeds the domain how-tos — `machin guide --skill web` or `--skill gamedev` prints the full skill offline, so you never need to reverse-engineer a demo repo to learn a domain.
+>
+> **Learn the language:** It emits the
 > complete, version-exact feature surface — keywords, every builtin with its
 > signature, idioms, and gotchas — as JSON (default) or `--text` (prose), from
 > the compiler's own source-of-truth catalog (so it never drifts). This file is

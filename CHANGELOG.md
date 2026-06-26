@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.74.0
+
+- **Domain how-tos in the binary.** `machin guide` now leads with a **DOMAINS** section
+  routing an agent to the right per-domain how-to (web / gamedev / backend), and the
+  web + gamedev SKILLs are **embedded** — `machin guide --skill web` / `--skill gamedev`
+  print the full guide offline (no repo checkout needed). Closes the gap where an agent
+  with only the curl|sh binary reverse-engineered the language from demo repos. The JSON
+  guide gains a `domains` array. Web skill now points at the networked DB drivers; both
+  skill descriptions refreshed to current coverage.
+
 ## v0.73.0
 
 - **MySQL connection pooling** — the MySQL/MariaDB client is now handle-based
