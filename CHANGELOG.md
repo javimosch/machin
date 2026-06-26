@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.80.0
+
+- **An SMTP toolkit — `framework/smtp.src`.** Send mail and receive it, both pure MFL over
+  `dial`/`listen` + read/write, no library, no cgo:
+  - **client** — `smtp_send(host, port, from, to, subject, body, user, pass) -> (ok, errmsg)`
+    runs the full `220`/`EHLO`/`AUTH LOGIN`/`MAIL`/`RCPT`/`DATA`/`QUIT` conversation, with
+    `base64` AUTH, multiple recipients, and dot-stuffing.
+  - **server** — `smtp_recv(conn) -> (Mail, ok)` plays the receiving side of one session
+    (a catcher), plus a buffered line reader (`line_reader`/`read_line`/`read_reply`) and
+    `mail_header`/`mail_body` parsers.
+  - Plaintext SMTP + AUTH (enough for a relay that doesn't force TLS, and for a local
+    catcher). STARTTLS/implicit TLS is the next step (it needs a wrap-an-fd-in-TLS
+    primitive). No new builtin — it rides `dial`/`read_bytes`/`base64_encode`.
+- Dogfooded by **[machin-mail](https://github.com/javimosch/machin-mail)** — a self-contained
+  SMTP toolkit binary: `send` mail and `sink` it (a local catcher + a web inbox, à la
+  MailHog/Mailpit), so the sender is testable with **zero external dependencies**. Verified
+  both directions against independent standard implementations (Python `smtplib` ⇄ the
+  machin client/sink).
+
 ## v0.79.0
 
 - **A WebSocket *server* (RFC 6455) for machweb** — `framework/ws.src`, the symmetric half
