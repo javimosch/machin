@@ -121,6 +121,7 @@ const cRuntime = `#define _GNU_SOURCE
 #include <termios.h>
 #include <sys/select.h>
 #include <sys/wait.h>
+#include <signal.h>
 
 /* slices: a Go-style header over an unboxed backing array */
 typedef struct { void* data; int64_t len; int64_t cap; } mfl_slice;
@@ -2493,7 +2494,9 @@ func (g *cgen) program(p *Program) (string, error) {
 	// host drives it through the exported functions, so emit the C main only for
 	// native, and only when the program actually defines an MFL main.
 	if !g.wasm() && g.c.HasMain() {
-		out.WriteString("int main(int argc, char** argv) { mfl_argc = argc; mfl_argv = argv; mfl_main(); return 0; }\n")
+		// Ignore SIGPIPE so a write to a peer that closed the connection (e.g. an SSE
+		// client that navigated away) returns -1/EPIPE instead of killing the process.
+		out.WriteString("int main(int argc, char** argv) { signal(SIGPIPE, SIG_IGN); mfl_argc = argc; mfl_argv = argv; mfl_main(); return 0; }\n")
 	}
 	return out.String(), nil
 }
