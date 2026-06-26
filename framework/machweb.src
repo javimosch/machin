@@ -27,7 +27,15 @@ type Response struct {
     location string    // Location header (set by redirect); empty for most responses
     extra   []string   // extra header lines "Name: value" (added via with_header), e.g. Content-Disposition
     is_stream int      // 1 = a streaming response: ignore body/bin, call stream(conn) instead
-    stream  func       // func(conn): writes the body incrementally over a long-lived socket (SSE / chunked)
+    is_hijack int      // 1 = hand the raw socket to stream(conn) with NO response written (protocol upgrade, e.g. WebSocket)
+    stream  func       // func(conn): writes the body incrementally over a long-lived socket (SSE / chunked / hijack)
+}
+
+// hijack returns a response that hands the raw connection to fn(conn) — machweb writes
+// nothing and closes after fn returns. The basis for a protocol upgrade: fn sends its own
+// handshake then speaks the new protocol (see framework/ws.src for WebSocket).
+func hijack(fn) (r) {
+    r = Response{status: "101 Switching Protocols", ctype: "", is_hijack: 1, stream: fn}
 }
 
 // with_header returns res with an extra response header added (e.g. Content-Disposition
@@ -494,6 +502,12 @@ func machweb_handle(conn, handler) {
         return
     }
     res := handler(req)
+    if res.is_hijack == 1 {
+        // protocol upgrade: hand over the raw socket, write no HTTP response of our own.
+        res.stream(conn)
+        close(conn)
+        return
+    }
     if res.is_stream == 1 {
         // streaming body: write the headers (no Content-Length), then let the handler
         // write events over the open socket. X-Accel-Buffering disables nginx buffering.

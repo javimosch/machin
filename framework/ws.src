@@ -1,0 +1,166 @@
+// ws.src — a WebSocket (RFC 6455) server for machweb. Compose after machweb.src:
+//   machin encode framework/machweb.src framework/ws.src yourapp.src > app.mfl
+//
+// A handler turns a request into a live socket by returning ws(req, fn): machweb hands
+// over the raw connection (Response.is_hijack), fn does the RFC 6455 upgrade handshake
+// (Sec-WebSocket-Accept = base64(sha1(key + GUID))) and then speaks frames. The codec is
+// pure MFL over bytes — server->client frames are unmasked, client->server frames are
+// masked (a 4-byte XOR key), all built/parsed with the bytes + bitwise builtins.
+//
+//   func chat(req) (res) {
+//       res = ws(req, func(c) {                 // c is a WSConn
+//           ws_send_text(c.fd, "welcome")
+//           for {
+//               msg, ok := ws_next_text(c)      // answers pings, stops on close/EOF
+//               if ok == 0 { return }
+//               n := ws_send_text(c.fd, "echo: " + msg)
+//           }
+//       })
+//   }
+
+// A live WebSocket connection: the fd plus a one-slot "box" holding bytes read off the
+// socket but not yet consumed (a frame can split across reads; reads can over-deliver).
+// The box persists across calls even though the struct is passed by value (the slice
+// shares its backing array).
+type WSConn struct {
+    fd  int
+    buf []bytes
+}
+
+func ws_conn(fd) (c) {
+    bx := []bytes{}
+    bx = append(bx, bytes(""))
+    c = WSConn{fd: fd, buf: bx}
+}
+
+// ws_accept computes Sec-WebSocket-Accept for a client's Sec-WebSocket-Key.
+func ws_accept(key) (a) {
+    a = base64_encode_bytes(sha1_bytes(bytes(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")))
+}
+
+// is_ws_request reports whether a request is a WebSocket upgrade (Upgrade: websocket).
+func is_ws_request(req) (yes) {
+    yes = 0
+    if to_lower(header(req, "upgrade")) == "websocket" { yes = 1 }
+}
+
+// ws upgrades a request to a WebSocket and runs fn(WSConn) for the life of the socket.
+func ws(req, fn) (r) {
+    key := header(req, "sec-websocket-key")
+    r = hijack(func(conn) {
+        write(conn, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + ws_accept(key) + "\r\n\r\n")
+        fn(ws_conn(conn))
+    })
+}
+
+// ---- frame codec ----
+
+func ws_nyb(v) (c) { d := "0123456789abcdef"  c = substr(d, v & 15, (v & 15) + 1) }
+func ws_hex2(n) (s) { s = ws_nyb((n & 255) / 16) + ws_nyb(n) }    // an int 0-255 -> 2 hex chars
+func ws_byte(n) (b) { b = from_hex(ws_hex2(n)) }                  // an int 0-255 -> one byte
+
+// ws_frame builds an unmasked server frame (FIN set) for an opcode + payload.
+func ws_frame(opcode, payload) (f) {
+    n := len(payload)
+    f = ws_byte(128 | opcode)                       // FIN=1 + opcode
+    if n < 126 {
+        f = bytes_concat(f, ws_byte(n))
+    } else {
+        if n < 65536 {
+            f = bytes_concat(f, ws_byte(126))
+            f = bytes_concat(f, ws_byte((n >> 8) & 255))
+            f = bytes_concat(f, ws_byte(n & 255))
+        } else {
+            f = bytes_concat(f, ws_byte(127))
+            i := 7
+            while i >= 0 { f = bytes_concat(f, ws_byte((n >> (i * 8)) & 255))  i = i - 1 }
+        }
+    }
+    f = bytes_concat(f, payload)
+}
+
+func ws_send_text(fd, s) (n)   { n = write_bytes(fd, ws_frame(1, bytes(s))) }
+func ws_send_bytes(fd, b) (n)  { n = write_bytes(fd, ws_frame(2, b)) }
+func ws_send_pong(fd, p) (n)   { n = write_bytes(fd, ws_frame(10, p)) }
+func ws_send_ping(fd) (n)      { n = write_bytes(fd, ws_frame(9, bytes(""))) }
+func ws_send_close(fd) (n)     { n = write_bytes(fd, ws_frame(8, bytes(""))) }
+
+// ws_fill ensures >= n bytes are buffered (reads more); 0 on EOF / read timeout.
+func ws_fill(c, n) (ok) {
+    ok = 1
+    while len(c.buf[0]) < n {
+        chunk := read_bytes(c.fd)
+        if len(chunk) == 0 { ok = 0  return }
+        c.buf[0] = bytes_concat(c.buf[0], chunk)
+    }
+}
+
+// ws_take consumes and returns the first n buffered bytes.
+func ws_take(c, n) (b) {
+    b = bytes_sub(c.buf[0], 0, n)
+    c.buf[0] = bytes_sub(c.buf[0], n, len(c.buf[0]))
+}
+
+// ws_recv reads one frame -> (opcode, payload, ok). Client frames are unmasked here.
+// ok == 0 on close/EOF. Control frames (ping 9, pong 10, close 8) are returned as-is.
+func ws_recv(c) (opcode, payload, ok) {
+    opcode = 0
+    payload = bytes("")
+    ok = 0
+    if ws_fill(c, 2) == 0 { return }
+    h := ws_take(c, 2)
+    b0 := byte_at(h, 0)
+    b1 := byte_at(h, 1)
+    opcode = b0 & 15
+    masked := b1 & 128
+    n := b1 & 127
+    if n == 126 {
+        if ws_fill(c, 2) == 0 { return }
+        e := ws_take(c, 2)
+        n = (byte_at(e, 0) << 8) | byte_at(e, 1)
+    }
+    if n == 127 {
+        if ws_fill(c, 8) == 0 { return }
+        e := ws_take(c, 8)
+        n = 0
+        i := 0
+        while i < 8 { n = (n << 8) | byte_at(e, i)  i = i + 1 }
+    }
+    mask := bytes("")
+    if masked != 0 {
+        if ws_fill(c, 4) == 0 { return }
+        mask = ws_take(c, 4)
+    }
+    if ws_fill(c, n) == 0 { return }
+    raw := ws_take(c, n)
+    if masked != 0 {
+        hx := ""
+        i := 0
+        while i < n {
+            u := byte_at(raw, i) ^ byte_at(mask, i & 3)      // unmask: XOR with the 4-byte key
+            hx = hx + ws_hex2(u)
+            i = i + 1
+        }
+        payload = from_hex(hx)
+    } else {
+        payload = raw
+    }
+    ok = 1
+}
+
+// ws_next_text reads the next TEXT/binary message, transparently answering pings and
+// stopping on a close or EOF -> (text, ok). The everyday read for a chat-style server.
+func ws_next_text(c) (text, ok) {
+    text = ""
+    ok = 0
+    while 1 == 1 {
+        op, payload, good := ws_recv(c)
+        if good == 0 { return }
+        if op == 8 { return }                                   // close
+        if op == 9 { p := ws_send_pong(c.fd, payload)  continue }   // ping -> pong
+        if op == 10 { continue }                                // pong
+        text = bytes_str(payload)
+        ok = 1
+        return                                                  // text or binary payload
+    }
+}

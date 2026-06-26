@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.79.0
+
+- **A WebSocket *server* (RFC 6455) for machweb** — `framework/ws.src`, the symmetric half
+  of the existing wss client. A handler returns `ws(req, fn)` and machweb hands over the
+  raw socket (new generic `hijack(fn)` response: write nothing, run `fn(conn)`); `fn` does
+  the upgrade handshake (`Sec-WebSocket-Accept = base64(sha1(key + GUID))`) and speaks
+  frames. The frame codec is **pure MFL over bytes + the bitwise builtins**: unmasked
+  server frames out (`ws_send_text` / `ws_send_bytes` / `ws_send_close` / 7-, 16-, 64-bit
+  lengths), masked client frames in (`ws_recv` unmasks via the 4-byte XOR key),
+  `ws_next_text` transparently answers pings and stops on close. Verified against the
+  Python `websockets` reference client (handshake, unicode, fragmented lengths, ping/pong).
+- machweb gains **`is_hijack`** on `Response` (hand the raw connection to a closure for any
+  protocol upgrade) — no new builtin needed; the codec rides existing `bytes`/bitwise ops
+  + `sha1_bytes`/`base64_encode_bytes`.
+- Dogfooded by **[machin-rooms](https://github.com/javimosch/machin-rooms)** — a
+  self-hostable real-time chat server: multi-room, broadcast fan-out, join/leave + live
+  member count, two goroutines per connection (a reader + a writer over the shared fd),
+  all in one MFL binary.
+
 ## v0.78.0
 
 - **Production hardening + reverse-proxy awareness in machweb.** A machin app usually
