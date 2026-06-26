@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.78.0
+
+- **Production hardening + reverse-proxy awareness in machweb.** A machin app usually
+  runs behind a proxy (nginx / Caddy / Traefik / Cloudflare) that terminates TLS — these
+  make it correct and safe there. All default **off**; turn them on in `main()` (or call
+  `harden(max_body_bytes, read_timeout_ms)` for the common set):
+  - **Proxy-awareness** — `scheme(req)` / `client_ip(req)` / `base_url(req)` read
+    `X-Forwarded-Proto` / `X-Forwarded-For` (only when `set_trust_proxy(1)`), so redirects,
+    OAuth `redirect_uri`s, emailed links, and logged client IPs are right behind a proxy.
+    `set_secure_cookies(1)` marks cookies `Secure`. `req.remote` is the raw socket peer.
+  - **Hardening** — `set_max_body(n)` rejects an over-cap body with `413` *without*
+    buffering it; `set_read_timeout(ms)` caps a slow client's request read (anti
+    slow-loris); `set_access_log(1)` emits one JSON access-log line per request on stderr.
+- **Two net builtins**: `peer_addr(fd)` (the socket peer IP via `getpeername`) and
+  `socket_timeout(fd, ms)` (cap blocking recv/send via `SO_RCVTIMEO`/`SO_SNDTIMEO`).
+- Dogfooded by **[machin-deploy](https://github.com/javimosch/machin-deploy)** — a
+  reference production-ready machin service (proxy-correct, hardened, with a systemd unit,
+  a slim Docker image, and nginx/Caddy snippets). New `machin guide --skill deploy`.
+
 ## v0.77.0
 
 - **Streaming responses in machweb (Server-Sent Events).** A handler can now return

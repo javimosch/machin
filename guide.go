@@ -20,9 +20,12 @@ var skillGamedev string
 //go:embed skills/machin-backend/SKILL.md
 var skillBackend string
 
+//go:embed skills/machin-deploy/SKILL.md
+var skillDeploy string
+
 // machinVersion is the single version string for the toolchain. Bump it when
 // cutting a release (alongside README badge / SPEC / CHANGELOG).
-const machinVersion = "0.77.0"
+const machinVersion = "0.78.0"
 
 // ---- the source-of-truth feature catalog ----
 //
@@ -74,6 +77,7 @@ var guideDomains = []guideDomain{
 	{"web", "web", "machin guide --skill web", "Full-stack web: a native HTTP server (machweb), SSR, a reactive WebAssembly UI (signals + keyed lists), a client-side router, cookies + signed sessions, and OAuth2/OIDC SSO — one language both ends, no Node/bundler."},
 	{"gamedev", "gamedev", "machin guide --skill gamedev", "Native games: terminal TUI (raw_mode/read_key + ANSI) and raylib GUI/audio/3D through the C FFI — sprites, sound, 3D cameras, GPU meshes (pointer/array FFI), instancing, shaders, procedural worlds (noise)."},
 	{"backend", "backend", "machin guide --skill backend", "Single-binary backends: HTTP/JSON APIs, pure-MFL drivers for SQLite, PostgreSQL (SCRAM), MySQL/MariaDB, Redis, and MongoDB (all connection-pooled, uniform JSON rows → parse([]T{})), signed sessions, OAuth2/OIDC SSO, agent-first CLIs, and daemons."},
+	{"deploy", "deploy", "machin guide --skill deploy", "Ship a machin web app to production: run it behind a reverse proxy (nginx/Caddy/Traefik/Cloudflare) correctly and safely — proxy-awareness (X-Forwarded-Proto/For → scheme/client_ip/base_url, Secure cookies), hardening (body cap, read timeout, access logs), a systemd unit, and a slim Docker image."},
 }
 
 // builtinNames is the set of builtin function names (from the catalog), memoized.
@@ -247,6 +251,8 @@ func machinGuide() guideCatalog {
 			{"dial", "(string, int) -> int", "TCP connect host:port -> fd (-1 on fail)", "net"},
 			{"listen", "(int) -> int", "open a listening TCP socket on a port", "net"},
 			{"accept", "(int) -> int", "accept a connection -> fd", "net"},
+			{"peer_addr", "(int) -> string", "remote IP of a connected socket (getpeername), \"\" on error — the real client IP when not behind a proxy", "net"},
+			{"socket_timeout", "(int, int) -> int", "cap blocking recv/send on a socket to N ms (0 = none) — anti slow-loris; 0 ok / -1 error", "net"},
 			{"read", "(int) -> string", "read a chunk from an fd (blocks); a C string, so it truncates at a NUL — use read_bytes for binary", "net"},
 			{"read_bytes", "(int) -> bytes", "read a chunk from an fd as raw bytes, NUL-safe (empty at EOF) — for binary wire protocols (Postgres/MySQL/Redis)", "net"},
 			{"write", "(int, string) -> int", "write to an fd", "net"},
@@ -359,8 +365,10 @@ func cmdGuide(args []string) error {
 				fmt.Print(skillGamedev)
 			case "backend":
 				fmt.Print(skillBackend)
+			case "deploy":
+				fmt.Print(skillDeploy)
 			default:
-				return fmt.Errorf("unknown skill %q — available: web, gamedev, backend (see `machin guide` domains)", name)
+				return fmt.Errorf("unknown skill %q — available: web, gamedev, backend, deploy (see `machin guide` domains)", name)
 			}
 			return nil
 		}

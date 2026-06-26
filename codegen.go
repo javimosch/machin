@@ -1081,6 +1081,23 @@ static int64_t mfl_listen(int64_t port) {
     return fd;
 }
 static int64_t mfl_accept(int64_t fd) { return accept((int)fd, NULL, NULL); }
+/* peer_addr: the remote IP of a connected socket (getpeername), "" on error — the real
+   client IP when not behind a proxy (behind one, prefer X-Forwarded-For). */
+static const char* mfl_peer_addr(int64_t fd) {
+    struct sockaddr_storage ss; socklen_t sl = sizeof(ss);
+    if (getpeername((int)fd, (struct sockaddr*)&ss, &sl) != 0) return "";
+    char host[64] = {0};
+    if (getnameinfo((struct sockaddr*)&ss, sl, host, sizeof(host), NULL, 0, NI_NUMERICHOST) != 0) return "";
+    char* r = (char*)mfl_alloc(strlen(host) + 1); strcpy(r, host); return r;
+}
+/* socket_timeout: cap blocking recv/send on a socket to ms milliseconds (0 = none), so a
+   slow client can't park a connection forever. Returns 0 on success, -1 on error. */
+static int64_t mfl_socket_timeout(int64_t fd, int64_t ms) {
+    struct timeval tv; tv.tv_sec = ms / 1000; tv.tv_usec = (ms % 1000) * 1000;
+    int a = setsockopt((int)fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    int b = setsockopt((int)fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    return (a == 0 && b == 0) ? 0 : -1;
+}
 /* dial: connect a TCP socket to host:port, returning an fd (-1 on failure).
    The fd is used with the same read/write/close as an accepted connection. */
 static int64_t mfl_dial(const char* host, int64_t port) {
@@ -4069,6 +4086,12 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 	case "accept":
 		g.usesNet = true
 		return fmt.Sprintf("mfl_accept(%s)", args[0]), nil
+	case "peer_addr":
+		g.usesNet = true
+		return fmt.Sprintf("mfl_peer_addr(%s)", args[0]), nil
+	case "socket_timeout":
+		g.usesNet = true
+		return fmt.Sprintf("mfl_socket_timeout(%s, %s)", args[0], args[1]), nil
 	case "read":
 		g.usesNet = true
 		return fmt.Sprintf("mfl_read(%s)", args[0]), nil

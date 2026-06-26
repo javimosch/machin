@@ -150,6 +150,81 @@ func main() {
 	}
 }
 
+// Proxy-awareness: behind a TLS-terminating proxy the socket is plain HTTP, but
+// X-Forwarded-Proto/For carry the real scheme + client IP. With set_trust_proxy(1) the
+// handler sees scheme=https, the forwarded client IP, an https base_url, and cookies are
+// marked Secure. Proven over the socket with forged X-Forwarded-* headers.
+func TestMachwebProxyAwareness(t *testing.T) {
+	app := loopbackHelpers + `
+func handle(req) (res) {
+    res = set_cookie(ok_text("scheme=" + scheme(req) + " ip=" + client_ip(req) + " base=" + base_url(req)), "sid", "x")
+}
+func main() {
+    set_trust_proxy(1)
+    set_secure_cookies(1)
+    port := 48238
+    srv := listen(port)
+    if srv < 0 { println("listen-failed")  return }
+    go serve_one(srv, func(req) { return handle(req) })
+    sleep(50)
+    c := dial("127.0.0.1", port)
+    if c < 0 { println("dial-failed")  return }
+    write(c, "GET /acct HTTP/1.1\r\nHost: app.example\r\nX-Forwarded-Proto: https\r\nX-Forwarded-For: 203.0.113.7, 10.0.0.1\r\n\r\n")
+    resp := read_all(c)
+    close(c)
+    println(resp)
+}`
+	out, err := RunCaptured(machwebProg(t, app))
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if strings.Contains(out, "listen-failed") || strings.Contains(out, "dial-failed") {
+		t.Fatalf("loopback setup failed:\n%s", out)
+	}
+	if !strings.Contains(out, "scheme=https") {
+		t.Fatalf("scheme should come from X-Forwarded-Proto; got:\n%s", out)
+	}
+	if !strings.Contains(out, "ip=203.0.113.7") {
+		t.Fatalf("client_ip should be the left-most X-Forwarded-For hop; got:\n%s", out)
+	}
+	if !strings.Contains(out, "base=https://app.example") {
+		t.Fatalf("base_url should be scheme://host; got:\n%s", out)
+	}
+	if !strings.Contains(out, "Set-Cookie: sid=x; Path=/; HttpOnly; SameSite=Lax; Secure") {
+		t.Fatalf("cookies should be marked Secure when set_secure_cookies(1); got:\n%s", out)
+	}
+}
+
+// The request body cap: with set_max_body(N), a request declaring a larger body is
+// rejected 413 without buffering it all.
+func TestMachwebMaxBody(t *testing.T) {
+	app := loopbackHelpers + `
+func main() {
+    set_max_body(100)
+    port := 48239
+    srv := listen(port)
+    if srv < 0 { println("listen-failed")  return }
+    go serve_one(srv, func(req) { return ok_text("ok") })
+    sleep(50)
+    c := dial("127.0.0.1", port)
+    if c < 0 { println("dial-failed")  return }
+    write(c, "POST /up HTTP/1.1\r\nHost: x\r\nContent-Length: 5000\r\n\r\n" + "AAAAAAAAAA")
+    resp := read_all(c)
+    close(c)
+    println(resp)
+}`
+	out, err := RunCaptured(machwebProg(t, app))
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if strings.Contains(out, "listen-failed") || strings.Contains(out, "dial-failed") {
+		t.Fatalf("loopback setup failed:\n%s", out)
+	}
+	if !strings.Contains(out, "413 Payload Too Large") {
+		t.Fatalf("an over-cap body should be rejected 413; got:\n%s", out)
+	}
+}
+
 // A streaming (SSE) response: the handler returns sse(fn), and machweb writes the
 // event-stream headers (no Content-Length) then lets fn write data events over the open
 // socket. The client reads until the server closes. Proven by the text/event-stream
