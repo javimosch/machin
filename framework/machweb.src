@@ -14,6 +14,7 @@ type Request struct {
     body       string             // text view of the body (truncates at a NUL — use body_bytes for uploads)
     body_bytes bytes              // raw body, binary-safe (file uploads / multipart)
     headers    map[string]string  // lowercased header name -> value; read via header(req, name)
+    remote     string             // the socket peer IP (set by machweb_handle); see client_ip(req)
 }
 
 type Response struct {
@@ -289,7 +290,9 @@ func cookie(req, name) (v) {
 //   return set_cookie(ok_html(page()), "sid", token)
 func set_cookie(res, name, value) (r) {
     r = res
-    r.cookies = append(r.cookies, name + "=" + value + "; Path=/; HttpOnly; SameSite=Lax")
+    sec := ""
+    if machweb_secure_cookies == 1 { sec = "; Secure" }    // HTTPS-only when set_secure_cookies(1)
+    r.cookies = append(r.cookies, name + "=" + value + "; Path=/; HttpOnly; SameSite=Lax" + sec)
 }
 
 // clear_cookie returns res with a cookie expired (for logout).
@@ -334,6 +337,67 @@ func set_session(res, secret, name, value) (r) { r = set_cookie(res, name, sessi
 // get_session reads + verifies a signed session cookie: (value, ok).
 func get_session(req, secret, name) (value, ok) { value, ok = session_verify(secret, cookie(req, name)) }
 
+// ---- production config: proxy-awareness + hardening ----
+//
+// In production a machin app usually sits behind a reverse proxy (nginx / Caddy /
+// Traefik / Cloudflare) that terminates TLS. These knobs make the app correct + safe in
+// that setup. All default OFF, so existing apps are unchanged; turn them on in main().
+
+var machweb_trust_proxy   = 0    // 1 = trust X-Forwarded-Proto/For (ONLY behind a proxy you control)
+var machweb_secure_cookies = 0   // 1 = add "; Secure" to cookies (set when served over HTTPS)
+var machweb_access_log    = 0    // 1 = one JSON access-log line per request on stderr
+var machweb_max_body      = 0    // > 0 = reject a request body larger than N bytes (413)
+var machweb_read_timeout  = 0    // > 0 = cap a slow client's request read at N ms (anti slow-loris)
+
+func set_trust_proxy(n)    { machweb_trust_proxy = n }
+func set_secure_cookies(n) { machweb_secure_cookies = n }
+func set_access_log(n)     { machweb_access_log = n }
+func set_max_body(n)       { machweb_max_body = n }
+func set_read_timeout(n)   { machweb_read_timeout = n }
+
+// harden turns on the common production set in one call: trust the proxy, mark cookies
+// Secure (you're behind TLS), structured access logs, a body cap, and a read timeout.
+func harden(max_body_bytes, read_timeout_ms) {
+    machweb_trust_proxy = 1
+    machweb_secure_cookies = 1
+    machweb_access_log = 1
+    machweb_max_body = max_body_bytes
+    machweb_read_timeout = read_timeout_ms
+}
+
+// scheme is the request's original scheme. Behind a TLS-terminating proxy the socket is
+// plain HTTP, so the true scheme comes from X-Forwarded-Proto (only trusted when
+// set_trust_proxy(1)). Defaults to "http".
+func scheme(req) (s) {
+    s = "http"
+    if machweb_trust_proxy == 1 {
+        xf := header(req, "x-forwarded-proto")
+        if xf != "" {
+            ci := index(xf, ",")                  // may be a list "https, http"
+            if ci >= 0 { xf = substr(xf, 0, ci) }
+            s = trim(xf)
+        }
+    }
+}
+
+// client_ip is the real client IP: the first hop of X-Forwarded-For when trusting the
+// proxy, otherwise the socket peer (req.remote).
+func client_ip(req) (ip) {
+    ip = req.remote
+    if machweb_trust_proxy == 1 {
+        xf := header(req, "x-forwarded-for")
+        if xf != "" {
+            ci := index(xf, ",")
+            if ci >= 0 { xf = substr(xf, 0, ci) }   // left-most = original client
+            ip = trim(xf)
+        }
+    }
+}
+
+// base_url is scheme://host for the request — build absolute URLs (OAuth redirect_uri,
+// emailed links) that are correct even behind a TLS proxy.
+func base_url(req) (u) { u = scheme(req) + "://" + header(req, "host") }
+
 // ---- server ----
 
 // content_length parses the Content-Length header value from a request's headers.
@@ -373,11 +437,15 @@ func read_request_bytes(conn) (raw) {
     sep := bytes_index(raw, bytes("\r\n\r\n"), 0)
     if sep >= 0 {
         clen := content_length(bytes_str(bytes_sub(raw, 0, sep)))   // header block is ASCII
-        body_start := sep + 4
-        for len(raw) - body_start < clen {
-            chunk := read_bytes(conn)
-            if len(chunk) == 0 { break }        // connection closed early
-            raw = bytes_concat(raw, chunk)
+        // a declared body larger than the cap is left unread — machweb_handle 413s it
+        // (no buffering, no OOM) rather than draining megabytes off the socket.
+        if machweb_max_body == 0 || clen <= machweb_max_body {
+            body_start := sep + 4
+            for len(raw) - body_start < clen {
+                chunk := read_bytes(conn)
+                if len(chunk) == 0 { break }    // connection closed early (or read timeout)
+                raw = bytes_concat(raw, chunk)
+            }
         }
     }
 }
@@ -403,29 +471,53 @@ func parse_request_bytes(raw) (req) {
     req = Request{method: m, path: p, body: bytes_str(bodyb), body_bytes: bodyb, headers: parse_headers(hs)}
 }
 
+// access_log writes one structured JSON line per request to stderr (fd 2), so it never
+// pollutes a JSON/data response on stdout. Enabled by set_access_log(1).
+func access_log(req, status, bytes_out, ms) {
+    line := "{\"ip\":\"" + client_ip(req) + "\",\"method\":\"" + req.method + "\",\"path\":\"" + req.path + "\",\"status\":\"" + status + "\",\"bytes\":" + str(bytes_out) + ",\"ms\":" + str(ms) + "}\n"
+    w := write(2, line)
+}
+
 func machweb_handle(conn, handler) {
+    started := now_ms()
+    if machweb_read_timeout > 0 { t := socket_timeout(conn, machweb_read_timeout) }   // anti slow-loris
     raw := read_request_bytes(conn)
     req := parse_request_bytes(raw)
+    req.remote = peer_addr(conn)
+    // reject an over-cap body before dispatching (read_request_bytes stopped buffering it)
+    if machweb_max_body > 0 && parse_int(header(req, "content-length")) > machweb_max_body {
+        body := "request body exceeds the limit"
+        out := "HTTP/1.1 413 Payload Too Large\r\nContent-Type: text/plain\r\nContent-Length: " + str(len(body)) + "\r\nConnection: close\r\n\r\n" + body
+        write(conn, out)
+        close(conn)
+        if machweb_access_log == 1 { access_log(req, "413 Payload Too Large", len(body), now_ms() - started) }
+        return
+    }
     res := handler(req)
     if res.is_stream == 1 {
         // streaming body: write the headers (no Content-Length), then let the handler
         // write events over the open socket. X-Accel-Buffering disables nginx buffering.
         shead := "HTTP/1.1 " + res.status + "\r\nContent-Type: " + res.ctype + "\r\nCache-Control: no-cache\r\nX-Accel-Buffering: no\r\n" + cookie_lines(res) + "Connection: close\r\n\r\n"
         write(conn, shead)
+        if machweb_access_log == 1 { access_log(req, res.status + " (stream)", 0, now_ms() - started) }
         res.stream(conn)
         close(conn)
         return
     }
+    nbytes := 0
     if res.is_bin == 1 {
         // binary body: write the headers, then the raw bytes (NUL-safe).
         head := "HTTP/1.1 " + res.status + "\r\nContent-Type: " + res.ctype + "\r\nContent-Length: " + str(len(res.bin)) + "\r\n" + cookie_lines(res) + "Connection: close\r\n\r\n"
         write(conn, head)
         write_bytes(conn, res.bin)
+        nbytes = len(res.bin)
     } else {
         out := "HTTP/1.1 " + res.status + "\r\nContent-Type: " + res.ctype + "\r\nContent-Length: " + str(len(res.body)) + "\r\n" + cookie_lines(res) + "Connection: close\r\n\r\n" + res.body
         write(conn, out)
+        nbytes = len(res.body)
     }
     close(conn)
+    if machweb_access_log == 1 { access_log(req, res.status, nbytes, now_ms() - started) }
 }
 
 // serve runs the HTTP server. Each connection is handled in its own goroutine.

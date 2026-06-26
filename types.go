@@ -2102,6 +2102,19 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		c.addPair(argSlots[0], c.cString)
 		c.addPair(argSlots[1], c.cInt)
 		return c.cInt, nil
+	case "peer_addr":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("peer_addr: 1 arg (fd)")
+		}
+		c.addPair(argSlots[0], c.cInt)
+		return c.cString, nil
+	case "socket_timeout":
+		if len(argSlots) != 2 {
+			return 0, fmt.Errorf("socket_timeout: 2 args (fd, ms)")
+		}
+		c.addPair(argSlots[0], c.cInt)
+		c.addPair(argSlots[1], c.cInt)
+		return c.cInt, nil
 	case "read":
 		if len(argSlots) != 1 {
 			return 0, fmt.Errorf("read: 1 arg")
