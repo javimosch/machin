@@ -539,6 +539,16 @@ static mfl_bytes mfl_bytes_sub(mfl_bytes b, int64_t start, int64_t end) {
     memcpy(r.data, b.data + start, (size_t)n);
     return r;
 }
+/* find needle in haystack at or after start, NUL-safe; -1 if absent. For binary
+   protocols (e.g. a multipart/form-data boundary inside an upload body). */
+static int64_t mfl_bytes_index(mfl_bytes h, mfl_bytes nd, int64_t from) {
+    if (from < 0) from = 0;
+    if (nd.len == 0) return from <= h.len ? from : -1;
+    for (int64_t i = from; i + nd.len <= h.len; i++) {
+        if (memcmp(h.data + i, nd.data, (size_t)nd.len) == 0) return i;
+    }
+    return -1;
+}
 static mfl_bytes mfl_bytes_concat(mfl_bytes a, mfl_bytes b) {
     mfl_bytes r; r.len = a.len + b.len; r.data = (uint8_t*)mfl_alloc(r.len ? r.len : 1);
     memcpy(r.data, a.data, (size_t)a.len);
@@ -881,6 +891,15 @@ static int64_t mfl_write_file(const char* path, const char* content) {
     size_t w = fwrite(content, 1, len, f);
     fclose(f); return (int64_t)w;
 }
+/* write raw bytes to a file, NUL-safe (length-driven) — for binary uploads/assets. */
+static int64_t mfl_write_file_bytes(const char* path, mfl_bytes b) {
+    FILE* f = fopen(path, "wb");
+    if (!f) return -1;
+    size_t w = b.len ? fwrite(b.data, 1, (size_t)b.len, f) : 0;
+    fclose(f); return (int64_t)w;
+}
+/* delete a file (0 on success, -1 on error) — e.g. removing a stored upload. */
+static int64_t mfl_remove_file(const char* path) { return remove(path) == 0 ? 0 : -1; }
 /* read a file's raw bytes (NUL-safe, unlike read_file which returns a C string).
    Empty bytes if the file can't be opened. */
 static mfl_bytes mfl_read_file_bytes(const char* path) {
@@ -3829,6 +3848,8 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("mfl_byte_at(%s, %s)", args[0], args[1]), nil
 	case "bytes_sub":
 		return fmt.Sprintf("mfl_bytes_sub(%s, %s, %s)", args[0], args[1], args[2]), nil
+	case "bytes_index":
+		return fmt.Sprintf("mfl_bytes_index(%s, %s, %s)", args[0], args[1], args[2]), nil
 	case "bytes_concat":
 		return fmt.Sprintf("mfl_bytes_concat(%s, %s)", args[0], args[1]), nil
 	case "rand_bytes":
@@ -4093,6 +4114,10 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("mfl_write_bytes(%s, %s)", args[0], args[1]), nil
 	case "write_file":
 		return fmt.Sprintf("mfl_write_file(%s, %s)", args[0], args[1]), nil
+	case "write_file_bytes":
+		return fmt.Sprintf("mfl_write_file_bytes(%s, %s)", args[0], args[1]), nil
+	case "remove":
+		return fmt.Sprintf("mfl_remove_file(%s)", args[0]), nil
 	case "list_dir":
 		return fmt.Sprintf("mfl_list_dir(%s)", args[0]), nil
 	case "system":

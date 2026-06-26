@@ -9,10 +9,11 @@
 // own goroutine; the goroutine's memory is reclaimed when the response is sent.
 
 type Request struct {
-    method  string
-    path    string
-    body    string
-    headers map[string]string   // lowercased header name -> value; read via header(req, name)
+    method     string
+    path       string
+    body       string             // text view of the body (truncates at a NUL — use body_bytes for uploads)
+    body_bytes bytes              // raw body, binary-safe (file uploads / multipart)
+    headers    map[string]string  // lowercased header name -> value; read via header(req, name)
 }
 
 type Response struct {
@@ -23,6 +24,14 @@ type Response struct {
     is_bin  int        // 1 = serve bin (raw bytes), 0 = serve body (text)
     cookies []string   // Set-Cookie values (added via set_cookie); empty for most responses
     location string    // Location header (set by redirect); empty for most responses
+    extra   []string   // extra header lines "Name: value" (added via with_header), e.g. Content-Disposition
+}
+
+// with_header returns res with an extra response header added (e.g. Content-Disposition
+// for a download filename, or Cache-Control). Structs are values, so use the copy.
+func with_header(res, name, value) (r) {
+    r = res
+    r.extra = append(r.extra, name + ": " + value)
 }
 
 // redirect returns a 302 to url (a Location header). Compose with set_cookie /
@@ -83,7 +92,8 @@ func parse_request(raw) (req) {
         m = parts[0]
         p = parts[1]
     }
-    req = Request{method: m, path: p, body: http_body(raw), headers: parse_headers(raw)}
+    b := http_body(raw)
+    req = Request{method: m, path: p, body: b, body_bytes: bytes(b), headers: parse_headers(raw)}
 }
 
 // header returns a request header value (case-insensitive), or "" if absent.
@@ -111,6 +121,111 @@ func query(req, name) (v) {
         eq := index(part, "=")
         if eq > 0 {
             if substr(part, 0, eq) == name { v = url_decode(substr(part, eq + 1, len(part))) }
+        }
+    }
+}
+
+// ---- multipart/form-data (file uploads) ----
+//
+// A browser uploads files as multipart/form-data: parts separated by a boundary, each
+// with its own headers (Content-Disposition: name / filename, Content-Type) and a raw,
+// possibly-binary body. parse_multipart splits req.body_bytes into those parts,
+// binary-safe (it works on bytes, not the NUL-truncating text view).
+
+type MultipartPart struct {
+    name     string   // form field name
+    filename string   // original filename ("" for a plain, non-file field)
+    ctype    string   // the part's Content-Type ("" if absent)
+    data     bytes    // the part's raw body (binary-safe)
+}
+
+// multipart_boundary extracts the boundary token from a multipart Content-Type, or "".
+func multipart_boundary(ctype) (b) {
+    b = ""
+    i := index(to_lower(ctype), "boundary=")
+    if i < 0 { return }
+    b = substr(ctype, i + 9, len(ctype))
+    if charat(b, 0) == "\"" {                       // quoted boundary
+        e := index(substr(b, 1, len(b)), "\"")
+        if e >= 0 { b = substr(b, 1, 1 + e) }
+    } else {
+        sc := index(b, ";")
+        if sc >= 0 { b = substr(b, 0, sc) }
+    }
+    b = trim(b)
+}
+
+// mp_attr pulls a quoted attribute (name= / filename=) out of a part's header block.
+func mp_attr(head, key) (v) {
+    v = ""
+    needle := key + "=\""
+    i := index(head, needle)
+    if i < 0 { return }
+    rest := substr(head, i + len(needle), len(head))
+    e := index(rest, "\"")
+    if e >= 0 { v = substr(rest, 0, e) }
+}
+
+// mp_ctype reads a part's own Content-Type header line, or "".
+func mp_ctype(head) (v) {
+    v = ""
+    i := index(to_lower(head), "content-type:")
+    if i < 0 { return }
+    rest := substr(head, i + 13, len(head))
+    nl := index(rest, "\r\n")
+    if nl >= 0 { rest = substr(rest, 0, nl) }
+    v = trim(rest)
+}
+
+// parse_multipart parses a multipart/form-data request body into its parts (fields and
+// files), binary-safe. Returns [] for a non-multipart request. File parts carry a
+// filename; plain fields have filename == "". Each part's raw bytes are in .data.
+func parse_multipart(req) (parts) {
+    parts = []MultipartPart{}
+    bnd := multipart_boundary(header(req, "content-type"))
+    if bnd == "" { return }
+    body := req.body_bytes
+    delim := bytes("--" + bnd)
+    pos := bytes_index(body, delim, 0)
+    if pos < 0 { return }
+    pos = pos + len(delim)
+    for {
+        if pos + 2 > len(body) { return }
+        if byte_at(body, pos) == 45 { return }      // "--" after boundary -> closing delimiter
+        hstart := pos + 2                            // skip the CRLF after the boundary line
+        hsep := bytes_index(body, bytes("\r\n\r\n"), hstart)
+        if hsep < 0 { return }
+        headstr := bytes_str(bytes_sub(body, hstart, hsep))
+        dstart := hsep + 4
+        next := bytes_index(body, delim, dstart)     // next boundary ends this part's data
+        if next < 0 { return }
+        dend := next
+        if dend - 2 >= dstart {
+            if byte_at(body, dend - 2) == 13 { dend = dend - 2 }   // strip the CRLF before the boundary
+        }
+        p := MultipartPart{name: mp_attr(headstr, "name"), filename: mp_attr(headstr, "filename"), ctype: mp_ctype(headstr), data: bytes_sub(body, dstart, dend)}
+        parts = append(parts, p)
+        pos = next + len(delim)
+    }
+}
+
+// multipart_file returns the first uploaded file part with the given field name (or any
+// file if name == ""), and ok == 1 if one was found.
+func multipart_file(req, name) (part, ok) {
+    ok = 0
+    for _, p := range parse_multipart(req) {
+        if p.filename != "" {
+            if name == "" || p.name == name { part = p  ok = 1  return }
+        }
+    }
+}
+
+// multipart_field returns the text value of a non-file form field, or "".
+func multipart_field(req, name) (v) {
+    v = ""
+    for _, p := range parse_multipart(req) {
+        if p.filename == "" {
+            if p.name == name { v = bytes_str(p.data)  return }
         }
     }
 }
@@ -148,6 +263,7 @@ func cookie_lines(res) (h) {
     h = ""
     for _, c := range res.cookies { h = h + "Set-Cookie: " + c + "\r\n" }
     if res.location != "" { h = h + "Location: " + res.location + "\r\n" }
+    for _, e := range res.extra { h = h + e + "\r\n" }
 }
 
 // ---- signed sessions ----
@@ -209,9 +325,47 @@ func read_request(conn) (raw) {
     }
 }
 
+// read_request_bytes reads a whole HTTP request as raw bytes — binary-safe, so a file
+// upload body (which contains NUL bytes a string read would truncate) survives intact.
+// Like read_request it keeps reading until Content-Length bytes of body have arrived.
+func read_request_bytes(conn) (raw) {
+    raw = read_bytes(conn)
+    sep := bytes_index(raw, bytes("\r\n\r\n"), 0)
+    if sep >= 0 {
+        clen := content_length(bytes_str(bytes_sub(raw, 0, sep)))   // header block is ASCII
+        body_start := sep + 4
+        for len(raw) - body_start < clen {
+            chunk := read_bytes(conn)
+            if len(chunk) == 0 { break }        // connection closed early
+            raw = bytes_concat(raw, chunk)
+        }
+    }
+}
+
+// parse_request_bytes builds a Request from raw request bytes, keeping the body as
+// bytes (body_bytes) for binary-safe file/multipart uploads; body is the text view.
+func parse_request_bytes(raw) (req) {
+    sep := bytes_index(raw, bytes("\r\n\r\n"), 0)
+    head := raw
+    bodyb := bytes("")
+    if sep >= 0 {
+        head = bytes_sub(raw, 0, sep)
+        bodyb = bytes_sub(raw, sep + 4, len(raw))
+    }
+    hs := bytes_str(head)
+    nl := index(hs, "\r\n")
+    if nl < 0 { nl = len(hs) }
+    line := substr(hs, 0, nl)
+    parts := split(line, " ")
+    m := ""
+    p := "/"
+    if len(parts) >= 2 { m = parts[0]  p = parts[1] }
+    req = Request{method: m, path: p, body: bytes_str(bodyb), body_bytes: bodyb, headers: parse_headers(hs)}
+}
+
 func machweb_handle(conn, handler) {
-    raw := read_request(conn)
-    req := parse_request(raw)
+    raw := read_request_bytes(conn)
+    req := parse_request_bytes(raw)
     res := handler(req)
     if res.is_bin == 1 {
         // binary body: write the headers, then the raw bytes (NUL-safe).

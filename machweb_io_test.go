@@ -103,6 +103,53 @@ func main() {
 	}
 }
 
+// End-to-end multipart/form-data upload: the client sends a real multipart body — a
+// text field plus a "file" whose bytes include NULs — over the socket via write_bytes.
+// The server reads it with the binary-safe read_request_bytes path and parse_multipart,
+// then echoes the file's length + hex. The proof of binary-safety is that the 4-byte
+// file (0011ff00, two NULs) round-trips intact; a NUL-truncating string path would lose
+// everything from the first 0x00.
+func TestMachwebMultipartUpload(t *testing.T) {
+	app := loopbackHelpers + `
+func handle(req) (res) {
+    title := multipart_field(req, "title")
+    f, ok := multipart_file(req, "file")
+    res = ok_text("title=" + title + " ok=" + str(ok) + " name=" + f.filename + " ct=" + f.ctype + " len=" + str(len(f.data)) + " hex=" + to_hex(f.data))
+}
+func main() {
+    port := 48236
+    srv := listen(port)
+    if srv < 0 { println("listen-failed")  return }
+    go serve_one(srv, func(req) { return handle(req) })
+    sleep(50)
+    c := dial("127.0.0.1", port)
+    if c < 0 { println("dial-failed")  return }
+    bnd := "----mfltestB"
+    pre := "--" + bnd + "\r\nContent-Disposition: form-data; name=\"title\"\r\n\r\nSME share\r\n--" + bnd + "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"x.bin\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+    post := "\r\n--" + bnd + "--\r\n"
+    body := bytes_concat(bytes_concat(bytes(pre), from_hex("0011ff00")), bytes(post))
+    head := "POST /upload HTTP/1.1\r\nHost: x\r\nContent-Type: multipart/form-data; boundary=" + bnd + "\r\nContent-Length: " + str(len(body)) + "\r\n\r\n"
+    write_bytes(c, bytes_concat(bytes(head), body))
+    resp := read_all(c)
+    close(c)
+    println(resp)
+}`
+	out, err := RunCaptured(machwebProg(t, app))
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if strings.Contains(out, "listen-failed") || strings.Contains(out, "dial-failed") {
+		t.Fatalf("loopback setup failed:\n%s", out)
+	}
+	if !strings.Contains(out, "title=SME share") {
+		t.Fatalf("server should read the text field; got:\n%s", out)
+	}
+	// the binary file round-tripped intact through the multipart parser, NULs and all
+	if !strings.Contains(out, "ok=1 name=x.bin ct=application/octet-stream len=4 hex=0011ff00") {
+		t.Fatalf("multipart file should round-trip binary-safe (len=4, hex=0011ff00); got:\n%s", out)
+	}
+}
+
 // The binary response path (is_bin=1) writes the headers then write_bytes(conn,
 // bin) — NUL-safe. The body here starts with a 0x00 byte, so a text/strlen path
 // would report Content-Length 0; the binary path reports the true byte count (4).

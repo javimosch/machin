@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.76.0
+
+- **File uploads in machweb (multipart/form-data).** Requests are now read **binary-safe**
+  — `read_request_bytes`/`parse_request_bytes` keep the body as raw bytes
+  (`req.body_bytes`), so an upload with NUL bytes survives intact (the old `read()` path
+  truncated at the first NUL). New `parse_multipart(req)` splits a `multipart/form-data`
+  body into its `MultipartPart`s (fields + files), with `multipart_file(req, field)` and
+  `multipart_field(req, name)` convenience helpers. Responses gain extra headers via
+  `with_header(res, name, value)` (e.g. `Content-Disposition` for download filenames).
+- **Three enabling builtins**: `bytes_index(haystack, needle, from) -> int` (NUL-safe
+  byte search, for binary protocols / multipart boundaries), `write_file_bytes(path,
+  bytes) -> int` (binary-safe file write, for storing uploads), and the binary request
+  path above. `req.body` (text view) is unchanged for existing apps.
+- Dogfooded by **[machin-share](https://github.com/javimosch/machin-share)** — a
+  self-hostable file/paste drop in one MFL binary (the upload/download/streaming surface
+  that surfaced all of the above).
+
 ## v0.75.0
 
 - **A `machin-backend` skill** — the backend domain now has its own how-to (the five
