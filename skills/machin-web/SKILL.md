@@ -79,6 +79,14 @@ func main() { serve(48080, func(req) { return handle(req) }) }
   (one producer → many live subscribers) use a single hub goroutine that owns the
   subscriber set (a `chan` field inside a struct, a `[]Sub` registry) — see
   [machin-live](https://github.com/javimosch/machin-live).
+- **WebSockets (`framework/ws.src`):** compose `ws.src` after `machweb.src`, then a handler
+  returns `ws(req, func(c) { ... })`. machweb does the upgrade (via the generic
+  `hijack(fn)` response) and `c` is a `WSConn`: `ws_next_text(c)` → `(msg, ok)` reads the
+  next message (answering pings, stopping on close); `ws_send_text(c.fd, s)` /
+  `ws_send_bytes(c.fd, b)` send. A connection that also receives broadcasts wants **two
+  goroutines** — the handler loop reads, a spawned `go writer(c.fd, ch)` drains an outbound
+  channel (read + write are independent on the fd). Fan-out is the same hub-goroutine
+  pattern as SSE. See [machin-rooms](https://github.com/javimosch/machin-rooms).
 - **A database:** machin has SQLite builtins — `sqlite_open(path)` / `sqlite_exec(db,
   sql)` / `sqlite_exec(db, sql, []string params)` (`?`-bind, injection-safe) /
   `sqlite_query(db, sql[, params]) -> string` (a **JSON-array-of-rows string**) /
