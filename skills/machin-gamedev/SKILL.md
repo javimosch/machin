@@ -1,6 +1,6 @@
 ---
 name: machin-gamedev
-description: Build native games and interactive desktop/terminal apps in machin (MFL) — the canonical setup, build-and-verify workflow, raylib C-FFI surface, audio, and the hard-won caveats/gotchas. Use when writing or debugging a machin game (terminal TUI or raylib GUI), or any machin program that draws a window, plays sound, or reads real-time input. Distilled from machin-game-demo-snake / -2048 / -flappy / -simon.
+description: Build native games and interactive desktop/terminal apps in machin (MFL) — the canonical setup, build-and-verify workflow, raylib C-FFI surface, audio, and the hard-won caveats/gotchas. Use when writing or debugging a machin game (terminal TUI or raylib GUI), or any machin program that draws a window, plays sound, or reads real-time input. Covers terminal TUI, raylib GUI/audio, 3D cameras, GPU meshes (pointer/array FFI), instancing, shaders, and procedural worlds (noise). Distilled from machin-game-demo-snake / -2048 / -flappy / -simon / -3d / -terrain / -planet / -cyberpunk.
 ---
 
 # Building games in machin

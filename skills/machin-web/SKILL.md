@@ -1,6 +1,6 @@
 ---
 name: machin-web
-description: Build web apps in machin (MFL) — a native HTTP server, a JSON API, server-side rendering, and a reactive WebAssembly UI, all in one language with no Node/bundler. Use when writing or debugging a machin web app: a backend service, an SSR page, a wasm SPA, an isomorphic full-stack app, or a CRUD back-office. Covers the machweb/reactive/flags frameworks, the wasm bridge, host↔wasm marshaling, the generic JS host, build-and-verify, and the hard-won gotchas. Distilled from the web-domain dogfood (machin v0.50–v0.58).
+description: Build web apps in machin (MFL) — a native HTTP server, a JSON API, server-side rendering, and a reactive WebAssembly UI, all in one language with no Node/bundler. Use when writing or debugging a machin web app: a backend service, an SSR page, a wasm SPA, an isomorphic full-stack app, or a CRUD back-office. Covers the machweb/reactive/router/flags frameworks, cookies + signed sessions, OAuth2/OIDC SSO, the wasm bridge + host↔wasm marshaling, the generic JS host, the pure-MFL Postgres/MySQL/Mongo/Redis drivers, build-and-verify, and the hard-won gotchas. Distilled from the web + backend dogfood (machin v0.50–v0.73).
 ---
 
 # Building web apps in machin
@@ -78,6 +78,13 @@ func main() { serve(48080, func(req) { return handle(req) }) }
   "[0].name")` only to pull ONE field — and note **it returns the raw JSON token, so a
   string comes back quoted** (`"Ada"`); strip the quotes (`substr(s, 1, len(s)-1)`) or
   just use `parse`. Always parameterize (`?`, `[]string{...}`); never concat user input.
+- **A networked database** (shared across instances): machin has pure-MFL drivers for
+  **PostgreSQL**, **MySQL/MariaDB**, **Redis**, and **MongoDB** (all connection-pooled,
+  no cgo) — each returns rows as JSON the same way, so `parse(rows, []T{})` decodes them.
+  See the `postgres-client` / `mysql-client` / `mongo-client` / `redis-client` /
+  `machweb-sessions` / `sso-oauth` idioms in `machin guide`, and
+  [`docs/NORTH-STAR-BACKEND.md`](../../docs/NORTH-STAR-BACKEND.md) for the full backend
+  story (sessions, SSO, pooling, and the worked MachNotes / machin-cms apps).
 - **A CLI:** compose `framework/flags.src` — `new_flags` / `flag_int` / `flag_str` /
   `flag_bool` / `parse_flags(fs, args())` / `flag_int_val` / `flag_on(fs,"help")`
   (auto `--help`).

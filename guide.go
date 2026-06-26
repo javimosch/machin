@@ -1,15 +1,25 @@
 package main
 
 import (
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
 )
 
+// The domain how-to guides, embedded into the binary so an agent that installed via
+// curl|sh (no repo checkout) can read them offline: `machin guide --skill web|gamedev`.
+//
+//go:embed skills/machin-web/SKILL.md
+var skillWeb string
+
+//go:embed skills/machin-gamedev/SKILL.md
+var skillGamedev string
+
 // machinVersion is the single version string for the toolchain. Bump it when
 // cutting a release (alongside README badge / SPEC / CHANGELOG).
-const machinVersion = "0.73.0"
+const machinVersion = "0.74.0"
 
 // ---- the source-of-truth feature catalog ----
 //
@@ -36,15 +46,31 @@ type guideNote struct {
 	Note  string `json:"note"`
 }
 
+type guideDomain struct {
+	Name    string `json:"name"`
+	Skill   string `json:"skill"`   // run `machin guide --skill <this>` for the full how-to ("" = none yet)
+	Howto   string `json:"howto"`   // where the how-to lives
+	Summary string `json:"summary"`
+}
+
 type guideCatalog struct {
 	Version  string         `json:"version"`
 	Schema   string         `json:"schema"`
 	Tagline  string         `json:"tagline"`
 	Keywords []string       `json:"keywords"`
+	Domains  []guideDomain  `json:"domains"`
 	Types    []guideNote    `json:"types"`
 	Builtins []guideBuiltin `json:"builtins"`
 	Idioms   []guideIdiom   `json:"idioms"`
 	Gotchas  []guideNote    `json:"gotchas"`
+}
+
+// guideDomains routes an agent from `machin guide` (the language) to the per-domain
+// how-to. Embedded skills are printable offline via `machin guide --skill <name>`.
+var guideDomains = []guideDomain{
+	{"web", "web", "machin guide --skill web", "Full-stack web: a native HTTP server (machweb), SSR, a reactive WebAssembly UI (signals + keyed lists), a client-side router, cookies + signed sessions, and OAuth2/OIDC SSO — one language both ends, no Node/bundler."},
+	{"gamedev", "gamedev", "machin guide --skill gamedev", "Native games: terminal TUI (raw_mode/read_key + ANSI) and raylib GUI/audio/3D through the C FFI — sprites, sound, 3D cameras, GPU meshes (pointer/array FFI), instancing, shaders, procedural worlds (noise)."},
+	{"backend", "", "see the *-client builtins/idioms below + docs/NORTH-STAR-BACKEND.md", "Single-binary backends: pure-MFL drivers for SQLite, PostgreSQL (SCRAM), MySQL/MariaDB, Redis, and MongoDB (all connection-pooled), plus signed sessions and SSO. See the postgres-client / mysql-client / mongo-client / redis-client / machweb-sessions / sso-oauth idioms."},
 }
 
 // builtinNames is the set of builtin function names (from the catalog), memoized.
@@ -71,6 +97,7 @@ func machinGuide() guideCatalog {
 			"select", "go", "chan", "make", "map", "struct", "type", "var", "arena",
 			"extern", "export", "true", "false", "nil",
 		},
+		Domains: guideDomains,
 		Types: []guideNote{
 			{"int", "64-bit signed"},
 			{"float", "double"},
@@ -308,12 +335,26 @@ func main() { println(str(sqrt(2.0))) }`},
 // intended agent entry point), or a dense prose form with --text.
 func cmdGuide(args []string) error {
 	text := false
-	for _, a := range args {
+	for i, a := range args {
 		switch a {
 		case "--text", "-t":
 			text = true
 		case "--json":
 			text = false
+		case "--skill":
+			name := ""
+			if i+1 < len(args) {
+				name = args[i+1]
+			}
+			switch name {
+			case "web":
+				fmt.Print(skillWeb)
+			case "gamedev", "game":
+				fmt.Print(skillGamedev)
+			default:
+				return fmt.Errorf("unknown skill %q — available: web, gamedev (see `machin guide` domains)", name)
+			}
+			return nil
 		}
 	}
 	g := machinGuide()
@@ -331,7 +372,11 @@ func renderGuideText(g guideCatalog) string {
 	fmt.Fprintf(&b, "machin %s — %s\n\n", g.Version, g.Tagline)
 	fmt.Fprintf(&b, "KEYWORDS: %s\n\n", strings.Join(g.Keywords, " "))
 
-	b.WriteString("TYPES\n")
+	b.WriteString("DOMAINS — building something specific? read the how-to FIRST (don't reverse-engineer demos):\n")
+	for _, d := range g.Domains {
+		fmt.Fprintf(&b, "  %-8s %s\n           %s\n", d.Name, d.Howto, d.Summary)
+	}
+	b.WriteString("\nTYPES\n")
 	for _, t := range g.Types {
 		fmt.Fprintf(&b, "  %-10s %s\n", t.Topic, t.Note)
 	}
