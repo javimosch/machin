@@ -17,9 +17,12 @@ var skillWeb string
 //go:embed skills/machin-gamedev/SKILL.md
 var skillGamedev string
 
+//go:embed skills/machin-backend/SKILL.md
+var skillBackend string
+
 // machinVersion is the single version string for the toolchain. Bump it when
 // cutting a release (alongside README badge / SPEC / CHANGELOG).
-const machinVersion = "0.74.0"
+const machinVersion = "0.75.0"
 
 // ---- the source-of-truth feature catalog ----
 //
@@ -70,7 +73,7 @@ type guideCatalog struct {
 var guideDomains = []guideDomain{
 	{"web", "web", "machin guide --skill web", "Full-stack web: a native HTTP server (machweb), SSR, a reactive WebAssembly UI (signals + keyed lists), a client-side router, cookies + signed sessions, and OAuth2/OIDC SSO — one language both ends, no Node/bundler."},
 	{"gamedev", "gamedev", "machin guide --skill gamedev", "Native games: terminal TUI (raw_mode/read_key + ANSI) and raylib GUI/audio/3D through the C FFI — sprites, sound, 3D cameras, GPU meshes (pointer/array FFI), instancing, shaders, procedural worlds (noise)."},
-	{"backend", "", "see the *-client builtins/idioms below + docs/NORTH-STAR-BACKEND.md", "Single-binary backends: pure-MFL drivers for SQLite, PostgreSQL (SCRAM), MySQL/MariaDB, Redis, and MongoDB (all connection-pooled), plus signed sessions and SSO. See the postgres-client / mysql-client / mongo-client / redis-client / machweb-sessions / sso-oauth idioms."},
+	{"backend", "backend", "machin guide --skill backend", "Single-binary backends: HTTP/JSON APIs, pure-MFL drivers for SQLite, PostgreSQL (SCRAM), MySQL/MariaDB, Redis, and MongoDB (all connection-pooled, uniform JSON rows → parse([]T{})), signed sessions, OAuth2/OIDC SSO, agent-first CLIs, and daemons."},
 }
 
 // builtinNames is the set of builtin function names (from the catalog), memoized.
@@ -351,8 +354,10 @@ func cmdGuide(args []string) error {
 				fmt.Print(skillWeb)
 			case "gamedev", "game":
 				fmt.Print(skillGamedev)
+			case "backend":
+				fmt.Print(skillBackend)
 			default:
-				return fmt.Errorf("unknown skill %q — available: web, gamedev (see `machin guide` domains)", name)
+				return fmt.Errorf("unknown skill %q — available: web, gamedev, backend (see `machin guide` domains)", name)
 			}
 			return nil
 		}
