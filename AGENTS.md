@@ -41,6 +41,16 @@ add it to [awesome-machin](https://github.com/javimosch/awesome-machin)** (the
 curated ecosystem list). Each app is its own public repo under `javimosch` with
 a `build.sh` (`machin encode src/*.src > app.mfl && machin build app.mfl`).
 
+> **When you discover an MFL gotcha, a new pattern, or an FFI caveat during
+> dogfooding, record it in [machin-learn](https://github.com/javimosch/machin-learn)**
+> — the agent knowledge base for MFL, seven skill files under `.agents/skills/`
+> covering language, builtins, gotchas, FFI, terminal/TUI, networking, and
+> storage/SQLite. Each skill is a self-contained `.md` an agent loads in one
+> `read` call. Keeping machin-learn current means the next agent won't hit the
+> same wall twice. (If the learning is specific to a domain — web, game-dev,
+> backend — it also belongs in `skills/machin-*/SKILL.md` in this repo; the
+> general MFL gotchas go in machin-learn.)
+
 Building a **web app** (HTTP server, JSON API, SSR, a reactive wasm UI, or a
 CRUD back-office)? Read [`skills/machin-web/SKILL.md`](skills/machin-web/SKILL.md)
 first — the machweb/reactive/router frameworks, the wasm bridge + host↔wasm
