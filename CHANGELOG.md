@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Claude Code plugin marketplace.** The repo is now a Claude Code marketplace
+  (`.claude-plugin/marketplace.json`) shipping a `machin` plugin that bundles the 5
+  agent skills (machin-start + web/backend/gamedev/deploy). Install in any project:
+  `/plugin marketplace add javimosch/machin` then `/plugin install machin@machin` — so
+  an agent reaches for machin at the decision moment *everywhere*, not just where
+  `machin skill install` was run. Bundled skills are kept identical to the canonical
+  `skills/` (the embedded source of truth) by `tools/sync-plugin-skills.sh`, guarded by
+  a test; manifest validated with `claude plugin validate`.
+
 ## v0.82.0
 
 - **The framework modules now ship in the binary.** `machweb.src`, the DB drivers,

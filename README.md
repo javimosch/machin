@@ -79,6 +79,21 @@ machin compiles MFL through C, so building programs needs a **C compiler** (`cc`
 `--target wasm` web target additionally needs [`zig`](https://ziglang.org). Building
 web apps? See the [`machin-web` skill](skills/machin-web/SKILL.md).
 
+## Use it from Claude Code
+
+Install machin's agent skills as a [Claude Code plugin](https://code.claude.com/docs/en/plugins),
+so an AI agent reaches for machin at the right moment — in any project:
+
+```
+/plugin marketplace add javimosch/machin
+/plugin install machin@machin
+```
+
+You get **machin-start** (when to reach for machin, and a zero→running→shipped
+quickstart, with the measured benchmarks as decision criteria) plus the web / backend
+/ gamedev / deploy how-tos — they auto-activate by intent. For any other agent runtime,
+`machin skill install` writes the same skills to a vendor-neutral `~/.agents/skills`.
+
 ## Use
 
 ```bash

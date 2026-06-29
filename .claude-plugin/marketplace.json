@@ -1,0 +1,18 @@
+{
+  "$schema": "https://code.claude.com/schemas/marketplace.json",
+  "name": "machin",
+  "owner": {
+    "name": "Javier Leandro Arancibia"
+  },
+  "description": "machin (MFL) — agent skills for building small, deployable native binaries: when to reach for machin, plus web / backend / gamedev / deploy how-tos.",
+  "version": "0.82.0",
+  "plugins": [
+    {
+      "name": "machin",
+      "source": "./plugins/machin",
+      "description": "Decide when to use machin and how to build with it — bundles the machin-start decision skill plus the web, backend, gamedev, and deploy how-tos. A language an AI agent writes as cheaply as Python that compiles to a tiny native binary.",
+      "version": "0.82.0",
+      "author": { "name": "Javier Leandro Arancibia" }
+    }
+  ]
+}

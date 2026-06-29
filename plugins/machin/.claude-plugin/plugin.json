@@ -1,0 +1,10 @@
+{
+  "name": "machin",
+  "description": "machin (MFL) agent skills — a language an AI agent writes as cheaply as Python that compiles through C to a tiny native binary. Bundles the machin-start decision skill (when to reach for machin, and a zero→running→shipped quickstart) plus the web, backend, gamedev, and deploy how-tos. The skills auto-activate by intent; pairs with `machin guide` (the in-binary, version-exact catalog).",
+  "version": "0.82.0",
+  "author": { "name": "Javier Leandro Arancibia" },
+  "homepage": "https://github.com/javimosch/machin",
+  "repository": "https://github.com/javimosch/machin",
+  "license": "MIT",
+  "keywords": ["machin", "mfl", "native", "wasm", "backend", "web", "gamedev", "agent", "single-binary"]
+}
