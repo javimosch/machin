@@ -1,0 +1,4 @@
+#!/bin/sh
+# A CC wrapper that links statically with musl, so `CC=./muslcc machin build ...`
+# produces a fully static binary that runs FROM scratch (no libc in the image).
+exec musl-gcc -static "$@"

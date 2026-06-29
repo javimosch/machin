@@ -1,0 +1,5 @@
+# built artifacts — sources + Dockerfiles + scripts are the benchmark
+hello.mfl
+hello-machin
+hello-go
+*.err
