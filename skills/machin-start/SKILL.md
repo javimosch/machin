@@ -21,7 +21,7 @@ trust):
 |---|---|---|
 | **agent writes it** | a REST+SQLite API in ~390 tokens | **ties Python**, ~36 % fewer than Go |
 | **runs** | native, unboxed, no VM | **wins fib & integer loops vs Rust -O3 / Zig**, ties on float, ~1.4× behind on array-heavy |
-| **ships** | 92.9 kB image · 0.49 ms cold start · 0.1 MB RAM (pure compute; a DB/TLS app is a ~50 kB **dynamic** binary on a slim base — see ship step) | **1916× smaller / 59× faster start / 477× less RAM than Node** |
+| **ships** | 92.9 kB image · 0.49 ms cold start · 0.1 MB RAM (pure compute; a **SQLite** app ships `FROM scratch` too via `--static`, ~1 MB; TLS still needs OpenSSL — see ship step) | **1916× smaller / 59× faster start / 477× less RAM than Node** |
 
 Concretely a fit for: a JSON/REST API, a CLI or filter, a webhook receiver, a cron
 / daemon, an internal tool, a static-site or single-page app backend, a database
@@ -95,17 +95,17 @@ machin encode framework/machweb.src app.src > app.mfl
 machin build app.mfl -o app           # a small native binary (dynamic glibc, ~44 kB)
 ./app                                  # serving on :8080
 
-# 3. ship it — two honest paths:
-#   (a) DEFAULT: the small dynamic binary above (~50 kB). It links libc + libsqlite3
+# 3. ship it:
+#   (a) DEFAULT: the small dynamic binary above (~50 kB). Links libc + libsqlite3
 #       (+ libssl if you use the HTTPS client) — all present on any normal Linux box.
 #       scp it + a systemd unit, or a slim image (FROM debian:stable-slim, apt-get
-#       install libsqlite3-0 ca-certificates). This is the common case and plenty small.
-#   (b) FROM scratch (~1 MB static): the plain musl wrapper below gives a zero-dep static
-#       binary ONLY for pure-compute apps. The 92.9 kB FROM-scratch figure is that case.
-#       A SQLite or HTTPS app must compile its dep in statically (the SQLite *amalgamation*
-#       sqlite3.c, or static OpenSSL) — not just musl -static. Worth it for scale-to-zero.
+#       install libsqlite3-0 ca-certificates). The common case, plenty small.
+#   (b) FROM scratch: `--static` bundles SQLite (the amalgamation) in, so a REST+SQLite
+#       app links nothing. Pair with musl for a libc-free, zero-dep binary:
 printf '#!/bin/sh\nexec musl-gcc -static "$@"\n' > muslcc && chmod +x muslcc
-CC=./muslcc machin build app.mfl -o app   # pure-compute: statically linked, runs FROM scratch
+CC=./muslcc machin build --static app.mfl -o app   # statically linked -> FROM scratch (~1 MB)
+# Dockerfile:  FROM scratch / COPY app /app / ENTRYPOINT ["/app"]
+# (TLS apps using the HTTPS client still need OpenSSL — native TLS is tracked in #260.)
 ```
 
 ## Then read the domain skill for what you're building

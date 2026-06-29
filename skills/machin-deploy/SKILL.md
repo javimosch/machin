@@ -93,10 +93,10 @@ WantedBy=multi-user.target
 ```
 `listen` sets `SO_REUSEADDR`, so a restart rebinds immediately (no `TIME_WAIT` wait).
 
-## Run it: Docker (slim, not scratch)
+## Run it: Docker
 
-The binary needs libc + OpenSSL (`libssl`/`libcrypto`) at runtime (sessions/crypto), and
-`libsqlite3` if you use SQLite — so a `FROM scratch` image won't run it. A slim base does:
+By default the binary needs libc + OpenSSL (`libssl`/`libcrypto`, for sessions/crypto) and
+`libsqlite3` (if you use SQLite) at runtime, so ship it on a **slim base**:
 ```dockerfile
 FROM debian:stable-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -106,6 +106,13 @@ EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/server"]
 ```
 (Multi-stage: build with `machin build` in a builder stage, copy just the binary.)
+
+**`FROM scratch` for a SQLite-only service:** `machin build --static` compiles the SQLite
+amalgamation in (no `libsqlite3`); with `CC=musl-gcc` you get a libc-free ~1 MB binary that
+runs from an empty image — `FROM scratch / COPY server / ENTRYPOINT`. This works when the
+program uses **no OpenSSL** — i.e. no HTTPS client (`https_*`) and no crypto builtins
+(`hmac_sha256`/`sha256`/`rand_bytes`/…, which signed sessions use). Those still link OpenSSL
+(so the slim base above) until native TLS lands (issue #260).
 
 ## Gotchas
 
