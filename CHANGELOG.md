@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.82.0
+
 - **The framework modules now ship in the binary.** `machweb.src`, the DB drivers,
   `sso`/`ws`/`smtp`/`reactive`/`router`/`flags`/`bson` — the MFL libraries an app
   composes against — are `//go:embed`'d, and `machin encode` resolves
