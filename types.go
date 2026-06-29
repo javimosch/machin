@@ -1508,6 +1508,8 @@ func (c *Checker) multiRetBuiltin(name string) (args []int, rets []int, ok bool)
 		return []int{c.cString, c.cString, newSliceSlot(c, c.cString), c.cString}, []int{c.cInt, c.cString, c.cString}, true
 	case "json_get":
 		return []int{c.cString, c.cString}, []int{c.cString, c.cString}, true
+	case "exec":
+		return []int{c.cString}, []int{c.cInt, c.cString, c.cString}, true
 	}
 	return nil, nil, false
 }
@@ -2377,6 +2379,8 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		return 0, fmt.Errorf("http_request returns 3 values; use: status, body, err := http_request(method, url, headers, body)")
 	case "json_get":
 		return 0, fmt.Errorf("json_get returns 2 values; use: value, err := json_get(json, path)")
+	case "exec":
+		return 0, fmt.Errorf("exec returns 3 values; use: code, out, err := exec(cmd)")
 	case "wss_open":
 		if len(argSlots) != 1 {
 			return 0, fmt.Errorf("wss_open: 1 arg (url string)")

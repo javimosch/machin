@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **New builtin `exec(cmd) -> (exit_code, stdout, stderr)`** — run a shell command and
+  capture its output (unlike `system`, which returns only the exit code). Runs via
+  `/bin/sh` in a subshell with stdout/stderr redirected to temp files (no pipe-buffer
+  deadlock); multi-assign only (`code, out, err := exec(...)`). Unblocks SSH / mongodump
+  / gzip pipelines and any tool whose output you need — the gap from #277 (port
+  mongo-vault to MFL). Captured text is NUL-terminated; redirect binary output to a file
+  in the command.
+
 - **Claude Code plugin marketplace.** The repo is now a Claude Code marketplace
   (`.claude-plugin/marketplace.json`) shipping a `machin` plugin that bundles the 5
   agent skills (machin-start + web/backend/gamedev/deploy). Install in any project:

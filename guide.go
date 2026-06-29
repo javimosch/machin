@@ -142,6 +142,7 @@ func machinGuide() guideCatalog {
 			{"env", "(string) -> string", "environment variable (\"\" if unset)", "cli"},
 			{"exit", "(int) ->", "terminate the process with a status code", "cli"},
 			{"system", "(string) -> int", "run a shell command, return its exit code (-1 if unlaunchable). For process orchestration, e.g. spawning a detached daemon: system(\"./app serve >log 2>&1 &\")", "cli"},
+			{"exec", "(string) -> (int, string, string)", "run a shell command and CAPTURE its output -> (exit_code, stdout, stderr). MULTI-ASSIGN ONLY: code, out, err := exec(\"ssh host mongodump ...\"). Captured text is NUL-terminated (redirect binary output to a file in the command). For SSH/mongodump/gzip pipelines and any tool whose output you need", "cli"},
 			// time
 			{"now", "() -> int", "wall-clock Unix seconds", "time"},
 			{"now_ms", "() -> int", "wall-clock milliseconds", "time"},
