@@ -98,7 +98,18 @@ Built something? Add it to [awesome-machin](https://github.com/javimosch/awesome
 
 ## Performance
 
-`fib(40)` (~331M calls): **MFL 0.20s** · C 0.19s · Rust 0.29s. Values are unboxed; no interpreter, no VM.
+machin compiles through C, so it runs in the **native tier**, not the scripting tier.
+On four kernels with byte-identical output, `cc -O2` on machin's generated C **wins 2,
+ties 1, loses 1** against Rust `-O3` and Zig `ReleaseFast` (min of 5, this machine):
+
+| | fib(40) | mandelbrot 1000² | sieve 10⁷ | intsum 10⁹ |
+|---|--:|--:|--:|--:|
+| **machin** | **245 ms** | 827 ms | 203 ms | **2832 ms** |
+| Rust `-O3` | 303 ms | **814 ms** | 153 ms | 3764 ms |
+| Zig fast | 306 ms | 819 ms | **145 ms** | 3556 ms |
+
+Fastest on scalar recursion + integer loops; ~1.4× behind on array-heavy code. Unboxed
+values, no interpreter, no VM. Numbers + reproduce: [`bench/native-speed`](bench/native-speed).
 
 ## License
 

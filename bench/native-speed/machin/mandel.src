@@ -1,0 +1,31 @@
+// Mandelbrot escape-time over a 1000x1000 grid, max 1000 iterations.
+// Prints the summed iteration count (a checksum that must match across languages).
+func main() {
+    w := 1000
+    h := 1000
+    maxit := 1000
+    total := 0
+    py := 0
+    while py < h {
+        px := 0
+        while px < w {
+            x0 := (float(px)/float(w))*3.5 - 2.5
+            y0 := (float(py)/float(h))*2.0 - 1.0
+            x := 0.0
+            y := 0.0
+            it := 0
+            while it < maxit {
+                x2 := x*x
+                y2 := y*y
+                if x2 + y2 > 4.0 { break }
+                y = 2.0*x*y + y0
+                x = x2 - y2 + x0
+                it = it + 1
+            }
+            total = total + it
+            px = px + 1
+        }
+        py = py + 1
+    }
+    println(total)
+}
