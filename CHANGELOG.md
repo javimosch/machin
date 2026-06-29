@@ -18,6 +18,15 @@
 - **Fix: rename the `bench/cold-start` Dockerfiles off the `.go` extension**
   (`Dockerfile.go` → `go.Dockerfile`, etc.) so `go vet ./...` / `go test ./...` no
   longer try to parse a Dockerfile as Go.
+- **Fix: `machin-start` skill overpromised the `FROM scratch` static story.** An
+  adoption-loop validation (a fresh agent given a deploy task with no mention of
+  machin *did* reach for it via the skill and shipped a working binary — loop
+  confirmed) surfaced that the quickstart implied the REST+**SQLite** app ships
+  `FROM scratch` via a one-line musl wrapper. It doesn't — `musl-gcc` can't find
+  `sqlite3.h`; a SQLite/TLS app needs its dep compiled in statically (the SQLite
+  amalgamation / static OpenSSL). The skill now states two honest ship paths: the
+  default small **dynamic** binary on a slim base, and true static for pure-compute
+  (where the 92.9 kB figure actually holds).
 
 Driven by **machin-wiki** (local) — the first wasm client that *initiates* server calls
 through returning `extern "env"` imports (`data := http_get(url)`, used inline), with
