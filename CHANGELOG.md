@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.81.0
+
 - **New `machin build --static` — a fully static binary that bundles SQLite.** The
   SQLite [amalgamation](vendor/sqlite/) (public domain, v3.53.3) is embedded in the
   compiler (gzipped, `//go:embed`) and compiled directly into a program in `--static`
