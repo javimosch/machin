@@ -7,13 +7,35 @@
 
 # machin ⎯ Machine-First Language (MFL)
 
-A Go-flavored **backend language shaped for agents**: terse, type-inferred, one canonical declaration per line. Compiles to native code through C — C/Rust/Zig-class speed, a single static binary, no runtime.
+A language **shaped for AI agents to write and edit cheaply**: zero type annotations, one canonical declaration per line, every design choice measured for token cost. Compiles through C to a single native binary — C/Rust-class speed, unboxed values, no runtime.
 
 [Spec](SPEC.md) · [Language tour](docs/LANGUAGE.md) · [Agent guide](AGENTS.md) · [Ecosystem → **awesome-machin**](https://github.com/javimosch/awesome-machin) · [Landing](https://javimosch.github.io/machin/) · [Releases](https://github.com/javimosch/machin/releases)
 
-> This README is deliberately terse — machin is machine-first, and so are its docs. Depth lives in [`SPEC.md`](SPEC.md) and [`AGENTS.md`](AGENTS.md).
+## Same service, measured
 
-> **Agents: run `machin guide`** for the complete, version-exact feature surface in one call — every keyword, every builtin with its signature, the core idioms, and the gotchas, as JSON (`--text` for dense prose). It's emitted from the compiler's own catalog, so it can't drift from the implementation.
+The pitch in one table. The **same REST + SQLite API** (`POST` / `GET` / `DELETE
+/notes`) written idiomatically in each language, then measured for what actually
+costs an AI agent: **tokens to write, and tokens to edit**. All three build and
+pass the same CRUD test ([`bench/rest-sqlite`](bench/rest-sqlite)).
+
+| | author tokens | edit tokens | ships as |
+|---|--:|--:|---|
+| **machin** | **388** | **290** | **44 KB static binary · 0 deps** |
+| Go | 527 · 1.36× | 329 · 1.13× | 14.8 MB binary + module deps |
+| Python | 383 · 0.99× | 332 · 1.14× | source + CPython interpreter |
+
+machin is **as terse as Python** to write, **~36 % cheaper than Go**, lowest on
+edit cost — and the only one that ships as a **single 44 KB native binary with
+SQLite, the HTTP server, and the router built in**. No interpreter, no `go mod`,
+no container. *Write it like a script, ship it like C.* That combination — not a
+raw token count — is the whole idea. (`o200k_base`; `cl100k_base` gives the same
+ranking. Reproduce: `python3 bench/rest-sqlite/measure.py`.)
+
+## Why
+
+Every mainstream language was designed for **human** ergonomics — readable syntax, explicit types, multi-line formatting. For an AI agent, every output token costs, and that human-friendly ceremony taxes the writer without adding meaning. machin measured this: [`tools/tokcost.py`](tools/tokcost.py) showed base64 source costs ~2.5× the tokens to output; whitespace alone costs ~13%. The canonical one-line-per-declaration form, with every type inferred, is the end of that measurement — the smallest token surface that still produces C/Rust-class native code with zero runtime overhead.
+
+> **Agents: run `machin guide`** for the complete, version-exact feature surface — every keyword, every builtin with its signature, the core idioms, and the gotchas, as JSON (`--text` for prose). Emitted from the compiler's own catalog; can't drift from the implementation. Depth lives in [`SPEC.md`](SPEC.md) and [`AGENTS.md`](AGENTS.md).
 
 ## The form
 
@@ -25,7 +47,7 @@ func fib(n){if n<2{return n}return fib(n-1)+fib(n-2)}
 func main(){println(fib(10))}
 ```
 
-Why not base64 (the old design)? Measured with [`tools/tokcost.py`](tools/tokcost.py), base64 costs an agent ~2.5× the output tokens to write/edit. A dense `machin pack` form still exists for distribution; `machin run` reads either.
+A dense `machin pack` form exists for distribution; `machin run` reads either.
 
 ## Install
 
@@ -53,15 +75,12 @@ bin/machin pack   app.mfl                # dense base64 form (distribution)
 
 ## Capabilities
 
-- **Types** (all inferred, unboxed): `int` `float` `bool` `string`, slices `[]T`, maps `map[K]V`, structs, `func` values
-- **Flow**: `if`/`for`/`while`/`range`, `break`/`continue`, multiple & named returns, comma-ok, variadics, closures (by-reference), implicit generics (monomorphized)
-- **Concurrency**: goroutines (`go`), channels (`close`, `for v := range ch`, `v, ok := <-ch`), `select` (multi-way + `default` + timeouts); per-goroutine arena GC + scoped `arena{}`; `--safe` checks
-- **Networking**: `dial` (client) + `listen`/`accept`/`read`/`write`/`close` (server); native TLS — `https_get`/`https_post` and a `wss_*` WebSocket client (OpenSSL, linked only when used)
-- **Databases**: embedded **SQLite** (`sqlite_*`), a pure-MFL **PostgreSQL** client (`framework/postgres.src` — wire protocol + SCRAM-SHA-256, no libpq; rows as JSON that `parse(rows, []T{})` decodes), a pure-MFL **Redis** client (`framework/redis.src` — RESP; cache/sessions/queues), and a pure-MFL **MongoDB** client (`framework/mongo.src` + `bson.src` — OP_MSG wire protocol + a BSON codec)
-- **I/O & data**: `read_file`/`write_file`/`list_dir`/`mkdir`, `input`/`read_stdin`, `json`/`parse`/`json_get` (jq-style path), `args`/`env`/`now`/`now_ms`/`time_fields`/`time_format`/`time_format_utc`/`time_make`/`parse_int`/`exit`/`flush`, string ops, regex, base64 (incl. binary `*_bytes`), hashes (sha256/hmac_sha256)
-- **Error handling**: `http_get` returns `(status, body, err)` — the `v, err :=` idiom at the builtin layer (a 404, a 503, and an unreachable host are distinguishable)
-- **C FFI**: `extern` blocks — scalars, by-value structs (`cstruct`), opaque `ptr` handles, multi-`link` (drove a real raylib **GUI**)
-- **machweb**: a web framework written in MFL ([`framework/`](framework/))
+- **Concurrency:** goroutines + channels + `select`; per-goroutine arena GC + scoped `arena{}`; `--safe` checks
+- **Networking:** TCP client/server, native TLS, WebSocket client + server (RFC 6455)
+- **Databases:** SQLite builtins; pure-MFL Postgres / MySQL / Redis / MongoDB clients — no C libs, connection pooling
+- **Web:** [`machweb`](framework/) HTTP framework (router, cookies, SSO, SSE streaming, file uploads, proxy hardening) + reactive wasm frontend
+- **Crypto:** SHA-256, HMAC, HKDF, Ed25519, X25519, AES-GCM/CBC — binary and text paths
+- **C FFI:** `extern` blocks, by-value structs, opaque handles — real raylib 3D games
 
 Full surface and grammar: [`SPEC.md`](SPEC.md). Runnable programs: [`examples/`](examples/).
 
@@ -69,7 +88,9 @@ Full surface and grammar: [`SPEC.md`](SPEC.md). Runnable programs: [`examples/`]
 
 Things built with machin — the curated list is [**awesome-machin**](https://github.com/javimosch/awesome-machin):
 
-- [boilerplate-cli-ui-machin](https://github.com/javimosch/boilerplate-cli-ui-machin) — single-binary CLI + embedded React web UI + daemon (via FFI)
+- [machin-mail](https://github.com/javimosch/machin-mail) — SMTP send + local catch/sink (à la MailHog), pure MFL over TCP
+- [machin-rooms](https://github.com/javimosch/machin-rooms) — real-time WebSocket chat server, one binary
+- [machin-deploy](https://github.com/javimosch/machin-deploy) — production reference (systemd, Docker, nginx/Caddy)
 - [machin-healthcheck](https://github.com/javimosch/machin-healthcheck) — concurrent HTTP status/latency checker
 - [machin-ssg](https://github.com/javimosch/machin-ssg) — static-site generator (markdown → HTML)
 

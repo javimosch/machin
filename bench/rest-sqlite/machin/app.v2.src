@@ -1,0 +1,42 @@
+// A notes REST service over SQLite — create / list / get / delete.
+// Compose with machweb: `machin encode framework/machweb.src app.src > app.mfl`.
+type Note struct { id int  title string  body string  created_at int }
+
+func handle(db, req) (res) {
+    if req.method == "POST" {
+        if req.path == "/notes" {
+            n := parse(req.body, Note{})
+            sqlite_exec(db, "INSERT INTO notes(title,body,created_at) VALUES(?,?,?)", []string{n.title, n.body, str(now())})
+            res = created(sqlite_query(db, "SELECT id,title,body,created_at FROM notes WHERE id=last_insert_rowid()"))
+            return res
+        }
+    }
+    if req.method == "GET" {
+        if req.path == "/notes" {
+            res = ok_json(sqlite_query(db, "SELECT id,title,body,created_at FROM notes ORDER BY id"))
+            return res
+        }
+        id := param(req.path, "/notes/")
+        if id != "" {
+            rows := sqlite_query(db, "SELECT id,title,body,created_at FROM notes WHERE id=?", []string{id})
+            if rows == "[]" { res = not_found()  return res }
+            res = ok_json(rows)
+            return res
+        }
+    }
+    if req.method == "DELETE" {
+        id := param(req.path, "/notes/")
+        if id != "" {
+            sqlite_exec(db, "DELETE FROM notes WHERE id=?", []string{id})
+            res = ok_json("{\"deleted\":" + id + "}")
+            return res
+        }
+    }
+    res = not_found()
+}
+
+func main() {
+    db := sqlite_open("notes.db")
+    sqlite_exec(db, "CREATE TABLE IF NOT EXISTS notes(id INTEGER PRIMARY KEY, title TEXT, body TEXT, created_at INTEGER)")
+    serve(18080, func(req) { return handle(db, req) })
+}

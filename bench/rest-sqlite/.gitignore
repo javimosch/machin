@@ -1,0 +1,10 @@
+# build artifacts — the sources + measure.py are the benchmark; binaries are regenerated
+notes.db
+*.mfl
+*.err
+*.log
+machin/notes-machin*
+go/notes-go*
+go/go.sum
+go/.v2/
+python/__pycache__/
