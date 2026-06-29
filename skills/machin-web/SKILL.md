@@ -238,6 +238,53 @@ instance.exports.start();
 - **Package globals** (`var x = 0` at top level) hold a component's state across export calls (persist in the wasm instance); `=` assigns the global, `:=` shadows with a local.
 - **Closures over a loop variable** see its final value (captured by reference) — build per-item closures via a helper that takes the index as a *parameter* (fresh per call), not inside the loop.
 - **Two `extern "env"` blocks compose fine** (the runtime's DOM ops + your app's effect imports).
+- **Reactive signals are INT-only** — `reactive.src`'s `sval` is `[]int{}`, so `signal("")` fails to typecheck. Hold non-int state in globals; bump an int **version signal** (`set(ver, get(ver)+1)`) to trigger an outlet re-render.
+- **A NAMED function can't be passed as a value** — `route(r, "/", myHandler)` → "undefined variable". Wrap it in a closure: `route(r, "/", func(req){ return myHandler(req) })` (the router examples all pass inline closures for this reason).
+- **Slice literals must be `[]string{...}`**, not `[a,b]` — bare brackets parse as an *index* expression. Bound params to `sqlite_exec`/`sqlite_query` are `[]string{name, str(id)}`, never `[name, str(id)]`.
+- **`sqlite_query` returns a JSON ARRAY of rows** — `{"user":[{...}]}` not `{"user":{...}}`. And `json_get`'s path language does NOT compose `key[idx].field` (key → array index → field) — it returns err. For API responses use typed `parse(body, Struct{})` with a witness that mirrors the shape, e.g. `type Me struct { user []User }` → `parse(me, Me{})`.
+- **Returning values from `extern "env"` imports WORK** — `fn http_get(string) string` compiles *and* runs (first exercised by machin-wiki); the JS host returns a pointer into wasm linear memory. BUT the `alloc` builtin is NOT exported, so the host can't write the return string without a buffer-allocator export. See **Returning effect imports** below.
+- **SPA catch-all server routing** — `serve_router` does exact `METHOD PATH` match and 404s client-side routes (`/new`, `/page/slug`). Use `serve(port, handler)` with a catch-all instead: `if has_prefix(path,"/api/"){return dispatch(r,req)}`; `if path=="/app.wasm"{return wasm}`; `else return shell(req)` — so the wasm router hydrates the deep link.
+- **A trailing-slash API prefix** (`route(r,"/api/page/",…)`) won't exact-match `/api/page/home`. Handle the prefix path in the catch-all (`if has_prefix(path,"/api/page/"){return api_page(req)}`) *before* handing the rest to `dispatch`.
+- **Deep-link testing under headless Chrome** — `--dump-dom`/`--screenshot` return BEFORE the initial-navigation `setTimeout` fires; pass `--virtual-time-budget=2000` so the SPA's first navigate runs first, or you'll falsely see the home view.
+- **Host→wasm callbacks already work** — JS calling `instance.exports.on_event(ptr)` on any async event (SSE message, timer) is the SAME stack as a click handler; it is NOT the missing FFI-callback (Phase 4) gap. Composition, not a new feature.
+
+## Returning effect imports (HTTP from the wasm client)
+
+Existing demos never let the WASM client *initiate* a server call — JS caught the
+click, did the `fetch`, and fed the result back into MFL via a `load()` export. **Returning
+`extern "env"` imports invert that**: MFL says `data := http_get(url)` and uses the
+result inline (a synchronous XHR blocks under wasm). Two things must line up:
+
+```go
+// client.src — declare the imports to RETURN a value (never before exercised in a demo)
+extern "env" {
+    fn http_get(string) string          // returns response body as a string POINTER
+    fn http_post(string, string) string // (url, body) -> response body
+}
+
+// MUST export a buffer allocator: `alloc` is a builtin and is NOT exported by default,
+// so the JS host has nowhere to write the return string. Without this, returning
+// effect imports crash at runtime (instance.exports.alloc is not a function).
+export func alloc_export(n) (p) { p = alloc(n) }
+
+func fetch_page(slug) {
+    page_str = http_get("/api/page/" + slug)  // MFL drives the call, uses result inline
+    set(ver, get(ver) + 1)                     // int version signal bumps → outlet re-renders
+}
+```
+```js
+// host.js — the effect import writes the response into wasm memory and returns the pointer
+http_get: (urlPtr) => {
+  const b = enc.encode(cstr(urlPtr));  // sync XHR
+  const xhr = new XMLHttpRequest(); xhr.open('GET', cstr(urlPtr), false); xhr.send();
+  const r = enc.encode(xhr.responseText + '\0');
+  const p = Number(instance.exports.alloc_export(BigInt(r.length))); // ← the added export
+  new Uint8Array(mem.buffer).set(r, p); return p;
+},
+```
+This is the enabler for a wasm SPA that talks to its own server API — and the moment
+enough endpoints are hand-bridged, the boilerplate motivates a `machin gen-client`
+(typed RPC, the next north-star gap).
 
 ## Recipe: a CRUD back-office (e.g. manage a users DB)
 
