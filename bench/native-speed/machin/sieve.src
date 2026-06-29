@@ -1,0 +1,23 @@
+// Sieve of Eratosthenes to 10,000,000 — integer + memory access.
+// Prints the prime count (664579). All three languages use a 64-bit element
+// array (parity), so this measures codegen, not element size.
+func main() {
+    n := 10000000
+    sieve := []int{}
+    i := 0
+    while i <= n { sieve = append(sieve, 1)  i = i+1 }
+    sieve[0] = 0
+    sieve[1] = 0
+    p := 2
+    while p*p <= n {
+        if sieve[p] == 1 {
+            m := p*p
+            while m <= n { sieve[m] = 0  m = m+p }
+        }
+        p = p+1
+    }
+    count := 0
+    k := 0
+    while k <= n { count = count + sieve[k]  k = k+1 }
+    println(count)
+}

@@ -1,0 +1,9 @@
+// Recursive fib(40) — function-call overhead, no memoization.
+func fib(n) (r) {
+    if n < 2 { r = n  return r }
+    r = fib(n-1) + fib(n-2)
+}
+
+func main() {
+    println(fib(40))
+}

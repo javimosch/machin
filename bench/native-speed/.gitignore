@@ -1,0 +1,19 @@
+# compiled binaries + build artifacts — sources + measure.py are the benchmark
+*.mfl
+*.err
+*.o
+.zig-cache/
+zig-cache/
+# bare-name binaries (machin/fib, rust/fib, zig/fib, ...)
+machin/fib
+machin/mandel
+machin/sieve
+machin/intsum
+rust/fib
+rust/mandel
+rust/sieve
+rust/intsum
+zig/fib
+zig/mandel
+zig/sieve
+zig/intsum
