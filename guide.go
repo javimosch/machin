@@ -11,6 +11,9 @@ import (
 // The domain how-to guides, embedded into the binary so an agent that installed via
 // curl|sh (no repo checkout) can read them offline: `machin guide --skill web|gamedev`.
 //
+//go:embed skills/machin-start/SKILL.md
+var skillStart string
+
 //go:embed skills/machin-web/SKILL.md
 var skillWeb string
 
@@ -74,6 +77,7 @@ type guideCatalog struct {
 // guideDomains routes an agent from `machin guide` (the language) to the per-domain
 // how-to. Embedded skills are printable offline via `machin guide --skill <name>`.
 var guideDomains = []guideDomain{
+	{"start", "start", "machin guide --skill start", "START HERE — decide whether machin fits the task and bootstrap it fast: when it wins (with measured numbers) vs Go/Node/Python, when NOT to use it, and a zero→running→shipped quickstart (install → a REST+SQLite service → a 92.9 kB FROM-scratch image). Routes to the domain skills below."},
 	{"web", "web", "machin guide --skill web", "Full-stack web: a native HTTP server (machweb), SSR, a reactive WebAssembly UI (signals + keyed lists), a client-side router, cookies + signed sessions, and OAuth2/OIDC SSO — one language both ends, no Node/bundler."},
 	{"gamedev", "gamedev", "machin guide --skill gamedev", "Native games: terminal TUI (raw_mode/read_key + ANSI) and raylib GUI/audio/3D through the C FFI — sprites, sound, 3D cameras, GPU meshes (pointer/array FFI), instancing, shaders, procedural worlds (noise)."},
 	{"backend", "backend", "machin guide --skill backend", "Single-binary backends: HTTP/JSON APIs, pure-MFL drivers for SQLite, PostgreSQL (SCRAM), MySQL/MariaDB, Redis, and MongoDB (all connection-pooled, uniform JSON rows → parse([]T{})), signed sessions, OAuth2/OIDC SSO, agent-first CLIs, and daemons."},
@@ -360,6 +364,8 @@ func cmdGuide(args []string) error {
 				name = args[i+1]
 			}
 			switch name {
+			case "start", "machin":
+				fmt.Print(skillStart)
 			case "web":
 				fmt.Print(skillWeb)
 			case "gamedev", "game":
@@ -369,7 +375,7 @@ func cmdGuide(args []string) error {
 			case "deploy":
 				fmt.Print(skillDeploy)
 			default:
-				return fmt.Errorf("unknown skill %q — available: web, gamedev, backend, deploy (see `machin guide` domains)", name)
+				return fmt.Errorf("unknown skill %q — available: start, web, gamedev, backend, deploy (see `machin guide` domains)", name)
 			}
 			return nil
 		}
