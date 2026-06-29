@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **New embedded skill `machin-start`** (`machin guide --skill start`) — the
+  agent-facing entry point that comes *before* the domain how-tos: when to reach
+  for machin (and when not), with the measured `bench/` numbers as decision
+  criteria, plus a zero→running→shipped quickstart. `install.sh` now also registers
+  it into a vendor-neutral `~/.agents/skills/machin-start/SKILL.md` (the binary
+  emits its own embedded skill; opt out with `MACHIN_NO_SKILL=1`, relocate with
+  `AGENT_SKILLS_DIR`), so a coding agent surfaces machin at the decision moment.
+  Listed first in the `machin guide` domain registry.
+
 Driven by **machin-wiki** (local) — the first wasm client that *initiates* server calls
 through returning `extern "env"` imports (`data := http_get(url)`, used inline), with
 local PBKDF2 auth and SPA routing:
