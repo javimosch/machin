@@ -120,8 +120,10 @@ const cRuntime = `#define _GNU_SOURCE
 #include <errno.h>
 #include <termios.h>
 #include <sys/select.h>
+#ifndef __wasm__
 #include <sys/wait.h>
 #include <signal.h>
+#endif
 
 /* slices: a Go-style header over an unboxed backing array */
 typedef struct { void* data; int64_t len; int64_t cap; } mfl_slice;
@@ -931,6 +933,7 @@ static int64_t mfl_mkdir(const char* path) {
     if (r < 0 && errno == EEXIST) return 0;
     return r;
 }
+#ifndef __wasm__
 /* run a shell command, return its exit code (-1 if it could not be launched). For
    process orchestration — e.g. spawning a detached daemon with a trailing "&". */
 static int64_t mfl_system(const char* cmd) {
@@ -938,6 +941,7 @@ static int64_t mfl_system(const char* cmd) {
     if (r == -1) return -1;
     return (int64_t)WEXITSTATUS(r);
 }
+#endif
 
 /* copy n bytes into a fresh NUL-terminated arena string */
 static char* mfl_dup_arena(const char* s, size_t n) {
@@ -1938,6 +1942,11 @@ static mfl_bytes mfl_crypto_hmac256(mfl_bytes key, mfl_bytes msg) {
     unsigned int n = 32;
     HMAC(EVP_sha256(), key.data, (int)key.len, msg.data, (size_t)msg.len, out.data, &n);
     out.len = n;
+    return out;
+}
+static mfl_bytes mfl_crypto_pbkdf2(mfl_bytes pw, mfl_bytes salt, int64_t iter, int64_t dklen) {
+    mfl_bytes out = mfl_crypto_buf(dklen);
+    if (PKCS5_PBKDF2_HMAC((const char*)pw.data, (int)pw.len, salt.data, (int)salt.len, (int)iter, EVP_sha256(), (int)out.len, out.data) != 1) out.len = 0;
     return out;
 }
 static mfl_bytes mfl_crypto_hkdf(mfl_bytes ikm, mfl_bytes salt, mfl_bytes info, int64_t length) {
@@ -3887,6 +3896,9 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 	case "hkdf_sha256":
 		g.usesCrypto = true
 		return fmt.Sprintf("mfl_crypto_hkdf(%s, %s, %s, %s)", args[0], args[1], args[2], args[3]), nil
+	case "pbkdf2_sha256":
+		g.usesCrypto = true
+		return fmt.Sprintf("mfl_crypto_pbkdf2(%s, %s, %s, %s)", args[0], args[1], args[2], args[3]), nil
 	case "x25519_pub":
 		g.usesCrypto = true
 		return fmt.Sprintf("mfl_crypto_x25519_pub(%s)", args[0]), nil

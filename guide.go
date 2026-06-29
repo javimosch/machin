@@ -221,6 +221,7 @@ func machinGuide() guideCatalog {
 			{"sha1_bytes", "(bytes) -> bytes", "SHA-1 of binary -> 20-byte digest (for legacy auth, e.g. MySQL native password)", "crypto"},
 			{"hmac_sha256_bytes", "(bytes, bytes) -> bytes", "HMAC-SHA256(key, msg) -> 32 bytes (binary-safe)", "crypto"},
 			{"hkdf_sha256", "(bytes, bytes, bytes, int) -> bytes", "HKDF-SHA256(ikm, salt, info, length) -> length bytes", "crypto"},
+			{"pbkdf2_sha256", "(bytes, bytes, int, int) -> bytes", "PBKDF2-HMAC-SHA256(password, salt, iterations, dklen) -> derived key; for password hashing", "crypto"},
 			{"x25519_pub", "(bytes) -> bytes", "X25519 public key from a 32-byte private key", "crypto"},
 			{"x25519_shared", "(bytes, bytes) -> bytes", "X25519 ECDH shared secret (my private, their public) -> 32 bytes", "crypto"},
 			{"ed25519_pub", "(bytes) -> bytes", "Ed25519 public key from a 32-byte seed", "crypto"},

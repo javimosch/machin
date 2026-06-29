@@ -806,14 +806,17 @@ func TestCrypto(t *testing.T) {
 	println(ed25519_verify(ed25519_pub(seed), m, sig))
 	println(ed25519_verify(ed25519_pub(seed), bytes("no"), sig))
 	k := rand_bytes(32)  iv := rand_bytes(12)
-	ct := aes_gcm_encrypt(k, iv, m, bytes(""))
+		ct := aes_gcm_encrypt(k, iv, m, bytes(""))
 	println(bytes_str(aes_gcm_decrypt(k, iv, ct, bytes(""))) == "hi")
 	println(str(len(aes_gcm_decrypt(k, iv, ct, bytes("x")))))
+	// pbkdf2_sha256: deterministic, correct length, different salt → different hash
+	println(to_hex(pbkdf2_sha256(bytes("password"), bytes("salt"), 1, 20)) == to_hex(pbkdf2_sha256(bytes("password"), bytes("salt"), 1, 20)))
+	println(str(len(to_hex(pbkdf2_sha256(bytes("password"), bytes("salt"), 1, 20)))) == "40")
 }`
 	out, _ := buildRun(t, main)
 	want := "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\n" +
 		"2d93cbc1be167bcb1637a4a23cbff01a7878f0c50ee833954ea5221bb1b8c628\n" +
-		"true\ntrue\nfalse\ntrue\n0\n"
+		"true\ntrue\nfalse\ntrue\n0\ntrue\ntrue\n"
 	if out != want {
 		t.Fatalf("crypto: got %q, want %q", out, want)
 	}

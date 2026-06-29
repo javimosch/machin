@@ -1853,6 +1853,15 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		c.addPair(argSlots[2], c.cBytes)
 		c.addPair(argSlots[3], c.cInt)
 		return c.cBytes, nil
+	case "pbkdf2_sha256":
+		if len(argSlots) != 4 {
+			return 0, fmt.Errorf("pbkdf2_sha256: 4 args (password, salt — both bytes — iterations, dklen — both int)")
+		}
+		c.addPair(argSlots[0], c.cBytes)
+		c.addPair(argSlots[1], c.cBytes)
+		c.addPair(argSlots[2], c.cInt)
+		c.addPair(argSlots[3], c.cInt)
+		return c.cBytes, nil
 	case "append":
 		if len(argSlots) != 2 {
 			return 0, fmt.Errorf("append: 2 args")

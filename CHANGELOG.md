@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+Driven by **machin-wiki** (local) — the first wasm client that *initiates* server calls
+through returning `extern "env"` imports (`data := http_get(url)`, used inline), with
+local PBKDF2 auth and SPA routing:
+
+- **New builtin: `pbkdf2_sha256(password, salt, iterations, dklen) -> bytes`.**
+  PBKDF2-HMAC-SHA256 via OpenSSL's `PKCS5_PBKDF2_HMAC` (linked `-lcrypto`, same pattern
+  as the other crypto builtins). The password-hashing primitive MFL was missing — local
+  auth in a self-hostable web app can't lean on SSO alone. Tested in `mfl_test.go`.
+- **Wasm target: gate the POSIX headers that newer wasi-libc `#error`s out.** `sys/wait.h`
+  and `signal.h` were unconditionally `#include`d in the core C runtime; zig's shipped
+  wasi-libc now emits `#error "wasm lacks signal support"`, which broke **every** wasm
+  build (even `export func start(){}`). Gated behind `#ifndef __wasm__`, and `mfl_system`
+  (uses `WEXITSTATUS`) likewise. Net/TTY runtimes were already pay-as-you-go.
+- **Learnings recorded** (in `skills/machin-web/SKILL.md` Gotchas + a new *Returning effect
+  imports* how-to): returning `extern "env"` imports work end-to-end BUT the `alloc` builtin
+  isn't exported, so the host needs a `func alloc_export(n) (p) { p = alloc(n) }` export to
+  write the response string; `json_get` paths don't compose `key[idx].field` → use typed
+  `parse(body, Struct{})`; reactive signals are int-only; named functions can't be passed
+  by value; SPA catch-all server routing; `--virtual-time-budget` for deep-link tests.
+
 ## v0.80.0
 
 - **An SMTP toolkit — `framework/smtp.src`.** Send mail and receive it, both pure MFL over
