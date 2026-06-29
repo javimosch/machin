@@ -11,6 +11,10 @@ A language **shaped for AI agents to write and edit cheaply**: zero type annotat
 
 [Spec](SPEC.md) · [Language tour](docs/LANGUAGE.md) · [Agent guide](AGENTS.md) · [Ecosystem → **awesome-machin**](https://github.com/javimosch/awesome-machin) · [Landing](https://javimosch.github.io/machin/) · [Releases](https://github.com/javimosch/machin/releases)
 
+<p align="center">
+  <img src="docs/machin-demo.gif" alt="machin: write a REST+SQLite service, compile to a tiny native binary, run it" width="760">
+</p>
+
 ## Same service, measured
 
 The pitch in one table. The **same REST + SQLite API** (`POST` / `GET` / `DELETE
