@@ -40,6 +40,8 @@ func main() {
 		err = cmdGuide(os.Args[2:])
 	case "skill":
 		err = cmdSkill(os.Args[2:])
+	case "lextest":
+		err = cmdLexTest(os.Args[2:]) // self-hosting oracle (selfhost/): dump the Go token stream
 	case "framework":
 		err = cmdFramework(os.Args[2:])
 	case "help", "-h", "--help":

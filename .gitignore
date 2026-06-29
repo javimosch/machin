@@ -5,3 +5,4 @@
 # coverage reports (make cover)
 coverage.out
 coverage.html
+selfhost/mfl-lex
