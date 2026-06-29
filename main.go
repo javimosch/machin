@@ -40,6 +40,8 @@ func main() {
 		err = cmdGuide(os.Args[2:])
 	case "skill":
 		err = cmdSkill(os.Args[2:])
+	case "framework":
+		err = cmdFramework(os.Args[2:])
 	case "help", "-h", "--help":
 		usage()
 	default:
@@ -63,7 +65,8 @@ usage:
   machin build <file.mfl> --static   fully static binary (bundles SQLite; pair with CC=musl-gcc for FROM scratch)
   machin build <file.mfl> --emit-c   print the generated C and stop
   machin build|run <file.mfl> --safe  insert bounds / div-zero / overflow checks
-  machin encode <src>                mint canonical MFL from loose Go-like text
+  machin encode <src>                mint canonical MFL from loose Go-like text (framework/*.src resolve from the binary)
+  machin framework list|<name>|--vendor   the embedded framework modules (machweb, db drivers, …)
   machin pack  <file.mfl>            emit the dense base64 form (distribution)
   machin guide                       full feature catalog as JSON (--text for prose)
   machin skill install               register the agent skills where coding agents look
@@ -240,7 +243,7 @@ func cmdEncode(args []string) error {
 	}
 	var combined strings.Builder
 	for _, path := range args {
-		data, err := os.ReadFile(path)
+		data, err := readModule(path) // local file, else an embedded framework module
 		if err != nil {
 			return err
 		}

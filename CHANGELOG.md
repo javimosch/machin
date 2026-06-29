@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **The framework modules now ship in the binary.** `machweb.src`, the DB drivers,
+  `sso`/`ws`/`smtp`/`reactive`/`router`/`flags`/`bson` — the MFL libraries an app
+  composes against — are `//go:embed`'d, and `machin encode` resolves
+  `framework/<name>.src` from that embed when the local file is absent. So
+  `machin encode framework/machweb.src app.src` **works on a bare binary-only install**
+  (curl|sh), not just inside a repo checkout. A local copy still wins (vendoring is
+  respected). New `machin framework list | <name> | --vendor [dir]` for explicit
+  access. **Found by a clean-room re-validation:** in a fresh container the quickstart's
+  first command failed (`no such file: framework/machweb.src`) — the prior "loop
+  validated" was a false positive from running on a machin-saturated machine. Re-run in
+  the clean room now goes end-to-end: bare box → embedded framework → `--static` →
+  a working FROM-scratch SQLite binary.
+
 ## v0.81.0
 
 - **New `machin build --static` — a fully static binary that bundles SQLite.** The
