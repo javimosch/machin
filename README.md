@@ -31,6 +31,17 @@ no container. *Write it like a script, ship it like C.* That combination — not
 raw token count — is the whole idea. (`o200k_base`; `cl100k_base` gives the same
 ranking. Reproduce: `python3 bench/rest-sqlite/measure.py`.)
 
+…and then it ships in a way an interpreter can't ([`bench/cold-start`](bench/cold-start)):
+
+| same HTTP server | deployable image | cold start | idle RSS |
+|---|--:|--:|--:|
+| **machin** (static, `FROM scratch`) | **92.9 kB** | **0.49 ms** | **108 kB** |
+| Node (`.js` + `node:alpine`) | 178 MB · 1916× | 28.9 ms · 59× | 51 MB · 477× |
+| Python (`.py` + `python:alpine`) | 47.6 MB · 512× | 49.1 ms · 100× | 17.9 MB · 166× |
+
+A 92.9 kB image — the binary and nothing else — that's serving traffic in half a
+millisecond on ~0.1 MB of RAM.
+
 ## Why
 
 Every mainstream language was designed for **human** ergonomics — readable syntax, explicit types, multi-line formatting. For an AI agent, every output token costs, and that human-friendly ceremony taxes the writer without adding meaning. machin measured this: [`tools/tokcost.py`](tools/tokcost.py) showed base64 source costs ~2.5× the tokens to output; whitespace alone costs ~13%. The canonical one-line-per-declaration form, with every type inferred, is the end of that measurement — the smallest token surface that still produces C/Rust-class native code with zero runtime overhead.

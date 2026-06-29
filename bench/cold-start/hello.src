@@ -1,0 +1,3 @@
+// Minimal HTTP server — isolates the platform's shipping cost & startup floor.
+func handle(req) (res) { res = ok_text("hello from machin\n") }
+func main() { serve(8090, func(req) { return handle(req) }) }
