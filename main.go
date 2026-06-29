@@ -38,6 +38,8 @@ func main() {
 		err = cmdPack(os.Args[2:])
 	case "guide":
 		err = cmdGuide(os.Args[2:])
+	case "skill":
+		err = cmdSkill(os.Args[2:])
 	case "help", "-h", "--help":
 		usage()
 	default:
@@ -63,6 +65,7 @@ usage:
   machin encode <src>                mint canonical MFL from loose Go-like text
   machin pack  <file.mfl>            emit the dense base64 form (distribution)
   machin guide                       full feature catalog as JSON (--text for prose)
+  machin skill install               register the agent skills where coding agents look
 
 Agents: run "machin guide" for the complete, version-exact feature surface —
 keywords, every builtin with signature, idioms, and gotchas — in one call.

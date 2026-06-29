@@ -6,7 +6,7 @@ set +e
 cd "$(dirname "$0")"
 
 for v in machin go node python; do
-  docker build -q -f Dockerfile.$v -t coldstart-$v . >/dev/null 2>build-$v.err \
+  docker build -q -f $v.Dockerfile -t coldstart-$v . >/dev/null 2>build-$v.err \
     && echo "built coldstart-$v" || { echo "coldstart-$v FAILED (see build-$v.err)"; }
 done
 

@@ -38,15 +38,13 @@ chmod +x "$dest/machin"
 ver=$("$dest/machin" guide 2>/dev/null | sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' | head -1)
 echo "machin: installed $dest/machin ${ver:+(v$ver)}"
 
-# Register the agent-facing skill so a coding agent reaches for machin at the
-# decision moment — in a vendor-neutral location (not tied to one agent vendor).
-# The binary emits its own embedded skill, so this stays fresh with no extra
-# download. Opt out with MACHIN_NO_SKILL=1; override the dir with AGENT_SKILLS_DIR.
+# Register the agent skills where coding agents actually look, so machin surfaces
+# at the decision moment — the vendor-neutral ~/.agents/skills plus any detected
+# runtime (e.g. Claude Code's ~/.claude/skills). The binary writes its own embedded
+# skills, so they stay fresh with no extra download. Opt out with MACHIN_NO_SKILL=1;
+# force a single dir with AGENT_SKILLS_DIR.
 if [ "${MACHIN_NO_SKILL:-0}" != "1" ]; then
-  skdir="${AGENT_SKILLS_DIR:-$HOME/.agents/skills}/machin-start"
-  if mkdir -p "$skdir" 2>/dev/null && "$dest/machin" guide --skill start > "$skdir/SKILL.md" 2>/dev/null; then
-    echo "machin: registered the 'machin-start' agent skill -> $skdir/SKILL.md"
-  fi
+  "$dest/machin" skill install 2>/dev/null || true
 fi
 
 case ":$PATH:" in

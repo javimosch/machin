@@ -5,11 +5,19 @@
 - **New embedded skill `machin-start`** (`machin guide --skill start`) — the
   agent-facing entry point that comes *before* the domain how-tos: when to reach
   for machin (and when not), with the measured `bench/` numbers as decision
-  criteria, plus a zero→running→shipped quickstart. `install.sh` now also registers
-  it into a vendor-neutral `~/.agents/skills/machin-start/SKILL.md` (the binary
-  emits its own embedded skill; opt out with `MACHIN_NO_SKILL=1`, relocate with
-  `AGENT_SKILLS_DIR`), so a coding agent surfaces machin at the decision moment.
-  Listed first in the `machin guide` domain registry.
+  criteria, plus a zero→running→shipped quickstart. Listed first in the
+  `machin guide` domain registry.
+- **New `machin skill install` command** — closes the skill-discovery loop: writes
+  the embedded SKILL.md files where coding agents actually look. By default the
+  vendor-neutral `~/.agents/skills/` **plus any detected runtime** (Claude Code's
+  `~/.claude/skills/`, the same SKILL.md format), so machin surfaces at the decision
+  moment in a real session — not only inside this repo. Works regardless of how
+  machin was installed (curl|sh *or* source build), unlike the old install-time-only
+  path. `machin skill list` / `machin skill show <name>` / `--dir <path>` for a
+  project. `install.sh` now calls it (opt out `MACHIN_NO_SKILL=1`).
+- **Fix: rename the `bench/cold-start` Dockerfiles off the `.go` extension**
+  (`Dockerfile.go` → `go.Dockerfile`, etc.) so `go vet ./...` / `go test ./...` no
+  longer try to parse a Dockerfile as Go.
 
 Driven by **machin-wiki** (local) — the first wasm client that *initiates* server calls
 through returning `extern "env"` imports (`data := http_get(url)`, used inline), with
