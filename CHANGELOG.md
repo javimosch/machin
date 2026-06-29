@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.83.0
 
 - **New builtin `exec(cmd) -> (exit_code, stdout, stderr)`** — run a shell command and
   capture its output (unlike `system`, which returns only the exit code). Runs via
@@ -18,6 +18,12 @@
   `machin skill install` was run. Bundled skills are kept identical to the canonical
   `skills/` (the embedded source of truth) by `tools/sync-plugin-skills.sh`, guarded by
   a test; manifest validated with `claude plugin validate`.
+
+- **wasm: unbuffer stdout/stderr.** A `wasm32-wasi` reactor module has no `exit()` to
+  flush stdio, so output from an exported function was lost on return (only the first of
+  several `println`s came through). A constructor now sets stdout/stderr unbuffered for
+  the wasm target at `_initialize`; native keeps normal buffering. Surfaced building the
+  browser playground.
 
 ## v0.82.0
 
