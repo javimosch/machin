@@ -2516,6 +2516,13 @@ func (g *cgen) program(p *Program) (string, error) {
 		out.WriteString(ctor.String())
 		out.WriteString("}\n")
 	}
+	// wasm reactor has no exit() to flush stdio, so buffered output is lost when an
+	// exported function returns. Make stdout/stderr unbuffered at _initialize so every
+	// println is written through immediately (e.g. for the browser playground). Native
+	// keeps normal buffering — exit() flushes it.
+	if g.wasm() {
+		out.WriteString("__attribute__((constructor)) static void mfl_wasm_stdio_init(void) { setvbuf(stdout, NULL, _IONBF, 0); setvbuf(stderr, NULL, _IONBF, 0); }\n")
+	}
 	// Native entry point. The wasm target is a reactor module (no `int main`): the
 	// host drives it through the exported functions, so emit the C main only for
 	// native, and only when the program actually defines an MFL main.
