@@ -941,6 +941,30 @@ static int64_t mfl_system(const char* cmd) {
     if (r == -1) return -1;
     return (int64_t)WEXITSTATUS(r);
 }
+/* run a shell command and capture its output: returns (exit_code, stdout, stderr).
+   The command runs via /bin/sh in a subshell with stdout/stderr redirected to temp
+   files (so there is no pipe-buffer deadlock), then both are read back. Captured
+   text is NUL-terminated — a command producing binary output should redirect it to
+   a file itself (e.g. mongodump --archive piped to gzip > out.gz). */
+typedef struct { int64_t code; char* out; char* err; } mfl_exec_result;
+static mfl_exec_result mfl_exec(const char* cmd) {
+    mfl_exec_result R; R.code = -1; R.out = mfl_dup(""); R.err = mfl_dup("");
+    char op[] = "/tmp/mfl-exec-XXXXXX", ep[] = "/tmp/mfl-exec-XXXXXX";
+    int fo = mkstemp(op); if (fo < 0) return R; close(fo);
+    int fe = mkstemp(ep); if (fe < 0) { unlink(op); return R; } close(fe);
+    size_t n = strlen(cmd) + strlen(op) + strlen(ep) + 16;
+    char* full = (char*)malloc(n);
+    if (full) {
+        snprintf(full, n, "( %s ) >%s 2>%s", cmd, op, ep);
+        int r = system(full);
+        R.code = (r == -1) ? -1 : (int64_t)WEXITSTATUS(r);
+        R.out = mfl_read_file(op);
+        R.err = mfl_read_file(ep);
+        free(full);
+    }
+    unlink(op); unlink(ep);
+    return R;
+}
 #endif
 
 /* copy n bytes into a fresh NUL-terminated arena string */
@@ -2799,6 +2823,8 @@ func multiRetBuiltinC(name string) (cfn, ctype string, fields []string, needsTLS
 		return "mfl_http_request", "mfl_http_result", []string{"status", "body", "err"}, true, true
 	case "json_get":
 		return "mfl_json_get", "mfl_json_result", []string{"value", "err"}, false, true
+	case "exec":
+		return "mfl_exec", "mfl_exec_result", []string{"code", "out", "err"}, false, true
 	}
 	return "", "", nil, false, false
 }
