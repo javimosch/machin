@@ -60,6 +60,7 @@ usage:
   machin run   <file.mfl>            compile to native + execute
   machin build <file.mfl> [-o out]   compile to a native binary
   machin build <file.mfl> --target wasm  compile to a WebAssembly module (needs zig; mark exports with export func)
+  machin build <file.mfl> --static   fully static binary (bundles SQLite; pair with CC=musl-gcc for FROM scratch)
   machin build <file.mfl> --emit-c   print the generated C and stop
   machin build|run <file.mfl> --safe  insert bounds / div-zero / overflow checks
   machin encode <src>                mint canonical MFL from loose Go-like text
@@ -159,7 +160,7 @@ func cmdRun(args []string) error {
 
 func cmdBuild(args []string) error {
 	var src, out, target string
-	emitC, safe := false, false
+	emitC, safe, static := false, false, false
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "-o":
@@ -178,6 +179,8 @@ func cmdBuild(args []string) error {
 			emitC = true
 		case "--safe":
 			safe = true
+		case "--static":
+			static = true
 		default:
 			src = args[i]
 		}
@@ -189,6 +192,9 @@ func cmdBuild(args []string) error {
 	case "", "native":
 		target = "native"
 	case "wasm":
+		if static {
+			return fmt.Errorf("build: --static applies to the native target, not wasm")
+		}
 	default:
 		return fmt.Errorf("build: unknown --target %q (want native or wasm)", target)
 	}
@@ -217,7 +223,7 @@ func cmdBuild(args []string) error {
 	if out == "" {
 		out = strings.TrimSuffix(filepath.Base(src), filepath.Ext(src))
 	}
-	if err := BuildBinary(prog, out, safe); err != nil {
+	if err := BuildBinaryStatic(prog, out, safe, static); err != nil {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "built %s\n", out)

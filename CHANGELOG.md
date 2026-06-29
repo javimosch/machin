@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **New `machin build --static` — a fully static binary that bundles SQLite.** The
+  SQLite [amalgamation](vendor/sqlite/) (public domain, v3.53.3) is embedded in the
+  compiler (gzipped, `//go:embed`) and compiled directly into a program in `--static`
+  mode, so a **SQLite-using app links no `libsqlite3`** and, paired with `CC=musl-gcc`,
+  produces a **libc-free ~1 MB binary that runs `FROM scratch`** (verified: a
+  `bench/rest-sqlite` build → a 1.23 MB scratch image serving SQLite-backed traffic).
+  This unblocks the most common backend shape (REST+SQLite) for zero-dependency
+  deploys — the gap the flagship + the adoption-loop validation both surfaced. TLS/
+  crypto (OpenSSL) is not bundled (`--static` warns and the link needs static OpenSSL);
+  native TLS that removes the OpenSSL dependency is tracked in issue #260. The
+  `machin-start` / `machin-deploy` skills now document the turnkey path.
 - **New embedded skill `machin-start`** (`machin guide --skill start`) — the
   agent-facing entry point that comes *before* the domain how-tos: when to reach
   for machin (and when not), with the measured `bench/` numbers as decision
