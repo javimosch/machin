@@ -111,7 +111,17 @@ instantiation counter (so the MFL port need not reproduce `$N` names). Validated
 monomorphic, multi-function, and mixed-int/float (two-instance) programs.
 
 **Sub-plan for the MFL checker** (`selfhost/check.src`), each slice oracle-verified:
-1. engine: slot arrays + `find`/`union`/`reconcile` + constant slots.
+1. ✅ **engine: slot arrays + `find`/`union`/`reconcile`.** DONE. `selfhost/check.src`
+   ports the parallel-array `Checker` (parent/kind/elem/sname/mkey/mval/fsig + a `Sig`
+   table), `find` (path-halving), `reconcile`, and `union` with all recursive
+   sub-unions (slice/chan elem, map key/val, func params+ret) and the struct-name /
+   func-arity mismatch checks. Oracle `machin uftest <script>` drives the *real* Go
+   engine with a scripted op sequence (`var|int|slice E|map K V|func P0,P1|R|union A B|
+   dump`) and dumps the canonical slot table; the MFL engine runs the identical script.
+   **Verified byte-identical: 6 edge cases + 520 randomized fuzz scripts (to 300 slots /
+   500 unions).** `selfhost/verify-check.sh`, `selfhost/gen-uf.py`. MFL global-state
+   note: package globals need initializers (`var g = []int{}`), then `append` +
+   index-assignment mutate them in place — the natural fit for the array-based engine.
 2. `genExpr`/`genStmt` for the non-call grammar + `solve` + `finalizeMono` →
    verify on **main-only** programs (one instance, no generics).
 3. user-function calls + `instantiate` (monomorphization) → multi-function programs.
