@@ -49,22 +49,33 @@ mutation question.
 Oracle: `machin parsetest --expr <e>` dumps the AST as canonical, fully-parenthesized
 S-expressions (string values hex-encoded); the MFL parser emits the identical form.
 
-**Done: the expression grammar** (`parseExpr`..`parsePrimary` + precedence climbing,
-calls, spread, index, field chains, call-value, slice/struct literals, make,
-unary/recv, all literals). **Verified across 38 expression forms, 0 mismatches**
-(`selfhost/verify-parse.sh`). No new builtin needed.
+**Done: expressions + statements + function declarations.** The full expression
+grammar (`parseExpr`..`parsePrimary`, precedence climbing, calls/spread/index/field
+chains/call-value/slice+struct literals/make/unary/recv), every statement
+(`parseStmt`/`parseBlock`/if-else/while/for/range/select/multi-assign/send/go/arena/
+var/break/continue/index+field assign), funclit bodies, and `parseFuncDecl`
+(params/variadic/named-returns/export). Oracle modes: `--expr`, `--func`, `--funcs
+<file.mfl>` (every function in a program, with a two-pass known-struct scan over
+`type`+`cstruct` names).
 
-Known gap (deferred): float literals are dumped from the lexeme normalized to Go's
-shortest form (`2.0`→`2`); the very-large-magnitude case where Go's `%v` switches to
-`1e+NN` isn't matched (absent from real source). Clean fix later: dump IEEE-754 bits
-(would want a `float_bits` builtin — a real addition the bootstrap drives).
+**Verified at scale: 39 complete programs (the self-host compiler, raylib 3D demos,
+games, tools), 721 functions, 0 mismatches, 0 parse-errors** — every function's AST
+is byte-identical to the Go parser's. Includes the parser parsing its own source.
+`selfhost/verify-parse.sh` (repo-only) covers a 25-expr battery + self-application.
+No new builtin needed.
 
-**Still to port for Stage 2:** statements (`parseStmt`/`parseBlock`/if/while/for/
-range/select/multi-assign), declarations (`parseFuncDecl`/`parseTypeDecl`/
-`parseExternDecl`/`ParseGlobal`), the two-pass program driver (types first to seed
-known-struct names), and whole-`.mfl`-program AST parity over the corpus. FuncLit
-bodies and `T{...}` struct literals light up once statements + the known-struct set
-land (currently stubbed: `(funclit)`, `is_known_struct → false`).
+Robustness: the MFL parser tracks `g_err` and every consuming loop has a
+no-progress backstop, so malformed input reports an error (matching the oracle's
+`(parse-error)`) instead of hanging — a property a real compiler needs.
+
+Float literals: the oracle dumps `FormatFloat(v,'f',-1,64)` (shortest decimal, no
+exponent) and the MFL side strips trailing zeros from the lexeme — they match
+exactly on all real source (sidesteps `%v`'s `1e-05`/`1e+21`).
+
+**Still to port for Stage 2:** the other top-level decls — `parseTypeDecl`,
+`parseExternDecl`, `ParseGlobal` — and the whole-program driver (`ParseProgram`:
+classify decls, types/cstructs first to seed struct names, then funcs) for full
+`.mfl`-program AST parity. The function parser (the bulk) is done.
 
 ### Stages 3–5 — typecheck, codegen, driver
 Same oracle-diff discipline. Codegen verifies two ways: diff the emitted C against

@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -31,7 +32,129 @@ func cmdParseTest(args []string) error {
 		fmt.Println(sexprExpr(e))
 		return nil
 	}
-	return fmt.Errorf("usage: machin parsetest --expr <expression>")
+	if len(args) >= 2 && args[0] == "--func" {
+		fn, err := ParseFunc(args[1])
+		if err != nil {
+			return err
+		}
+		fmt.Println(sexprFunc(fn))
+		return nil
+	}
+	if len(args) >= 2 && args[0] == "--funcs" {
+		data, err := os.ReadFile(args[1])
+		if err != nil {
+			return err
+		}
+		lines := strings.Split(string(data), "\n")
+		structs := map[string]bool{}
+		for _, ln := range lines { // pass 1: collect struct names (type decls + cstruct/FFI handles)
+			toks, e := Lex(ln)
+			if e != nil {
+				continue
+			}
+			for i := 0; i+1 < len(toks); i++ {
+				if (toks[i].Val == "type" || toks[i].Val == "cstruct") && toks[i+1].Kind == TIdent {
+					structs[toks[i+1].Val] = true
+				}
+			}
+		}
+		var out strings.Builder
+		for _, ln := range lines { // pass 2: parse + dump every function
+			if strings.HasPrefix(ln, "func ") || strings.HasPrefix(ln, "export func ") {
+				fn, err := ParseFuncWith(ln, structs)
+				if err != nil {
+					out.WriteString("(parse-error)\n")
+					continue
+				}
+				out.WriteString(sexprFunc(fn) + "\n")
+			}
+		}
+		fmt.Print(out.String())
+		return nil
+	}
+	return fmt.Errorf("usage: machin parsetest --expr <e> | --func <src> | --funcs <file.mfl>")
+}
+
+func sexprStmts(ss []Stmt) string {
+	var b strings.Builder
+	for _, s := range ss {
+		b.WriteByte(' ')
+		b.WriteString(sexprStmt(s))
+	}
+	return b.String()
+}
+
+func sexprStmt(s Stmt) string {
+	switch v := s.(type) {
+	case *ExprStmt:
+		return "(expr " + sexprExpr(v.X) + ")"
+	case *AssignStmt:
+		return "(assign " + v.Op + " " + v.Name + " " + sexprExpr(v.Val) + ")"
+	case *MultiAssign:
+		names := "(names"
+		for _, n := range v.Names {
+			names += " " + n
+		}
+		names += ")"
+		return "(multi " + v.Op + " " + names + sexprExprs(v.Rhs) + ")"
+	case *ReturnStmt:
+		return "(return" + sexprExprs(v.Vals) + ")"
+	case *BreakStmt:
+		return "(break)"
+	case *ContinueStmt:
+		return "(continue)"
+	case *IfStmt:
+		return "(if " + sexprExpr(v.Cond) + " (then" + sexprStmts(v.Then) + ") (else" + sexprStmts(v.Else) + "))"
+	case *WhileStmt:
+		return "(while " + sexprExpr(v.Cond) + " (body" + sexprStmts(v.Body) + "))"
+	case *RangeStmt:
+		return "(range " + v.Key + " " + v.Val + " " + sexprExpr(v.X) + " (body" + sexprStmts(v.Body) + "))"
+	case *IndexAssign:
+		return "(idxassign " + sexprExpr(v.Target) + " " + sexprExpr(v.Val) + ")"
+	case *FieldAssign:
+		return "(fldassign " + sexprExpr(v.Target) + " " + sexprExpr(v.Val) + ")"
+	case *SendStmt:
+		return "(send " + sexprExpr(v.Ch) + " " + sexprExpr(v.Val) + ")"
+	case *GoStmt:
+		return "(go " + sexprExpr(v.Call) + ")"
+	case *ArenaStmt:
+		return "(arena (body" + sexprStmts(v.Body) + "))"
+	case *SelectStmt:
+		s := "(select"
+		for _, c := range v.Cases {
+			if c.RecvCh != nil {
+				s += " (case recv " + c.Name + " " + c.OkName + " " + sexprExpr(c.RecvCh) + " (body" + sexprStmts(c.Body) + "))"
+			} else {
+				s += " (case send " + sexprExpr(c.SendCh) + " " + sexprExpr(c.SendVal) + " (body" + sexprStmts(c.Body) + "))"
+			}
+		}
+		if v.HasDefault {
+			s += " (default (body" + sexprStmts(v.Default) + "))"
+		}
+		return s + ")"
+	}
+	fmt.Fprintf(os.Stderr, "sexpr: unhandled stmt %T\n", s)
+	return "(?s)"
+}
+
+func sexprFunc(fn *FuncDecl) string {
+	s := "(func " + fn.Name
+	if fn.Exported {
+		s += " export"
+	}
+	s += " (params"
+	for i, p := range fn.Params {
+		s += " " + p
+		if fn.Variadic && i == len(fn.Params)-1 {
+			s += "..."
+		}
+	}
+	s += ") (returns"
+	for _, r := range fn.Returns {
+		s += " " + r
+	}
+	s += ") (body" + sexprStmts(fn.Body) + "))"
+	return s
 }
 
 func sexprExprs(es []Expr) string {
@@ -48,7 +171,9 @@ func sexprExpr(e Expr) string {
 	case *IntLit:
 		return fmt.Sprintf("(int %d)", v.Val)
 	case *FloatLit:
-		return fmt.Sprintf("(float %v)", v.Val)
+		// shortest decimal WITHOUT exponent, so the MFL side (lexeme with trailing
+		// zeros stripped) matches exactly — avoids %v's 1e-05 / 1e+21 forms.
+		return "(float " + strconv.FormatFloat(v.Val, 'f', -1, 64) + ")"
 	case *StringLit:
 		return fmt.Sprintf("(str %x)", v.Val)
 	case *BoolLit:
@@ -92,7 +217,12 @@ func sexprExpr(e Expr) string {
 	case *Recv:
 		return "(recv " + sexprExpr(v.Ch) + ")"
 	case *FuncLit:
-		return "(funclit)" // body dumped once the statement stage lands
+		params := "(params"
+		for _, p := range v.Params {
+			params += " " + p
+		}
+		params += ")"
+		return "(funclit " + params + " (body" + sexprStmts(v.Body) + "))"
 	}
 	fmt.Fprintf(os.Stderr, "sexpr: unhandled %T\n", e)
 	return "(?)"

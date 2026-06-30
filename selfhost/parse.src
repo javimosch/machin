@@ -28,22 +28,43 @@ var K_MAKECHAN = 15
 var K_MAKEMAP = 16
 var K_RECV = 17
 var K_FUNCLIT = 18
+// statements
+var K_EXPRSTMT = 19
+var K_ASSIGN = 20
+var K_MULTI = 21
+var K_RETURN = 22
+var K_BREAK = 23
+var K_CONTINUE = 24
+var K_IF = 25
+var K_WHILE = 26
+var K_RANGE = 27
+var K_IDXASSIGN = 28
+var K_FLDASSIGN = 29
+var K_SEND = 30
+var K_GO = 31
+var K_ARENA = 32
+var K_SELECT = 33
+var K_SELCASE = 34
+var K_FUNC = 35
 
 type Node struct {
     kind int
-    s string        // op / name / callee / type / elem / field / makemap key / string value / float text
-    s2 string       // makemap value type
-    ival int        // int literal value / bool (0|1) / spread (0|1)
-    a int           // child index (X / L / Fn / Ch)
-    b int           // child index (R / Idx)
-    kids []int      // args / elems / struct vals
-    names []string  // struct field names
+    s string        // op / name / callee / type / elem / field / makemap key / string val / assign-target name / range key / selcase name
+    s2 string       // makemap value type / assign+multi op / range val / selcase okName
+    ival int        // int literal / bool (0|1) / call spread (0|1) / funcdecl exported / select hasDefault / selcase isSend
+    a int           // child index (X / L / Fn / Ch / cond / target / send-or-recv ch)
+    b int           // child index (R / Idx / val / send val / funcdecl variadic flag)
+    kids []int      // args / elems / struct vals / stmt body / return+multi exprs / if-then / select cases
+    kids2 []int     // if-else / select default body
+    names []string  // struct field names / func+funclit params / multiassign names
+    names2 []string // funcdecl named returns
 }
 
 // ---- AST + parser state (globals) ----
 var nodes = []Node{}
 var T = []Token{}
 var tp = 0
+var g_err = 0   // set on any parse error; loops bail on it (no hang), matching the Go oracle
 
 func emit(n) (idx) {
     idx = len(nodes)
@@ -174,6 +195,7 @@ func parse_primary() (idx) {
         if t.val == "nil" { adv()  idx = emit(Node{kind: K_NIL})  return idx }
         if t.val == "make" { idx = parse_make()  return idx }
         if t.val == "func" { idx = parse_func_lit()  return idx }
+        g_err = 1
         idx = -1  return idx
     }
     if t.kind == 1 {
@@ -187,6 +209,7 @@ func parse_primary() (idx) {
         if t.val == "(" { adv()  idx = parse_expr()  eat(")")  return idx }
         if t.val == "[" { idx = parse_slice_lit()  return idx }
     }
+    g_err = 1
     idx = -1
 }
 
@@ -279,8 +302,261 @@ func parse_make() (idx) {
 // handled in later stages). Returns the type's leading name token.
 func parse_type_name() (s) { s = adv().val }
 
-// func literals are parsed once the statement stage lands; consume nothing here.
-func parse_func_lit() (idx) { idx = emit(Node{kind: K_FUNCLIT}) }
+func parse_func_lit() (idx) {
+    adv()   // func
+    eat("(")
+    params := []string{}
+    while pk().val != ")" {
+        params = append(params, adv().val)
+        if pk().val == "," { adv() } else { break }
+    }
+    eat(")")
+    body := parse_block()
+    idx = emit(Node{kind: K_FUNCLIT, names: params, kids: body})
+}
+
+// ---- statements ----
+func parse_block() (stmts) {
+    eat("{")
+    stmts = []int{}
+    while pk().val != "}" {
+        if pk().kind == 0 { break }
+        if g_err == 1 { break }
+        before := tp
+        s := parse_stmt()
+        stmts = append(stmts, s)
+        if tp == before { g_err = 1  break }   // no progress => malformed; bail (never hang)
+        while pk().val == ";" { adv() }
+    }
+    eat("}")
+}
+
+func parse_expr_list() (list) {
+    list = []int{}
+    while true {
+        if g_err == 1 { break }
+        e := parse_expr()
+        list = append(list, e)
+        if at(",") == false { break }
+        adv()
+    }
+}
+
+func parse_stmt() (idx) {
+    t := pk()
+    if t.kind == 7 {
+        if t.val == "return" {
+            adv()
+            if pk().val == "}" || pk().val == ";" { idx = emit(Node{kind: K_RETURN})  return idx }
+            vals := parse_expr_list()
+            idx = emit(Node{kind: K_RETURN, kids: vals})
+            return idx
+        }
+        if t.val == "break" { adv()  idx = emit(Node{kind: K_BREAK})  return idx }
+        if t.val == "continue" { adv()  idx = emit(Node{kind: K_CONTINUE})  return idx }
+        if t.val == "if" { idx = parse_if()  return idx }
+        if t.val == "while" { idx = parse_while()  return idx }
+        if t.val == "for" { idx = parse_for()  return idx }
+        if t.val == "arena" { adv()  body := parse_block()  idx = emit(Node{kind: K_ARENA, kids: body})  return idx }
+        if t.val == "go" { adv()  call := parse_postfix()  idx = emit(Node{kind: K_GO, a: call})  return idx }
+        if t.val == "select" { idx = parse_select()  return idx }
+        if t.val == "var" {
+            adv()
+            nm := adv().val
+            eat("=")
+            val := parse_expr()
+            idx = emit(Node{kind: K_ASSIGN, s: nm, s2: ":=", a: val})
+            return idx
+        }
+    }
+    if t.kind == 1 {
+        if T[tp + 1].val == "," { idx = parse_multi_assign()  return idx }
+        if T[tp + 1].val == ":=" {
+            name := adv().val
+            adv()
+            val := parse_expr()
+            idx = emit(Node{kind: K_ASSIGN, s: name, s2: ":=", a: val})
+            return idx
+        }
+    }
+    x := parse_expr()
+    if pk().val == "<-" {
+        adv()
+        val := parse_expr()
+        idx = emit(Node{kind: K_SEND, a: x, b: val})
+        return idx
+    }
+    if pk().val == "=" {
+        adv()
+        val := parse_expr()
+        xk := nodes[x].kind
+        if xk == K_ID { idx = emit(Node{kind: K_ASSIGN, s: nodes[x].s, s2: "=", a: val})  return idx }
+        if xk == K_INDEX { idx = emit(Node{kind: K_IDXASSIGN, a: x, b: val})  return idx }
+        if xk == K_FIELD { idx = emit(Node{kind: K_FLDASSIGN, a: x, b: val})  return idx }
+        g_err = 1
+        idx = -1
+        return idx
+    }
+    idx = emit(Node{kind: K_EXPRSTMT, a: x})
+}
+
+func parse_if() (idx) {
+    adv()   // if
+    cond := parse_expr()
+    then := parse_block()
+    els := []int{}
+    if pk().val == "else" {
+        adv()
+        if pk().val == "if" {
+            s := parse_if()
+            els = append(els, s)
+        } else {
+            els = parse_block()
+        }
+    }
+    idx = emit(Node{kind: K_IF, a: cond, kids: then, kids2: els})
+}
+
+func parse_while() (idx) {
+    adv()
+    cond := parse_expr()
+    body := parse_block()
+    idx = emit(Node{kind: K_WHILE, a: cond, kids: body})
+}
+
+func parse_for() (idx) {
+    adv()   // for
+    if pk().val == "{" {
+        body := parse_block()
+        c := emit(Node{kind: K_BOOL, ival: 1})
+        idx = emit(Node{kind: K_WHILE, a: c, kids: body})
+        return idx
+    }
+    if pk().kind == 1 {
+        if T[tp + 1].val == ":=" || T[tp + 1].val == "," { idx = parse_range()  return idx }
+    }
+    cond := parse_expr()
+    body := parse_block()
+    idx = emit(Node{kind: K_WHILE, a: cond, kids: body})
+}
+
+func parse_range() (idx) {
+    key := adv().val
+    val := ""
+    if pk().val == "," { adv()  val = adv().val }
+    eat(":=")
+    adv()   // range keyword
+    x := parse_expr()
+    body := parse_block()
+    idx = emit(Node{kind: K_RANGE, s: key, s2: val, a: x, kids: body})
+}
+
+func parse_multi_assign() (idx) {
+    names := []string{}
+    while true {
+        names = append(names, adv().val)
+        if pk().val != "," { break }
+        adv()
+    }
+    op := pk().val
+    adv()
+    rhs := parse_expr_list()
+    idx = emit(Node{kind: K_MULTI, names: names, s2: op, kids: rhs})
+}
+
+func parse_select_body() (stmts) {
+    stmts = []int{}
+    while true {
+        v := pk().val
+        if v == "case" || v == "default" || v == "}" { break }
+        if pk().kind == 0 { break }
+        if g_err == 1 { break }
+        before := tp
+        s := parse_stmt()
+        stmts = append(stmts, s)
+        if tp == before { g_err = 1  break }
+        while pk().val == ";" { adv() }
+    }
+}
+
+func parse_select() (idx) {
+    adv()   // select
+    eat("{")
+    cases := []int{}
+    deflt := []int{}
+    hasdef := 0
+    while pk().val != "}" {
+        if pk().kind == 0 { break }
+        if g_err == 1 { break }
+        sbefore := tp
+        if pk().val == "default" {
+            adv()
+            eat(":")
+            deflt = parse_select_body()
+            hasdef = 1
+            continue
+        }
+        adv()   // case
+        is_send := 0
+        ca := -1
+        cb := -1
+        cname := ""
+        cok := ""
+        if pk().val == "<-" {
+            adv()
+            ca = parse_expr()
+            cname = "_"
+        } else {
+            if pk().kind == 1 && (T[tp + 1].val == ":=" || T[tp + 1].val == ",") {
+                cname = adv().val
+                if pk().val == "," { adv()  cok = adv().val }
+                eat(":=")
+                eat("<-")
+                ca = parse_expr()
+            } else {
+                ca = parse_expr()
+                eat("<-")
+                cb = parse_expr()
+                is_send = 1
+            }
+        }
+        eat(":")
+        body := parse_select_body()
+        sc := emit(Node{kind: K_SELCASE, ival: is_send, a: ca, b: cb, s: cname, s2: cok, kids: body})
+        cases = append(cases, sc)
+        if tp == sbefore { g_err = 1  break }
+    }
+    eat("}")
+    idx = emit(Node{kind: K_SELECT, kids: cases, kids2: deflt, ival: hasdef})
+}
+
+// ---- declarations ----
+func parse_func_decl() (idx) {
+    exported := 0
+    if pk().val == "export" { adv()  exported = 1 }
+    adv()   // func keyword
+    name := adv().val
+    eat("(")
+    params := []string{}
+    variadic := 0
+    while pk().val != ")" {
+        params = append(params, adv().val)
+        if pk().val == "..." { adv()  variadic = 1  break }
+        if pk().val == "," { adv() } else { break }
+    }
+    eat(")")
+    returns := []string{}
+    if pk().val == "(" {
+        adv()
+        while pk().val != ")" {
+            returns = append(returns, adv().val)
+            if pk().val == "," { adv() } else { break }
+        }
+        eat(")")
+    }
+    body := parse_block()
+    idx = emit(Node{kind: K_FUNC, s: name, ival: exported, b: variadic, names: params, names2: returns, kids: body})
+}
 
 // ---- S-expression dumper (must match sexprExpr in parsetest.go byte-for-byte) ----
 func dump_kids(kids) (s) {
@@ -332,21 +608,132 @@ func dump_expr(idx) (s) {
     if n.kind == K_MAKECHAN { s = "(makechan " + n.s + ")"  return s }
     if n.kind == K_MAKEMAP { s = "(makemap " + n.s + " " + n.s2 + ")"  return s }
     if n.kind == K_RECV { s = "(recv " + dump_expr(n.a) + ")"  return s }
-    if n.kind == K_FUNCLIT { s = "(funclit)"  return s }
+    if n.kind == K_FUNCLIT {
+        params := "(params"
+        for _, p := range n.names { params = params + " " + p }
+        params = params + ")"
+        s = "(funclit " + params + " (body" + dump_stmts(n.kids) + "))"
+        return s
+    }
     s = "(?)"
 }
 
-// In --expr mode no struct names are known (matching the Go oracle's nil set), so
-// `T{...}` parses as an ident. The program stage will supply the real set.
-func is_known_struct(name) (b) { b = false }
+func dump_stmts(kids) (s) {
+    s = ""
+    for _, k := range kids { s = s + " " + dump_stmt(k) }
+}
+
+func dump_case(idx) (s) {
+    n := nodes[idx]
+    if n.ival == 1 {
+        s = "(case send " + dump_expr(n.a) + " " + dump_expr(n.b) + " (body" + dump_stmts(n.kids) + "))"
+        return s
+    }
+    s = "(case recv " + n.s + " " + n.s2 + " " + dump_expr(n.a) + " (body" + dump_stmts(n.kids) + "))"
+}
+
+func dump_stmt(idx) (s) {
+    n := nodes[idx]
+    if n.kind == K_EXPRSTMT { s = "(expr " + dump_expr(n.a) + ")"  return s }
+    if n.kind == K_ASSIGN { s = "(assign " + n.s2 + " " + n.s + " " + dump_expr(n.a) + ")"  return s }
+    if n.kind == K_MULTI {
+        names := "(names"
+        for _, nm := range n.names { names = names + " " + nm }
+        names = names + ")"
+        s = "(multi " + n.s2 + " " + names + dump_kids(n.kids) + ")"
+        return s
+    }
+    if n.kind == K_RETURN { s = "(return" + dump_kids(n.kids) + ")"  return s }
+    if n.kind == K_BREAK { s = "(break)"  return s }
+    if n.kind == K_CONTINUE { s = "(continue)"  return s }
+    if n.kind == K_IF { s = "(if " + dump_expr(n.a) + " (then" + dump_stmts(n.kids) + ") (else" + dump_stmts(n.kids2) + "))"  return s }
+    if n.kind == K_WHILE { s = "(while " + dump_expr(n.a) + " (body" + dump_stmts(n.kids) + "))"  return s }
+    if n.kind == K_RANGE { s = "(range " + n.s + " " + n.s2 + " " + dump_expr(n.a) + " (body" + dump_stmts(n.kids) + "))"  return s }
+    if n.kind == K_IDXASSIGN { s = "(idxassign " + dump_expr(n.a) + " " + dump_expr(n.b) + ")"  return s }
+    if n.kind == K_FLDASSIGN { s = "(fldassign " + dump_expr(n.a) + " " + dump_expr(n.b) + ")"  return s }
+    if n.kind == K_SEND { s = "(send " + dump_expr(n.a) + " " + dump_expr(n.b) + ")"  return s }
+    if n.kind == K_GO { s = "(go " + dump_expr(n.a) + ")"  return s }
+    if n.kind == K_ARENA { s = "(arena (body" + dump_stmts(n.kids) + "))"  return s }
+    if n.kind == K_SELECT {
+        s = "(select"
+        for _, c := range n.kids { s = s + " " + dump_case(c) }
+        if n.ival == 1 { s = s + " (default (body" + dump_stmts(n.kids2) + "))" }
+        s = s + ")"
+        return s
+    }
+    s = "(?s)"
+}
+
+func dump_func(idx) (s) {
+    n := nodes[idx]
+    s = "(func " + n.s
+    if n.ival == 1 { s = s + " export" }
+    s = s + " (params"
+    np := len(n.names)
+    i := 0
+    while i < np {
+        s = s + " " + n.names[i]
+        if n.b == 1 { if i == np - 1 { s = s + "..." } }
+        i = i + 1
+    }
+    s = s + ") (returns"
+    for _, r := range n.names2 { s = s + " " + r }
+    s = s + ") (body" + dump_stmts(n.kids) + "))"
+}
+
+// known struct type names (seeded from `type` decls before parsing functions, so
+// `T{...}` is recognized). A linear scan keeps it to a plain []string global.
+var g_structs = []string{}
+func is_known_struct(name) (b) {
+    b = false
+    for _, s := range g_structs { if s == name { b = true  return b } }
+}
+
+func reset(line) {
+    T = lex(line, bytes(line))
+    tp = 0
+    nodes = []Node{}
+    g_err = 0
+}
 
 func main() {
     a := args()
-    if len(a) < 3 { write(2, "usage: parse --expr <expr>\n")  exit(2) }
-    src := a[2]
-    T = lex(src, bytes(src))
-    tp = 0
-    nodes = []Node{}
+    if len(a) < 3 { write(2, "usage: parse (--expr <e> | --func <src> | --funcs <file.mfl>)\n")  exit(2) }
+    mode := a[1]
+
+    if mode == "--funcs" {
+        data := read_file(a[2])
+        lines := split(data, "\n")
+        // pass 1: collect struct names (type decls + cstruct/FFI handles)
+        for _, ln := range lines {
+            reset(ln)
+            i := 0
+            while i + 1 < len(T) {
+                if T[i].val == "type" || T[i].val == "cstruct" {
+                    if T[i + 1].kind == 1 { g_structs = append(g_structs, T[i + 1].val) }
+                }
+                i = i + 1
+            }
+        }
+        // pass 2: parse + dump every function
+        out := ""
+        for _, ln := range lines {
+            if has_prefix(ln, "func ") || has_prefix(ln, "export func ") {
+                reset(ln)
+                idx := parse_func_decl()
+                if g_err == 1 || pk().kind != 0 { out = out + "(parse-error)\n" } else { out = out + dump_func(idx) + "\n" }
+            }
+        }
+        write(1, out)
+        return
+    }
+
+    reset(a[2])
+    if mode == "--func" {
+        idx := parse_func_decl()
+        println(dump_func(idx))
+        return
+    }
     idx := parse_expr()
     println(dump_expr(idx))
 }
