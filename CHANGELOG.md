@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **`substr` is now O(1) per call on a repeated source (was O(string length)).**
+  `mfl_substr` needed `strlen(s)` only to clamp the end offset; it now memoizes the
+  length by pointer identity, so slicing one buffer in a loop (lexers, parsers,
+  scanners, JSON/CSV readers) no longer rescans the whole string each time. Clamping
+  behavior is unchanged (semantics-identical cache; the arena free path invalidates it
+  so a reused address can't return a stale length). Measured: the self-host lexer over
+  the corpus dropped 8.3× (5283 → 636 ms), from 19× off hand-written Go to ~1.4×.
+  Surfaced by the bootstrap (`selfhost/PERF.md`, `selfhost/bench.sh`).
+
 ## v0.83.0
 
 - **New builtin `exec(cmd) -> (exit_code, stdout, stderr)`** — run a shell command and

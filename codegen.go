@@ -155,10 +155,26 @@ static void* mfl_realloc(void* old, size_t sz) {
     if (old) { size_t o = ((mfl_blk*)old - 1)->size; memcpy(p, old, o < sz ? o : sz); }
     return p; /* old reclaimed with its arena */
 }
+/* substr strlen-cache: mfl_substr only needs strlen(s) to clamp the end offset.
+   In hot loops (the lexer, parsers, scanners) the same source pointer is sliced
+   thousands of times, so caching its length by pointer identity turns a per-call
+   O(strlen) scan into O(1) while preserving exact clamping semantics. Two distinct
+   *live* strings never share an address (the arena frees nothing mid-life), so
+   pointer identity ⇒ same length — but a freed block's address can be reused by a
+   later malloc, so mfl_arena_free invalidates the cache. */
+static _Thread_local const char* mfl_strlen_cache_s = NULL;
+static _Thread_local int64_t mfl_strlen_cache_n = 0;
+static inline int64_t mfl_strlen_cached(const char* s) {
+    if (s == mfl_strlen_cache_s) return mfl_strlen_cache_n;
+    int64_t n = (int64_t)strlen(s);
+    mfl_strlen_cache_s = s; mfl_strlen_cache_n = n;
+    return n;
+}
 static void mfl_arena_free(mfl_arena* a) {
     mfl_blk* b = a->head;
     while (b) { mfl_blk* n = b->next; free(b); b = n; }
     a->head = NULL;
+    mfl_strlen_cache_s = NULL; /* freed addresses may be reused — drop stale length */
 }
 
 /* --safe runtime checks (used only when the program is built with --safe) */
@@ -734,7 +750,7 @@ static int mfl_js_more(const char** p) { mfl_js_ws(p); if (**p==',') { (*p)++; r
 
 /* string operations */
 static char* mfl_substr(const char* s, int64_t i, int64_t j) {
-    int64_t n = strlen(s);
+    int64_t n = mfl_strlen_cached(s);
     if (i < 0) i = 0; if (j > n) j = n; if (i > j) i = j;
     int64_t len = j - i;
     char* r = mfl_alloc(len + 1); memcpy(r, s + i, len); r[len] = 0;
