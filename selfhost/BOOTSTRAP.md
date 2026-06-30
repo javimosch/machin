@@ -86,10 +86,39 @@ Not replicated (correctly): `ParseProgram`'s cstruct→TypeDecl synthesis and
 `liftClosures` are post-parse *transforms*, not parsing — they belong to later
 stages. The parser milestone compares each decl as-parsed, which is exact.
 
-### Stage 3 — typecheck / inference (next)
-Port `types.go` (~2700 LOC) — the big semantic stage: Hindley-style inference over
-the AST, the builtin signature table, struct/field typing, multi-return handling.
-Oracle: a `checktest` subcommand dumping each expression/var's inferred type.
+### Stage 3 — typecheck / inference (in progress)
+Port `types.go` (~2700 LOC) — the largest, most semantic stage. Architecture
+(learned while building the oracle):
+
+- **Union-find inference.** Every expr/var gets a *slot*; `union` merges slots and
+  `reconcile` merges `Kind`s (KVar/KNum/KInt/KFloat/KBool/KString/KVoid/KSlice/
+  KStruct/KChan/KMap/KFunc/KBytes). `KNum` is a flexible numeric literal that
+  finalizes to `int` unless unified with `float`.
+- **Constraint generation** (`genExpr`/`genStmt`): literals → kind slots, `+` → a
+  *deferred* plus-constraint (numeric vs string concat), `-*/`→ same-numeric,
+  `%&|^<<>>`→ int, comparisons→bool, index/field/range→deferred uses, resolved to a
+  fixpoint in `solve`/`resolveDeferred`, then `finalizeMono` (`KNum`→`int`).
+- **Monomorphization.** A function with params is a *generic template*; each call
+  `instantiate`s a fresh specialization (`name$N`), so `dbl` used at int and float
+  yields two instances. Locals/params/returns are keyed by **instance**, not source
+  name. Verified: the oracle dumps two `dbl` instances for a mixed-type program.
+- **The builtin table** (`genCall`, ~800 LOC) hard-codes every builtin's signature.
+
+**Done: the oracle.** `machin checktest --program <file.mfl>` runs the Go checker and
+dumps, per monomorphized instance, `(func NAME (param p KIND) (ret i KIND) (local l
+KIND) …)`, keyed by `source|signature` and sorted — deterministic, independent of the
+instantiation counter (so the MFL port need not reproduce `$N` names). Validated on
+monomorphic, multi-function, and mixed-int/float (two-instance) programs.
+
+**Sub-plan for the MFL checker** (`selfhost/check.src`), each slice oracle-verified:
+1. engine: slot arrays + `find`/`union`/`reconcile` + constant slots.
+2. `genExpr`/`genStmt` for the non-call grammar + `solve` + `finalizeMono` →
+   verify on **main-only** programs (one instance, no generics).
+3. user-function calls + `instantiate` (monomorphization) → multi-function programs.
+4. the builtin signature table (the long tail) → full corpus parity.
+
+### Stage 4 — C codegen, Stage 5 — driver, Stage 6 — fixpoint
+(unchanged; see top.)
 
 ### Stages 3–5 — typecheck, codegen, driver
 Same oracle-diff discipline. Codegen verifies two ways: diff the emitted C against
