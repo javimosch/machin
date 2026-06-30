@@ -42,6 +42,8 @@ func main() {
 		err = cmdSkill(os.Args[2:])
 	case "lextest":
 		err = cmdLexTest(os.Args[2:]) // self-hosting oracle (selfhost/): dump the Go token stream
+	case "parsetest":
+		err = cmdParseTest(os.Args[2:]) // self-hosting oracle (selfhost/): dump the Go AST as S-exprs
 	case "framework":
 		err = cmdFramework(os.Args[2:])
 	case "help", "-h", "--help":

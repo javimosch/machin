@@ -1,0 +1,15 @@
+// lexmain.src — the driver for the standalone lexer oracle binary (mfl-lex).
+// Composed with lex.src. Reads a file, lexes it, prints "<kind> <pos> <hex(val)>".
+func main() {
+    a := args()
+    if len(a) < 2 { write(2, "usage: lex <file>\n")  exit(2) }
+    path := a[1]
+    src := read_file(path)
+    b := read_file_bytes(path)
+    toks := lex(src, b)
+    out := ""
+    for _, t := range toks {
+        out = out + str(t.kind) + " " + str(t.pos) + " " + to_hex(bytes(t.val)) + "\n"
+    }
+    write(1, out)
+}
