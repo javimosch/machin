@@ -38,13 +38,13 @@ for f in $(find . -maxdepth 3 -name '*.src' 2>/dev/null | sort -u); do
   "$MACHIN" encode "$f" > "$out" 2>/dev/null
   [ -s "$out" ] || rm -f "$out"; i=$((i+1))
 done
-fp=0; funcs=0
+fp=0; decls=0
 for mfl in /tmp/sh-corpus/*.mfl; do
-  "$MACHIN" parsetest --funcs "$mfl" > /tmp/sh-o.txt 2>/dev/null
-  timeout 20 ./selfhost/mfl-parse --funcs "$mfl" > /tmp/sh-m.txt 2>/dev/null
-  funcs=$((funcs + $(grep -cE '^\(func ' /tmp/sh-o.txt)))
-  if diff -q /tmp/sh-o.txt /tmp/sh-m.txt >/dev/null 2>&1; then fp=$((fp+1)); else fail=$((fail+1)); echo "FUNCS MISMATCH: $(basename "$mfl")"; fi
+  "$MACHIN" parsetest --program "$mfl" > /tmp/sh-o.txt 2>/dev/null
+  timeout 20 ./selfhost/mfl-parse --program "$mfl" > /tmp/sh-m.txt 2>/dev/null
+  decls=$((decls + $(wc -l < /tmp/sh-o.txt)))
+  if diff -q /tmp/sh-o.txt /tmp/sh-m.txt >/dev/null 2>&1; then fp=$((fp+1)); else fail=$((fail+1)); echo "PROGRAM MISMATCH: $(basename "$mfl")"; fi
 done
-echo "programs: $fp files, $funcs functions cross-checked"
+echo "programs: $fp files, $decls declarations cross-checked (types/externs/globals/funcs)"
 echo "----"; [ "$fail" -eq 0 ] && echo "PASS" || echo "FAIL ($fail)"
 [ "$fail" -eq 0 ]

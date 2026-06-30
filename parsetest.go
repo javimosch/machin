@@ -40,24 +40,56 @@ func cmdParseTest(args []string) error {
 		fmt.Println(sexprFunc(fn))
 		return nil
 	}
+	if len(args) >= 2 && args[0] == "--program" {
+		data, err := os.ReadFile(args[1])
+		if err != nil {
+			return err
+		}
+		lines := strings.Split(string(data), "\n")
+		structs := collectStructNames(lines)
+		var out strings.Builder
+		for _, ln := range lines { // classify + parse + dump each decl in source order
+			toks, e := Lex(ln)
+			if e != nil || len(toks) == 0 || toks[0].Kind != TKeyword {
+				continue
+			}
+			switch toks[0].Val {
+			case "type":
+				if td, err := ParseType(ln); err != nil {
+					out.WriteString("(parse-error)\n")
+				} else {
+					out.WriteString(sexprType(td) + "\n")
+				}
+			case "extern":
+				if ed, err := ParseExtern(ln); err != nil {
+					out.WriteString("(parse-error)\n")
+				} else {
+					out.WriteString(sexprExtern(ed) + "\n")
+				}
+			case "var":
+				if gv, err := ParseGlobalWith(ln, structs); err != nil {
+					out.WriteString("(parse-error)\n")
+				} else {
+					out.WriteString(sexprGlobal(gv) + "\n")
+				}
+			case "func", "export":
+				if fn, err := ParseFuncWith(ln, structs); err != nil {
+					out.WriteString("(parse-error)\n")
+				} else {
+					out.WriteString(sexprFunc(fn) + "\n")
+				}
+			}
+		}
+		fmt.Print(out.String())
+		return nil
+	}
 	if len(args) >= 2 && args[0] == "--funcs" {
 		data, err := os.ReadFile(args[1])
 		if err != nil {
 			return err
 		}
 		lines := strings.Split(string(data), "\n")
-		structs := map[string]bool{}
-		for _, ln := range lines { // pass 1: collect struct names (type decls + cstruct/FFI handles)
-			toks, e := Lex(ln)
-			if e != nil {
-				continue
-			}
-			for i := 0; i+1 < len(toks); i++ {
-				if (toks[i].Val == "type" || toks[i].Val == "cstruct") && toks[i+1].Kind == TIdent {
-					structs[toks[i+1].Val] = true
-				}
-			}
-		}
+		structs := collectStructNames(lines)
 		var out strings.Builder
 		for _, ln := range lines { // pass 2: parse + dump every function
 			if strings.HasPrefix(ln, "func ") || strings.HasPrefix(ln, "export func ") {
@@ -72,7 +104,71 @@ func cmdParseTest(args []string) error {
 		fmt.Print(out.String())
 		return nil
 	}
-	return fmt.Errorf("usage: machin parsetest --expr <e> | --func <src> | --funcs <file.mfl>")
+	return fmt.Errorf("usage: machin parsetest --expr <e> | --func <src> | --funcs <f.mfl> | --program <f.mfl>")
+}
+
+// collectStructNames scans every line for `type NAME` and `cstruct NAME`, so
+// `T{...}` composite literals are recognized when parsing functions/globals.
+func collectStructNames(lines []string) map[string]bool {
+	structs := map[string]bool{}
+	for _, ln := range lines {
+		toks, e := Lex(ln)
+		if e != nil {
+			continue
+		}
+		for i := 0; i+1 < len(toks); i++ {
+			if (toks[i].Val == "type" || toks[i].Val == "cstruct") && toks[i+1].Kind == TIdent {
+				structs[toks[i+1].Val] = true
+			}
+		}
+	}
+	return structs
+}
+
+func sexprFields(names []string, types []string) string {
+	s := "(fields"
+	for i := range names {
+		s += " (f " + names[i] + " " + types[i] + ")"
+	}
+	return s + ")"
+}
+
+func sexprType(td *TypeDecl) string {
+	names := make([]string, len(td.Fields))
+	types := make([]string, len(td.Fields))
+	for i, f := range td.Fields {
+		names[i], types[i] = f.Name, f.Type
+	}
+	return "(type " + td.Name + " " + sexprFields(names, types) + ")"
+}
+
+func sexprGlobal(gv *GlobalVar) string {
+	return "(global " + gv.Name + " " + sexprExpr(gv.Init) + ")"
+}
+
+func sexprExtern(ed *ExternDecl) string {
+	s := "(extern " + ed.Lib + " (header " + ed.Header + ") (links"
+	for _, l := range ed.Links {
+		s += " " + l
+	}
+	s += ") (cflags " + ed.CFlags + ") (cstructs"
+	for _, cs := range ed.Structs {
+		names := make([]string, len(cs.Fields))
+		types := make([]string, len(cs.Fields))
+		for i, f := range cs.Fields {
+			names[i], types[i] = f.Name, f.CType
+		}
+		s += " (cstruct " + cs.Name + " " + sexprFields(names, types) + ")"
+	}
+	s += ") (fns"
+	for _, fn := range ed.Funcs {
+		s += " (fn " + fn.Name + " (params"
+		for _, p := range fn.Params {
+			s += " " + p
+		}
+		s += ") " + fn.Ret + ")"
+	}
+	return s + "))"
 }
 
 func sexprStmts(ss []Stmt) string {

@@ -46,18 +46,25 @@ var K_ARENA = 32
 var K_SELECT = 33
 var K_SELCASE = 34
 var K_FUNC = 35
+// top-level declarations
+var K_TYPE = 36
+var K_GLOBAL = 37
+var K_EXTERN = 38
+var K_CSTRUCT = 39
+var K_EXTERNFN = 40
 
 type Node struct {
     kind int
-    s string        // op / name / callee / type / elem / field / makemap key / string val / assign-target name / range key / selcase name
-    s2 string       // makemap value type / assign+multi op / range val / selcase okName
-    ival int        // int literal / bool (0|1) / call spread (0|1) / funcdecl exported / select hasDefault / selcase isSend
-    a int           // child index (X / L / Fn / Ch / cond / target / send-or-recv ch)
+    s string        // op / name / callee / type / elem / field / makemap key / string val / assign-target / range key / selcase name / decl name / extern lib
+    s2 string       // makemap value type / assign+multi op / range val / selcase okName / extern header / externfn ret
+    s3 string       // extern cflags
+    ival int        // int literal / bool / call spread / funcdecl exported / select hasDefault / selcase isSend
+    a int           // child index (X / L / Fn / Ch / cond / target / send-or-recv ch / global init)
     b int           // child index (R / Idx / val / send val / funcdecl variadic flag)
-    kids []int      // args / elems / struct vals / stmt body / return+multi exprs / if-then / select cases
-    kids2 []int     // if-else / select default body
-    names []string  // struct field names / func+funclit params / multiassign names
-    names2 []string // funcdecl named returns
+    kids []int      // args / elems / struct vals / stmt body / return+multi exprs / if-then / select cases / extern cstructs
+    kids2 []int     // if-else / select default body / extern fns
+    names []string  // struct/cstruct field names / func+funclit params / multiassign names / extern links / externfn params
+    names2 []string // funcdecl named returns / struct+cstruct field types
 }
 
 // ---- AST + parser state (globals) ----
@@ -298,9 +305,133 @@ func parse_make() (idx) {
     idx = -1
 }
 
-// parse_type_name: enough for make() element types (a bare name; []T / map nesting
-// handled in later stages). Returns the type's leading name token.
-func parse_type_name() (s) { s = adv().val }
+// parse_type_name: int/float/bool/string, a struct name, []elem, map[K]V, chan T,
+// or func. Returns the canonical type string.
+func parse_type_name() (s) {
+    if pk().val == "[" {
+        adv()
+        eat("]")
+        elem := parse_type_name()
+        s = "[]" + elem
+        return s
+    }
+    if pk().val == "map" {
+        adv()
+        eat("[")
+        key := parse_type_name()
+        eat("]")
+        val := parse_type_name()
+        s = "map[" + key + "]" + val
+        return s
+    }
+    if pk().val == "chan" {
+        adv()
+        elem := parse_type_name()
+        s = "chan " + elem
+        return s
+    }
+    if pk().val == "func" { adv()  s = "func"  return s }
+    s = adv().val
+}
+
+// ---- top-level declarations ----
+func parse_type_decl() (idx) {
+    adv()   // type
+    name := adv().val
+    adv()   // struct
+    eat("{")
+    fnames := []string{}
+    ftypes := []string{}
+    while pk().val != "}" {
+        if pk().kind == 0 { break }
+        if g_err == 1 { break }
+        before := tp
+        fname := adv().val
+        ftype := parse_type_name()
+        fnames = append(fnames, fname)
+        ftypes = append(ftypes, ftype)
+        while pk().val == ";" || pk().val == "," { adv() }
+        if tp == before { g_err = 1  break }
+    }
+    eat("}")
+    idx = emit(Node{kind: K_TYPE, s: name, names: fnames, names2: ftypes})
+}
+
+func parse_global() (idx) {
+    adv()   // var
+    name := adv().val
+    eat("=")
+    val := parse_expr()
+    idx = emit(Node{kind: K_GLOBAL, s: name, a: val})
+}
+
+func is_extern_directive(s) (b) {
+    b = s == "header" || s == "link" || s == "cflags" || s == "fn" || s == "cstruct"
+}
+
+func parse_extern_decl() (idx) {
+    adv()   // extern
+    lib := adv().val   // lib name (string literal)
+    eat("{")
+    header := ""
+    cflags := ""
+    links := []string{}
+    cstructs := []int{}
+    fns := []int{}
+    while pk().val != "}" {
+        if pk().kind == 0 { break }
+        if g_err == 1 { break }
+        before := tp
+        kw := adv().val
+        if kw == "header" { header = adv().val }
+        if kw == "link" { links = append(links, adv().val) }
+        if kw == "cflags" { cflags = adv().val }
+        if kw == "cstruct" {
+            cn := adv().val
+            eat("{")
+            cfn := []string{}
+            cft := []string{}
+            while pk().val != "}" {
+                if pk().kind == 0 { break }
+                b2 := tp
+                fld := adv().val
+                ct := adv().val
+                cfn = append(cfn, fld)
+                cft = append(cft, ct)
+                while pk().val == "," || pk().val == ";" { adv() }
+                if tp == b2 { g_err = 1  break }
+            }
+            eat("}")
+            sc := emit(Node{kind: K_CSTRUCT, s: cn, names: cfn, names2: cft})
+            cstructs = append(cstructs, sc)
+        }
+        if kw == "fn" {
+            fnname := adv().val
+            eat("(")
+            params := []string{}
+            while pk().val != ")" {
+                if pk().kind == 0 { break }
+                b3 := tp
+                prefix := ""
+                if pk().val == "*" { adv()  prefix = "*" }
+                tname := adv().val
+                suffix := ""
+                if pk().val == "*" { adv()  suffix = "*" }
+                params = append(params, prefix + tname + suffix)
+                while pk().val == "," { adv() }
+                if tp == b3 { g_err = 1  break }
+            }
+            eat(")")
+            ret := ""
+            if pk().kind == 1 { if is_extern_directive(pk().val) == false { ret = adv().val } }
+            ef := emit(Node{kind: K_EXTERNFN, s: fnname, s2: ret, names: params})
+            fns = append(fns, ef)
+        }
+        if tp == before { g_err = 1  break }
+    }
+    eat("}")
+    idx = emit(Node{kind: K_EXTERN, s: lib, s2: header, s3: cflags, names: links, kids: cstructs, kids2: fns})
+}
 
 func parse_func_lit() (idx) {
     adv()   // func
@@ -681,6 +812,45 @@ func dump_func(idx) (s) {
     s = s + ") (body" + dump_stmts(n.kids) + "))"
 }
 
+func dump_fields(names, types) (s) {
+    s = "(fields"
+    i := 0
+    while i < len(names) {
+        s = s + " (f " + names[i] + " " + types[i] + ")"
+        i = i + 1
+    }
+    s = s + ")"
+}
+
+func dump_type(idx) (s) {
+    n := nodes[idx]
+    s = "(type " + n.s + " " + dump_fields(n.names, n.names2) + ")"
+}
+
+func dump_global(idx) (s) {
+    n := nodes[idx]
+    s = "(global " + n.s + " " + dump_expr(n.a) + ")"
+}
+
+func dump_extern(idx) (s) {
+    n := nodes[idx]
+    s = "(extern " + n.s + " (header " + n.s2 + ") (links"
+    for _, l := range n.names { s = s + " " + l }
+    s = s + ") (cflags " + n.s3 + ") (cstructs"
+    for _, c := range n.kids {
+        cn := nodes[c]
+        s = s + " (cstruct " + cn.s + " " + dump_fields(cn.names, cn.names2) + ")"
+    }
+    s = s + ") (fns"
+    for _, f := range n.kids2 {
+        fn := nodes[f]
+        s = s + " (fn " + fn.s + " (params"
+        for _, p := range fn.names { s = s + " " + p }
+        s = s + ") " + fn.s2 + ")"
+    }
+    s = s + "))"
+}
+
 // known struct type names (seeded from `type` decls before parsing functions, so
 // `T{...}` is recognized). A linear scan keeps it to a plain []string global.
 var g_structs = []string{}
@@ -728,6 +898,35 @@ func main() {
         return
     }
 
+    if mode == "--program" {
+        data := read_file(a[2])
+        lines := split(data, "\n")
+        // pass 1: struct names (type + cstruct)
+        for _, ln := range lines {
+            reset(ln)
+            i := 0
+            while i + 1 < len(T) {
+                if T[i].val == "type" || T[i].val == "cstruct" {
+                    if T[i + 1].kind == 1 { g_structs = append(g_structs, T[i + 1].val) }
+                }
+                i = i + 1
+            }
+        }
+        // pass 2: classify + parse + dump each decl in source order
+        out := ""
+        for _, ln := range lines {
+            reset(ln)
+            f := T[0]
+            if f.kind == 0 { continue }
+            if f.kind == 7 && f.val == "type" { idx := parse_type_decl()  out = out + emit_decl(dump_type(idx)) }
+            if f.kind == 7 && f.val == "extern" { idx := parse_extern_decl()  out = out + emit_decl(dump_extern(idx)) }
+            if f.kind == 7 && f.val == "var" { idx := parse_global()  out = out + emit_decl(dump_global(idx)) }
+            if f.kind == 7 && (f.val == "func" || f.val == "export") { idx := parse_func_decl()  out = out + emit_decl(dump_func(idx)) }
+        }
+        write(1, out)
+        return
+    }
+
     reset(a[2])
     if mode == "--func" {
         idx := parse_func_decl()
@@ -736,4 +935,12 @@ func main() {
     }
     idx := parse_expr()
     println(dump_expr(idx))
+}
+
+// emit_decl returns the dump, or "(parse-error)" if the parse failed or left
+// trailing tokens (matching the Go oracle's per-decl error reporting).
+func emit_decl(dumped) (s) {
+    if g_err == 1 { s = "(parse-error)\n"  return s }
+    if pk().kind != 0 { s = "(parse-error)\n"  return s }
+    s = dumped + "\n"
 }

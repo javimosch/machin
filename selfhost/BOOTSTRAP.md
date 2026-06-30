@@ -38,7 +38,8 @@ Notes from the port (MFL was already enough — no new builtin needed):
   escaping mismatch between Go and MFL.
 - no receiver methods in MFL → the sub-lexers are inlined into one flat `lex()`.
 
-### Stage 2 — parser (in progress)
+### Stage 2 — parser ✅ DONE
+The full parser is ported and verified. `selfhost/parse.src`.
 Port `parser.go` → an AST. **AST representation decision:** MFL has no sum types, so
 the AST is a **flat index-array of fat nodes** (`selfhost/parse.src`: `var nodes
 []Node`, children referenced by integer index). No recursive types, no deep struct
@@ -72,10 +73,23 @@ Float literals: the oracle dumps `FormatFloat(v,'f',-1,64)` (shortest decimal, n
 exponent) and the MFL side strips trailing zeros from the lexeme — they match
 exactly on all real source (sidesteps `%v`'s `1e-05`/`1e+21`).
 
-**Still to port for Stage 2:** the other top-level decls — `parseTypeDecl`,
-`parseExternDecl`, `ParseGlobal` — and the whole-program driver (`ParseProgram`:
-classify decls, types/cstructs first to seed struct names, then funcs) for full
-`.mfl`-program AST parity. The function parser (the bulk) is done.
+**Top-level decls + program driver — done.** `parseTypeDecl`, `parseExternDecl`
+(header/link/cflags/cstruct/fn, incl. `*T`/`T*` FFI marshaling prefixes/suffixes),
+`ParseGlobal`, and `parseTypeName` (`[]T`, `map[K]V`, `chan T`, `func`). The
+`--program <file.mfl>` mode classifies every decl line (two-pass: `type`+`cstruct`
+names first), parses it, and dumps in source order. **Verified across 39 complete
+programs: 928 declarations (50 types, 29 externs, 128 globals, 721 funcs), 0
+mismatches** — every AST byte-identical to the Go parser, including the parser
+parsing its own source.
+
+Not replicated (correctly): `ParseProgram`'s cstruct→TypeDecl synthesis and
+`liftClosures` are post-parse *transforms*, not parsing — they belong to later
+stages. The parser milestone compares each decl as-parsed, which is exact.
+
+### Stage 3 — typecheck / inference (next)
+Port `types.go` (~2700 LOC) — the big semantic stage: Hindley-style inference over
+the AST, the builtin signature table, struct/field typing, multi-return handling.
+Oracle: a `checktest` subcommand dumping each expression/var's inferred type.
 
 ### Stages 3–5 — typecheck, codegen, driver
 Same oracle-diff discipline. Codegen verifies two ways: diff the emitted C against
