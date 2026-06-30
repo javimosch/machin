@@ -1,16 +1,15 @@
-// selfhost/check.src — the machin type checker, written in MFL. Stage 3 of the
-// bootstrap. Sub-slice (1): the union-find inference ENGINE — slot arrays, find,
-// reconcile, union (with the recursive sub-unions for slice/chan elements, map
-// key/value, and function signatures). A faithful port of types.go's Checker core.
+// selfhost/check.src — the machin type checker ENGINE, written in MFL. Stage 3 of
+// the bootstrap. A faithful port of types.go's Checker union-find core: slot arrays,
+// find, reconcile, and union (with the recursive sub-unions for slice/chan elements,
+// map key/value, and function signatures).
 //
-// Verified by `machin uftest <script>` (the Go engine as oracle): a scripted
-// sequence of newSlot/union ops is run by both, and the resulting slot table is
-// dumped in one canonical form and diffed byte-for-byte. This isolates the engine
-// from constraint generation (later sub-slices).
-
-// Kind tags — must match types.go's iota exactly.
-// KVar=0 KNum=1 KInt=2 KFloat=3 KBool=4 KString=5 KVoid=6
-// KSlice=7 KStruct=8 KChan=9 KMap=10 KFunc=11 KBytes=12
+// This file is engine-only (no main, no parser dependency). It composes with:
+//   - ufmain.src   -> the sub-slice-1 uftest binary (scripted op sequences)
+//   - checkgen.src + checkmain.src -> the full checker (constraint generation)
+//
+// Kind tags — must match types.go's iota exactly:
+//   KVar=0 KNum=1 KInt=2 KFloat=3 KBool=4 KString=5 KVoid=6
+//   KSlice=7 KStruct=8 KChan=9 KMap=10 KFunc=11 KBytes=12
 
 type Sig struct { params []int  ret int }
 
@@ -23,7 +22,8 @@ var g_mkey = []int{}      // KMap: key slot; -1 otherwise
 var g_mval = []int{}      // KMap: value slot; -1 otherwise
 var g_fsig = []int{}      // KFunc: index into g_sigs; -1 otherwise
 var g_sigs = []Sig{}
-var g_err = 0             // set to 1 on the first type mismatch
+var g_terr = 0            // set to 1 on the first type mismatch
+var g_changed = 0         // union sets this to 1 on any merge (drives the solve fixpoint)
 
 func kind_str(k) (s) {
     if k == 0 { s = "var"  return s }
@@ -88,14 +88,15 @@ func reconcile(a, b) (merged, ok) {
 }
 
 // union merges the equivalence classes of a and b, recursively unifying the inner
-// slots (element / key / value / signature). On mismatch it sets g_err and returns.
+// slots (element / key / value / signature). On mismatch it sets g_terr; on any
+// merge it sets g_changed (so solve() can run to a fixpoint).
 func union(a, b) {
-    if g_err == 1 { return }
+    if g_terr == 1 { return }
     ra := find(a)
     rb := find(b)
     if ra == rb { return }
     merged, ok := reconcile(g_kind[ra], g_kind[rb])
-    if ok == 0 { g_err = 1  return }
+    if ok == 0 { g_terr = 1  return }
 
     ea := -1
     eb := -1
@@ -103,18 +104,19 @@ func union(a, b) {
     if merged == 8 {
         na := g_sname[ra]
         nb := g_sname[rb]
-        if na != "" && nb != "" && na != nb { g_err = 1  return }
+        if na != "" && nb != "" && na != nb { g_terr = 1  return }
     }
     sa := -1
     sb := -1
     if merged == 11 {
         sa = g_fsig[ra]
         sb = g_fsig[rb]
-        if sa >= 0 && sb >= 0 && len(g_sigs[sa].params) != len(g_sigs[sb].params) { g_err = 1  return }
+        if sa >= 0 && sb >= 0 && len(g_sigs[sa].params) != len(g_sigs[sb].params) { g_terr = 1  return }
     }
 
     g_parent[rb] = ra
     g_kind[ra] = merged
+    g_changed = 1
 
     if merged == 7 || merged == 9 {
         keep := ea
@@ -154,107 +156,4 @@ func union(a, b) {
     }
 }
 
-// ---- script interpreter + canonical dump (mirrors uftest.go) ----
-
-func fields(line) (out) {
-    out = []string{}
-    for _, p := range split(line, " ") {
-        if p != "" { out = append(out, p) }
-    }
-}
-
-func parse_slot(s) (n) {
-    if s == "-" || s == "" { n = -1  return n }
-    n = parse_int(s)
-}
-
-// parse a "P0,P1,...|R" func spec into (params, ret)
-func parse_sig(spec) (params, ret) {
-    params = []int{}
-    ret = -1
-    bar := index(spec, "|")
-    left := spec
-    if bar >= 0 {
-        left = substr(spec, 0, bar)
-        ret = parse_slot(substr(spec, bar + 1, len(spec)))
-    }
-    if left != "-" && left != "" {
-        for _, p := range split(left, ",") { params = append(params, parse_slot(p)) }
-    }
-}
-
-func canon(s) (r) {
-    if s < 0 { r = -1  return r }
-    r = find(s)
-}
-
-func dump() (out) {
-    out = ""
-    i := 0
-    for i < len(g_parent) {
-        r := find(i)
-        k := g_kind[r]
-        line := str(i) + " root=" + str(r) + " kind=" + kind_str(k)
-        if k == 7 || k == 9 { line = line + " elem=" + str(canon(g_elem[r])) }
-        if k == 8 { line = line + " sname=" + g_sname[r] }
-        if k == 10 { line = line + " mkey=" + str(canon(g_mkey[r])) + " mval=" + str(canon(g_mval[r])) }
-        if k == 11 {
-            line = line + " fsig="
-            si := g_fsig[r]
-            if si < 0 {
-                line = line + "-"
-            } else {
-                ps := g_sigs[si].params
-                j := 0
-                for j < len(ps) {
-                    if j > 0 { line = line + "," }
-                    line = line + str(canon(ps[j]))
-                    j = j + 1
-                }
-                line = line + "|" + str(canon(g_sigs[si].ret))
-            }
-        }
-        out = out + line + "\n"
-        i = i + 1
-    }
-    out = out + "err=" + str(g_err) + "\n"
-}
-
-func main() {
-    a := args()
-    if len(a) < 2 { write(2, "usage: check <script>\n")  exit(2) }
-    src := read_file(a[1])
-    for _, raw := range split(src, "\n") {
-        line := raw
-        h := index(line, "#")
-        if h >= 0 { line = substr(line, 0, h) }
-        line = trim(line)
-        if line == "" { continue }
-        f := fields(line)
-        op := f[0]
-        if g_err == 1 && op != "dump" { continue }
-        if op == "var" { new_slot(0)  continue }
-        if op == "num" { new_slot(1)  continue }
-        if op == "int" { new_slot(2)  continue }
-        if op == "float" { new_slot(3)  continue }
-        if op == "bool" { new_slot(4)  continue }
-        if op == "string" { new_slot(5)  continue }
-        if op == "void" { new_slot(6)  continue }
-        if op == "bytes" { new_slot(12)  continue }
-        if op == "slice" { s := new_slot(7)  g_elem[s] = parse_slot(f[1])  continue }
-        if op == "chan" { s := new_slot(9)  g_elem[s] = parse_slot(f[1])  continue }
-        if op == "struct" { s := new_slot(8)  g_sname[s] = f[1]  continue }
-        if op == "map" { s := new_slot(10)  g_mkey[s] = parse_slot(f[1])  g_mval[s] = parse_slot(f[2])  continue }
-        if op == "func" {
-            params := []int{}
-            ret := -1
-            if len(f) >= 2 { params, ret = parse_sig(f[1]) }
-            new_func_slot(params, ret)
-            continue
-        }
-        if op == "union" { union(parse_slot(f[1]), parse_slot(f[2]))  continue }
-        if op == "dump" { continue }
-        write(2, "unknown op: " + op + "\n")  exit(1)
-    }
-    write(1, dump())
-}
+func kind_of(slot) (k) { k = g_kind[find(slot)] }

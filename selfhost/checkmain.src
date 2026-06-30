@@ -1,0 +1,47 @@
+// selfhost/checkmain.src — driver for the type-checker oracle binary (mfl-check),
+// Stage 3. Composes lex.src + parse.src + check.src + checkgen.src. Mirrors
+// `machin checktest --program <file.mfl>`: parse the program, run the checker, and
+// dump each instance as (func NAME (param ..) (ret ..) (local ..)).
+//
+// Sub-slice 2 scope: MAIN-ONLY programs (one instance). It finds `func main`,
+// type-checks its body, and prints "(func main (local ..) ...)". Programs that use
+// constructs not yet ported print "(unsupported)" so the harness can skip them.
+
+func main() {
+    a := args()
+    if len(a) < 3 { write(2, "usage: check --program <file.mfl>\n")  exit(2) }
+    if a[1] != "--program" { write(2, "only --program is supported\n")  exit(2) }
+    data := read_file(a[2])
+    lines := split(data, "\n")
+
+    // pass 1: seed struct names so T{...} parses (matches the parser driver)
+    for _, ln := range lines {
+        reset(ln)
+        i := 0
+        while i + 1 < len(T) {
+            if T[i].val == "type" || T[i].val == "cstruct" {
+                if T[i + 1].kind == 1 { g_structs = append(g_structs, T[i + 1].val) }
+            }
+            i = i + 1
+        }
+    }
+
+    // find and parse `func main`
+    mainline := ""
+    for _, ln := range lines {
+        if has_prefix(ln, "func main(") { mainline = ln }
+    }
+    if mainline == "" { write(1, "(check-error)\n")  return }  // no main: the Go checker errors too
+
+    reset(mainline)
+    idx := parse_func_decl()
+    if g_err == 1 || pk().kind != 0 { write(1, "(parse-error)\n")  return }
+
+    init_consts()
+    gen_block(nodes[idx].kids)
+    if g_unsupported == 1 { write(1, "(unsupported)\n")  return }
+    solve()
+    finalize()
+    if g_terr == 1 || g_check_err == 1 { write(1, "(check-error)\n")  return }
+    write(1, check_dump())
+}

@@ -9,7 +9,7 @@ cd "$(dirname "$0")/.."
 MACHIN="${MACHIN:-./bin/machin}"
 
 go build -trimpath -o bin/machin . || { echo "go build failed"; exit 1; }
-"$MACHIN" encode selfhost/lex.src selfhost/parse.src > /tmp/sh-parse.mfl
+"$MACHIN" encode selfhost/lex.src selfhost/parse.src selfhost/parsemain.src > /tmp/sh-parse.mfl
 "$MACHIN" build /tmp/sh-parse.mfl -o selfhost/mfl-parse
 
 fail=0

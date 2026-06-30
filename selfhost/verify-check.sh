@@ -8,17 +8,17 @@ MACHIN="${MACHIN:-./bin/machin}"
 
 echo "building Go machin (oracle) + MFL engine…"
 go build -trimpath -o bin/machin . || { echo "go build failed"; exit 1; }
-"$MACHIN" encode selfhost/check.src > /tmp/sh-check.mfl
-"$MACHIN" build /tmp/sh-check.mfl -o selfhost/mfl-check
+"$MACHIN" encode selfhost/check.src selfhost/ufmain.src > /tmp/sh-check.mfl
+"$MACHIN" build /tmp/sh-check.mfl -o selfhost/mfl-uf
 
 T=$(mktemp -d)
 pass=0; fail=0
 
 run() { # <script-file>
-  if diff -q <("$MACHIN" uftest "$1") <(./selfhost/mfl-check "$1") >/dev/null 2>&1; then
+  if diff -q <("$MACHIN" uftest "$1") <(./selfhost/mfl-uf "$1") >/dev/null 2>&1; then
     pass=$((pass+1))
   else
-    fail=$((fail+1)); echo "MISMATCH: $1"; diff <("$MACHIN" uftest "$1") <(./selfhost/mfl-check "$1") | head -12
+    fail=$((fail+1)); echo "MISMATCH: $1"; diff <("$MACHIN" uftest "$1") <(./selfhost/mfl-uf "$1") | head -12
   fi
 }
 

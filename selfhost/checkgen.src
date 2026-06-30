@@ -1,0 +1,245 @@
+// selfhost/checkgen.src — Stage 3 sub-slice (2): constraint generation over the AST.
+// Composes with lex.src + parse.src (the AST in `nodes`) + check.src (the engine).
+// Ports types.go genExpr/genBinary/genStmt (the non-call grammar) + solve + the
+// KNum->int defaults, for MAIN-ONLY programs (one instance, no calls/generics yet).
+//
+// Verified against `machin checktest --program` (the full Go checker) on curated
+// main-only programs. Calls + monomorphization (slice 3) and the deferred index/
+// field/range/map/struct grammar (slice 2b) come next.
+
+// ---- constant slots (created in Check's order: bool,string,void,int,float,bytes) ----
+var c_bool = -1
+var c_string = -1
+var c_void = -1
+var c_int = -1
+var c_float = -1
+var c_bytes = -1
+
+func init_consts() {
+    c_bool = new_slot(4)
+    c_string = new_slot(5)
+    c_void = new_slot(6)
+    c_int = new_slot(2)
+    c_float = new_slot(3)
+    c_bytes = new_slot(12)
+}
+
+// ---- local environment (name -> slot), in declaration order (= localOrder) ----
+var g_env_names = []string{}
+var g_env_slots = []int{}
+
+func env_lookup(name) (slot, found) {
+    slot = -1
+    found = 0
+    i := 0
+    for i < len(g_env_names) {
+        if g_env_names[i] == name { slot = g_env_slots[i]  found = 1  return slot, found }
+        i = i + 1
+    }
+}
+
+func env_declare(name) (slot) {
+    slot = new_slot(0)   // KVar
+    g_env_names = append(g_env_names, name)
+    g_env_slots = append(g_env_slots, slot)
+}
+
+// ---- constraint stores ----
+var g_pa = []int{}       // pair lhs
+var g_pb = []int{}       // pair rhs
+var g_plus_l = []int{}   // '+' constraints: left / right / result slots
+var g_plus_r = []int{}
+var g_plus_res = []int{}
+var g_check_err = 0      // undefined var, arity, etc. (-> "(check-error)")
+var g_unsupported = 0    // a node this slice doesn't handle yet (-> skip in the harness)
+
+func add_pair(a, b) {
+    g_pa = append(g_pa, a)
+    g_pb = append(g_pb, b)
+}
+
+func new_slice_slot(elem) (s) {
+    s = new_slot(7)   // KSlice
+    g_elem[s] = elem
+}
+
+// type_slot maps a type-name string to a slot (base kinds + nested []T).
+func type_slot(t) (s) {
+    if t == "int" { s = c_int  return s }
+    if t == "float" { s = c_float  return s }
+    if t == "string" { s = c_string  return s }
+    if t == "bool" { s = c_bool  return s }
+    if t == "bytes" { s = c_bytes  return s }
+    if has_prefix(t, "[]") { s = new_slice_slot(type_slot(substr(t, 2, len(t))))  return s }
+    // struct/map/chan element types arrive in later slices; treat as an opaque var
+    s = new_slot(0)
+}
+
+// gen_expr returns the slot for expression node `idx`.
+func gen_expr(idx) (slot) {
+    n := nodes[idx]
+    k := n.kind
+    if k == K_INT { slot = new_slot(1)  return slot }      // KNum
+    if k == K_FLOAT { slot = new_slot(3)  return slot }    // KFloat
+    if k == K_STR { slot = c_string  return slot }
+    if k == K_BOOL { slot = c_bool  return slot }
+    if k == K_NIL { slot = c_void  return slot }
+    if k == K_ID {
+        s, found := env_lookup(n.s)
+        if found == 1 { slot = s  return slot }
+        g_check_err = 1   // undefined (no package globals in main-only slice)
+        slot = c_void
+        return slot
+    }
+    if k == K_UNARY {
+        xs := gen_expr(n.a)
+        if n.s == "!" { add_pair(xs, c_bool)  slot = c_bool  return slot }
+        if n.s == "^" { add_pair(xs, c_int)  slot = xs  return slot }
+        add_pair(xs, new_slot(1))   // numeric
+        slot = xs
+        return slot
+    }
+    if k == K_BIN { slot = gen_binary(idx)  return slot }
+    if k == K_SLICE {
+        eslot := type_slot(n.s)
+        for _, el := range n.kids {
+            es := gen_expr(el)
+            add_pair(es, eslot)
+        }
+        slot = new_slice_slot(eslot)
+        return slot
+    }
+    g_unsupported = 1   // call / index / field / struct / map / chan / funclit (later slices)
+    slot = c_void
+}
+
+func gen_binary(idx) (slot) {
+    n := nodes[idx]
+    ls := gen_expr(n.a)
+    rs := gen_expr(n.b)
+    op := n.s
+    if op == "+" {
+        res := new_slot(0)
+        g_plus_l = append(g_plus_l, ls)
+        g_plus_r = append(g_plus_r, rs)
+        g_plus_res = append(g_plus_res, res)
+        slot = res
+        return slot
+    }
+    if op == "-" || op == "*" || op == "/" {
+        add_pair(ls, rs)
+        add_pair(ls, new_slot(1))
+        slot = ls
+        return slot
+    }
+    if op == "%" || op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>" {
+        add_pair(ls, rs)
+        add_pair(ls, c_int)
+        slot = ls
+        return slot
+    }
+    if op == "==" || op == "!=" || op == "<" || op == "<=" || op == ">" || op == ">=" {
+        add_pair(ls, rs)
+        slot = c_bool
+        return slot
+    }
+    if op == "&&" || op == "||" {
+        add_pair(ls, c_bool)
+        add_pair(rs, c_bool)
+        slot = c_bool
+        return slot
+    }
+    g_unsupported = 1
+    slot = c_void
+}
+
+func gen_block(kids) {
+    for _, s := range kids { gen_stmt(s) }
+}
+
+func gen_stmt(idx) {
+    n := nodes[idx]
+    k := n.kind
+    if k == K_EXPRSTMT { gen_expr(n.a)  return }
+    if k == K_ASSIGN {
+        vs := gen_expr(n.a)
+        slot, found := env_lookup(n.s)
+        if found == 0 { slot = env_declare(n.s) }
+        add_pair(slot, vs)
+        return
+    }
+    if k == K_RETURN {
+        if len(n.kids) == 0 { return }
+        g_check_err = 1   // main has no return values; a valued return is an error
+        return
+    }
+    if k == K_IF {
+        cs := gen_expr(n.a)
+        add_pair(cs, c_bool)
+        gen_block(n.kids)
+        gen_block(n.kids2)
+        return
+    }
+    if k == K_WHILE {
+        cs := gen_expr(n.a)
+        add_pair(cs, c_bool)
+        gen_block(n.kids)
+        return
+    }
+    if k == K_BREAK { return }
+    if k == K_CONTINUE { return }
+    if k == K_ARENA { gen_block(n.kids)  return }
+    g_unsupported = 1   // multi-assign / range / send / select / go / field-assign (later)
+}
+
+// solve: unify all pairs and resolve '+' constraints to a fixpoint (port of solve()).
+func solve() {
+    for true {
+        g_changed = 0
+        i := 0
+        for i < len(g_pa) {
+            union(g_pa[i], g_pb[i])
+            i = i + 1
+        }
+        j := 0
+        for j < len(g_plus_res) {
+            kl := kind_of(g_plus_l[j])
+            kr := kind_of(g_plus_r[j])
+            decided := 0
+            if kl == 5 || kr == 5 {
+                decided = 1
+            } else {
+                if is_numeric(kl) || is_numeric(kr) { decided = 1 }
+            }
+            if decided == 1 {
+                union(g_plus_l[j], g_plus_r[j])
+                union(g_plus_res[j], g_plus_l[j])
+            }
+            j = j + 1
+        }
+        if g_terr == 1 { return }
+        if g_changed == 0 { return }
+    }
+}
+
+// finalize: every still-unbound (KVar) or flexible-numeric (KNum) slot defaults to int.
+func finalize() {
+    i := 0
+    for i < len(g_parent) {
+        r := find(i)
+        kk := g_kind[r]
+        if kk == 0 || kk == 1 { g_kind[r] = 2 }
+        i = i + 1
+    }
+}
+
+// check_dump renders the single main instance like checktest.go: (func main locals…).
+func check_dump() (out) {
+    out = "(func main"
+    i := 0
+    for i < len(g_env_names) {
+        out = out + " (local " + g_env_names[i] + " " + kind_str(kind_of(g_env_slots[i])) + ")"
+        i = i + 1
+    }
+    out = out + ")\n"
+}

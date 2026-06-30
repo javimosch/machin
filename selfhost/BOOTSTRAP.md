@@ -122,8 +122,19 @@ monomorphic, multi-function, and mixed-int/float (two-instance) programs.
    500 unions).** `selfhost/verify-check.sh`, `selfhost/gen-uf.py`. MFL global-state
    note: package globals need initializers (`var g = []int{}`), then `append` +
    index-assignment mutate them in place — the natural fit for the array-based engine.
-2. `genExpr`/`genStmt` for the non-call grammar + `solve` + `finalizeMono` →
-   verify on **main-only** programs (one instance, no generics).
+2. ✅ **constraint generation (non-call grammar) + solve + defaults.** DONE.
+   `checkgen.src` ports `genExpr`/`genBinary`/`genStmt` for literals, idents, unary,
+   all binary ops (incl. the deferred `+` numeric-vs-concat constraint), `:=`/`=`,
+   if/while/return/arena/break/continue, and slice literals; plus `solve` (pair
+   unification + `+`-fixpoint) and the `KNum`/`KVar`→`int` defaults. Verified on
+   MAIN-ONLY programs via `checktest --program`: 3 hand cases (every operator, the
+   int→float flex back-prop, control flow, slices) + **700 random type-correct
+   programs, 0 mismatches**. `verify-check2.sh` + `gen-check.py`. Module split done so
+   one `main` per binary: `parsemain.src` (parser CLI), `check.src` (engine only),
+   `ufmain.src` (uftest), `checkgen.src`+`checkmain.src` (the checker). The integrated
+   checker = `lex+parse+check+checkgen+checkmain` → `mfl-check`. Unsupported nodes emit
+   `(unsupported)` so the harness skips out-of-slice programs.
+   *Next (2b): the deferred index/field/range/map/struct/chan grammar + resolveDeferred.*
 3. user-function calls + `instantiate` (monomorphization) → multi-function programs.
 4. the builtin signature table (the long tail) → full corpus parity.
 
