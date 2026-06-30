@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"os"
+	"strconv"
+	"time"
 )
 
 // cmdLexTest is the self-hosting oracle: lex a source file with the Go lexer and
@@ -27,5 +29,34 @@ func cmdLexTest(args []string) error {
 		b = append(b, fmt.Sprintf("%d %d %x\n", int(t.Kind), t.Pos, t.Val)...)
 	}
 	os.Stdout.Write(b)
+	return nil
+}
+
+// cmdLexBench mirrors selfhost/lexbench.src: lex one file N times in-memory and
+// report total tokens + elapsed ms. Same workload as the MFL lexer benchmark, so
+// the two numbers are directly comparable (Go-compiled vs MFL-compiled, same algo).
+func cmdLexBench(args []string) error {
+	if len(args) < 2 {
+		return fmt.Errorf("usage: machin lexbench <file> <iters>")
+	}
+	src, err := os.ReadFile(args[0])
+	if err != nil {
+		return err
+	}
+	iters, _ := strconv.Atoi(args[1])
+	s := string(src)
+	warm, err := Lex(s)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "tokens/iter: %d\n", len(warm))
+	total := 0
+	t0 := time.Now()
+	for i := 0; i < iters; i++ {
+		toks, _ := Lex(s)
+		total += len(toks)
+	}
+	ms := time.Since(t0).Milliseconds()
+	fmt.Printf("iters=%d total_tokens=%d elapsed_ms=%d\n", iters, total, ms)
 	return nil
 }

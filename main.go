@@ -40,6 +40,12 @@ func main() {
 		err = cmdGuide(os.Args[2:])
 	case "skill":
 		err = cmdSkill(os.Args[2:])
+	case "lexbench":
+		if err := cmdLexBench(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
 	case "lextest":
 		err = cmdLexTest(os.Args[2:]) // self-hosting oracle (selfhost/): dump the Go token stream
 	case "parsetest":

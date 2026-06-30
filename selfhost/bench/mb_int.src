@@ -1,0 +1,18 @@
+func main() {
+    n := parse_int(args()[1])
+    acc := 0
+    i := 0
+    for i < n {
+        acc = acc + (i * 31 + 7) % 1000003
+        i = i + 1
+    }
+    t0 := now_ms()
+    acc = 0
+    i = 0
+    for i < n {
+        acc = (acc + (i * 31 + 7)) % 1000003
+        i = i + 1
+    }
+    t1 := now_ms()
+    write(1, "int acc=" + str(acc) + " ms=" + str(t1 - t0) + "\n")
+}

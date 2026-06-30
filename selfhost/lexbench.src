@@ -1,0 +1,23 @@
+// lexbench.src — benchmark the MFL lexer. Reads one file, lexes it N times
+// in-memory, prints total tokens + elapsed ms. Composed with lex.src.
+func main() {
+    a := args()
+    if len(a) < 3 { write(2, "usage: lexbench <file> <iters>\n")  exit(2) }
+    path := a[1]
+    iters := parse_int(a[2])
+    src := read_file(path)
+    b := read_file_bytes(path)
+    // warm up
+    warm := lex(src, b)
+    write(2, "tokens/iter: " + str(len(warm)) + "\n")
+    total := 0
+    t0 := now_ms()
+    i := 0
+    for i < iters {
+        toks := lex(src, b)
+        total = total + len(toks)
+        i = i + 1
+    }
+    t1 := now_ms()
+    write(1, "iters=" + str(iters) + " total_tokens=" + str(total) + " elapsed_ms=" + str(t1 - t0) + "\n")
+}

@@ -1,0 +1,18 @@
+func main() {
+    n := parse_int(args()[1])
+    s := "the quick brown fox jumps over the lazy dog 0123456789"
+    cnt := 0
+    t0 := now_ms()
+    i := 0
+    for i < n {
+        j := 0
+        for j < len(s) - 5 {
+            sub := substr(s, j, j + 5)
+            cnt = cnt + len(sub)
+            j = j + 1
+        }
+        i = i + 1
+    }
+    t1 := now_ms()
+    write(1, "str cnt=" + str(cnt) + " ms=" + str(t1 - t0) + "\n")
+}
