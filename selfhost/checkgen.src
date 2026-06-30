@@ -58,20 +58,130 @@ func add_pair(a, b) {
     g_pb = append(g_pb, b)
 }
 
+// ---- struct registry (name -> field names + field types), from `type` decls ----
+type StructDef struct { name string  fnames []string  ftypes []string }
+var g_structdefs = []StructDef{}
+
+func register_struct(nm, fnames, ftypes) {
+    g_structdefs = append(g_structdefs, StructDef{name: nm, fnames: fnames, ftypes: ftypes})
+}
+func struct_exists(nm) (b) {
+    b = 0
+    for _, d := range g_structdefs { if d.name == nm { b = 1  return b } }
+}
+func field_type(nm, field) (t, found) {
+    t = ""
+    found = 0
+    for _, d := range g_structdefs {
+        if d.name == nm {
+            i := 0
+            for i < len(d.fnames) {
+                if d.fnames[i] == field { t = d.ftypes[i]  found = 1  return t, found }
+                i = i + 1
+            }
+            return t, found
+        }
+    }
+}
+func struct_field_count(nm) (c) {
+    c = 0
+    for _, d := range g_structdefs { if d.name == nm { c = len(d.fnames)  return c } }
+}
+func struct_field_type_at(nm, ix) (t) {
+    t = ""
+    for _, d := range g_structdefs { if d.name == nm { t = d.ftypes[ix]  return t } }
+}
+
+// ---- deferred uses, resolved after solve() once base kinds are known ----
+var g_iu_base = []int{}    // index uses: base[i] / idx[i] -> result[i]
+var g_iu_idx = []int{}
+var g_iu_res = []int{}
+var g_ru_base = []int{}    // range uses: base[i], key[i], val[i], hasval[i]
+var g_ru_key = []int{}
+var g_ru_val = []int{}
+var g_ru_hasval = []int{}
+var g_fu_base = []int{}    // field uses: base[i] . field[i] -> result[i]
+var g_fu_field = []string{}
+var g_fu_res = []int{}
+
+func add_index_use(b, ix, r) { g_iu_base = append(g_iu_base, b)  g_iu_idx = append(g_iu_idx, ix)  g_iu_res = append(g_iu_res, r) }
+func add_range_use(b, k, v, hv) { g_ru_base = append(g_ru_base, b)  g_ru_key = append(g_ru_key, k)  g_ru_val = append(g_ru_val, v)  g_ru_hasval = append(g_ru_hasval, hv) }
+func add_field_use(b, f, r) { g_fu_base = append(g_fu_base, b)  g_fu_field = append(g_fu_field, f)  g_fu_res = append(g_fu_res, r) }
+
 func new_slice_slot(elem) (s) {
     s = new_slot(7)   // KSlice
     g_elem[s] = elem
 }
+func new_map_slot(k, v) (s) { s = new_slot(10)  g_mkey[s] = k  g_mval[s] = v }
+func new_chan_slot(e) (s) { s = new_slot(9)  g_elem[s] = e }
+func new_struct_slot(nm) (s) { s = new_slot(8)  g_sname[s] = nm }
 
-// type_slot maps a type-name string to a slot (base kinds + nested []T).
+// slice_elem / map_kv / chan_elem force a slot to the given shape and return the
+// inner slot(s), creating + unifying a fresh shaped slot if not already known.
+func slice_elem(slot) (e) {
+    r := find(slot)
+    if g_kind[r] == 7 && g_elem[r] >= 0 { e = g_elem[r]  return e }
+    ev := new_slot(0)
+    ss := new_slice_slot(ev)
+    union(slot, ss)
+    e = g_elem[find(slot)]
+}
+func map_kv(slot) (k, v) {
+    r := find(slot)
+    if g_kind[r] == 10 && g_mkey[r] >= 0 && g_mval[r] >= 0 { k = g_mkey[r]  v = g_mval[r]  return k, v }
+    kk := new_slot(0)
+    vv := new_slot(0)
+    m := new_map_slot(kk, vv)
+    union(slot, m)
+    rr := find(slot)
+    k = g_mkey[rr]
+    v = g_mval[rr]
+}
+func chan_elem(slot) (e) {
+    r := find(slot)
+    if g_kind[r] == 9 && g_elem[r] >= 0 { e = g_elem[r]  return e }
+    ev := new_slot(0)
+    cc := new_chan_slot(ev)
+    union(slot, cc)
+    e = g_elem[find(slot)]
+}
+
+// split_map_type splits "map[KEY]VAL" into its key and value type strings
+// (honoring nested brackets in the key, e.g. map[[]int]string). Port of splitMapType.
+func split_map_type(t) (kt, vt) {
+    kt = ""
+    vt = ""
+    inner := substr(t, 4, len(t))   // after "map["
+    depth := 0
+    i := 0
+    for i < len(inner) {
+        c := substr(inner, i, i + 1)
+        if c == "[" { depth = depth + 1 }
+        if c == "]" {
+            if depth == 0 { kt = substr(inner, 0, i)  vt = substr(inner, i + 1, len(inner))  return kt, vt }
+            depth = depth - 1
+        }
+        i = i + 1
+    }
+}
+
+// type_slot maps a type-name string to a slot (base kinds, []T, chan T, map[K]V, struct).
 func type_slot(t) (s) {
+    if has_prefix(t, "[]") { s = new_slice_slot(type_slot(substr(t, 2, len(t))))  return s }
+    if has_prefix(t, "chan ") { s = new_chan_slot(type_slot(substr(t, 5, len(t))))  return s }
+    if has_prefix(t, "map[") {
+        kt, vt := split_map_type(t)
+        s = new_map_slot(type_slot(kt), type_slot(vt))
+        return s
+    }
     if t == "int" { s = c_int  return s }
     if t == "float" { s = c_float  return s }
     if t == "string" { s = c_string  return s }
     if t == "bool" { s = c_bool  return s }
     if t == "bytes" { s = c_bytes  return s }
-    if has_prefix(t, "[]") { s = new_slice_slot(type_slot(substr(t, 2, len(t))))  return s }
-    // struct/map/chan element types arrive in later slices; treat as an opaque var
+    if t == "func" { s = new_slot(11)  return s }
+    if struct_exists(t) == 1 { s = new_struct_slot(t)  return s }
+    g_check_err = 1   // unknown type name
     s = new_slot(0)
 }
 
@@ -109,8 +219,74 @@ func gen_expr(idx) (slot) {
         slot = new_slice_slot(eslot)
         return slot
     }
-    g_unsupported = 1   // call / index / field / struct / map / chan / funclit (later slices)
+    if k == K_INDEX {
+        xs := gen_expr(n.a)
+        is := gen_expr(n.b)
+        res := new_slot(0)
+        add_index_use(xs, is, res)
+        slot = res
+        return slot
+    }
+    if k == K_MAKEMAP {
+        ks := type_slot(n.s)
+        vs := type_slot(n.s2)
+        slot = new_map_slot(ks, vs)
+        return slot
+    }
+    if k == K_MAKECHAN {
+        e := type_slot(n.s)
+        slot = new_chan_slot(e)
+        return slot
+    }
+    if k == K_RECV {
+        cs := gen_expr(n.a)
+        slot = chan_elem(cs)
+        return slot
+    }
+    if k == K_STRUCT {
+        slot = gen_struct_lit(idx)
+        return slot
+    }
+    if k == K_FIELD {
+        xs := gen_expr(n.a)
+        res := new_slot(0)
+        add_field_use(xs, n.s, res)
+        slot = res
+        return slot
+    }
+    g_unsupported = 1   // call / callvalue / funclit / closure (later slices)
     slot = c_void
+}
+
+// gen_struct_lit handles T{...} — named fields (FieldNames+Vals) or positional (Vals).
+func gen_struct_lit(idx) (slot) {
+    n := nodes[idx]
+    tn := n.s
+    if struct_exists(tn) == 0 { g_check_err = 1  slot = c_void  return slot }
+    res := new_struct_slot(tn)
+    if len(n.names) > 0 {
+        i := 0
+        for i < len(n.names) {
+            ft, found := field_type(tn, n.names[i])
+            if found == 0 { g_check_err = 1  slot = res  return slot }
+            fs := type_slot(ft)
+            vs := gen_expr(n.kids[i])
+            add_pair(vs, fs)
+            i = i + 1
+        }
+    } else {
+        if len(n.kids) > 0 {
+            if len(n.kids) != struct_field_count(tn) { g_check_err = 1  slot = res  return slot }
+            i := 0
+            for i < len(n.kids) {
+                fs := type_slot(struct_field_type_at(tn, i))
+                vs := gen_expr(n.kids[i])
+                add_pair(vs, fs)
+                i = i + 1
+            }
+        }
+    }
+    slot = res
 }
 
 func gen_binary(idx) (slot) {
@@ -189,7 +365,47 @@ func gen_stmt(idx) {
     if k == K_BREAK { return }
     if k == K_CONTINUE { return }
     if k == K_ARENA { gen_block(n.kids)  return }
-    g_unsupported = 1   // multi-assign / range / send / select / go / field-assign (later)
+    if k == K_RANGE {
+        xs := gen_expr(n.a)
+        keyslot := range_bind(n.s)
+        valslot := range_bind(n.s2)
+        hv := 0
+        if n.s2 != "" { hv = 1 }
+        add_range_use(xs, keyslot, valslot, hv)
+        gen_block(n.kids)
+        return
+    }
+    if k == K_IDXASSIGN {
+        ixn := nodes[n.a]
+        xs := gen_expr(ixn.a)
+        is := gen_expr(ixn.b)
+        vs := gen_expr(n.b)
+        add_index_use(xs, is, vs)
+        return
+    }
+    if k == K_FLDASSIGN {
+        fdn := nodes[n.a]
+        xs := gen_expr(fdn.a)
+        vs := gen_expr(n.b)
+        add_field_use(xs, fdn.s, vs)
+        return
+    }
+    if k == K_SEND {
+        cs := gen_expr(n.a)
+        eslot := chan_elem(cs)
+        vs := gen_expr(n.b)
+        add_pair(vs, eslot)
+        return
+    }
+    g_unsupported = 1   // multi-assign / select / go (later slices, tied to calls)
+}
+
+// range_bind: "" or "_" -> a throwaway slot (not named); else reuse/declare a local.
+func range_bind(name) (slot) {
+    if name == "" || name == "_" { slot = new_slot(0)  return slot }
+    s, found := env_lookup(name)
+    if found == 1 { slot = s  return slot }
+    slot = env_declare(name)
 }
 
 // solve: unify all pairs and resolve '+' constraints to a fixpoint (port of solve()).
@@ -220,6 +436,122 @@ func solve() {
         if g_terr == 1 { return }
         if g_changed == 0 { return }
     }
+}
+
+func zeros(n) (a) {
+    a = []int{}
+    i := 0
+    for i < n { a = append(a, 0)  i = i + 1 }
+}
+
+// try_index resolves one x[i]: slice -> (idx int, result elem); map -> (idx key,
+// result value). Returns 1 if resolved, 0 if the base kind is not yet known.
+func try_index(base, idx, res) (ok) {
+    ok = 0
+    k := kind_of(base)
+    if k == 7 {   // slice
+        e := slice_elem(base)
+        union(idx, c_int)
+        union(res, e)
+        ok = 1
+        return ok
+    }
+    if k == 10 {  // map
+        kk, vv := map_kv(base)
+        union(idx, kk)
+        union(res, vv)
+        ok = 1
+        return ok
+    }
+}
+
+// try_range resolves one for-range once the base kind is known.
+func try_range(base, key, val, hasval) (ok) {
+    ok = 0
+    k := kind_of(base)
+    if k == 7 {   // slice
+        union(key, c_int)
+        if hasval == 1 { e := slice_elem(base)  union(val, e) }
+        ok = 1
+        return ok
+    }
+    if k == 5 {   // string
+        union(key, c_int)
+        if hasval == 1 { union(val, c_string) }
+        ok = 1
+        return ok
+    }
+    if k == 10 {  // map
+        kk, vv := map_kv(base)
+        union(key, kk)
+        if hasval == 1 { union(val, vv) }
+        ok = 1
+        return ok
+    }
+    if k == 9 {   // chan: single variable (the received element)
+        if hasval == 1 { g_check_err = 1  return ok }
+        e := chan_elem(base)
+        union(key, e)
+        ok = 1
+        return ok
+    }
+}
+
+// resolve_deferred is the fixpoint over index/range/field uses (port of resolveDeferred):
+// resolve whatever now has a known base kind, re-solve, repeat until no progress.
+func resolve_deferred() {
+    idone := zeros(len(g_iu_base))
+    rdone := zeros(len(g_ru_base))
+    fdone := zeros(len(g_fu_base))
+    for true {
+        progressed := 0
+        i := 0
+        for i < len(g_iu_base) {
+            if idone[i] == 0 {
+                ok := try_index(g_iu_base[i], g_iu_idx[i], g_iu_res[i])
+                if g_terr == 1 || g_check_err == 1 { return }
+                if ok == 1 { idone[i] = 1  progressed = 1 }
+            }
+            i = i + 1
+        }
+        i = 0
+        for i < len(g_ru_base) {
+            if rdone[i] == 0 {
+                ok := try_range(g_ru_base[i], g_ru_key[i], g_ru_val[i], g_ru_hasval[i])
+                if g_terr == 1 || g_check_err == 1 { return }
+                if ok == 1 { rdone[i] = 1  progressed = 1 }
+            }
+            i = i + 1
+        }
+        i = 0
+        for i < len(g_fu_base) {
+            if fdone[i] == 0 {
+                if kind_of(g_fu_base[i]) == 8 {   // KStruct
+                    nm := g_sname[find(g_fu_base[i])]
+                    ft, found := field_type(nm, g_fu_field[i])
+                    if found == 0 { g_check_err = 1  return }
+                    fs := type_slot(ft)
+                    union(g_fu_res[i], fs)
+                    fdone[i] = 1
+                    progressed = 1
+                }
+            }
+            i = i + 1
+        }
+        if progressed == 0 { return_after_check(idone, rdone, fdone)  return }
+        solve()
+        if g_terr == 1 { return }
+    }
+}
+
+// return_after_check flags any deferred use that never resolved as a check error.
+func return_after_check(idone, rdone, fdone) {
+    i := 0
+    for i < len(idone) { if idone[i] == 0 { g_check_err = 1  return }  i = i + 1 }
+    i = 0
+    for i < len(rdone) { if rdone[i] == 0 { g_check_err = 1  return }  i = i + 1 }
+    i = 0
+    for i < len(fdone) { if fdone[i] == 0 { g_check_err = 1  return }  i = i + 1 }
 }
 
 // finalize: every still-unbound (KVar) or flexible-numeric (KNum) slot defaults to int.

@@ -25,6 +25,14 @@ func main() {
             i = i + 1
         }
     }
+    // pass 1b: register struct field names/types (for field access + struct literals)
+    for _, ln := range lines {
+        if has_prefix(ln, "type ") {
+            reset(ln)
+            tidx := parse_type_decl()
+            if g_err == 0 { register_struct(nodes[tidx].s, nodes[tidx].names, nodes[tidx].names2) }
+        }
+    }
 
     // find and parse `func main`
     mainline := ""
@@ -41,6 +49,7 @@ func main() {
     gen_block(nodes[idx].kids)
     if g_unsupported == 1 { write(1, "(unsupported)\n")  return }
     solve()
+    resolve_deferred()
     finalize()
     if g_terr == 1 || g_check_err == 1 { write(1, "(check-error)\n")  return }
     write(1, check_dump())

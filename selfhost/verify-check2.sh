@@ -59,10 +59,51 @@ func main() {
     if i == 3 { k := i << 1 | 1 }
 }
 EOF
+# deferred grammar: index / index-assign / range (slice,map,string) / maps
+cat > "$T/h4.src" <<'EOF'
+func main() {
+    xs := []int{10, 20, 30}
+    a := xs[0]
+    xs[1] = 99
+    total := 0
+    for i, v := range xs { total = total + v + i }
+    m := make(map[string]int)
+    m["k"] = 5
+    b := m["k"]
+    for key, val := range m { c := key }
+}
+EOF
+# structs: literal (named + positional), field access, field assign, slice-of-struct
+cat > "$T/h5.src" <<'EOF'
+type Point struct { x int  y int  label string }
+func main() {
+    p := Point{x: 1, y: 2, label: "o"}
+    q := Point{5, 6, "z"}
+    dx := p.x
+    lbl := q.label
+    p.y = 42
+    pts := []Point{p, q}
+    first := pts[0].x
+    fl := pts[1].label
+}
+EOF
+# channels: make / send / recv / range over string
+cat > "$T/h6.src" <<'EOF'
+func main() {
+    ch := make(chan int)
+    ch <- 7
+    got := <-ch
+    s := "hello"
+    n := 0
+    for idx, chr := range s { n = n + idx }
+    fc := make(chan float)
+    fc <- 1.5
+}
+EOF
 for f in "$T"/h*.src; do run "$f"; done
 
 # randomized type-correct fuzz
-for seed in $(seq 1 200); do
+for seed in $(seq 1 300); do
   python3 selfhost/gen-check.py "$seed" $(( (seed % 16) + 4 )) > "$T/g.src"
   run "$T/g.src"
 done

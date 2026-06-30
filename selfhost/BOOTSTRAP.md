@@ -134,7 +134,15 @@ monomorphic, multi-function, and mixed-int/float (two-instance) programs.
    `ufmain.src` (uftest), `checkgen.src`+`checkmain.src` (the checker). The integrated
    checker = `lex+parse+check+checkgen+checkmain` → `mfl-check`. Unsupported nodes emit
    `(unsupported)` so the harness skips out-of-slice programs.
-   *Next (2b): the deferred index/field/range/map/struct/chan grammar + resolveDeferred.*
+2b. ✅ **deferred grammar + resolveDeferred.** DONE. `checkgen.src` adds index `x[i]`,
+   field `x.f`, `for…range` (slice/string/map/chan), `make(map[K]V)`, `make(chan T)`,
+   `<-ch`, `ch <- v`, struct literals (named + positional) and field/index assignment —
+   plus `tryIndex`/`tryRange`/field resolution and the `resolveDeferred` fixpoint
+   (resolve what now has a known base kind → re-solve → repeat). A struct registry
+   (`type` decls → field names/types) backs field access + struct literals; `type_slot`
+   now parses `[]T`/`chan T`/`map[K]V`/struct names. Verified vs `checktest --program`:
+   a comprehensive hand battery (maps, structs both forms, channels, field/index ops) +
+   **800 random type-correct programs (slices, indexing, range), 0 mismatches**.
 3. user-function calls + `instantiate` (monomorphization) → multi-function programs.
 4. the builtin signature table (the long tail) → full corpus parity.
 
