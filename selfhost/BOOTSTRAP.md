@@ -223,9 +223,18 @@ node→slot pairs (so each expression's kind is queryable) + named-return names.
   (was 1). Global inits limited to scalar literals/idents for now (complex inits →
   g_cg_unsup). MFL gotcha: flat function scope — `parts := ""` and `parts := []string{}`
   in sibling if-branches are the SAME var → slice-vs-string clash; use distinct names.
-  *Next (4d part 2+): FFI extern calls + cstruct marshaling, json/parse serializers,
-  channels (make/send/recv/select), closures, complex global inits. Then FIXPOINT +
-  perf gate.*
+- 🔨 **(4d part 2) complex global inits + multi-value return → SELF-APPLICATION.**
+  Aggregate package-global initializers (`var nodes = []Node{}`, `var nums = []int{1,2}`)
+  now codegen: the `$globals` node-slot recordings are snapshotted (`g_glob_nn`/`g_glob_ns`)
+  and queried with `iid == -1`. Multi-value `return a, b` emits the `_ret` aggregate via
+  seqExprs. **MILESTONE: the MFL codegen emits byte-for-byte identical C to the Go
+  compiler for the COMPILER'S OWN SOURCE** — the checker (4371 lines of C) and the full
+  lex+parse+check+codegen (6406 lines). `verify-cgen.sh` (406) now includes the
+  self-application diff. Corpus codegen still PASS 9 / FAIL 0.
+  *Next (4d part 3): FFI extern calls + cstruct marshaling (unlocks the raylib games),
+  then json/parse serializers (backends), channels, closures → full corpus codegen
+  parity. Then the FIXPOINT proper (compile mflc's source to a native binary, run it,
+  assert it reproduces itself) + perf gate.*
 
 ### Stage 4 — C codegen, Stage 5 — driver, Stage 6 — fixpoint
 (unchanged; see top.)

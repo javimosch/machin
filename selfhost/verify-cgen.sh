@@ -101,6 +101,27 @@ func main() {
 EOF
 run "$T/h4.src"
 
+# aggregate package-global initializers ([]T{}, struct literals)
+cat > "$T/h5.src" <<'EOF'
+type Node struct { kind int  s string }
+var nodes = []Node{}
+var nums = []int{1, 2, 3}
+var names = []string{"a", "b"}
+var count = 0
+func main() {
+    nodes = append(nodes, Node{kind: 1, s: "x"})
+    count = len(nodes) + len(nums) + len(names)
+}
+EOF
+run "$T/h5.src"
+
+# SELF-APPLICATION: the MFL codegen emits byte-identical C for the compiler's OWN
+# source (checker + full codegen) — the fixpoint-adjacent milestone.
+$N "$MACHIN" encode selfhost/lex.src selfhost/parse.src selfhost/check.src \
+    selfhost/checkgen.src selfhost/checkmain.src > "$T/self-checker.mfl" 2>/dev/null
+run "$T/self-checker.mfl"
+cp /tmp/sh-cgen.mfl "$T/self-cgen.mfl" 2>/dev/null && run "$T/self-cgen.mfl"
+
 # randomized fuzz: call-free (4a) + call-heavy (4b) + builtin-heavy (4c) + aggregates (4d)
 for seed in $(seq 1 100); do
   python3 selfhost/gen-cg.py "$seed" $(( (seed % 16) + 4 )) > "$T/g.src";  run "$T/g.src"

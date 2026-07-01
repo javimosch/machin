@@ -53,6 +53,10 @@ var g_insts = []Inst{}
 // node-slot + call-instance recording for the ACTIVE instance (snapshotted after gen)
 var cur_nn = []int{}
 var cur_ns = []int{}
+// the $globals context: node->slot recordings for package-global initializer exprs
+// (codegen queries these with iid == -1).
+var g_glob_nn = []int{}
+var g_glob_ns = []int{}
 var cur_cnodes = []int{}
 var cur_cinsts = []int{}
 func record_call(call_idx, callee_inst) {

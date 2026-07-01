@@ -80,18 +80,21 @@ func ctype_slot(slot) (s) {
 
 // node_kind / node_slot_of: the inferred Kind / slot of expression node `idx` in `iid`.
 func node_kind(iid, idx) (k) {
+    s := node_slot_of(iid, idx)
+    if s >= 0 { k = kind_of(s)  return k }
     k = 2   // default int
-    if iid < 0 { return k }
-    ins := g_insts[iid]
-    j := 0
-    for j < len(ins.nn) {
-        if ins.nn[j] == idx { k = kind_of(ins.ns[j])  return k }
-        j = j + 1
-    }
 }
 func node_slot_of(iid, idx) (slot) {
     slot = -1
-    if iid < 0 { return slot }
+    if iid < 0 {
+        // $globals context: query the package-global initializer recordings
+        j := 0
+        for j < len(g_glob_nn) {
+            if g_glob_nn[j] == idx { slot = find(g_glob_ns[j])  return slot }
+            j = j + 1
+        }
+        return slot
+    }
     ins := g_insts[iid]
     j := 0
     for j < len(ins.nn) {
@@ -293,7 +296,11 @@ func cg_stmt(iid, idx, depth) {
     if k == K_RETURN {
         if len(n.kids) == 0 { emit_named_return(iid)  return }
         if len(n.kids) == 1 { cemit("return (" + cg_expr(iid, n.kids[0]) + ");\n")  return }
-        g_cg_unsup = 1  cemit("0;\n")
+        // multiple return values: sequence them, then build the _ret aggregate
+        names, decls, wrapped := seq_operands(iid, n.kids)
+        inner := "(" + g_insts[iid].cname + "_ret){ " + join(names, ", ") + " }"
+        if wrapped == 1 { inner = "({ " + decls + inner + "; })" }
+        cemit("return " + inner + ";\n")
         return
     }
     if k == K_BREAK { cemit("break;\n")  return }
