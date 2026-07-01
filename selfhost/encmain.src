@@ -1,0 +1,14 @@
+// selfhost/encmain.src — standalone driver for the MFL `encode` pass (Phase A of the
+// no-Go bootstrap). `encode <file.src>...` -> canonical MFL on stdout, byte-identical
+// to `machin encode`. Folded into the full `machin` driver in a later phase.
+
+func main() {
+    a := args()
+    paths := []string{}
+    i := 1
+    for i < len(a) { paths = append(paths, a[i])  i = i + 1 }
+    if len(paths) == 0 { write(2, "usage: encode <file.src>...\n")  exit(2) }
+    out := encode_files(paths)
+    if g_enc_err == 1 { write(2, "encode: unbalanced braces\n")  exit(1) }
+    write(1, out)
+}

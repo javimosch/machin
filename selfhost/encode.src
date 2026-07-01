@@ -1,0 +1,172 @@
+// selfhost/encode.src — the `machin encode` pass in MFL: loose Go-like source ->
+// canonical MFL (one normalized declaration per line). Ports splitFunctions,
+// stripLineComment, tighten (the ` *([punct]) *` -> `$1` whitespace collapse, done
+// string-aware as a char loop — no regex), and normalize. Output is byte-identical
+// to the Go `machin encode`, verified via the oracle diff. Part of the no-Go bootstrap.
+
+// is_tight_punct: one of the operator/punctuation bytes tighten collapses spaces around:
+//   ( ) { } [ ] , + - * / % < > = ! & | ; :
+func is_tight_punct(c) (b) {
+    b = 0
+    if c == 40 || c == 41 || c == 123 || c == 125 || c == 91 || c == 93 { b = 1  return b }
+    if c == 44 || c == 43 || c == 45 || c == 42 || c == 47 || c == 37 { b = 1  return b }
+    if c == 60 || c == 62 || c == 61 || c == 33 || c == 38 || c == 124 { b = 1  return b }
+    if c == 59 || c == 58 { b = 1  return b }
+}
+
+// tighten_seg: a code segment (no string literals) with spaces adjacent to any
+// tighten-punct removed. Exact char-loop equivalent of ` *(P) *` -> `$1` global replace:
+// spaces are dropped iff they are immediately before or after a punct char; other
+// spaces (between two identifiers, or leading/trailing) are preserved.
+func tighten_seg(s) (out) {
+    parts := []string{}
+    b := bytes(s)
+    n := len(b)
+    i := 0
+    pending := 0   // buffered spaces not yet committed (dropped if a punct follows)
+    for i < n {
+        c := byte_at(b, i)
+        if c == 32 {
+            pending = pending + 1
+            i = i + 1
+        } else {
+            if is_tight_punct(c) == 1 {
+                pending = 0                                  // drop the ` *` before P
+                parts = append(parts, substr(s, i, i + 1))
+                i = i + 1
+                for i < n && byte_at(b, i) == 32 { i = i + 1 }   // drop the ` *` after P
+            } else {
+                for pending > 0 { parts = append(parts, " ")  pending = pending - 1 }
+                parts = append(parts, substr(s, i, i + 1))
+                i = i + 1
+            }
+        }
+    }
+    for pending > 0 { parts = append(parts, " ")  pending = pending - 1 }   // trailing spaces kept
+    out = join(parts, "")
+}
+
+// tighten: tighten the code between string literals, copying each literal verbatim.
+func tighten(s) (out) {
+    parts := []string{}
+    b := bytes(s)
+    n := len(b)
+    seg := 0
+    i := 0
+    for i < n {
+        if byte_at(b, i) != 34 {   // not a double-quote
+            i = i + 1
+            continue
+        }
+        parts = append(parts, tighten_seg(substr(s, seg, i)))   // code before the string
+        j := i + 1                                              // copy the string literal
+        for j < n && byte_at(b, j) != 34 {
+            if byte_at(b, j) == 92 { j = j + 1 }   // skip an escaped char
+            j = j + 1
+        }
+        if j < n { j = j + 1 }   // include the closing quote
+        parts = append(parts, substr(s, i, j))
+        i = j
+        seg = j
+    }
+    parts = append(parts, tighten_seg(substr(s, seg, n)))
+    out = join(parts, "")
+}
+
+// strip_line_comment: drop a // comment, ignoring // inside a string literal.
+func strip_line_comment(line) (out) {
+    b := bytes(line)
+    n := len(b)
+    in_str := 0
+    i := 0
+    for i < n {
+        c := byte_at(b, i)
+        if in_str == 1 {
+            if c == 92 { i = i + 1 } else { if c == 34 { in_str = 0 } }
+        } else {
+            if c == 34 { in_str = 1 } else {
+                if c == 47 && i + 1 < n && byte_at(b, i + 1) == 47 { out = substr(line, 0, i)  return out }
+            }
+        }
+        i = i + 1
+    }
+    out = line
+}
+
+// normalize: flatten a declaration block to one canonical line.
+func normalize(src) (out) {
+    parts := []string{}
+    for _, line := range split(src, "\n") {
+        t := trim(strip_line_comment(line))
+        if t != "" { parts = append(parts, t) }
+    }
+    out = tighten(join(parts, " "))
+}
+
+// count_braces: update brace depth across one line, string/comment-aware. Returns the
+// new depth (mirrors splitFunctions' inner scan: "{"/"}" in strings/comments don't count).
+func count_braces(line, depth) (d) {
+    d = depth
+    b := bytes(line)
+    n := len(b)
+    in_str := 0
+    i := 0
+    for i < n {
+        c := byte_at(b, i)
+        if in_str == 1 {
+            if c == 92 { i = i + 1 } else { if c == 34 { in_str = 0 } }
+        } else {
+            if c == 34 { in_str = 1 } else {
+                if c == 47 && i + 1 < n && byte_at(b, i + 1) == 47 { i = n } else {
+                    if c == 123 { d = d + 1 } else { if c == 125 { d = d - 1 } }
+                }
+            }
+        }
+        i = i + 1
+    }
+}
+
+// split_functions: split readable source into per-declaration blocks (brace-aware).
+// A block completes when braces balance and it has a body ("{"), or is a brace-less
+// top-level `var` global. Returns the blocks; g_enc_err=1 on unbalanced braces.
+var g_enc_err = 0
+func split_functions(src) (blocks) {
+    blocks = []string{}
+    cur := []string{}     // accumulated lines of the current block
+    depth := 0
+    started := 0
+    for _, line := range split(src, "\n") {
+        trimmed := trim(line)
+        if started == 0 {
+            if trimmed == "" || has_prefix(trimmed, "//") { continue }
+            started = 1
+        }
+        cur = append(cur, line)
+        depth = count_braces(line, depth)
+        body := trim(join(cur, "\n"))
+        if started == 1 && depth == 0 && (contains(body, "{") || has_prefix(body, "var ")) {
+            blocks = append(blocks, body)
+            cur = []string{}
+            started = 0
+        }
+    }
+    if trim(join(cur, "\n")) != "" { g_enc_err = 1 }
+}
+
+// encode_files: read each path, concat, split into blocks, normalize each -> canonical
+// MFL text (blocks separated by a blank line), matching `machin encode`'s output.
+func encode_files(paths) (out) {
+    combined := []string{}
+    for _, p := range paths {
+        combined = append(combined, read_file(p))
+        combined = append(combined, "\n")
+    }
+    blocks := split_functions(join(combined, ""))
+    if g_enc_err == 1 { out = ""  return out }
+    parts := []string{}
+    for _, blk := range blocks {
+        parts = append(parts, normalize(blk))
+        parts = append(parts, "\n\n")
+    }
+    out = join(parts, "")
+}
