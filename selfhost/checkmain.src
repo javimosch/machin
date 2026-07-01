@@ -1,11 +1,21 @@
 // selfhost/checkmain.src — driver for the type-checker oracle binary (mfl-check),
 // Stage 3. Composes lex.src + parse.src + check.src + checkgen.src. Mirrors
-// `machin checktest --program <file.mfl>`: parse the program, run the checker, and
-// dump each instance as (func NAME (param ..) (ret ..) (local ..)).
+// `machin checktest --program <file.mfl>`: parse the whole program, run the checker
+// (with monomorphization), and dump every instance as
+//   (func NAME (param ..) (ret ..) (local ..))
+// deduped by source|signature and sorted — exactly like checktest.go.
 //
-// Sub-slice 2 scope: MAIN-ONLY programs (one instance). It finds `func main`,
-// type-checks its body, and prints "(func main (local ..) ...)". Programs that use
-// constructs not yet ported print "(unsupported)" so the harness can skip them.
+// Sub-slice 3 scope: user-function CALLS + monomorphization. Programs whose main (or a
+// reachable function) uses a construct not yet ported (builtins, variadic, closures)
+// print "(unsupported)" so the harness can skip them.
+
+// lex_only sets up the token stream for one line WITHOUT clearing `nodes`, so several
+// function decls accumulate into one shared node array (needed for cross-function calls).
+func lex_only(line) {
+    T = lex(line, bytes(line))
+    tp = 0
+    g_err = 0
+}
 
 func main() {
     a := args()
@@ -14,7 +24,7 @@ func main() {
     data := read_file(a[2])
     lines := split(data, "\n")
 
-    // pass 1: seed struct names so T{...} parses (matches the parser driver)
+    // pass 1: seed struct names so T{...} parses (reset() clears nodes each line)
     for _, ln := range lines {
         reset(ln)
         i := 0
@@ -34,23 +44,28 @@ func main() {
         }
     }
 
-    // find and parse `func main`
-    mainline := ""
+    // pass 2: parse EVERY function into the shared `nodes` array (no reset between
+    // them), recording name -> root node index. reset() above already cleared nodes,
+    // so accumulation starts clean.
+    nodes = []Node{}
     for _, ln := range lines {
-        if has_prefix(ln, "func main(") { mainline = ln }
+        if has_prefix(ln, "func ") || has_prefix(ln, "export func ") {
+            lex_only(ln)
+            r := parse_func_decl()
+            if g_err == 1 || pk().kind != 0 { write(1, "(parse-error)\n")  return }
+            g_func_names = append(g_func_names, nodes[r].s)
+            g_func_roots = append(g_func_roots, r)
+        }
     }
-    if mainline == "" { write(1, "(check-error)\n")  return }  // no main: the Go checker errors too
 
-    reset(mainline)
-    idx := parse_func_decl()
-    if g_err == 1 || pk().kind != 0 { write(1, "(parse-error)\n")  return }
+    if func_root("main") < 0 { write(1, "(check-error)\n")  return }   // no main
 
     init_consts()
-    gen_block(nodes[idx].kids)
+    instantiate("main")
     if g_unsupported == 1 { write(1, "(unsupported)\n")  return }
     solve()
     resolve_deferred()
     finalize()
     if g_terr == 1 || g_check_err == 1 { write(1, "(check-error)\n")  return }
-    write(1, check_dump())
+    write(1, dump_all())
 }

@@ -3436,10 +3436,14 @@ func (g *cgen) binaryCombine(ex *Binary, l, r string) string {
 	if ex.Op == "+" && g.c.NodeKind(g.curFn, ex) == KString {
 		return fmt.Sprintf("mfl_cat(%s, %s)", l, r)
 	}
-	// Compare strings by value, not by pointer. C's == on char* compares
-	// addresses, so equal-but-distinct strings would wrongly differ.
-	if (ex.Op == "==" || ex.Op == "!=") && g.c.NodeKind(g.curFn, ex.L) == KString {
-		return fmt.Sprintf("(mfl_strcmp(%s, %s) %s 0)", l, r, ex.Op)
+	// Compare strings by value, not by pointer. C's relational operators on char*
+	// compare addresses, so equal-but-distinct strings would wrongly differ and
+	// ordering (< <= > >=) would be meaningless; route all six through strcmp.
+	if g.c.NodeKind(g.curFn, ex.L) == KString {
+		switch ex.Op {
+		case "==", "!=", "<", "<=", ">", ">=":
+			return fmt.Sprintf("(mfl_strcmp(%s, %s) %s 0)", l, r, ex.Op)
+		}
 	}
 	// --safe: checked integer arithmetic (overflow) and division (by zero)
 	if g.safe && g.c.NodeKind(g.curFn, ex) == KInt {

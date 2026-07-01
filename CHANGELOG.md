@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Fixed: string ordering comparisons (`<` `<=` `>` `>=`) compared pointers, not
+  contents.** The type checker accepts ordering on strings (it returns bool), but
+  codegen only routed `==`/`!=` through `strcmp` — the four relational operators fell
+  through to raw C pointer comparison, so e.g. `"dbl" < "add"` could return true and
+  sorting strings gave garbage. All six comparisons now go through `mfl_strcmp`.
+  (Surfaced by the self-host type checker sorting its instance dump.)
+
 - **`substr` is now O(1) per call on a repeated source (was O(string length)).**
   `mfl_substr` needed `strlen(s)` only to clamp the end offset; it now memoizes the
   length by pointer identity, so slicing one buffer in a loop (lexers, parsers,

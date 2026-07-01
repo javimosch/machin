@@ -143,7 +143,18 @@ monomorphic, multi-function, and mixed-int/float (two-instance) programs.
    now parses `[]T`/`chan T`/`map[K]V`/struct names. Verified vs `checktest --program`:
    a comprehensive hand battery (maps, structs both forms, channels, field/index ops) +
    **800 random type-correct programs (slices, indexing, range), 0 mismatches**.
-3. user-function calls + `instantiate` (monomorphization) → multi-function programs.
+3. ✅ **user-function calls + monomorphization.** DONE. `checkgen.src` grows per-instance
+   contexts (save/restore around each `instantiate`), an `Inst` store, a recursion-guard
+   instStack (top-pointer, since MFL has no sub-slice op), `gen_call` (unify params↔args,
+   return the ret slot), `gen_multi_assign` (comma-ok recv + multi-return user calls),
+   `return_arity`, and a deduped, signature-sorted `dump_all` (`type_string_slot` +
+   `sig_string`). `checkmain.src` now parses ALL functions into one shared `nodes` array
+   (via `lex_only`, no reset) and instantiates from `main`. Verified vs `checktest
+   --program`: hand cases (monomorphization at int/float, multi-return, recursion, param
+   inference from body) + **539 random multi-function programs, 0 mismatches**. Two bugs
+   fixed en route: (a) a **compiler** bug — string `< <= > >=` compared pointers not
+   contents (now `mfl_strcmp`; CHANGELOG); (b) recursion needed params published to the
+   Inst store *before* generating the body. `verify-check3.sh` (276) + `gen-check3.py`.
 4. the builtin signature table (the long tail) → full corpus parity.
 
 ### Stage 4 — C codegen, Stage 5 — driver, Stage 6 — fixpoint

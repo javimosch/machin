@@ -24,24 +24,168 @@ func init_consts() {
     c_bytes = new_slot(12)
 }
 
-// ---- local environment (name -> slot), in declaration order (= localOrder) ----
-var g_env_names = []string{}
-var g_env_slots = []int{}
+// ---- per-instance context (monomorphization) ----
+// The ACTIVE instance's working state, read/written by gen_expr/gen_stmt. Saved and
+// restored around each recursive instantiate() so nested calls don't clobber it.
+var cur_names = []string{}   // env: variable name ...
+var cur_slots = []int{}      //      ... -> slot (params + named-returns + locals)
+var cur_lnames = []string{}  // localOrder: named-returns + body locals (NOT params)
+var cur_lslots = []int{}     //             parallel slots
+var cur_rets = []int{}       // this instance's return slots
+
+// Finished instances (in creation order = instOrder). Each is a monomorphic
+// specialization; the dump dedups them by src|signature.
+type Inst struct {
+    src string
+    pnames []string
+    pslots []int
+    rslots []int
+    lnames []string
+    lslots []int
+}
+var g_insts = []Inst{}
+
+// instStack (recursion guard): names currently being instantiated -> their inst id.
+// A top-pointer stack (MFL has no sub-slice op, so we don't shrink the backing array).
+var g_istack_names = []string{}
+var g_istack_ids = []int{}
+var g_istack_top = 0
+func istack_push(name, id) {
+    if g_istack_top < len(g_istack_names) {
+        g_istack_names[g_istack_top] = name
+        g_istack_ids[g_istack_top] = id
+    } else {
+        g_istack_names = append(g_istack_names, name)
+        g_istack_ids = append(g_istack_ids, id)
+    }
+    g_istack_top = g_istack_top + 1
+}
+func istack_pop() { g_istack_top = g_istack_top - 1 }
+func istack_lookup(name) (id) {
+    id = -1
+    i := g_istack_top - 1
+    for i >= 0 { if g_istack_names[i] == name { id = g_istack_ids[i]  return id }  i = i - 1 }
+}
+
+// name -> root K_FUNC node index (all functions parsed into the shared `nodes`).
+var g_func_names = []string{}
+var g_func_roots = []int{}
+func func_root(name) (root) {
+    root = -1
+    i := 0
+    for i < len(g_func_names) { if g_func_names[i] == name { root = g_func_roots[i]  return root }  i = i + 1 }
+}
 
 func env_lookup(name) (slot, found) {
     slot = -1
     found = 0
     i := 0
-    for i < len(g_env_names) {
-        if g_env_names[i] == name { slot = g_env_slots[i]  found = 1  return slot, found }
+    for i < len(cur_names) {
+        if cur_names[i] == name { slot = cur_slots[i]  found = 1  return slot, found }
         i = i + 1
     }
 }
 
+// env_set binds name->slot in the env only (used for parameters).
+func env_set(name, slot) {
+    cur_names = append(cur_names, name)
+    cur_slots = append(cur_slots, slot)
+}
+
+// env_declare creates a fresh local: env binding + localOrder entry.
 func env_declare(name) (slot) {
     slot = new_slot(0)   // KVar
-    g_env_names = append(g_env_names, name)
-    g_env_slots = append(g_env_slots, slot)
+    env_set(name, slot)
+    cur_lnames = append(cur_lnames, name)
+    cur_lslots = append(cur_lslots, slot)
+}
+
+// return_arity: the count in the first return stmt that has values (nested scan).
+func return_arity(body) (n) {
+    n = 0
+    for _, si := range body {
+        st := nodes[si]
+        k := st.kind
+        if k == K_RETURN { if len(st.kids) > 0 { n = len(st.kids)  return n } }
+        if k == K_IF { n = return_arity(st.kids)  if n > 0 { return n }  n = return_arity(st.kids2)  if n > 0 { return n } }
+        if k == K_WHILE || k == K_RANGE || k == K_ARENA { n = return_arity(st.kids)  if n > 0 { return n } }
+    }
+}
+
+func func_arity_of(root) (n) {
+    n = len(nodes[root].names2)
+    if n > 0 { return n }
+    n = return_arity(nodes[root].kids)
+}
+
+// instantiate: a fresh monomorphic specialization of `name`. A recursive call
+// reuses the in-progress instance. Runs the body's constraint generation, then
+// snapshots the instance and restores the caller's context.
+func instantiate(name) (id) {
+    g := istack_lookup(name)
+    if g >= 0 { id = g  return id }
+    root := func_root(name)
+    if root < 0 { g_check_err = 1  id = -1  return id }
+
+    pnames := nodes[root].names
+    rnames := nodes[root].names2
+    body := nodes[root].kids
+
+    id = len(g_insts)
+    g_insts = append(g_insts, Inst{src: name})   // placeholder (for recursion)
+    istack_push(name, id)
+
+    // save caller context
+    s_names := cur_names
+    s_slots := cur_slots
+    s_lnames := cur_lnames
+    s_lslots := cur_lslots
+    s_rets := cur_rets
+
+    // fresh context
+    cur_names = []string{}
+    cur_slots = []int{}
+    cur_lnames = []string{}
+    cur_lslots = []int{}
+
+    pslots := []int{}
+    i := 0
+    for i < len(pnames) {
+        ps := new_slot(0)
+        pslots = append(pslots, ps)
+        env_set(pnames[i], ps)
+        i = i + 1
+    }
+    arity := len(rnames)
+    if arity == 0 { arity = return_arity(body) }
+    rslots := []int{}
+    i = 0
+    for i < arity {
+        rs := new_slot(0)
+        rslots = append(rslots, rs)
+        if i < len(rnames) {
+            env_set(rnames[i], rs)
+            cur_lnames = append(cur_lnames, rnames[i])
+            cur_lslots = append(cur_lslots, rs)
+        }
+        i = i + 1
+    }
+    cur_rets = rslots
+
+    // publish params/returns BEFORE generating the body, so a recursive call sees a
+    // populated instance (Go sets funcParam/funcRets before genStmt). Refreshed after
+    // the body to capture the locals discovered during generation.
+    g_insts[id] = Inst{src: name, pnames: pnames, pslots: pslots, rslots: rslots, lnames: cur_lnames, lslots: cur_lslots}
+    gen_block(body)
+    g_insts[id] = Inst{src: name, pnames: pnames, pslots: pslots, rslots: rslots, lnames: cur_lnames, lslots: cur_lslots}
+
+    // restore caller context and pop the recursion guard
+    cur_names = s_names
+    cur_slots = s_slots
+    cur_lnames = s_lnames
+    cur_lslots = s_lslots
+    cur_rets = s_rets
+    istack_pop()
 }
 
 // ---- constraint stores ----
@@ -254,7 +398,32 @@ func gen_expr(idx) (slot) {
         slot = res
         return slot
     }
-    g_unsupported = 1   // call / callvalue / funclit / closure (later slices)
+    if k == K_CALL { slot = gen_call(idx)  return slot }
+    g_unsupported = 1   // callvalue / funclit / closure / builtins (later slices)
+    slot = c_void
+}
+
+// gen_call handles user-function calls with 0 or 1 return value (monomorphized).
+// Builtins, variadic calls, and func-valued locals fall to g_unsupported (later slices).
+func gen_call(idx) (slot) {
+    n := nodes[idx]
+    callee := n.s
+    argslots := []int{}
+    for _, a := range n.kids { argslots = append(argslots, gen_expr(a)) }
+    root := func_root(callee)
+    if root < 0 { g_unsupported = 1  slot = c_void  return slot }   // builtin or func-local
+    if nodes[root].b == 1 { g_unsupported = 1  slot = c_void  return slot }  // variadic
+    if n.ival == 1 { g_unsupported = 1  slot = c_void  return slot }         // spread call
+    inst := instantiate(callee)
+    if inst < 0 { slot = c_void  return slot }
+    pslots := g_insts[inst].pslots
+    if len(pslots) != len(argslots) { g_check_err = 1  slot = c_void  return slot }
+    i := 0
+    for i < len(pslots) { add_pair(pslots[i], argslots[i])  i = i + 1 }
+    rets := g_insts[inst].rslots
+    if len(rets) == 0 { slot = c_void  return slot }
+    if len(rets) == 1 { slot = rets[0]  return slot }
+    g_check_err = 1   // multi-return in expression position needs a multi-assignment
     slot = c_void
 }
 
@@ -345,10 +514,13 @@ func gen_stmt(idx) {
         return
     }
     if k == K_RETURN {
-        if len(n.kids) == 0 { return }
-        g_check_err = 1   // main has no return values; a valued return is an error
+        if len(n.kids) == 0 { return }   // bare return: ok for void / named-return funcs
+        if len(n.kids) != len(cur_rets) { g_check_err = 1  return }
+        i := 0
+        for i < len(n.kids) { vs := gen_expr(n.kids[i])  add_pair(cur_rets[i], vs)  i = i + 1 }
         return
     }
+    if k == K_MULTI { gen_multi_assign(idx)  return }
     if k == K_IF {
         cs := gen_expr(n.a)
         add_pair(cs, c_bool)
@@ -406,6 +578,73 @@ func range_bind(name) (slot) {
     s, found := env_lookup(name)
     if found == 1 { slot = s  return slot }
     slot = env_declare(name)
+}
+
+// gen_multi_assign: `a, b := rhs...` (port of genMultiAssign). Handles comma-ok
+// receive, a single user call returning >=2 values (destructured), and the plain
+// N-names = N-values form. Multi-return builtins fall to g_unsupported (slice 4).
+func gen_multi_assign(idx) {
+    n := nodes[idx]
+    nameslots := []int{}
+    i := 0
+    for i < len(n.names) {
+        nm := n.names[i]
+        if nm == "_" {
+            nameslots = append(nameslots, new_slot(0))
+        } else {
+            s, found := env_lookup(nm)
+            if found == 0 {
+                if n.s2 == "=" { g_check_err = 1  return }
+                s = env_declare(nm)
+            }
+            nameslots = append(nameslots, s)
+        }
+        i = i + 1
+    }
+    if len(n.kids) == 1 {
+        rhs0 := n.kids[0]
+        rn := nodes[rhs0]
+        if rn.kind == K_RECV {
+            if len(n.names) != 2 { g_check_err = 1  return }
+            cs := gen_expr(rn.a)
+            eslot := chan_elem(cs)
+            add_pair(nameslots[0], eslot)
+            add_pair(nameslots[1], c_bool)
+            return
+        }
+        if rn.kind == K_CALL {
+            callee := rn.s
+            root := func_root(callee)
+            if root < 0 { g_unsupported = 1  return }   // multi-return builtin (slice 4)
+            if func_arity_of(root) >= 2 {
+                if nodes[root].b == 1 { g_unsupported = 1  return }   // variadic
+                argslots := []int{}
+                for _, a := range rn.kids { argslots = append(argslots, gen_expr(a)) }
+                inst := instantiate(callee)
+                if inst < 0 { return }
+                pslots := g_insts[inst].pslots
+                if len(pslots) != len(rn.kids) { g_check_err = 1  return }
+                j := 0
+                for j < len(pslots) { add_pair(pslots[j], argslots[j])  j = j + 1 }
+                rets := g_insts[inst].rslots
+                if len(rets) != len(n.names) { g_check_err = 1  return }
+                j = 0
+                for j < len(rets) { add_pair(nameslots[j], rets[j])  j = j + 1 }
+                return
+            }
+        }
+        if len(n.names) != 1 { g_check_err = 1  return }
+        vs := gen_expr(n.kids[0])
+        add_pair(nameslots[0], vs)
+        return
+    }
+    if len(n.kids) != len(n.names) { g_check_err = 1  return }
+    i = 0
+    for i < len(n.kids) {
+        vs := gen_expr(n.kids[i])
+        add_pair(nameslots[i], vs)
+        i = i + 1
+    }
 }
 
 // solve: unify all pairs and resolve '+' constraints to a fixpoint (port of solve()).
@@ -565,13 +804,91 @@ func finalize() {
     }
 }
 
-// check_dump renders the single main instance like checktest.go: (func main locals…).
-func check_dump() (out) {
-    out = "(func main"
+// type_string_slot: the concrete type string of a slot (port of typeStringSlot),
+// used to build an instance's dedup/sort signature.
+func type_string_slot(slot) (s) {
+    r := find(slot)
+    k := g_kind[r]
+    if k == 3 { s = "float"  return s }
+    if k == 4 { s = "bool"  return s }
+    if k == 5 { s = "string"  return s }
+    if k == 8 { s = g_sname[r]  return s }
+    if k == 7 { s = "[]" + type_string_slot(g_elem[r])  return s }
+    if k == 9 { s = "chan " + type_string_slot(g_elem[r])  return s }
+    if k == 10 { s = "map[" + type_string_slot(g_mkey[r]) + "]" + type_string_slot(g_mval[r])  return s }
+    if k == 6 { s = "void"  return s }
+    s = "int"
+}
+
+// sig_string: an instance's canonical concrete signature "(p,..)->( r,..)".
+func sig_string(id) (s) {
+    inst := g_insts[id]
+    s = "("
     i := 0
-    for i < len(g_env_names) {
-        out = out + " (local " + g_env_names[i] + " " + kind_str(kind_of(g_env_slots[i])) + ")"
+    for i < len(inst.pslots) {
+        if i > 0 { s = s + "," }
+        s = s + type_string_slot(inst.pslots[i])
         i = i + 1
     }
-    out = out + ")\n"
+    s = s + ")->("
+    i = 0
+    for i < len(inst.rslots) {
+        if i > 0 { s = s + "," }
+        s = s + type_string_slot(inst.rslots[i])
+        i = i + 1
+    }
+    s = s + ")"
+}
+
+func dump_inst(id) (out) {
+    inst := g_insts[id]
+    out = "(func " + inst.src
+    i := 0
+    for i < len(inst.pslots) {
+        out = out + " (param " + inst.pnames[i] + " " + kind_str(kind_of(inst.pslots[i])) + ")"
+        i = i + 1
+    }
+    i = 0
+    for i < len(inst.rslots) {
+        out = out + " (ret " + str(i) + " " + kind_str(kind_of(inst.rslots[i])) + ")"
+        i = i + 1
+    }
+    i = 0
+    for i < len(inst.lnames) {
+        out = out + " (local " + inst.lnames[i] + " " + kind_str(kind_of(inst.lslots[i])) + ")"
+        i = i + 1
+    }
+    out = out + ")"
+}
+
+func seen_key(keys, key) (b) {
+    b = 0
+    for _, k := range keys { if k == key { b = 1  return b } }
+}
+
+// dump_all: dedup instances by src|signature (keep first), sort by key, one per line.
+func dump_all() (out) {
+    keys := []string{}
+    dlines := []string{}
+    i := 0
+    for i < len(g_insts) {
+        key := g_insts[i].src + "|" + sig_string(i)
+        if seen_key(keys, key) == 0 {
+            keys = append(keys, key)
+            dlines = append(dlines, dump_inst(i))
+        }
+        i = i + 1
+    }
+    // selection sort by key, moving dlines in tandem
+    a := 0
+    for a < len(keys) {
+        m := a
+        b := a + 1
+        for b < len(keys) { if keys[b] < keys[m] { m = b }  b = b + 1 }
+        tk := keys[a]  keys[a] = keys[m]  keys[m] = tk
+        tl := dlines[a]  dlines[a] = dlines[m]  dlines[m] = tl
+        a = a + 1
+    }
+    out = ""
+    for _, l := range dlines { out = out + l + "\n" }
 }
