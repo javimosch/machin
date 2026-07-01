@@ -4,12 +4,13 @@
 
 ## v0.84.0
 
-- **machin now self-hosts: the compiler compiles itself.** The full compiler —
-  lexer, parser, type checker, and C code generator — is now written in MFL
-  (`selfhost/`, ~4k lines) and reproduces the reference compiler byte-for-byte. The
-  self-hosting **fixpoint** holds: the MFL compiler compiles its own source into a
-  native binary (`mflc2`) that re-emits its own source identically (`mflc2.c ==
-  mflc3.c`), and its generated C matches the Go compiler for arbitrary programs. Every
+- **The machin compiler now compiles itself (a compiler bootstrap).** The full
+  compiler — lexer, parser, type checker, and C code generator — is now written *in
+  MFL* (`selfhost/`, ~4k lines) and emits the same machine code as the reference Go
+  compiler byte-for-byte. The **fixpoint** holds: the MFL compiler compiles its own
+  source into a native binary (`mflc2`) that re-emits its own source identically
+  (`mflc2.c == mflc3.c`), and its generated C matches the Go compiler for arbitrary
+  programs. (This is compiler self-hosting, not a hosting/deployment feature.) Every
   stage was built against a byte-diff oracle (`machin lextest`/`parsetest`/`checktest`/
   `cgentest`), and the effort surfaced three real compiler bugs (below) plus two
   general runtime speedups. On the full parse→typecheck→codegen of its own source the

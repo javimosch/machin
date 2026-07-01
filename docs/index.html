@@ -62,12 +62,13 @@
   <p class="tag">A language <b>optimized for the AI agent writing it</b>, not the human reading it.<br>
     As terse as Python to write, compiled through C to a tiny native binary. <i>Write it like a script, ship it like C.</i></p>
   <div class="announce">
-    🧬 <b>New in v0.84.0 — machin is self-hosting.</b> The whole compiler
-    (<span class="k">lexer → parser → type-checker → C codegen</span>) is now written in
-    machin itself and reproduces the reference compiler <b>byte-for-byte</b>. The
-    <b>fixpoint</b> holds: machin compiles its own source into a native binary that
-    re-emits itself identically — and runs at <b>~0.9× the reference speed</b>.
-    <a href="https://github.com/javimosch/machin/tree/main/selfhost">See selfhost/ →</a>
+    🧬 <b>New in v0.84.0 — machin now compiles itself.</b> The machin compiler
+    (<span class="k">lexer → parser → type-checker → C codegen</span>) is now written
+    <i>in machin</i>, and it emits the same machine code as the original compiler
+    <b>byte-for-byte</b>. It even compiles its own source into a native binary that
+    re-emits itself identically — a genuine compiler <b>fixpoint</b> — at
+    <b>~0.9× the original's speed</b>.
+    <a href="https://github.com/javimosch/machin/tree/main/selfhost">See how →</a>
   </div>
   <div class="cta">
     <a class="primary" href="https://play.intrane.fr">▶ Try in your browser</a>
