@@ -214,6 +214,18 @@ func assign_line(iid, name, val, depth) {
     cemit(var_ref(iid, name) + " = " + val + ";\n")
 }
 
+// mrb_info: multi-return builtin -> (C fn, result struct type, comma-joined fields).
+// "" cfn => not a multi-return builtin. (needsTLS only gates the skipped prelude.)
+func mrb_info(name) (cfn, ctype, fields) {
+    cfn = ""
+    ctype = ""
+    fields = ""
+    if name == "http_get" { cfn = "mfl_http_get"  ctype = "mfl_http_result"  fields = "status,body,err"  return cfn, ctype, fields }
+    if name == "http_request" { cfn = "mfl_http_request"  ctype = "mfl_http_result"  fields = "status,body,err"  return cfn, ctype, fields }
+    if name == "json_get" { cfn = "mfl_json_get"  ctype = "mfl_json_result"  fields = "value,err"  return cfn, ctype, fields }
+    if name == "exec" { cfn = "mfl_exec"  ctype = "mfl_exec_result"  fields = "code,out,err"  return cfn, ctype, fields }
+}
+
 func callee_inst_of(iid, idx) (ci) {
     ins := g_insts[iid]
     j := 0
@@ -247,8 +259,43 @@ func cg_multi_assign(iid, idx, depth) {
                 return
             }
         }
-        if rn.kind == K_RECV { g_cg_unsup = 1  cemit("0;\n")  return }
-        if rn.kind == K_CALL && func_root(rn.s) < 0 { g_cg_unsup = 1  cemit("0;\n")  return }
+        if rn.kind == K_CALL && func_root(rn.s) < 0 {
+            cfn, ctype, fstr := mrb_info(rn.s)
+            if cfn != "" {
+                fld := split(fstr, ",")
+                argstrs := []string{}
+                for _, a := range rn.kids { argstrs = append(argstrs, cg_expr(iid, a)) }
+                id := g_tmpid
+                g_tmpid = g_tmpid + 1
+                cemit("{\n")
+                indent(depth + 1)
+                cemit(ctype + " _t" + str(id) + " = " + cfn + "(" + join(argstrs, ", ") + ");\n")
+                i := 0
+                for i < len(n.names) { assign_line(iid, n.names[i], "_t" + str(id) + "." + fld[i], depth)  i = i + 1 }
+                indent(depth)
+                cemit("}\n")
+                return
+            }
+            g_cg_unsup = 1  cemit("0;\n")   // unknown multi-return builtin
+            return
+        }
+        if rn.kind == K_RECV {
+            cs := cg_expr(iid, rn.a)
+            ect := elem_ctype(iid, rn.a)   // channel element C type
+            id := g_tmpid
+            g_tmpid = g_tmpid + 1
+            ids := str(id)
+            cemit("{\n")
+            indent(depth + 1)
+            cemit(ect + " _rv" + ids + "; int _rok" + ids + " = mfl_chan_recv2(" + cs + ", &_rv" + ids + ");\n")
+            indent(depth + 1)
+            cemit("if (!_rok" + ids + ") memset(&_rv" + ids + ", 0, sizeof(_rv" + ids + "));\n")
+            assign_line(iid, n.names[0], "_rv" + ids, depth)
+            assign_line(iid, n.names[1], "_rok" + ids, depth)
+            indent(depth)
+            cemit("}\n")
+            return
+        }
         cemit(var_ref(iid, n.names[0]) + " = " + cg_expr(iid, rhs0) + ";\n")
         return
     }
