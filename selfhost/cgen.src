@@ -1,0 +1,387 @@
+// selfhost/cgen.src — Stage 4 (C codegen) in MFL, sub-slice (1). Composes with
+// lex + parse + check + checkgen. Emits the program-specific C (function bodies +
+// main) that `machin cgentest --program` produces in bodyOnly mode, diffed
+// byte-for-byte. This slice covers scalar locals, literals, idents, unary, binary
+// (incl. string concat/compare), assignment, if/while/return/break/continue — enough
+// for straight-line + control-flow functions. Calls/structs/slices/maps come next.
+
+// Output is accumulated as a slice of chunks (amortized O(1) append) and joined once
+// at the end — NOT via `g_out = g_out + s`, which copies the whole growing buffer per
+// call (O(n^2), the dominant cost of the naive codegen). join is O(n) in the runtime.
+var g_out = []string{}
+func cemit(s) { g_out = append(g_out, s) }
+func indent(depth) {
+    i := 0
+    for i < depth { g_out = append(g_out, "    ")  i = i + 1 }
+}
+func g_out_str() (s) { s = join(g_out, "") }
+
+// c_type: a Kind -> its C type (port of cType). c_zero: the C zero value (cZero).
+func c_type(k) (s) {
+    if k == 2 { s = "int64_t"  return s }
+    if k == 3 { s = "double"  return s }
+    if k == 4 { s = "int"  return s }
+    if k == 5 { s = "char*"  return s }
+    if k == 12 { s = "mfl_bytes"  return s }
+    if k == 6 { s = "void"  return s }
+    if k == 7 { s = "mfl_slice"  return s }
+    if k == 9 { s = "mfl_chan*"  return s }
+    if k == 10 { s = "mfl_map*"  return s }
+    if k == 11 { s = "mfl_closure"  return s }
+    s = "int64_t"
+}
+func c_zero(k) (s) {
+    if k == 3 { s = "0.0"  return s }
+    if k == 5 { s = "\"\""  return s }
+    if k == 7 || k == 8 || k == 11 || k == 12 { s = "{0}"  return s }
+    s = "0"
+}
+
+// c_quote renders a string value as a C string literal (the common cases of Go's
+// strconv.Quote: standard escapes + printable ASCII; other bytes as octal \NNN).
+func c_quote(v) (out) {
+    parts := []string{"\""}
+    b := bytes(v)
+    i := 0
+    for i < len(b) {
+        c := byte_at(b, i)
+        if c == 34 { parts = append(parts, "\\\"") } else {
+        if c == 92 { parts = append(parts, "\\\\") } else {
+        if c == 10 { parts = append(parts, "\\n") } else {
+        if c == 9 { parts = append(parts, "\\t") } else {
+        if c == 13 { parts = append(parts, "\\r") } else {
+        if (c >= 32 && c < 127) || c >= 128 { parts = append(parts, substr(v, i, i + 1)) } else {
+            parts = append(parts, "\\" + oct3(c))   // control byte (0-31, 127): octal escape
+        }}}}}}
+        i = i + 1
+    }
+    parts = append(parts, "\"")
+    out = join(parts, "")
+}
+func oct3(c) (s) {
+    d0 := c / 64
+    d1 := (c / 8) % 8
+    d2 := c % 8
+    s = str(d0) + str(d1) + str(d2)
+}
+
+// ctype_slot: the C type of a slot (port of ctypeSlot) — like c_type but resolves a
+// KStruct to mfl_<name>. Used for locals/params/returns/node C types.
+func ctype_slot(slot) (s) {
+    r := find(slot)
+    k := g_kind[r]
+    if k == 3 { s = "double"  return s }
+    if k == 4 { s = "int"  return s }
+    if k == 5 { s = "char*"  return s }
+    if k == 12 { s = "mfl_bytes"  return s }
+    if k == 6 { s = "void"  return s }
+    if k == 7 { s = "mfl_slice"  return s }
+    if k == 8 { s = "mfl_" + g_sname[r]  return s }
+    if k == 9 { s = "mfl_chan*"  return s }
+    if k == 10 { s = "mfl_map*"  return s }
+    if k == 11 { s = "mfl_closure"  return s }
+    s = "int64_t"
+}
+
+// node->slot lookup during codegen was an O(n) scan of the active instance's node
+// array, per expression -> O(n^2) per function (the dominant cost of the self-hosted
+// compiler). Replace it with an O(1) direct index keyed by global node id, refreshed
+// per instance via a generation tag (so no clearing between instances).
+var g_nslot = []int{}      // node idx -> slot (for the active instance)
+var g_nslot_gen = []int{}  // generation each entry was written under
+var g_cur_gen = 0
+
+// cg_nslot_init sizes the direct-index arrays to the node count (called once).
+func cg_nslot_init() {
+    g_nslot = []int{}
+    g_nslot_gen = []int{}
+    i := 0
+    for i < len(nodes) { g_nslot = append(g_nslot, -1)  g_nslot_gen = append(g_nslot_gen, 0)  i = i + 1 }
+}
+
+// activate_inst makes instance iid's node->slot map the active O(1) lookup table.
+func activate_inst(iid) {
+    g_cur_gen = g_cur_gen + 1
+    ins := g_insts[iid]
+    j := 0
+    for j < len(ins.nn) {
+        nd := ins.nn[j]
+        g_nslot[nd] = ins.ns[j]
+        g_nslot_gen[nd] = g_cur_gen
+        j = j + 1
+    }
+}
+
+// node_kind / node_slot_of: the inferred Kind / slot of expression node `idx` in `iid`.
+func node_kind(iid, idx) (k) {
+    s := node_slot_of(iid, idx)
+    if s >= 0 { k = kind_of(s)  return k }
+    k = 2   // default int
+}
+func node_slot_of(iid, idx) (slot) {
+    slot = -1
+    if iid < 0 {
+        // $globals context: query the package-global initializer recordings (few)
+        j := 0
+        for j < len(g_glob_nn) {
+            if g_glob_nn[j] == idx { slot = find(g_glob_ns[j])  return slot }
+            j = j + 1
+        }
+        return slot
+    }
+    // active instance: O(1) direct index (entries valid only for the current generation)
+    if g_nslot_gen[idx] == g_cur_gen { slot = find(g_nslot[idx]) }
+}
+// elem_ctype: the C type of a slice/chan node's element (for append).
+func elem_ctype(iid, idx) (s) {
+    r := node_slot_of(iid, idx)
+    if r >= 0 {
+        if (g_kind[r] == 7 || g_kind[r] == 9) && g_elem[r] >= 0 { s = ctype_slot(g_elem[r])  return s }
+    }
+    s = "int64_t"
+}
+// map_key_args: (ik, sk) for a map op — string keys pass ("0", key), else (key, "NULL").
+func map_key_args(iid, map_idx, keyexpr) (ik, sk) {
+    r := node_slot_of(iid, map_idx)
+    strkey := 0
+    if r >= 0 { if g_kind[r] == 10 && g_mkey[r] >= 0 { if kind_of(g_mkey[r]) == 5 { strkey = 1 } } }
+    if strkey == 1 { ik = "0"  sk = keyexpr } else { ik = keyexpr  sk = "NULL" }
+}
+
+// is_local: is `name` a parameter or local of instance iid?
+func is_local(iid, name) (b) {
+    b = 0
+    if iid < 0 { return b }
+    ins := g_insts[iid]
+    i := 0
+    for i < len(ins.pnames) { if ins.pnames[i] == name { b = 1  return b }  i = i + 1 }
+    i = 0
+    for i < len(ins.lnames) { if ins.lnames[i] == name { b = 1  return b }  i = i + 1 }
+}
+
+// var_ref: mfl_g_<name> for a package global (unless shadowed by a local), else v_<name>.
+func var_ref(iid, name) (s) {
+    fnd := 0
+    _, fnd = global_lookup(name)
+    if fnd == 1 && is_local(iid, name) == 0 { s = "mfl_g_" + name  return s }
+    s = "v_" + name
+}
+
+// c_float renders a float literal to match strconv.FormatFloat(v,'g',-1,64)+".0"-fixup.
+// str() uses C's %g, which shares Go's exponent threshold (e at exp<-4 or exp>=6); the
+// ONLY difference is precision — C's default 6 sig figs vs Go's shortest. So when the
+// %g result round-trips (value needs <=6 sig figs), it is byte-identical to Go's 'g',
+// exponent form included. Values needing >6 figs can't be produced here -> defer.
+func c_float(lex) (s) {
+    v := parse_float(lex)
+    s = str(v)
+    if parse_float(s) != v { g_cg_unsup = 1  s = "0.0"  return s }   // needs >6 sig figs
+    if contains(s, ".") == false && contains(s, "e") == false && contains(s, "E") == false { s = s + ".0" }
+}
+
+func cg_expr(iid, idx) (out) {
+    n := nodes[idx]
+    k := n.kind
+    if k == K_INT { out = str(n.ival)  return out }
+    if k == K_FLOAT { out = c_float(n.s)  return out }
+    if k == K_STR { out = c_quote(n.s)  return out }
+    if k == K_BOOL { if n.ival == 1 { out = "1" } else { out = "0" }  return out }
+    if k == K_NIL { out = "0"  return out }
+    if k == K_ID { out = var_ref(iid, n.s)  return out }
+    if k == K_UNARY {
+        op := n.s
+        if op == "^" { op = "~" }
+        out = "(" + op + cg_expr(iid, n.a) + ")"
+        return out
+    }
+    if k == K_BIN { out = cg_binary(iid, idx)  return out }
+    if k == K_CALL { out = cg_call(iid, idx)  return out }
+    if k == K_SLICE { out = cg_slice_lit(iid, idx)  return out }
+    if k == K_STRUCT { out = cg_struct_lit(iid, idx)  return out }
+    if k == K_INDEX { out = cg_index(iid, idx)  return out }
+    if k == K_FIELD { out = cg_field(iid, idx)  return out }
+    if k == K_MAKEMAP { out = cg_makemap(iid, idx)  return out }
+    g_cg_unsup = 1  out = "0"    // makechan / recv / funclit / closure / callvalue: later parts
+}
+
+// ---- side-effect ordering (port of seqExprs) ----
+var g_tmpid = 0
+
+func expr_has_side_effect(idx) (b) {
+    n := nodes[idx]
+    k := n.kind
+    if k == K_CALL || k == K_CALLV || k == K_RECV { b = 1  return b }
+    if k == K_UNARY || k == K_FIELD { b = expr_has_side_effect(n.a)  return b }
+    if k == K_BIN || k == K_INDEX {
+        if expr_has_side_effect(n.a) == 1 { b = 1  return b }
+        b = expr_has_side_effect(n.b)
+        return b
+    }
+    if k == K_SLICE {
+        for _, e := range n.kids { if expr_has_side_effect(e) == 1 { b = 1  return b } }
+    }
+    if k == K_STRUCT {
+        for _, e := range n.kids { if expr_has_side_effect(e) == 1 { b = 1  return b } }
+    }
+    b = 0
+}
+
+func node_ctype(iid, idx) (s) {
+    r := node_slot_of(iid, idx)
+    if r >= 0 { s = ctype_slot(r)  return s }
+    s = "int64_t"
+}
+
+// seq_operands evaluates the given operand nodes left-to-right. If any has a side
+// effect and there are >=2, it hoists them into _sq temporaries (returning the decl
+// prefix + temp names); otherwise it returns the raw operand strings. wrapped=1 means
+// the caller must wrap its result in a `({ <decls> <body>; })` statement-expression.
+func seq_operands(iid, idxs) (names, decls, wrapped) {
+    names = []string{}
+    strs := []string{}
+    impure := 0
+    i := 0
+    for i < len(idxs) {
+        strs = append(strs, cg_expr(iid, idxs[i]))
+        if expr_has_side_effect(idxs[i]) == 1 { impure = 1 }
+        i = i + 1
+    }
+    if impure == 0 || len(idxs) < 2 {
+        names = strs
+        decls = ""
+        wrapped = 0
+        return names, decls, wrapped
+    }
+    id := g_tmpid
+    g_tmpid = g_tmpid + 1
+    decls = ""
+    i = 0
+    for i < len(idxs) {
+        nm := "_sq" + str(id) + "_" + str(i)
+        names = append(names, nm)
+        decls = decls + node_ctype(iid, idxs[i]) + " " + nm + " = " + strs[i] + "; "
+        i = i + 1
+    }
+    wrapped = 1
+}
+
+// callee_cname: the C name of the callee instance for the call node `idx` in iid.
+func callee_cname(iid, idx) (cn) {
+    ins := g_insts[iid]
+    j := 0
+    for j < len(ins.cnodes) {
+        if ins.cnodes[j] == idx { cn = g_insts[ins.cinsts[j]].cname  return cn }
+        j = j + 1
+    }
+    cn = "/*?*/"
+}
+
+func cg_call(iid, idx) (out) {
+    n := nodes[idx]
+    names, decls, wrapped := seq_operands(iid, n.kids)
+    body := ""
+    ei := ext_lookup(n.s)   // an extern (FFI) fn shadows a builtin, matching the checker
+    if ei >= 0 {
+        body = cg_extern_call(iid, ei, names)
+    } else {
+        if func_root(n.s) >= 0 {
+            body = callee_cname(iid, idx) + "(" + join(names, ", ") + ")"
+        } else {
+            body = cg_builtin(iid, idx, n.s, names)
+        }
+    }
+    if wrapped == 1 { out = "({ " + decls + body + "; })" } else { out = body }
+}
+
+func is_cmp(op) (b) {
+    b = op == "==" || op == "!=" || op == "<" || op == "<=" || op == ">" || op == ">="
+}
+
+func binary_combine(iid, idx, l, r) (out) {
+    n := nodes[idx]
+    op := n.s
+    if op == "+" && node_kind(iid, idx) == 5 { out = "mfl_cat(" + l + ", " + r + ")"  return out }
+    if is_cmp(op) && node_kind(iid, n.a) == 5 { out = "(mfl_strcmp(" + l + ", " + r + ") " + op + " 0)"  return out }
+    out = "(" + l + " " + op + " " + r + ")"
+}
+
+func cg_binary(iid, idx) (out) {
+    n := nodes[idx]
+    idxs := []int{n.a, n.b}
+    names, decls, wrapped := seq_operands(iid, idxs)
+    combined := binary_combine(iid, idx, names[0], names[1])
+    if wrapped == 1 { out = "({ " + decls + combined + "; })" } else { out = combined }
+}
+
+func cg_block(iid, kids, depth) {
+    for _, s := range kids { cg_stmt(iid, s, depth) }
+}
+
+func cg_stmt(iid, idx, depth) {
+    n := nodes[idx]
+    k := n.kind
+    if k == K_EXPRSTMT {
+        cn := nodes[n.a]
+        if cn.kind == K_CALL && (cn.s == "print" || cn.s == "println") {
+            indent(depth)
+            cg_print(iid, n.a, depth)
+            return
+        }
+        indent(depth)
+        cemit(cg_expr(iid, n.a) + ";\n")
+        return
+    }
+    if k == K_MULTI { indent(depth)  cg_multi_assign(iid, idx, depth)  return }
+    indent(depth)
+    if k == K_ASSIGN { cemit(var_ref(iid, n.s) + " = " + cg_expr(iid, n.a) + ";\n")  return }
+    if k == K_RETURN {
+        if len(n.kids) == 0 { emit_named_return(iid)  return }
+        if len(n.kids) == 1 { cemit("return (" + cg_expr(iid, n.kids[0]) + ");\n")  return }
+        // multiple return values: sequence them, then build the _ret aggregate
+        names, decls, wrapped := seq_operands(iid, n.kids)
+        inner := "(" + g_insts[iid].cname + "_ret){ " + join(names, ", ") + " }"
+        if wrapped == 1 { inner = "({ " + decls + inner + "; })" }
+        cemit("return " + inner + ";\n")
+        return
+    }
+    if k == K_BREAK { cemit("break;\n")  return }
+    if k == K_CONTINUE { cemit("continue;\n")  return }
+    if k == K_IF {
+        cemit("if (" + cg_expr(iid, n.a) + ") {\n")
+        cg_block(iid, n.kids, depth + 1)
+        indent(depth)
+        if len(n.kids2) > 0 {
+            cemit("} else {\n")
+            cg_block(iid, n.kids2, depth + 1)
+            indent(depth)
+        }
+        cemit("}\n")
+        return
+    }
+    if k == K_WHILE {
+        cemit("while (" + cg_expr(iid, n.a) + ") {\n")
+        cg_block(iid, n.kids, depth + 1)
+        indent(depth)
+        cemit("}\n")
+        return
+    }
+    if k == K_IDXASSIGN { cg_index_assign(iid, idx, depth)  return }
+    if k == K_FLDASSIGN { cg_field_assign(iid, idx)  return }
+    if k == K_RANGE { cg_range(iid, idx, depth)  return }
+    if k == K_ARENA { cg_arena(iid, idx, depth)  return }
+    g_cg_unsup = 1  cemit("0;\n")   // send / select / go: later parts
+}
+
+func emit_named_return(iid) {
+    ins := g_insts[iid]
+    if len(ins.rnames) == 0 { cemit("return;\n")  return }
+    if len(ins.rnames) == 1 { cemit("return " + var_ref(iid, ins.rnames[0]) + ";\n")  return }
+    s := "return (" + ins.cname + "_ret){ "
+    i := 0
+    for i < len(ins.rnames) {
+        if i > 0 { s = s + ", " }
+        s = s + var_ref(iid, ins.rnames[i])
+        i = i + 1
+    }
+    cemit(s + " };\n")
+}

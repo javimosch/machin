@@ -1,5 +1,44 @@
 # Changelog
 
+## Unreleased
+
+## v0.84.0
+
+- **machin now self-hosts: the compiler compiles itself.** The full compiler —
+  lexer, parser, type checker, and C code generator — is now written in MFL
+  (`selfhost/`, ~4k lines) and reproduces the reference compiler byte-for-byte. The
+  self-hosting **fixpoint** holds: the MFL compiler compiles its own source into a
+  native binary (`mflc2`) that re-emits its own source identically (`mflc2.c ==
+  mflc3.c`), and its generated C matches the Go compiler for arbitrary programs. Every
+  stage was built against a byte-diff oracle (`machin lextest`/`parsetest`/`checktest`/
+  `cgentest`), and the effort surfaced three real compiler bugs (below) plus two
+  general runtime speedups. On the full parse→typecheck→codegen of its own source the
+  self-hosted compiler runs ~0.9× the Go reference (competitive). See `selfhost/`.
+
+- **`join([]string, sep)` is now O(n) instead of O(n²).** It built the result with
+  repeated `mfl_cat` (each copying the whole growing string); it now does one length
+  pass, a single allocation, and memcpy per piece. Building large strings by collecting
+  chunks in a slice and `join`-ing once is now linear — the idiomatic fast string
+  builder for MFL. (Surfaced by the self-hosted compiler emitting ~7k lines of C:
+  switching its output accumulation from `s = s + chunk` to slice+join took the whole
+  parse→typecheck→codegen pipeline from 7.4× slower than the Go compiler to ~0.9×.)
+
+- **Fixed: string ordering comparisons (`<` `<=` `>` `>=`) compared pointers, not
+  contents.** The type checker accepts ordering on strings (it returns bool), but
+  codegen only routed `==`/`!=` through `strcmp` — the four relational operators fell
+  through to raw C pointer comparison, so e.g. `"dbl" < "add"` could return true and
+  sorting strings gave garbage. All six comparisons now go through `mfl_strcmp`.
+  (Surfaced by the self-host type checker sorting its instance dump.)
+
+- **`substr` is now O(1) per call on a repeated source (was O(string length)).**
+  `mfl_substr` needed `strlen(s)` only to clamp the end offset; it now memoizes the
+  length by pointer identity, so slicing one buffer in a loop (lexers, parsers,
+  scanners, JSON/CSV readers) no longer rescans the whole string each time. Clamping
+  behavior is unchanged (semantics-identical cache; the arena free path invalidates it
+  so a reused address can't return a stale length). Measured: the self-host lexer over
+  the corpus dropped 8.3× (5283 → 636 ms), from 19× off hand-written Go to ~1.4×.
+  Surfaced by the bootstrap (`selfhost/PERF.md`, `selfhost/bench.sh`).
+
 ## v0.83.0
 
 - **New builtin `exec(cmd) -> (exit_code, stdout, stderr)`** — run a shell command and

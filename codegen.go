@@ -90,6 +90,7 @@ type cgen struct {
 	usesTTY   bool   // program calls raw_mode/read_key -> emit termios/select runtime
 	target    string // "" or "native" (default) -> cc; "wasm" -> zig cc, lean runtime, FFI as imports, exports
 	globals   map[string]bool // package-global names (emitted as C statics, mfl_g_<name>)
+	bodyOnly  bool   // oracle mode: emit only the program-specific C (skip the static runtime blocks)
 }
 
 // build targets.
@@ -155,10 +156,26 @@ static void* mfl_realloc(void* old, size_t sz) {
     if (old) { size_t o = ((mfl_blk*)old - 1)->size; memcpy(p, old, o < sz ? o : sz); }
     return p; /* old reclaimed with its arena */
 }
+/* substr strlen-cache: mfl_substr only needs strlen(s) to clamp the end offset.
+   In hot loops (the lexer, parsers, scanners) the same source pointer is sliced
+   thousands of times, so caching its length by pointer identity turns a per-call
+   O(strlen) scan into O(1) while preserving exact clamping semantics. Two distinct
+   *live* strings never share an address (the arena frees nothing mid-life), so
+   pointer identity ⇒ same length — but a freed block's address can be reused by a
+   later malloc, so mfl_arena_free invalidates the cache. */
+static _Thread_local const char* mfl_strlen_cache_s = NULL;
+static _Thread_local int64_t mfl_strlen_cache_n = 0;
+static inline int64_t mfl_strlen_cached(const char* s) {
+    if (s == mfl_strlen_cache_s) return mfl_strlen_cache_n;
+    int64_t n = (int64_t)strlen(s);
+    mfl_strlen_cache_s = s; mfl_strlen_cache_n = n;
+    return n;
+}
 static void mfl_arena_free(mfl_arena* a) {
     mfl_blk* b = a->head;
     while (b) { mfl_blk* n = b->next; free(b); b = n; }
     a->head = NULL;
+    mfl_strlen_cache_s = NULL; /* freed addresses may be reused — drop stale length */
 }
 
 /* --safe runtime checks (used only when the program is built with --safe) */
@@ -734,7 +751,7 @@ static int mfl_js_more(const char** p) { mfl_js_ws(p); if (**p==',') { (*p)++; r
 
 /* string operations */
 static char* mfl_substr(const char* s, int64_t i, int64_t j) {
-    int64_t n = strlen(s);
+    int64_t n = mfl_strlen_cached(s);
     if (i < 0) i = 0; if (j > n) j = n; if (i > j) i = j;
     int64_t len = j - i;
     char* r = mfl_alloc(len + 1); memcpy(r, s + i, len); r[len] = 0;
@@ -779,8 +796,19 @@ static mfl_slice mfl_split(const char* s, const char* sep) {
 }
 static char* mfl_join(mfl_slice xs, const char* sep) {
     if (xs.len == 0) return mfl_dup("");
-    char* r = mfl_dup(((char**)xs.data)[0]);
-    for (int64_t i = 1; i < xs.len; i++) { r = mfl_cat(r, sep); r = mfl_cat(r, ((char**)xs.data)[i]); }
+    char** parts = (char**)xs.data;
+    size_t ls = strlen(sep), total = 0;
+    for (int64_t i = 0; i < xs.len; i++) total += strlen(mfl_s(parts[i]));
+    total += ls * (size_t)(xs.len - 1);
+    char* r = mfl_alloc(total + 1);
+    char* w = r;
+    for (int64_t i = 0; i < xs.len; i++) {
+        if (i > 0) { memcpy(w, sep, ls); w += ls; }
+        const char* p = mfl_s(parts[i]);
+        size_t lp = strlen(p);
+        memcpy(w, p, lp); w += lp;
+    }
+    *w = 0;
     return r;
 }
 
@@ -2311,67 +2339,60 @@ func (g *cgen) program(p *Program) (string, error) {
 		}
 	}
 	var out strings.Builder
-	out.WriteString(cRuntime)
-	out.WriteByte('\n')
-	// POSIX socket + tty runtimes: always present for the native target; for the
-	// wasm target emitted only when actually used, so a browser app pulls in no
-	// socket/termios symbols (which wasi-libc does not fully provide).
-	if !g.wasm() || g.usesNet {
-		out.WriteString(netRuntime)
+	// bodyOnly (the Stage-4 codegen oracle): skip every static runtime block and emit
+	// only the program-specific C (externs, structs, functions, main). Both the Go and
+	// MFL codegens produce this identically, so diffing it verifies the emission logic
+	// without embedding the ~2000-line runtime prelude in MFL.
+	if !g.bodyOnly {
+		out.WriteString(cRuntime)
 		out.WriteByte('\n')
-	}
-	if !g.wasm() || g.usesTTY {
-		out.WriteString(ttyRuntime)
-		out.WriteByte('\n')
-	}
-	if g.usesTLS || g.usesWSS {
-		// OpenSSL plumbing — emitted (and linked) only when a program uses native
-		// TLS (https_* or wss_*), so TLS-free programs stay libc-only.
-		out.WriteString(tlsCoreRuntime)
-		out.WriteByte('\n')
-	}
-	if g.usesTLS {
-		out.WriteString(tlsRuntime)
-		out.WriteByte('\n')
-	}
-	if g.usesWSS {
-		out.WriteString(wssRuntime)
-		out.WriteByte('\n')
-	}
-	if g.usesMath {
-		// native math (libm) — emitted and linked (-lm) only when a program calls a
-		// math builtin, so math-free programs keep machin's libc-only footprint.
-		out.WriteString(mathRuntime)
-		out.WriteByte('\n')
-	}
-	if g.usesNoise {
-		// Perlin noise (libm for floor) — emitted only when noise2/noise3 is used.
-		out.WriteString(noiseRuntime)
-		out.WriteByte('\n')
-	}
-	if g.usesRegex {
-		// POSIX regex (libc) — emitted only when a program calls regex_*, so other
-		// programs don't pull in <regex.h> (keeps them portable to libcs without it).
-		out.WriteString(regexRuntime)
-		out.WriteByte('\n')
-	}
-	if g.usesSQLite {
-		// SQLite (libsqlite3) — emitted and linked (-lsqlite3) only when a program
-		// calls sqlite_*, so other programs don't depend on it.
-		out.WriteString(sqliteRuntime)
-		out.WriteByte('\n')
-	}
-	if g.usesCrypto {
-		// OpenSSL libcrypto (rand/sha/hmac/hkdf/x25519/ed25519/aes) — emitted and
-		// linked (-lcrypto) only when a program calls a crypto builtin.
-		out.WriteString(cryptoRuntime)
-		out.WriteByte('\n')
-	}
-	if g.usesXEdDSA {
-		// XEdDSA (Curve25519 signatures) — libsodium + OpenSSL + TweetNaCl field
-		// math; emitted and linked (-lsodium -lcrypto) only when xeddsa_* is used.
-		out.WriteString(xeddsaRuntime)
-		out.WriteByte('\n')
+		// POSIX socket + tty runtimes: always present for the native target; for the
+		// wasm target emitted only when actually used, so a browser app pulls in no
+		// socket/termios symbols (which wasi-libc does not fully provide).
+		if !g.wasm() || g.usesNet {
+			out.WriteString(netRuntime)
+			out.WriteByte('\n')
+		}
+		if !g.wasm() || g.usesTTY {
+			out.WriteString(ttyRuntime)
+			out.WriteByte('\n')
+		}
+		if g.usesTLS || g.usesWSS {
+			out.WriteString(tlsCoreRuntime)
+			out.WriteByte('\n')
+		}
+		if g.usesTLS {
+			out.WriteString(tlsRuntime)
+			out.WriteByte('\n')
+		}
+		if g.usesWSS {
+			out.WriteString(wssRuntime)
+			out.WriteByte('\n')
+		}
+		if g.usesMath {
+			out.WriteString(mathRuntime)
+			out.WriteByte('\n')
+		}
+		if g.usesNoise {
+			out.WriteString(noiseRuntime)
+			out.WriteByte('\n')
+		}
+		if g.usesRegex {
+			out.WriteString(regexRuntime)
+			out.WriteByte('\n')
+		}
+		if g.usesSQLite {
+			out.WriteString(sqliteRuntime)
+			out.WriteByte('\n')
+		}
+		if g.usesCrypto {
+			out.WriteString(cryptoRuntime)
+			out.WriteByte('\n')
+		}
+		if g.usesXEdDSA {
+			out.WriteString(xeddsaRuntime)
+			out.WriteByte('\n')
+		}
 	}
 	// foreign (extern) declarations. With a header, its prototypes + C structs are
 	// in scope. Without one, emit C struct typedefs and function prototypes from
@@ -3420,10 +3441,14 @@ func (g *cgen) binaryCombine(ex *Binary, l, r string) string {
 	if ex.Op == "+" && g.c.NodeKind(g.curFn, ex) == KString {
 		return fmt.Sprintf("mfl_cat(%s, %s)", l, r)
 	}
-	// Compare strings by value, not by pointer. C's == on char* compares
-	// addresses, so equal-but-distinct strings would wrongly differ.
-	if (ex.Op == "==" || ex.Op == "!=") && g.c.NodeKind(g.curFn, ex.L) == KString {
-		return fmt.Sprintf("(mfl_strcmp(%s, %s) %s 0)", l, r, ex.Op)
+	// Compare strings by value, not by pointer. C's relational operators on char*
+	// compare addresses, so equal-but-distinct strings would wrongly differ and
+	// ordering (< <= > >=) would be meaningless; route all six through strcmp.
+	if g.c.NodeKind(g.curFn, ex.L) == KString {
+		switch ex.Op {
+		case "==", "!=", "<", "<=", ">", ">=":
+			return fmt.Sprintf("(mfl_strcmp(%s, %s) %s 0)", l, r, ex.Op)
+		}
 	}
 	// --safe: checked integer arithmetic (overflow) and division (by zero)
 	if g.safe && g.c.NodeKind(g.curFn, ex) == KInt {

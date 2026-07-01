@@ -1,0 +1,159 @@
+// selfhost/check.src — the machin type checker ENGINE, written in MFL. Stage 3 of
+// the bootstrap. A faithful port of types.go's Checker union-find core: slot arrays,
+// find, reconcile, and union (with the recursive sub-unions for slice/chan elements,
+// map key/value, and function signatures).
+//
+// This file is engine-only (no main, no parser dependency). It composes with:
+//   - ufmain.src   -> the sub-slice-1 uftest binary (scripted op sequences)
+//   - checkgen.src + checkmain.src -> the full checker (constraint generation)
+//
+// Kind tags — must match types.go's iota exactly:
+//   KVar=0 KNum=1 KInt=2 KFloat=3 KBool=4 KString=5 KVoid=6
+//   KSlice=7 KStruct=8 KChan=9 KMap=10 KFunc=11 KBytes=12
+
+type Sig struct { params []int  ret int }
+
+// ---- engine state (mirrors the Go Checker's parallel arrays) ----
+var g_parent = []int{}
+var g_kind = []int{}
+var g_elem = []int{}      // KSlice/KChan: element slot; -1 otherwise
+var g_sname = []string{}  // KStruct: type name; "" otherwise
+var g_mkey = []int{}      // KMap: key slot; -1 otherwise
+var g_mval = []int{}      // KMap: value slot; -1 otherwise
+var g_fsig = []int{}      // KFunc: index into g_sigs; -1 otherwise
+var g_sigs = []Sig{}
+var g_terr = 0            // set to 1 on the first type mismatch
+var g_changed = 0         // union sets this to 1 on any merge (drives the solve fixpoint)
+
+func kind_str(k) (s) {
+    if k == 0 { s = "var"  return s }
+    if k == 1 { s = "num"  return s }
+    if k == 2 { s = "int"  return s }
+    if k == 3 { s = "float"  return s }
+    if k == 4 { s = "bool"  return s }
+    if k == 5 { s = "string"  return s }
+    if k == 6 { s = "void"  return s }
+    if k == 7 { s = "slice"  return s }
+    if k == 8 { s = "struct"  return s }
+    if k == 9 { s = "chan"  return s }
+    if k == 10 { s = "map"  return s }
+    if k == 11 { s = "func"  return s }
+    if k == 12 { s = "bytes"  return s }
+    s = "?"
+}
+
+func is_numeric(k) (b) { b = k == 2 || k == 3 || k == 1 }
+
+// new_slot appends a fresh slot of kind k and returns its index.
+func new_slot(k) (i) {
+    i = len(g_parent)
+    g_parent = append(g_parent, i)
+    g_kind = append(g_kind, k)
+    g_elem = append(g_elem, -1)
+    g_sname = append(g_sname, "")
+    g_mkey = append(g_mkey, -1)
+    g_mval = append(g_mval, -1)
+    g_fsig = append(g_fsig, -1)
+}
+
+func new_func_slot(params, ret) (i) {
+    i = new_slot(11)
+    g_fsig[i] = len(g_sigs)
+    g_sigs = append(g_sigs, Sig{params: params, ret: ret})
+}
+
+// find with path halving (mutates g_parent, exactly like the Go engine).
+func find(i) (r) {
+    for g_parent[i] != i {
+        g_parent[i] = g_parent[g_parent[i]]
+        i = g_parent[i]
+    }
+    r = i
+}
+
+// reconcile merges two kinds. ok=0 signals a type mismatch.
+func reconcile(a, b) (merged, ok) {
+    ok = 1
+    if a == b { merged = a  return merged, ok }
+    if a == 0 { merged = b  return merged, ok }   // KVar
+    if b == 0 { merged = a  return merged, ok }
+    if a == 1 && is_numeric(b) { merged = b  return merged, ok }   // KNum flex
+    if b == 1 && is_numeric(a) { merged = a  return merged, ok }
+    if a == 7 && b == 7 { merged = 7  return merged, ok }   // slice
+    if a == 8 && b == 8 { merged = 8  return merged, ok }   // struct
+    if a == 9 && b == 9 { merged = 9  return merged, ok }   // chan
+    if a == 10 && b == 10 { merged = 10  return merged, ok }  // map
+    if a == 11 && b == 11 { merged = 11  return merged, ok }  // func
+    merged = 0  ok = 0
+}
+
+// union merges the equivalence classes of a and b, recursively unifying the inner
+// slots (element / key / value / signature). On mismatch it sets g_terr; on any
+// merge it sets g_changed (so solve() can run to a fixpoint).
+func union(a, b) {
+    if g_terr == 1 { return }
+    ra := find(a)
+    rb := find(b)
+    if ra == rb { return }
+    merged, ok := reconcile(g_kind[ra], g_kind[rb])
+    if ok == 0 { g_terr = 1  return }
+
+    ea := -1
+    eb := -1
+    if merged == 7 || merged == 9 { ea = g_elem[ra]  eb = g_elem[rb] }
+    if merged == 8 {
+        na := g_sname[ra]
+        nb := g_sname[rb]
+        if na != "" && nb != "" && na != nb { g_terr = 1  return }
+    }
+    sa := -1
+    sb := -1
+    if merged == 11 {
+        sa = g_fsig[ra]
+        sb = g_fsig[rb]
+        if sa >= 0 && sb >= 0 && len(g_sigs[sa].params) != len(g_sigs[sb].params) { g_terr = 1  return }
+    }
+
+    g_parent[rb] = ra
+    g_kind[ra] = merged
+    g_changed = 1
+
+    if merged == 7 || merged == 9 {
+        keep := ea
+        if keep < 0 { keep = eb }
+        g_elem[ra] = keep
+        if ea >= 0 && eb >= 0 && ea != eb { union(ea, eb) }
+    }
+    if merged == 8 {
+        if g_sname[ra] == "" { g_sname[ra] = g_sname[rb] }
+    }
+    if merged == 10 {
+        mka := g_mkey[ra]
+        mkb := g_mkey[rb]
+        mva := g_mval[ra]
+        mvb := g_mval[rb]
+        if mka < 0 { g_mkey[ra] = mkb }
+        if mva < 0 { g_mval[ra] = mvb }
+        if mka >= 0 && mkb >= 0 && mka != mkb { union(mka, mkb) }
+        if mva >= 0 && mvb >= 0 && mva != mvb { union(mva, mvb) }
+    }
+    if merged == 11 {
+        keep := sa
+        if keep < 0 { keep = sb }
+        g_fsig[ra] = keep
+        if sa >= 0 && sb >= 0 && sa != sb {
+            pa := g_sigs[sa].params
+            pb := g_sigs[sb].params
+            i := 0
+            for i < len(pa) {
+                union(pa[i], pb[i])
+                i = i + 1
+            }
+            ra2 := g_sigs[sa].ret
+            rb2 := g_sigs[sb].ret
+            if ra2 >= 0 && rb2 >= 0 { union(ra2, rb2) }
+        }
+    }
+}
+
+func kind_of(slot) (k) { k = g_kind[find(slot)] }

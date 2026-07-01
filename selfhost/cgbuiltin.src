@@ -1,0 +1,316 @@
+// selfhost/cgbuiltin.src — Stage 4 codegen, sub-slice (4c): the builtin C table
+// (port of callBody's builtin switch), printCall, and multiAssign. In bodyOnly mode
+// the uses<X> flags gate the SKIPPED runtime prelude, so they don't affect output and
+// are omitted here. json/parse (per-type serializers), extern FFI calls, and multi-
+// return builtins are deferred to slice 4d -> g_cg_unsup so the harness skips them.
+
+var g_cg_unsup = 0
+
+func is_math1(name) (b) {
+    b = name == "sin" || name == "cos" || name == "tan" || name == "asin" || name == "acos" || name == "atan" || name == "exp" || name == "log" || name == "log2" || name == "log10" || name == "sqrt" || name == "cbrt" || name == "floor" || name == "ceil" || name == "round" || name == "trunc" || name == "abs"
+}
+
+// builtin_cfn maps a builtin to its plain C function name (arg-forwarding form
+// mfl_<cfn>(<args>)). "" => not a plain-table builtin (needs special handling).
+func builtin_cfn(name) (s) {
+    if name == "bytes" { s = "mfl_bytes_from_str"  return s }
+    if name == "bytes_str" { s = "mfl_bytes_str"  return s }
+    if name == "to_hex" { s = "mfl_bytes_hex"  return s }
+    if name == "from_hex" { s = "mfl_bytes_unhex"  return s }
+    if name == "byte_at" { s = "mfl_byte_at"  return s }
+    if name == "bytes_sub" { s = "mfl_bytes_sub"  return s }
+    if name == "bytes_index" { s = "mfl_bytes_index"  return s }
+    if name == "bytes_concat" { s = "mfl_bytes_concat"  return s }
+    if name == "rand_bytes" { s = "mfl_crypto_rand"  return s }
+    if name == "sha256_bytes" { s = "mfl_crypto_sha256"  return s }
+    if name == "sha1_bytes" { s = "mfl_crypto_sha1"  return s }
+    if name == "hmac_sha256_bytes" { s = "mfl_crypto_hmac256"  return s }
+    if name == "hkdf_sha256" { s = "mfl_crypto_hkdf"  return s }
+    if name == "pbkdf2_sha256" { s = "mfl_crypto_pbkdf2"  return s }
+    if name == "x25519_pub" { s = "mfl_crypto_x25519_pub"  return s }
+    if name == "x25519_shared" { s = "mfl_crypto_x25519_shared"  return s }
+    if name == "ed25519_pub" { s = "mfl_crypto_ed25519_pub"  return s }
+    if name == "ed25519_sign" { s = "mfl_crypto_ed25519_sign"  return s }
+    if name == "ed25519_verify" { s = "mfl_crypto_ed25519_verify"  return s }
+    if name == "aes_gcm_encrypt" { s = "mfl_crypto_aes_gcm_enc"  return s }
+    if name == "aes_gcm_decrypt" { s = "mfl_crypto_aes_gcm_dec"  return s }
+    if name == "aes_cbc_encrypt" { s = "mfl_crypto_aes_cbc_enc"  return s }
+    if name == "aes_cbc_decrypt" { s = "mfl_crypto_aes_cbc_dec"  return s }
+    if name == "xeddsa_sign" { s = "mfl_xeddsa" + "_sign"  return s }
+    if name == "xeddsa_verify" { s = "mfl_xeddsa" + "_verify"  return s }
+    if name == "keys" { s = "mfl_map_keys"  return s }
+    if name == "http_body" { s = "mfl_http_body"  return s }
+    if name == "to_upper" { s = "mfl_to_upper"  return s }
+    if name == "to_lower" { s = "mfl_to_lower"  return s }
+    if name == "trim" { s = "mfl_trim"  return s }
+    if name == "contains" { s = "mfl_contains"  return s }
+    if name == "has_prefix" { s = "mfl_has_prefix"  return s }
+    if name == "has_suffix" { s = "mfl_has_suffix"  return s }
+    if name == "index" { s = "mfl_index"  return s }
+    if name == "substr" { s = "mfl_substr"  return s }
+    if name == "charat" { s = "mfl_charat"  return s }
+    if name == "replace" { s = "mfl_replace"  return s }
+    if name == "split" { s = "mfl_split"  return s }
+    if name == "join" { s = "mfl_join"  return s }
+    if name == "sleep" { s = "mfl_sleep"  return s }
+    if name == "exit" { s = "mfl_exit"  return s }
+    if name == "flush" { s = "mfl_flush"  return s }
+    if name == "raw_mode" { s = "mfl_raw_mode"  return s }
+    if name == "read_key" { s = "mfl_read_key"  return s }
+    if name == "base64_encode" { s = "mfl_base64_encode"  return s }
+    if name == "base64_decode" { s = "mfl_base64_decode"  return s }
+    if name == "base64_encode_bytes" { s = "mfl_base64_encode_bytes"  return s }
+    if name == "base64_decode_bytes" { s = "mfl_base64_decode_bytes"  return s }
+    if name == "url_encode" { s = "mfl_url_encode"  return s }
+    if name == "url_decode" { s = "mfl_url_decode"  return s }
+    if name == "sha256" { s = "mfl_sha256"  return s }
+    if name == "hmac_sha256" { s = "mfl_hmac_sha256"  return s }
+    if name == "sqlite_open" { s = "mfl_sqlite_open"  return s }
+    if name == "sqlite_close" { s = "mfl_sqlite_close"  return s }
+    if name == "regex_match" { s = "mfl_regex_match"  return s }
+    if name == "regex_find" { s = "mfl_regex_find"  return s }
+    if name == "regex_replace" { s = "mfl_regex_replace"  return s }
+    if name == "regex_groups" { s = "mfl_regex_groups"  return s }
+    if name == "alloc" { s = "mfl_raw_alloc"  return s }
+    if name == "free" { s = "mfl_raw_free"  return s }
+    if name == "poke_f32" { s = "mfl_poke_f32"  return s }
+    if name == "poke_i32" { s = "mfl_poke_i32"  return s }
+    if name == "poke_u8" { s = "mfl_poke_u8"  return s }
+    if name == "poke_u16" { s = "mfl_poke_u16"  return s }
+    if name == "poke_ptr" { s = "mfl_poke_ptr"  return s }
+    if name == "peek_f32" { s = "mfl_peek_f32"  return s }
+    if name == "peek_i32" { s = "mfl_peek_i32"  return s }
+    if name == "ptr_str" { s = "mfl_ptr_str"  return s }
+    if name == "dial" { s = "mfl_dial"  return s }
+    if name == "listen" { s = "mfl_listen"  return s }
+    if name == "accept" { s = "mfl_accept"  return s }
+    if name == "peer_addr" { s = "mfl_peer_addr"  return s }
+    if name == "socket_timeout" { s = "mfl_socket_timeout"  return s }
+    if name == "read" { s = "mfl_read"  return s }
+    if name == "read_bytes" { s = "mfl_read_bytes"  return s }
+    if name == "write" { s = "mfl_write"  return s }
+    if name == "input" { s = "mfl_input"  return s }
+    if name == "read_stdin" { s = "mfl_read_stdin"  return s }
+    if name == "args" { s = "mfl_args"  return s }
+    if name == "env" { s = "mfl_env"  return s }
+    if name == "now" { s = "mfl_now"  return s }
+    if name == "now_ms" { s = "mfl_now_ms"  return s }
+    if name == "time_fields" { s = "mfl_time_fields"  return s }
+    if name == "time_format" { s = "mfl_time_format"  return s }
+    if name == "time_format_utc" { s = "mfl_time_format_utc"  return s }
+    if name == "time_make" { s = "mfl_time_make"  return s }
+    if name == "parse_int" { s = "mfl_parse_int"  return s }
+    if name == "parse_float" { s = "mfl_parse_float"  return s }
+    if name == "read_file" { s = "mfl_read_file"  return s }
+    if name == "read_file_bytes" { s = "mfl_read_file_bytes"  return s }
+    if name == "write_bytes" { s = "mfl_write_bytes"  return s }
+    if name == "write_file" { s = "mfl_write_file"  return s }
+    if name == "write_file_bytes" { s = "mfl_write_file_bytes"  return s }
+    if name == "remove" { s = "mfl_remove_file"  return s }
+    if name == "list_dir" { s = "mfl_list_dir"  return s }
+    if name == "system" { s = "mfl_system"  return s }
+    if name == "mkdir" { s = "mfl_mkdir"  return s }
+    if name == "https_get" { s = "mfl_https_get"  return s }
+    if name == "https_post" { s = "mfl_https_post"  return s }
+    if name == "wss_open" { s = "mfl_wss_open"  return s }
+    if name == "wss_send" { s = "mfl_wss_send"  return s }
+    if name == "wss_recv" { s = "mfl_wss_recv"  return s }
+    if name == "wss_send_bin" { s = "mfl_wss_send_bin"  return s }
+    if name == "wss_recv_bin" { s = "mfl_wss_recv_bin"  return s }
+    if name == "wss_close" { s = "mfl_wss_close"  return s }
+    if name == "pi" { s = "mfl_math_pi"  return s }
+    s = ""
+}
+
+// cg_builtin emits the C for a builtin call. `names` are the already-evaluated args.
+func cg_builtin(iid, call_idx, callee, names) (out) {
+    argn := nodes[call_idx].kids
+    if callee == "len" {
+        k := node_kind(iid, argn[0])
+        if k == 7 || k == 12 { out = "((" + names[0] + ").len)"  return out }
+        if k == 10 { out = "mfl_map_len(" + names[0] + ")"  return out }
+        out = "((int64_t)strlen(" + names[0] + "))"
+        return out
+    }
+    if callee == "str" {
+        k := node_kind(iid, argn[0])
+        if k == 3 { out = "mfl_str_d(" + names[0] + ")"  return out }
+        if k == 4 { out = "mfl_str_b(" + names[0] + ")"  return out }
+        if k == 5 { out = names[0]  return out }
+        out = "mfl_str_i(" + names[0] + ")"
+        return out
+    }
+    if callee == "int" { out = "((int64_t)(" + names[0] + "))"  return out }
+    if callee == "float" { out = "((double)(" + names[0] + "))"  return out }
+    if callee == "f64_bits" { out = "mfl_f64_bits((double)(" + names[0] + "))"  return out }
+    if callee == "f64_from_bits" { out = "mfl_f64_from_bits((int64_t)(" + names[0] + "))"  return out }
+    if callee == "close" {
+        if node_kind(iid, argn[0]) == 9 { out = "mfl_chan_close(" + names[0] + ")"  return out }
+        out = "mfl_close(" + names[0] + ")"
+        return out
+    }
+    if callee == "has" { ik, sk := map_key_args(iid, argn[0], names[1])  out = "mfl_map_has(" + names[0] + ", " + ik + ", " + sk + ")"  return out }
+    if callee == "delete" { ik, sk := map_key_args(iid, argn[0], names[1])  out = "mfl_map_del(" + names[0] + ", " + ik + ", " + sk + ")"  return out }
+    if callee == "append" {
+        ct := elem_ctype(iid, argn[0])
+        out = "mfl_append(" + names[0] + ", &((" + ct + "[1]){" + names[1] + "})[0], sizeof(" + ct + "))"
+        return out
+    }
+    if callee == "sqlite_exec" {
+        if len(names) == 3 { out = "mfl_sqlite_exec_p(" + join(names, ", ") + ")" } else { out = "mfl_sqlite_exec(" + join(names, ", ") + ")" }
+        return out
+    }
+    if callee == "sqlite_query" {
+        if len(names) == 3 { out = "mfl_sqlite_query_p(" + join(names, ", ") + ")" } else { out = "mfl_sqlite_query(" + join(names, ", ") + ")" }
+        return out
+    }
+    if is_math1(callee) {
+        fn := callee
+        if fn == "abs" { fn = "fabs" }
+        out = "mfl_math_" + fn + "((double)(" + names[0] + "))"
+        return out
+    }
+    if callee == "pow" || callee == "atan2" || callee == "fmod" || callee == "hypot" {
+        out = "mfl_math_" + callee + "((double)(" + names[0] + "), (double)(" + names[1] + "))"
+        return out
+    }
+    if callee == "noise2" { out = "mfl_noise2((double)(" + names[0] + "), (double)(" + names[1] + "))"  return out }
+    if callee == "noise3" { out = "mfl_noise3((double)(" + names[0] + "), (double)(" + names[1] + "), (double)(" + names[2] + "))"  return out }
+    if callee == "json" || callee == "parse" { g_cg_unsup = 1  out = "0"  return out }
+    cfn := builtin_cfn(callee)
+    if cfn != "" { out = cfn + "(" + join(names, ", ") + ")"  return out }
+    g_cg_unsup = 1   // extern FFI call / unknown -> slice 4d
+    out = "0"
+}
+
+// cg_print emits println/print (one print per arg, single-space separators). The
+// first line's indent was already emitted by the caller.
+func cg_print(iid, call_idx, depth) {
+    n := nodes[call_idx]
+    args := n.kids
+    i := 0
+    for i < len(args) {
+        if i > 0 { cemit("fputs(\" \", stdout); ") }
+        e := cg_expr(iid, args[i])
+        pk := node_kind(iid, args[i])
+        if pk == 2 { cemit("printf(\"%lld\", (long long)(" + e + "));") } else {
+        if pk == 3 { cemit("printf(\"%g\", (double)(" + e + "));") } else {
+        if pk == 4 { cemit("fputs((" + e + ") ? \"true\" : \"false\", stdout);") } else {
+        if pk == 5 { cemit("{ const char* _s = (" + e + "); fputs(_s ? _s : \"\", stdout); }") } else {
+        if pk == 12 { cemit("fputs(mfl_bytes_hex(" + e + "), stdout);") } else {
+            cemit("printf(\"%lld\", (long long)(" + e + "));")
+        }}}}}
+        cemit("\n")
+        if i < len(args) - 1 { indent(depth) }
+        i = i + 1
+    }
+    indent(depth)
+    if n.s == "println" { cemit("fputs(\"\\n\", stdout);\n") } else { cemit("fflush(stdout);\n") }
+}
+
+func assign_line(iid, name, val, depth) {
+    if name == "_" { return }
+    indent(depth + 1)
+    cemit(var_ref(iid, name) + " = " + val + ";\n")
+}
+
+// mrb_info: multi-return builtin -> (C fn, result struct type, comma-joined fields).
+// "" cfn => not a multi-return builtin. (needsTLS only gates the skipped prelude.)
+func mrb_info(name) (cfn, ctype, fields) {
+    cfn = ""
+    ctype = ""
+    fields = ""
+    if name == "http_get" { cfn = "mfl_http_get"  ctype = "mfl_http_result"  fields = "status,body,err"  return cfn, ctype, fields }
+    if name == "http_request" { cfn = "mfl_http_request"  ctype = "mfl_http_result"  fields = "status,body,err"  return cfn, ctype, fields }
+    if name == "json_get" { cfn = "mfl_json_get"  ctype = "mfl_json_result"  fields = "value,err"  return cfn, ctype, fields }
+    if name == "exec" { cfn = "mfl_exec"  ctype = "mfl_exec_result"  fields = "code,out,err"  return cfn, ctype, fields }
+}
+
+func callee_inst_of(iid, idx) (ci) {
+    ins := g_insts[iid]
+    j := 0
+    for j < len(ins.cnodes) { if ins.cnodes[j] == idx { ci = ins.cinsts[j]  return ci }  j = j + 1 }
+    ci = -1
+}
+
+// cg_multi_assign emits `a, b := rhs` (port of multiAssign): user multi-return call
+// destructuring, parallel assignment, or a single value. comma-ok recv + multi-return
+// builtins are deferred (g_cg_unsup). The caller already emitted the leading indent.
+func cg_multi_assign(iid, idx, depth) {
+    n := nodes[idx]
+    if len(n.kids) == 1 {
+        rhs0 := n.kids[0]
+        rn := nodes[rhs0]
+        if rn.kind == K_CALL && func_root(rn.s) >= 0 {
+            cinst := callee_inst_of(iid, rhs0)
+            if cinst >= 0 && len(g_insts[cinst].rslots) >= 2 {
+                argstrs := []string{}
+                for _, a := range rn.kids { argstrs = append(argstrs, cg_expr(iid, a)) }
+                id := g_tmpid
+                g_tmpid = g_tmpid + 1
+                cn := g_insts[cinst].cname
+                cemit("{\n")
+                indent(depth + 1)
+                cemit(cn + "_ret _t" + str(id) + " = " + cn + "(" + join(argstrs, ", ") + ");\n")
+                i := 0
+                for i < len(n.names) { assign_line(iid, n.names[i], "_t" + str(id) + ".r" + str(i), depth)  i = i + 1 }
+                indent(depth)
+                cemit("}\n")
+                return
+            }
+        }
+        if rn.kind == K_CALL && func_root(rn.s) < 0 {
+            cfn, ctype, fstr := mrb_info(rn.s)
+            if cfn != "" {
+                fld := split(fstr, ",")
+                argstrs := []string{}
+                for _, a := range rn.kids { argstrs = append(argstrs, cg_expr(iid, a)) }
+                id := g_tmpid
+                g_tmpid = g_tmpid + 1
+                cemit("{\n")
+                indent(depth + 1)
+                cemit(ctype + " _t" + str(id) + " = " + cfn + "(" + join(argstrs, ", ") + ");\n")
+                i := 0
+                for i < len(n.names) { assign_line(iid, n.names[i], "_t" + str(id) + "." + fld[i], depth)  i = i + 1 }
+                indent(depth)
+                cemit("}\n")
+                return
+            }
+            g_cg_unsup = 1  cemit("0;\n")   // unknown multi-return builtin
+            return
+        }
+        if rn.kind == K_RECV {
+            cs := cg_expr(iid, rn.a)
+            ect := elem_ctype(iid, rn.a)   // channel element C type
+            id := g_tmpid
+            g_tmpid = g_tmpid + 1
+            ids := str(id)
+            cemit("{\n")
+            indent(depth + 1)
+            cemit(ect + " _rv" + ids + "; int _rok" + ids + " = mfl_chan_recv2(" + cs + ", &_rv" + ids + ");\n")
+            indent(depth + 1)
+            cemit("if (!_rok" + ids + ") memset(&_rv" + ids + ", 0, sizeof(_rv" + ids + "));\n")
+            assign_line(iid, n.names[0], "_rv" + ids, depth)
+            assign_line(iid, n.names[1], "_rok" + ids, depth)
+            indent(depth)
+            cemit("}\n")
+            return
+        }
+        cemit(var_ref(iid, n.names[0]) + " = " + cg_expr(iid, rhs0) + ";\n")
+        return
+    }
+    // parallel assignment: hoist all RHS into temps, then assign
+    id := g_tmpid
+    g_tmpid = g_tmpid + 1
+    cemit("{\n")
+    i := 0
+    for i < len(n.kids) {
+        indent(depth + 1)
+        cemit(node_ctype(iid, n.kids[i]) + " _t" + str(id) + "_" + str(i) + " = " + cg_expr(iid, n.kids[i]) + ";\n")
+        i = i + 1
+    }
+    i = 0
+    for i < len(n.names) { assign_line(iid, n.names[i], "_t" + str(id) + "_" + str(i), depth)  i = i + 1 }
+    indent(depth)
+    cemit("}\n")
+}
