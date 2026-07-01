@@ -28,7 +28,7 @@ var skillDeploy string
 
 // machinVersion is the single version string for the toolchain. Bump it when
 // cutting a release (alongside README badge / SPEC / CHANGELOG).
-const machinVersion = "0.86.0"
+const machinVersion = "0.87.0"
 
 // ---- the source-of-truth feature catalog ----
 //
@@ -62,11 +62,20 @@ type guideDomain struct {
 	Summary string `json:"summary"`
 }
 
+// guideCommand is one CLI subcommand — so an agent can enumerate the whole tool
+// surface, not just the language.
+type guideCommand struct {
+	Name    string `json:"name"`
+	Usage   string `json:"usage"`
+	Summary string `json:"summary"`
+}
+
 type guideCatalog struct {
 	Version  string         `json:"version"`
 	Schema   string         `json:"schema"`
 	Tagline  string         `json:"tagline"`
 	Keywords []string       `json:"keywords"`
+	Commands []guideCommand `json:"commands"`
 	Domains  []guideDomain  `json:"domains"`
 	Types    []guideNote    `json:"types"`
 	Builtins []guideBuiltin `json:"builtins"`
@@ -101,12 +110,22 @@ func isBuiltinName(n string) bool {
 func machinGuide() guideCatalog {
 	return guideCatalog{
 		Version: machinVersion,
-		Schema:  "machin.guide/v1",
+		Schema:  "machin.guide/v2",
 		Tagline: "Go-flavored, type-inferred, machine-first language; MFL compiles through C to a single native binary. Plain-text source, one declaration per line.",
 		Keywords: []string{
 			"func", "return", "if", "else", "while", "for", "range", "break", "continue",
 			"select", "go", "chan", "make", "map", "struct", "type", "var", "arena",
 			"extern", "export", "true", "false", "nil",
+		},
+		Commands: []guideCommand{
+			{"run", "machin run <file.mfl> [--safe]", "compile to native and execute in one step"},
+			{"build", "machin build <file.mfl> [-o out] [--target wasm] [--static] [--emit-c] [--safe]", "compile to a native binary (or a wasm module with --target wasm; mark exports with `export func`). --static bundles SQLite for a FROM-scratch binary (pair with CC=musl-gcc); --emit-c prints the generated C and stops; --safe inserts bounds/div-zero/overflow checks."},
+			{"encode", "machin encode <src...>", "mint canonical MFL (one declaration/line) from loose Go-like .src; multiple files concatenate (compose a framework with an app); framework/*.src resolve from the binary."},
+			{"check", "machin check [--json] <src...>|--stdin", "lex/parse/typecheck ONLY — no cc, milliseconds — the fast write→check→fix loop. --json returns {ok, errorCount, diagnostics:[{severity, phase, code, message, decl, line, snippet}]}, exit 0 iff clean. Branch on the stable `code` (type-mismatch/undefined-name/undefined-field/arity-mismatch/parse-*/no-main/unsupported-construct/...), NOT the message text; `decl` is the function to fix. Reserve a full `build` for when you actually need the binary."},
+			{"pack", "machin pack <file.mfl>", "emit the dense base64 distribution form (`run` reads either plain or packed)"},
+			{"guide", "machin guide [--text] [--skill <name>]", "this version-exact catalog as JSON (--text for prose); --skill <start|web|gamedev|backend|deploy> prints a domain how-to"},
+			{"framework", "machin framework list|<name>|--vendor", "inspect the embedded framework modules (machweb, db drivers, …); --vendor writes a local copy"},
+			{"skill", "machin skill install", "register the agent skills where coding agents look (~/.agents/skills + detected editor dirs)"},
 		},
 		Domains: guideDomains,
 		Types: []guideNote{
@@ -317,8 +336,6 @@ func main() { println(str(id(42)) + " " + id("hi")) }`},
 func main() { println(str(sqrt(2.0))) }`},
 		},
 		Gotchas: []guideNote{
-			{"build", "Author loose Go-like .src, then `machin encode a.src > a.mfl` and `machin build a.mfl -o app`. The .mfl is canonical plain text (one decl/line)."},
-			{"check", "In a write->check->fix loop, run `machin check --json a.src` (or `--stdin`) BEFORE building — it lex/parse/typechecks only (no cc, milliseconds) and returns diagnostics as JSON: {ok, errorCount, diagnostics:[{severity,phase,code,message,decl,line,snippet}]}, exit 0 iff clean. Branch on the stable `code` (type-mismatch/undefined-name/arity-mismatch/parse-*/no-main/...), not the message text; `decl` is the function to fix. This is the fast structured feedback path — reserve a full `build` for when you actually need the binary."},
 			{"struct-value-semantics", "Structs are VALUE types: passing or assigning one copies it, so a function cannot mutate a caller's struct (and a builder must return the updated struct). For shared mutable state use a map — a reference type, so m[k]=v survives the holder being passed by value (see framework/flags.src)."},
 			{"map-comma-ok", "There is no map comma-ok: `v, ok := m[k]` does NOT compile. A read of an absent key returns the value type's zero value; use has(m, k) to test presence. (comma-ok is for channel receives: `v, ok := <-ch`.)"},
 			{"parse-witness", "parse(s, T{}) needs a value of T as a type witness, e.g. `u := parse(body, User{})`. A SLICE witness decodes an array: `parse(jsonArray, []T{}) -> []T`. For schemaless extraction use json_get(s, path); json(x) serializes any value."},
@@ -396,6 +413,12 @@ func renderGuideText(g guideCatalog) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "machin %s — %s\n\n", g.Version, g.Tagline)
 	fmt.Fprintf(&b, "KEYWORDS: %s\n\n", strings.Join(g.Keywords, " "))
+
+	b.WriteString("COMMANDS (the CLI surface)\n")
+	for _, c := range g.Commands {
+		fmt.Fprintf(&b, "  %s\n      %s\n", c.Usage, c.Summary)
+	}
+	b.WriteString("\n")
 
 	b.WriteString("DOMAINS — building something specific? read the how-to FIRST (don't reverse-engineer demos):\n")
 	for _, d := range g.Domains {

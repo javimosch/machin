@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## v0.87.0
+
+- **`machin guide` now enumerates the CLI — a structured `commands` section.** The catalog
+  gained a `commands` array (every subcommand — `run`/`build`/`encode`/`check`/`pack`/`guide`/
+  `framework`/`skill` — with its usage and one-line purpose), so an agent can discover the whole
+  tool surface, not just the language. Schema bumped to `machin.guide/v2`; `check` and `build`
+  moved out of `gotchas` into `commands` (their correct home). `--text` renders a COMMANDS section.
+
 ## v0.86.0
 
 - **`machin check [--json]` — agent-native diagnostics.** A machine-first alternative to a
