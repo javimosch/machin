@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.85.0
+
 - **The no-Go bootstrap: machin is now written in machin, full stop.** v0.84.0 proved the
   *compiler* compiles itself; the toolchain around it (`encode`, the `build`/`run`
   orchestration, the CLI) was still Go. Those are now ported to MFL too, so the repo
