@@ -39,11 +39,18 @@ type Inst struct {
     src string
     pnames []string
     pslots []int
+    rnames []string   // NAMED return variable names ("" entries for unnamed arity)
     rslots []int
     lnames []string
     lslots []int
+    nn []int          // expression node indices ...
+    ns []int          //   ... paired with their slot (for codegen's node kinds)
+    cname string      // assigned C function name (mfl_main / mfl_<src>_<n>)
 }
 var g_insts = []Inst{}
+// node-slot recording for the ACTIVE instance (snapshotted into Inst after gen)
+var cur_nn = []int{}
+var cur_ns = []int{}
 
 // instStack (recursion guard): names currently being instantiated -> their inst id.
 // A top-pointer stack (MFL has no sub-slice op, so we don't shrink the backing array).
@@ -164,6 +171,8 @@ func instantiate(name) (id) {
     cur_slots = []int{}
     cur_lnames = []string{}
     cur_lslots = []int{}
+    cur_nn = []int{}
+    cur_ns = []int{}
 
     pslots := []int{}
     i := 0
@@ -192,9 +201,9 @@ func instantiate(name) (id) {
     // publish params/returns BEFORE generating the body, so a recursive call sees a
     // populated instance (Go sets funcParam/funcRets before genStmt). Refreshed after
     // the body to capture the locals discovered during generation.
-    g_insts[id] = Inst{src: name, pnames: pnames, pslots: pslots, rslots: rslots, lnames: cur_lnames, lslots: cur_lslots}
+    g_insts[id] = Inst{src: name, pnames: pnames, rnames: rnames, pslots: pslots, rslots: rslots, lnames: cur_lnames, lslots: cur_lslots}
     gen_block(body)
-    g_insts[id] = Inst{src: name, pnames: pnames, pslots: pslots, rslots: rslots, lnames: cur_lnames, lslots: cur_lslots}
+    g_insts[id] = Inst{src: name, pnames: pnames, rnames: rnames, pslots: pslots, rslots: rslots, lnames: cur_lnames, lslots: cur_lslots, nn: cur_nn, ns: cur_ns}
 
     // restore caller context and pop the recursion guard
     cur_names = s_names
@@ -378,8 +387,15 @@ func type_slot(t) (s) {
     s = new_slot(0)
 }
 
-// gen_expr returns the slot for expression node `idx`.
+// gen_expr returns the slot for expression node `idx`, recording node->slot for the
+// active instance so codegen can query each expression's kind.
 func gen_expr(idx) (slot) {
+    slot = gen_expr_inner(idx)
+    cur_nn = append(cur_nn, idx)
+    cur_ns = append(cur_ns, slot)
+}
+
+func gen_expr_inner(idx) (slot) {
     n := nodes[idx]
     k := n.kind
     if k == K_INT { slot = new_slot(1)  return slot }      // KNum

@@ -90,6 +90,7 @@ type cgen struct {
 	usesTTY   bool   // program calls raw_mode/read_key -> emit termios/select runtime
 	target    string // "" or "native" (default) -> cc; "wasm" -> zig cc, lean runtime, FFI as imports, exports
 	globals   map[string]bool // package-global names (emitted as C statics, mfl_g_<name>)
+	bodyOnly  bool   // oracle mode: emit only the program-specific C (skip the static runtime blocks)
 }
 
 // build targets.
@@ -2327,67 +2328,60 @@ func (g *cgen) program(p *Program) (string, error) {
 		}
 	}
 	var out strings.Builder
-	out.WriteString(cRuntime)
-	out.WriteByte('\n')
-	// POSIX socket + tty runtimes: always present for the native target; for the
-	// wasm target emitted only when actually used, so a browser app pulls in no
-	// socket/termios symbols (which wasi-libc does not fully provide).
-	if !g.wasm() || g.usesNet {
-		out.WriteString(netRuntime)
+	// bodyOnly (the Stage-4 codegen oracle): skip every static runtime block and emit
+	// only the program-specific C (externs, structs, functions, main). Both the Go and
+	// MFL codegens produce this identically, so diffing it verifies the emission logic
+	// without embedding the ~2000-line runtime prelude in MFL.
+	if !g.bodyOnly {
+		out.WriteString(cRuntime)
 		out.WriteByte('\n')
-	}
-	if !g.wasm() || g.usesTTY {
-		out.WriteString(ttyRuntime)
-		out.WriteByte('\n')
-	}
-	if g.usesTLS || g.usesWSS {
-		// OpenSSL plumbing — emitted (and linked) only when a program uses native
-		// TLS (https_* or wss_*), so TLS-free programs stay libc-only.
-		out.WriteString(tlsCoreRuntime)
-		out.WriteByte('\n')
-	}
-	if g.usesTLS {
-		out.WriteString(tlsRuntime)
-		out.WriteByte('\n')
-	}
-	if g.usesWSS {
-		out.WriteString(wssRuntime)
-		out.WriteByte('\n')
-	}
-	if g.usesMath {
-		// native math (libm) — emitted and linked (-lm) only when a program calls a
-		// math builtin, so math-free programs keep machin's libc-only footprint.
-		out.WriteString(mathRuntime)
-		out.WriteByte('\n')
-	}
-	if g.usesNoise {
-		// Perlin noise (libm for floor) — emitted only when noise2/noise3 is used.
-		out.WriteString(noiseRuntime)
-		out.WriteByte('\n')
-	}
-	if g.usesRegex {
-		// POSIX regex (libc) — emitted only when a program calls regex_*, so other
-		// programs don't pull in <regex.h> (keeps them portable to libcs without it).
-		out.WriteString(regexRuntime)
-		out.WriteByte('\n')
-	}
-	if g.usesSQLite {
-		// SQLite (libsqlite3) — emitted and linked (-lsqlite3) only when a program
-		// calls sqlite_*, so other programs don't depend on it.
-		out.WriteString(sqliteRuntime)
-		out.WriteByte('\n')
-	}
-	if g.usesCrypto {
-		// OpenSSL libcrypto (rand/sha/hmac/hkdf/x25519/ed25519/aes) — emitted and
-		// linked (-lcrypto) only when a program calls a crypto builtin.
-		out.WriteString(cryptoRuntime)
-		out.WriteByte('\n')
-	}
-	if g.usesXEdDSA {
-		// XEdDSA (Curve25519 signatures) — libsodium + OpenSSL + TweetNaCl field
-		// math; emitted and linked (-lsodium -lcrypto) only when xeddsa_* is used.
-		out.WriteString(xeddsaRuntime)
-		out.WriteByte('\n')
+		// POSIX socket + tty runtimes: always present for the native target; for the
+		// wasm target emitted only when actually used, so a browser app pulls in no
+		// socket/termios symbols (which wasi-libc does not fully provide).
+		if !g.wasm() || g.usesNet {
+			out.WriteString(netRuntime)
+			out.WriteByte('\n')
+		}
+		if !g.wasm() || g.usesTTY {
+			out.WriteString(ttyRuntime)
+			out.WriteByte('\n')
+		}
+		if g.usesTLS || g.usesWSS {
+			out.WriteString(tlsCoreRuntime)
+			out.WriteByte('\n')
+		}
+		if g.usesTLS {
+			out.WriteString(tlsRuntime)
+			out.WriteByte('\n')
+		}
+		if g.usesWSS {
+			out.WriteString(wssRuntime)
+			out.WriteByte('\n')
+		}
+		if g.usesMath {
+			out.WriteString(mathRuntime)
+			out.WriteByte('\n')
+		}
+		if g.usesNoise {
+			out.WriteString(noiseRuntime)
+			out.WriteByte('\n')
+		}
+		if g.usesRegex {
+			out.WriteString(regexRuntime)
+			out.WriteByte('\n')
+		}
+		if g.usesSQLite {
+			out.WriteString(sqliteRuntime)
+			out.WriteByte('\n')
+		}
+		if g.usesCrypto {
+			out.WriteString(cryptoRuntime)
+			out.WriteByte('\n')
+		}
+		if g.usesXEdDSA {
+			out.WriteString(xeddsaRuntime)
+			out.WriteByte('\n')
+		}
 	}
 	// foreign (extern) declarations. With a header, its prototypes + C structs are
 	// in scope. Without one, emit C struct typedefs and function prototypes from
