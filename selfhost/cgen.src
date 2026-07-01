@@ -5,12 +5,16 @@
 // (incl. string concat/compare), assignment, if/while/return/break/continue — enough
 // for straight-line + control-flow functions. Calls/structs/slices/maps come next.
 
-var g_out = ""
-func cemit(s) { g_out = g_out + s }
+// Output is accumulated as a slice of chunks (amortized O(1) append) and joined once
+// at the end — NOT via `g_out = g_out + s`, which copies the whole growing buffer per
+// call (O(n^2), the dominant cost of the naive codegen). join is O(n) in the runtime.
+var g_out = []string{}
+func cemit(s) { g_out = append(g_out, s) }
 func indent(depth) {
     i := 0
-    for i < depth { g_out = g_out + "    "  i = i + 1 }
+    for i < depth { g_out = append(g_out, "    ")  i = i + 1 }
 }
+func g_out_str() (s) { s = join(g_out, "") }
 
 // c_type: a Kind -> its C type (port of cType). c_zero: the C zero value (cZero).
 func c_type(k) (s) {
@@ -36,22 +40,23 @@ func c_zero(k) (s) {
 // c_quote renders a string value as a C string literal (the common cases of Go's
 // strconv.Quote: standard escapes + printable ASCII; other bytes as octal \NNN).
 func c_quote(v) (out) {
-    out = "\""
+    parts := []string{"\""}
     b := bytes(v)
     i := 0
     for i < len(b) {
         c := byte_at(b, i)
-        if c == 34 { out = out + "\\\"" } else {
-        if c == 92 { out = out + "\\\\" } else {
-        if c == 10 { out = out + "\\n" } else {
-        if c == 9 { out = out + "\\t" } else {
-        if c == 13 { out = out + "\\r" } else {
-        if (c >= 32 && c < 127) || c >= 128 { out = out + substr(v, i, i + 1) } else {
-            out = out + "\\" + oct3(c)   // control byte (0-31, 127): octal escape
+        if c == 34 { parts = append(parts, "\\\"") } else {
+        if c == 92 { parts = append(parts, "\\\\") } else {
+        if c == 10 { parts = append(parts, "\\n") } else {
+        if c == 9 { parts = append(parts, "\\t") } else {
+        if c == 13 { parts = append(parts, "\\r") } else {
+        if (c >= 32 && c < 127) || c >= 128 { parts = append(parts, substr(v, i, i + 1)) } else {
+            parts = append(parts, "\\" + oct3(c))   // control byte (0-31, 127): octal escape
         }}}}}}
         i = i + 1
     }
-    out = out + "\""
+    parts = append(parts, "\"")
+    out = join(parts, "")
 }
 func oct3(c) (s) {
     d0 := c / 64
@@ -78,6 +83,35 @@ func ctype_slot(slot) (s) {
     s = "int64_t"
 }
 
+// node->slot lookup during codegen was an O(n) scan of the active instance's node
+// array, per expression -> O(n^2) per function (the dominant cost of the self-hosted
+// compiler). Replace it with an O(1) direct index keyed by global node id, refreshed
+// per instance via a generation tag (so no clearing between instances).
+var g_nslot = []int{}      // node idx -> slot (for the active instance)
+var g_nslot_gen = []int{}  // generation each entry was written under
+var g_cur_gen = 0
+
+// cg_nslot_init sizes the direct-index arrays to the node count (called once).
+func cg_nslot_init() {
+    g_nslot = []int{}
+    g_nslot_gen = []int{}
+    i := 0
+    for i < len(nodes) { g_nslot = append(g_nslot, -1)  g_nslot_gen = append(g_nslot_gen, 0)  i = i + 1 }
+}
+
+// activate_inst makes instance iid's node->slot map the active O(1) lookup table.
+func activate_inst(iid) {
+    g_cur_gen = g_cur_gen + 1
+    ins := g_insts[iid]
+    j := 0
+    for j < len(ins.nn) {
+        nd := ins.nn[j]
+        g_nslot[nd] = ins.ns[j]
+        g_nslot_gen[nd] = g_cur_gen
+        j = j + 1
+    }
+}
+
 // node_kind / node_slot_of: the inferred Kind / slot of expression node `idx` in `iid`.
 func node_kind(iid, idx) (k) {
     s := node_slot_of(iid, idx)
@@ -87,7 +121,7 @@ func node_kind(iid, idx) (k) {
 func node_slot_of(iid, idx) (slot) {
     slot = -1
     if iid < 0 {
-        // $globals context: query the package-global initializer recordings
+        // $globals context: query the package-global initializer recordings (few)
         j := 0
         for j < len(g_glob_nn) {
             if g_glob_nn[j] == idx { slot = find(g_glob_ns[j])  return slot }
@@ -95,12 +129,8 @@ func node_slot_of(iid, idx) (slot) {
         }
         return slot
     }
-    ins := g_insts[iid]
-    j := 0
-    for j < len(ins.nn) {
-        if ins.nn[j] == idx { slot = find(ins.ns[j])  return slot }
-        j = j + 1
-    }
+    // active instance: O(1) direct index (entries valid only for the current generation)
+    if g_nslot_gen[idx] == g_cur_gen { slot = find(g_nslot[idx]) }
 }
 // elem_ctype: the C type of a slice/chan node's element (for append).
 func elem_ctype(iid, idx) (s) {

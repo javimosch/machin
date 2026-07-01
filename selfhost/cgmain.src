@@ -116,5 +116,5 @@ func main() {
     if full == 1 { emit_prelude() }
     cg_program()
     if g_cg_unsup == 1 { write(1, "(unsupported)\n")  return }
-    write(1, g_out)
+    write(1, g_out_str())
 }

@@ -258,9 +258,11 @@ Three-way agreement confirmed: **Go machin ≡ mfl-cgen ≡ self-compiled mflc2*
 byte-identical C for arbitrary programs, and `mflc2`-compiled binaries run correctly
 (`HELLO 41 4`). Stages lex ✅ parse ✅ typecheck ✅ codegen ✅ → **self-hosting done.**
 
-Perf gate (`PERF.md`): the self-hosted compiler is ~7.4× slower than Go on the full
-pipeline — codegen quality is competitive; the gap is O(n) linear-scan symbol/node
-tables (algorithmically fixable, left naive for correctness-first).
+Perf gate (`PERF.md`): **PASSED.** The self-hosted compiler went from 7.4× slower to
+**0.90× (faster than Go)** on the full pipeline (335 ms vs 374 ms). The real bottleneck
+was O(n²) string building (not the linear scans first suspected): fixed the runtime
+`mfl_join` to O(n) and switched codegen output to `[]string`-accumulate + join once
+(`cemit`, `c_quote`); plus an O(1) generation-tagged `node_slot_of` index.
 
 Remaining breadth (optional, not needed for the fixpoint): json/parse serializers,
 channels (make/send/recv/select), closures (MakeClosure/CallValue) — the ~11 corpus

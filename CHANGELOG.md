@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **`join([]string, sep)` is now O(n) instead of O(n²).** It built the result with
+  repeated `mfl_cat` (each copying the whole growing string); it now does one length
+  pass, a single allocation, and memcpy per piece. Building large strings by collecting
+  chunks in a slice and `join`-ing once is now linear — the idiomatic fast string
+  builder for MFL. (Surfaced by the self-hosted compiler emitting ~7k lines of C:
+  switching its output accumulation from `s = s + chunk` to slice+join took the whole
+  parse→typecheck→codegen pipeline from 7.4× slower than the Go compiler to ~0.9×.)
+
 - **Fixed: string ordering comparisons (`<` `<=` `>` `>=`) compared pointers, not
   contents.** The type checker accepts ordering on strings (it returns bool), but
   codegen only routed `==`/`!=` through `strcmp` — the four relational operators fell

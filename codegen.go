@@ -796,8 +796,19 @@ static mfl_slice mfl_split(const char* s, const char* sep) {
 }
 static char* mfl_join(mfl_slice xs, const char* sep) {
     if (xs.len == 0) return mfl_dup("");
-    char* r = mfl_dup(((char**)xs.data)[0]);
-    for (int64_t i = 1; i < xs.len; i++) { r = mfl_cat(r, sep); r = mfl_cat(r, ((char**)xs.data)[i]); }
+    char** parts = (char**)xs.data;
+    size_t ls = strlen(sep), total = 0;
+    for (int64_t i = 0; i < xs.len; i++) total += strlen(mfl_s(parts[i]));
+    total += ls * (size_t)(xs.len - 1);
+    char* r = mfl_alloc(total + 1);
+    char* w = r;
+    for (int64_t i = 0; i < xs.len; i++) {
+        if (i > 0) { memcpy(w, sep, ls); w += ls; }
+        const char* p = mfl_s(parts[i]);
+        size_t lp = strlen(p);
+        memcpy(w, p, lp); w += lp;
+    }
+    *w = 0;
     return r;
 }
 

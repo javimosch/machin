@@ -70,6 +70,7 @@ func cg_signature(iid) (s) {
 
 func cg_function(iid) {
     ins := g_insts[iid]
+    activate_inst(iid)   // make this instance's node->slot map the O(1) lookup table
     cemit(cg_signature(iid) + " {\n")
     // local declarations (named returns + body locals), zero-initialized
     i := 0
@@ -93,6 +94,7 @@ var g_glob_inits = []int{}   // global-init expr node indices (parallel to g_glo
 
 func cg_program() {
     compute_reps()
+    cg_nslot_init()   // O(1) node->slot direct index (sized to the node count)
     // 0. extern (FFI) declarations: #include headers or raw cstruct typedefs + prototypes
     cg_extern_decls()
     // 1. struct typedefs — declared `type` structs and cstructs (mfl_ form), in

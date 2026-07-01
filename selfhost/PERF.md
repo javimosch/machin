@@ -49,26 +49,33 @@ malloc+copy. Closing that needs a real zero-copy `{ptr,len}` string-view represe
 done now: it's invasive and the lexer is already competitive. Tracked for if/when a
 later stage's profile demands it.
 
-## The fixpoint is reached — and the whole-compiler number
+## The fixpoint is reached — and the whole-compiler number (perf gate: PASSED)
 
 The self-hosting bootstrap is **complete**: the MFL compiler compiles its own source
-to a native binary that reproduces itself byte-for-byte (`verify-fixpoint.sh`). With a
-real self-compiled compiler binary (`mflc2`) we can finally measure the whole pipeline,
-not just the lexer:
+to a native binary that reproduces itself byte-for-byte (`verify-fixpoint.sh`). The
+whole-pipeline benchmark (parse + typecheck + codegen of the compiler's own 644-decl
+source → 6850 lines of C):
 
-| Task (parse + typecheck + codegen of the 11-file compiler source → 7937 lines of C) | Time |
-|---|---:|
-| Go machin (reference) | 251 ms |
-| MFL `mflc2` (self-hosted) | 1865 ms → **7.4× slower** |
+| | before opt | after opt |
+|---|---:|---:|
+| Go machin (reference) | 251 ms | 374 ms |
+| MFL self-hosted | 1865 ms (**7.4× slower**) | **335 ms (0.90× — faster than Go)** |
 
-So the *generated code* is competitive (raw compute beats Go — see the lexer row after
-the substr fix), but the compiler *as written* is ~7× slower. The cause is not codegen
-quality; it is **O(n) linear scans** used as the compiler's data structures — `node_kind`/
-`node_slot_of` scan the instance's node→slot array per expression, and the symbol tables
-(`func_root`, `callee_cname`, `ext_lookup`, `struct_def_idx`, `g_structdefs`) are linear
-arrays. This is the same class of issue the substr fix addressed (a representation
-choice, not a fundamental limit): swapping the hot linear scans for hash maps / indexed
-lookups would close most of the gap. It was left naive on purpose — correctness first.
+**The gap is closed.** The bottleneck was NOT the linear scans first suspected — a
+phase timer showed codegen was ~85% of the time, and it was **O(n²) string building**:
+`cemit` did `g_out = g_out + s` (immutable-string concat copies the whole growing
+buffer per call), and `c_quote` built the 67 KB embedded base64 prelude byte-by-byte
+the same way; even the runtime `mfl_join` was O(n²) (repeated `mfl_cat`). Two fixes:
+
+1. **Runtime `mfl_join` → O(n)** (one length pass, one alloc, memcpy) — a general
+   improvement for every MFL program that builds strings via `join`, `codegen.go`.
+2. **Codegen accumulates output as a `[]string` and joins once** — `cemit`/`indent`
+   append chunks (amortized O(1) via `mfl_append`'s capacity doubling), `c_quote`
+   collects per-byte pieces then joins. Same class of fix as the substr cache: a
+   representation choice, not a language limit.
+
+(The `node_slot_of` O(1) direct index — a generation-tagged array replacing the per-
+expression node-array scan — was also applied; it was a minor contributor, ~9%.)
 
 ## Takeaway for the keep/drop gate
 
