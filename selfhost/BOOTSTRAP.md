@@ -280,3 +280,47 @@ Go codegen, **and** compile it + run the existing test corpus.
 `mflc` (the MFL compiler, built by the Go compiler) compiles its own source to
 `mflc2`; `mflc2` compiles the source again to `mflc3`; assert
 `binary(mflc2) == binary(mflc3)`. When that holds, machin compiles itself.
+
+## ✅ Stage 7 — THE NO-GO BOOTSTRAP ("written in machin, full stop")
+
+The fixpoint (Stage 6) proved the *compiler* compiles itself, but the toolchain around
+it — `encode`, the `build`/`run` orchestration, the CLI — was still Go. Stage 7 ports
+those, so the repo rebuilds the entire `machin` binary from MFL with **zero Go in the
+loop**. Verify with `selfhost/verify-nogo.sh`.
+
+What was ported (the compute-heavy frontend/codegen were already self-hosted):
+
+- **`encode`** (`encode.src`) — `splitFunctions` + `stripLineComment` + `tighten`
+  (the ` *([punct]) *` → `$1` whitespace collapse, as a char loop — no regex) +
+  `normalize`. Byte-identical to `machin encode` over the full compiler source + every
+  corpus app.
+- **`build` / `run`** (`build.src`) — compile to full C, write a temp file, feature-scan
+  the C for link libs (`-lssl`/`-lsqlite3`/`-lm`/`-lcrypto`/`-lsodium`, needles split so
+  they don't false-trigger the host build), invoke `cc` via `system()`. FFI `extern`
+  cflags/links are threaded through (raylib games link).
+- **the standalone driver** (`machin.src`) — dispatches `encode`/`build`/`run`/`pack`/
+  `--emit-c` (+ the `--program`/`--full` oracle modes), composing every `selfhost/`
+  module. The shared compile pipeline lives in `compile.src` (also used by the oracle
+  driver `cgmain.src`).
+- **feature-gated runtime prelude** (`gen-prelude.py` → `cgprelude.src`) — the prelude is
+  split into blocks (core + tls/wss/math/noise/regex/sqlite/crypto/xeddsa), recovered by
+  subtraction from the Go compiler, and emitted **gated by `g_uses_*` flags** set per
+  builtin name during codegen — matching Go's `uses<X>` gating byte-for-byte. So a
+  crypto/TLS/sqlite/math program gets exactly the runtime it needs, and a libc program
+  (the compiler itself) stays libc-only.
+
+### The proof (`verify-nogo.sh`)
+From a machin binary + a C compiler, **no Go**:
+1. `M0` encodes its own source → `A.mfl`, builds it → `M1`.
+2. **Encode fixpoint**: `M1` re-encodes the source → `B.mfl`; `A.mfl == B.mfl`.
+3. **Codegen fixpoint**: `M1`'s emitted C == `M0`'s, byte-for-byte.
+4. `M1` builds + runs fresh programs; its codegen matches the Go reference.
+
+Go is now one *replaceable* bootstrap origin — used once to mint the seed binary — not
+"under the hood." `machin-mfl` (~248 KB) is a real drop-in `machin`: it encodes, type-
+checks, compiles, links, and runs machin — including its own source — plus crypto
+(OpenSSL), SQLite, math, and raylib FFI programs, byte-for-byte with the Go reference.
+
+Corpus `--emit-c` parity: **PASS 23, FAIL 0**, with 9 UNSUPPORTED — the remaining codegen
+skips (channels-with-structs / `select` / closures), a separate codegen effort. Other
+follow-ups: `--static` (SQLite amalgamation bundling), the wasm target, `guide`/`skill`.

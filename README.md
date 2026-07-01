@@ -15,14 +15,15 @@ A language **shaped for AI agents to write and edit cheaply**: zero type annotat
 > ### ▶ [Try machin in your browser → **play.intrane.fr**](https://play.intrane.fr)
 > Write MFL, hit Run — it compiles to WebAssembly and runs client-side. No install.
 
-> ### 🧬 New in v0.84.0 — machin **compiles itself**
-> The machin compiler — lexer, parser, type checker, and C code generator — is now
-> written *in machin* ([`selfhost/`](selfhost/), ~4k lines), and it emits the same
-> machine code as the original Go compiler **byte-for-byte**. It even compiles its own
-> source into a native binary that re-emits itself identically — a genuine compiler
-> **fixpoint** ("a compiler bootstrap") — at ~0.9× the original's speed. Every stage was
-> built against a byte-diff oracle, which flushed out three real compiler bugs along the
-> way. See [`selfhost/`](selfhost/) and [`BOOTSTRAP.md`](selfhost/BOOTSTRAP.md).
+> ### 🧬 machin is **written in machin** — bootstrapped, zero Go under the hood
+> The whole toolchain — lexer, parser, type checker, C code generator, *and* `encode` /
+> `build` / `run` — is written *in machin* ([`selfhost/`](selfhost/), ~4k lines). From a
+> machin binary + a C compiler (**no Go**), the repo rebuilds the entire `machin` binary
+> from its own source, and the rebuild reproduces itself **byte-for-byte** — a genuine
+> compiler **fixpoint** — at ~0.9× the original's speed. Go is just one replaceable way to
+> mint the seed binary. Every stage was built against a byte-diff oracle, which flushed
+> out three real compiler bugs along the way. See [`selfhost/`](selfhost/) and
+> [`BOOTSTRAP.md`](selfhost/BOOTSTRAP.md).
 
 <p align="center">
   <img src="docs/machin-demo.gif" alt="machin: write a REST+SQLite service, compile to a tiny native binary, run it" width="760">

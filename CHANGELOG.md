@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **The no-Go bootstrap: machin is now written in machin, full stop.** v0.84.0 proved the
+  *compiler* compiles itself; the toolchain around it (`encode`, the `build`/`run`
+  orchestration, the CLI) was still Go. Those are now ported to MFL too, so the repo
+  rebuilds the entire `machin` binary from its own source with **zero Go in the loop**
+  (`selfhost/verify-nogo.sh`): a machin binary encodes + type-checks + compiles + links +
+  runs machin, and the rebuild reproduces itself byte-for-byte (both the encoded source
+  and the generated C). The standalone MFL `machin` (~248 KB) is a drop-in for the Go one
+  across libc / crypto (OpenSSL) / SQLite / math / TLS / regex / xeddsa / raylib-FFI
+  programs — byte-identical output, verified over the whole corpus. The runtime prelude is
+  now feature-gated (only the blocks a program uses are emitted), matching the Go compiler
+  exactly. Go remains one *replaceable* way to mint the seed binary — not "under the hood."
+  (Remaining for 100% CLI parity: `select`/struct-channels/closures codegen, `--static`,
+  the wasm target.) See [`selfhost/BOOTSTRAP.md`](selfhost/BOOTSTRAP.md) Stage 7.
+
 ## v0.84.0
 
 - **The machin compiler now compiles itself (a compiler bootstrap).** The full

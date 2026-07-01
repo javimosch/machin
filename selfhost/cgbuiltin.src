@@ -6,6 +6,45 @@
 
 var g_cg_unsup = 0
 
+// Feature-usage flags, set as builtins are emitted (mirrors Go's uses<X>). They gate
+// which runtime prelude blocks emit_prelude_gated includes — PRECISELY, by builtin name,
+// not by scanning the body text (a user func named `noise_x` must NOT pull the Perlin
+// runtime). Reset per compile.
+var g_uses_math = 0
+var g_uses_noise = 0
+var g_uses_regex = 0
+var g_uses_sqlite = 0
+var g_uses_crypto = 0
+var g_uses_xeddsa = 0
+var g_uses_tls = 0
+var g_uses_wss = 0
+
+func reset_features() {
+    g_uses_math = 0  g_uses_noise = 0  g_uses_regex = 0  g_uses_sqlite = 0
+    g_uses_crypto = 0  g_uses_xeddsa = 0  g_uses_tls = 0  g_uses_wss = 0
+}
+
+func is_crypto_builtin(name) (b) {
+    b = 0
+    if name == "rand_bytes" || name == "sha256_bytes" || name == "sha1_bytes" || name == "hmac_sha256_bytes" || name == "hkdf_sha256" || name == "pbkdf2_sha256" { b = 1  return b }
+    if name == "x25519_pub" || name == "x25519_shared" || name == "ed25519_pub" || name == "ed25519_sign" || name == "ed25519_verify" { b = 1  return b }
+    if name == "aes_gcm_encrypt" || name == "aes_gcm_decrypt" || name == "aes_cbc_encrypt" || name == "aes_cbc_decrypt" { b = 1  return b }
+    // NB: sha256/hmac_sha256 (string variants -> mfl_sha256/mfl_hmac_sha256) are in the
+    // CORE prelude and do NOT set usesCrypto — only the *_bytes/asymmetric/aes ones do.
+}
+
+// note_feature: classify a builtin call by feature family and set the flag.
+func note_feature(name) {
+    if is_math1(name) || name == "pow" || name == "pi" || name == "f64_bits" || name == "f64_from_bits" { g_uses_math = 1 }
+    if name == "noise2" || name == "noise3" { g_uses_noise = 1 }
+    if name == "regex_match" || name == "regex_find" || name == "regex_replace" || name == "regex_groups" { g_uses_regex = 1 }
+    if name == "sqlite_open" || name == "sqlite_close" || name == "sqlite_exec" || name == "sqlite_query" { g_uses_sqlite = 1 }
+    if is_crypto_builtin(name) == 1 { g_uses_crypto = 1 }
+    if name == "xeddsa_sign" || name == "xeddsa_verify" { g_uses_xeddsa = 1 }
+    if name == "https_get" || name == "https_post" || name == "http_get" || name == "http_request" { g_uses_tls = 1 }
+    if name == "wss_open" || name == "wss_send" || name == "wss_recv" || name == "wss_send_bin" || name == "wss_recv_bin" || name == "wss_close" { g_uses_wss = 1 }
+}
+
 func is_math1(name) (b) {
     b = name == "sin" || name == "cos" || name == "tan" || name == "asin" || name == "acos" || name == "atan" || name == "exp" || name == "log" || name == "log2" || name == "log10" || name == "sqrt" || name == "cbrt" || name == "floor" || name == "ceil" || name == "round" || name == "trunc" || name == "abs"
 }
@@ -125,6 +164,7 @@ func builtin_cfn(name) (s) {
 // cg_builtin emits the C for a builtin call. `names` are the already-evaluated args.
 func cg_builtin(iid, call_idx, callee, names) (out) {
     argn := nodes[call_idx].kids
+    note_feature(callee)   // flag the feature family for prelude gating
     if callee == "len" {
         k := node_kind(iid, argn[0])
         if k == 7 || k == 12 { out = "((" + names[0] + ").len)"  return out }
@@ -260,6 +300,7 @@ func cg_multi_assign(iid, idx, depth) {
             }
         }
         if rn.kind == K_CALL && func_root(rn.s) < 0 {
+            note_feature(rn.s)   // http_get/http_request set usesTLS (multi-return path)
             cfn, ctype, fstr := mrb_info(rn.s)
             if cfn != "" {
                 fld := split(fstr, ",")
