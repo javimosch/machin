@@ -198,9 +198,22 @@ node→slot pairs (so each expression's kind is queryable) + named-return names.
   temps inside a `({ … })` statement-expression). Binary + call args route through it.
   Verified byte-for-byte: hand cases (recursion, nested calls, dedup) + **400 random
   call-heavy programs, 0 diffs**; call-free 4a + checker corpus parity unchanged.
-  *Next (4c): the builtin C table (callBody ~400 LOC: mfl_str/len/append/print/…) +
-  multi-return destructuring. Then (4d) structs/slices/maps/FFI, closures, select.
-  Then the FIXPOINT + perf gate.*
+- ✅ **(4c) the builtin C table + printCall + multiAssign.** `cgbuiltin.src`: a
+  data-driven `builtin_cfn` table (~110 builtins → their `mfl_*` C function) + special
+  cases (len/str dispatch by node kind, int/float/math casts, has/delete via
+  map_key_args, append via elem_ctype, close chan-vs-fd, sqlite 2/3-arg); `cg_print`
+  (one print per arg, `%lld`/`%g`/bool/string/hex by kind); `cg_multi_assign` (user
+  multi-return `_ret` destructure + parallel-assign temps). Added `ctype_slot` (structs
+  → `mfl_<name>`, now used for locals/params/returns/node types) + the `_ret` typedef
+  emission. In bodyOnly mode the `uses<X>` flags gate the skipped prelude, so they're
+  omitted. json/parse (per-type serializers), extern FFI calls, multi-return builtins,
+  and comma-ok recv → `g_cg_unsup` (deferred to 4d). Verified byte-for-byte: hand cases
+  + **400 builtin-heavy programs, 0 diffs**; corpus codegen 0 fails (aggregates skip).
+  MFL gotcha: `build.go` picks link libs by *text-scanning* the C for `mfl_xeddsa_`/
+  etc — my `"mfl_xeddsa_sign"` string literals falsely pulled in `-lsodium`; split as
+  `"mfl_xeddsa"+"_sign"` so the trigger substring never appears contiguously.
+  *Next (4d): structs/slices/maps literals + index/field/range codegen, FFI extern
+  calls, json/parse serializers, closures, select. Then the FIXPOINT + perf gate.*
 
 ### Stage 4 — C codegen, Stage 5 — driver, Stage 6 — fixpoint
 (unchanged; see top.)

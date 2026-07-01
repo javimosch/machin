@@ -100,5 +100,6 @@ func main() {
     if g_terr == 1 || g_check_err == 1 { write(1, "(check-error)\n")  return }
 
     cg_program()
+    if g_cg_unsup == 1 { write(1, "(unsupported)\n")  return }
     write(1, g_out)
 }

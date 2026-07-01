@@ -59,12 +59,35 @@ func dbl2(x) (y) { y = x + x }
 EOF
 run "$T/h2.src"
 
-# randomized fuzz: call-free (4a) + call-heavy (4b)
-for seed in $(seq 1 150); do
+# builtins + printCall + multiAssign (4c)
+cat > "$T/h3.src" <<'EOF'
+func divmod(a, b) (q, r) { q = a / b  r = a % b }
+func main() {
+    s := "Hello, World"
+    n := len(s)
+    up := to_upper(s)
+    parts := split(s, ", ")
+    j := join(parts, "-")
+    f := sqrt(float(n)) * 2.0
+    println(up, n, f)
+    write(1, j + "\n")
+    x := 10
+    y := 20
+    x, y = y, x
+    q, rem := divmod(17, 5)
+    println(x, y, q, rem, has_prefix(s, "He"))
+}
+EOF
+run "$T/h3.src"
+
+# randomized fuzz: call-free (4a) + call-heavy (4b) + builtin-heavy (4c)
+for seed in $(seq 1 120); do
   python3 selfhost/gen-cg.py "$seed" $(( (seed % 16) + 4 )) > "$T/g.src"
   run "$T/g.src"
   python3 selfhost/gen-cg2.py "$seed" $(( (seed % 12) + 4 )) > "$T/g2.src"
   run "$T/g2.src"
+  python3 selfhost/gen-cg3.py "$seed" $(( (seed % 14) + 4 )) > "$T/g3.src"
+  run "$T/g3.src"
 done
 
 rm -rf "$T"

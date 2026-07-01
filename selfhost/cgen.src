@@ -60,7 +60,25 @@ func oct3(c) (s) {
     s = str(d0) + str(d1) + str(d2)
 }
 
-// node_kind: the inferred Kind of expression node `idx` within instance `iid`.
+// ctype_slot: the C type of a slot (port of ctypeSlot) — like c_type but resolves a
+// KStruct to mfl_<name>. Used for locals/params/returns/node C types.
+func ctype_slot(slot) (s) {
+    r := find(slot)
+    k := g_kind[r]
+    if k == 3 { s = "double"  return s }
+    if k == 4 { s = "int"  return s }
+    if k == 5 { s = "char*"  return s }
+    if k == 12 { s = "mfl_bytes"  return s }
+    if k == 6 { s = "void"  return s }
+    if k == 7 { s = "mfl_slice"  return s }
+    if k == 8 { s = "mfl_" + g_sname[r]  return s }
+    if k == 9 { s = "mfl_chan*"  return s }
+    if k == 10 { s = "mfl_map*"  return s }
+    if k == 11 { s = "mfl_closure"  return s }
+    s = "int64_t"
+}
+
+// node_kind / node_slot_of: the inferred Kind / slot of expression node `idx` in `iid`.
 func node_kind(iid, idx) (k) {
     ins := g_insts[iid]
     j := 0
@@ -69,6 +87,30 @@ func node_kind(iid, idx) (k) {
         j = j + 1
     }
     k = 2   // default int
+}
+func node_slot_of(iid, idx) (slot) {
+    ins := g_insts[iid]
+    j := 0
+    for j < len(ins.nn) {
+        if ins.nn[j] == idx { slot = find(ins.ns[j])  return slot }
+        j = j + 1
+    }
+    slot = -1
+}
+// elem_ctype: the C type of a slice/chan node's element (for append).
+func elem_ctype(iid, idx) (s) {
+    r := node_slot_of(iid, idx)
+    if r >= 0 {
+        if (g_kind[r] == 7 || g_kind[r] == 9) && g_elem[r] >= 0 { s = ctype_slot(g_elem[r])  return s }
+    }
+    s = "int64_t"
+}
+// map_key_args: (ik, sk) for a map op — string keys pass ("0", key), else (key, "NULL").
+func map_key_args(iid, map_idx, keyexpr) (ik, sk) {
+    r := node_slot_of(iid, map_idx)
+    strkey := 0
+    if r >= 0 { if g_kind[r] == 10 && g_mkey[r] >= 0 { if kind_of(g_mkey[r]) == 5 { strkey = 1 } } }
+    if strkey == 1 { ik = "0"  sk = keyexpr } else { ik = keyexpr  sk = "NULL" }
 }
 
 func var_ref(name) (s) { s = "v_" + name }
@@ -96,7 +138,7 @@ func cg_expr(iid, idx) (out) {
     }
     if k == K_BIN { out = cg_binary(iid, idx)  return out }
     if k == K_CALL { out = cg_call(iid, idx)  return out }
-    out = "/*unsupported*/0"
+    g_cg_unsup = 1  out = "0"
 }
 
 // ---- side-effect ordering (port of seqExprs) ----
@@ -121,7 +163,11 @@ func expr_has_side_effect(idx) (b) {
     b = 0
 }
 
-func node_ctype(iid, idx) (s) { s = c_type(node_kind(iid, idx)) }
+func node_ctype(iid, idx) (s) {
+    r := node_slot_of(iid, idx)
+    if r >= 0 { s = ctype_slot(r)  return s }
+    s = "int64_t"
+}
 
 // seq_operands evaluates the given operand nodes left-to-right. If any has a side
 // effect and there are >=2, it hoists them into _sq temporaries (returning the decl
@@ -169,10 +215,14 @@ func callee_cname(iid, idx) (cn) {
 
 func cg_call(iid, idx) (out) {
     n := nodes[idx]
-    if func_root(n.s) < 0 { out = "/*builtin TODO*/0"  return out }   // builtins: slice 4c
     names, decls, wrapped := seq_operands(iid, n.kids)
-    call := callee_cname(iid, idx) + "(" + join(names, ", ") + ")"
-    if wrapped == 1 { out = "({ " + decls + call + "; })" } else { out = call }
+    body := ""
+    if func_root(n.s) >= 0 {
+        body = callee_cname(iid, idx) + "(" + join(names, ", ") + ")"
+    } else {
+        body = cg_builtin(iid, idx, n.s, names)
+    }
+    if wrapped == 1 { out = "({ " + decls + body + "; })" } else { out = body }
 }
 
 func is_cmp(op) (b) {
@@ -202,13 +252,24 @@ func cg_block(iid, kids, depth) {
 func cg_stmt(iid, idx, depth) {
     n := nodes[idx]
     k := n.kind
+    if k == K_EXPRSTMT {
+        cn := nodes[n.a]
+        if cn.kind == K_CALL && (cn.s == "print" || cn.s == "println") {
+            indent(depth)
+            cg_print(iid, n.a, depth)
+            return
+        }
+        indent(depth)
+        cemit(cg_expr(iid, n.a) + ";\n")
+        return
+    }
+    if k == K_MULTI { indent(depth)  cg_multi_assign(iid, idx, depth)  return }
     indent(depth)
-    if k == K_EXPRSTMT { cemit(cg_expr(iid, n.a) + ";\n")  return }
     if k == K_ASSIGN { cemit(var_ref(n.s) + " = " + cg_expr(iid, n.a) + ";\n")  return }
     if k == K_RETURN {
         if len(n.kids) == 0 { emit_named_return(iid)  return }
         if len(n.kids) == 1 { cemit("return (" + cg_expr(iid, n.kids[0]) + ");\n")  return }
-        cemit("/*multi-return TODO*/\n")
+        g_cg_unsup = 1  cemit("0;\n")
         return
     }
     if k == K_BREAK { cemit("break;\n")  return }
@@ -233,11 +294,10 @@ func cg_stmt(iid, idx, depth) {
         return
     }
     if k == K_ARENA {
-        // (arena block; slice 4a: emit body inline — full arena TODO)
-        cemit("/*arena TODO*/\n")
+        g_cg_unsup = 1  cemit("0;\n")
         return
     }
-    cemit("/*stmt TODO*/\n")
+    g_cg_unsup = 1  cemit("0;\n")
 }
 
 func emit_named_return(iid) {
