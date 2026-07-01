@@ -1,0 +1,172 @@
+// selfhost/cgen.src — Stage 4 (C codegen) in MFL, sub-slice (1). Composes with
+// lex + parse + check + checkgen. Emits the program-specific C (function bodies +
+// main) that `machin cgentest --program` produces in bodyOnly mode, diffed
+// byte-for-byte. This slice covers scalar locals, literals, idents, unary, binary
+// (incl. string concat/compare), assignment, if/while/return/break/continue — enough
+// for straight-line + control-flow functions. Calls/structs/slices/maps come next.
+
+var g_out = ""
+func cemit(s) { g_out = g_out + s }
+func indent(depth) {
+    i := 0
+    for i < depth { g_out = g_out + "    "  i = i + 1 }
+}
+
+// c_type: a Kind -> its C type (port of cType). c_zero: the C zero value (cZero).
+func c_type(k) (s) {
+    if k == 2 { s = "int64_t"  return s }
+    if k == 3 { s = "double"  return s }
+    if k == 4 { s = "int"  return s }
+    if k == 5 { s = "char*"  return s }
+    if k == 12 { s = "mfl_bytes"  return s }
+    if k == 6 { s = "void"  return s }
+    if k == 7 { s = "mfl_slice"  return s }
+    if k == 9 { s = "mfl_chan*"  return s }
+    if k == 10 { s = "mfl_map*"  return s }
+    if k == 11 { s = "mfl_closure"  return s }
+    s = "int64_t"
+}
+func c_zero(k) (s) {
+    if k == 3 { s = "0.0"  return s }
+    if k == 5 { s = "\"\""  return s }
+    if k == 7 || k == 8 || k == 11 || k == 12 { s = "{0}"  return s }
+    s = "0"
+}
+
+// c_quote renders a string value as a C string literal (the common cases of Go's
+// strconv.Quote: standard escapes + printable ASCII; other bytes as octal \NNN).
+func c_quote(v) (out) {
+    out = "\""
+    b := bytes(v)
+    i := 0
+    for i < len(b) {
+        c := byte_at(b, i)
+        if c == 34 { out = out + "\\\"" } else {
+        if c == 92 { out = out + "\\\\" } else {
+        if c == 10 { out = out + "\\n" } else {
+        if c == 9 { out = out + "\\t" } else {
+        if c == 13 { out = out + "\\r" } else {
+        if c >= 32 && c < 127 { out = out + substr(v, i, i + 1) } else {
+            out = out + "\\" + oct3(c)
+        }}}}}}
+        i = i + 1
+    }
+    out = out + "\""
+}
+func oct3(c) (s) {
+    d0 := c / 64
+    d1 := (c / 8) % 8
+    d2 := c % 8
+    s = str(d0) + str(d1) + str(d2)
+}
+
+// node_kind: the inferred Kind of expression node `idx` within instance `iid`.
+func node_kind(iid, idx) (k) {
+    ins := g_insts[iid]
+    j := 0
+    for j < len(ins.nn) {
+        if ins.nn[j] == idx { k = kind_of(ins.ns[j])  return k }
+        j = j + 1
+    }
+    k = 2   // default int
+}
+
+func var_ref(name) (s) { s = "v_" + name }
+
+// c_float renders a float literal like strconv.FormatFloat(v,'g',-1,64) + ".0"-fixup.
+func c_float(lex) (s) {
+    s = str(parse_float(lex))
+    if contains(s, ".") == false && contains(s, "e") == false && contains(s, "E") == false { s = s + ".0" }
+}
+
+func cg_expr(iid, idx) (out) {
+    n := nodes[idx]
+    k := n.kind
+    if k == K_INT { out = str(n.ival)  return out }
+    if k == K_FLOAT { out = c_float(n.s)  return out }
+    if k == K_STR { out = c_quote(n.s)  return out }
+    if k == K_BOOL { if n.ival == 1 { out = "1" } else { out = "0" }  return out }
+    if k == K_NIL { out = "0"  return out }
+    if k == K_ID { out = var_ref(n.s)  return out }
+    if k == K_UNARY {
+        op := n.s
+        if op == "^" { op = "~" }
+        out = "(" + op + cg_expr(iid, n.a) + ")"
+        return out
+    }
+    if k == K_BIN { out = cg_binary(iid, idx)  return out }
+    out = "/*unsupported*/0"
+}
+
+func is_cmp(op) (b) {
+    b = op == "==" || op == "!=" || op == "<" || op == "<=" || op == ">" || op == ">="
+}
+
+func cg_binary(iid, idx) (out) {
+    n := nodes[idx]
+    l := cg_expr(iid, n.a)
+    r := cg_expr(iid, n.b)
+    op := n.s
+    if op == "+" && node_kind(iid, idx) == 5 { out = "mfl_cat(" + l + ", " + r + ")"  return out }
+    if is_cmp(op) && node_kind(iid, n.a) == 5 { out = "(mfl_strcmp(" + l + ", " + r + ") " + op + " 0)"  return out }
+    out = "(" + l + " " + op + " " + r + ")"
+}
+
+func cg_block(iid, kids, depth) {
+    for _, s := range kids { cg_stmt(iid, s, depth) }
+}
+
+func cg_stmt(iid, idx, depth) {
+    n := nodes[idx]
+    k := n.kind
+    indent(depth)
+    if k == K_EXPRSTMT { cemit(cg_expr(iid, n.a) + ";\n")  return }
+    if k == K_ASSIGN { cemit(var_ref(n.s) + " = " + cg_expr(iid, n.a) + ";\n")  return }
+    if k == K_RETURN {
+        if len(n.kids) == 0 { emit_named_return(iid)  return }
+        if len(n.kids) == 1 { cemit("return (" + cg_expr(iid, n.kids[0]) + ");\n")  return }
+        cemit("/*multi-return TODO*/\n")
+        return
+    }
+    if k == K_BREAK { cemit("break;\n")  return }
+    if k == K_CONTINUE { cemit("continue;\n")  return }
+    if k == K_IF {
+        cemit("if (" + cg_expr(iid, n.a) + ") {\n")
+        cg_block(iid, n.kids, depth + 1)
+        indent(depth)
+        if len(n.kids2) > 0 {
+            cemit("} else {\n")
+            cg_block(iid, n.kids2, depth + 1)
+            indent(depth)
+        }
+        cemit("}\n")
+        return
+    }
+    if k == K_WHILE {
+        cemit("while (" + cg_expr(iid, n.a) + ") {\n")
+        cg_block(iid, n.kids, depth + 1)
+        indent(depth)
+        cemit("}\n")
+        return
+    }
+    if k == K_ARENA {
+        // (arena block; slice 4a: emit body inline — full arena TODO)
+        cemit("/*arena TODO*/\n")
+        return
+    }
+    cemit("/*stmt TODO*/\n")
+}
+
+func emit_named_return(iid) {
+    ins := g_insts[iid]
+    if len(ins.rnames) == 0 { cemit("return;\n")  return }
+    if len(ins.rnames) == 1 { cemit("return " + var_ref(ins.rnames[0]) + ";\n")  return }
+    s := "return (" + ins.cname + "_ret){ "
+    i := 0
+    for i < len(ins.rnames) {
+        if i > 0 { s = s + ", " }
+        s = s + var_ref(ins.rnames[i])
+        i = i + 1
+    }
+    cemit(s + " };\n")
+}

@@ -1,0 +1,103 @@
+// selfhost/cgprog.src — Stage 4 codegen: monomorphization dedup + C-name assignment,
+// function signatures, function bodies, and whole-program assembly (prototypes,
+// bodies, native main). Port of codegen.go program()/signature()/function() for the
+// slice-4a subset (no structs/globals/externs/closures yet).
+
+var g_reps = []int{}   // representative instance ids, in creation order
+
+func str_index(arr, v) (r) {
+    r = -1
+    i := 0
+    for i < len(arr) { if arr[i] == v { r = i  return r }  i = i + 1 }
+}
+
+// compute_reps dedups instances by source|signature (keeping the first = the rep, in
+// creation order) and assigns each a C name (main -> mfl_main, else mfl_<src>_<n>).
+// Non-rep instances inherit their rep's C name.
+func compute_reps() {
+    g_reps = []int{}
+    keys := []string{}
+    kcname := []string{}
+    scount_names := []string{}
+    scount_vals := []int{}
+    i := 0
+    for i < len(g_insts) {
+        key := g_insts[i].src + "|" + sig_string(i)
+        ki := str_index(keys, key)
+        if ki >= 0 {
+            g_insts[i].cname = kcname[ki]
+        } else {
+            g_reps = append(g_reps, i)
+            src := g_insts[i].src
+            cn := "mfl_main"
+            if src != "main" {
+                si := str_index(scount_names, src)
+                cnt := 0
+                if si >= 0 { cnt = scount_vals[si] }
+                cn = "mfl_" + src + "_" + str(cnt)
+                if si >= 0 { scount_vals[si] = cnt + 1 } else {
+                    scount_names = append(scount_names, src)
+                    scount_vals = append(scount_vals, 1)
+                }
+            }
+            keys = append(keys, key)
+            kcname = append(kcname, cn)
+            g_insts[i].cname = cn
+        }
+        i = i + 1
+    }
+}
+
+func ret_type(iid) (s) {
+    ins := g_insts[iid]
+    if len(ins.rslots) == 0 { s = "void"  return s }
+    if len(ins.rslots) == 1 { s = c_type(kind_of(ins.rslots[0]))  return s }
+    s = ins.cname + "_ret"
+}
+
+func cg_signature(iid) (s) {
+    ins := g_insts[iid]
+    params := ""
+    i := 0
+    for i < len(ins.pslots) {
+        if i > 0 { params = params + ", " }
+        params = params + c_type(kind_of(ins.pslots[i])) + " v_" + ins.pnames[i]
+        i = i + 1
+    }
+    if params == "" { params = "void" }
+    s = ret_type(iid) + " " + ins.cname + "(" + params + ")"
+}
+
+func cg_function(iid) {
+    ins := g_insts[iid]
+    cemit(cg_signature(iid) + " {\n")
+    // local declarations (named returns + body locals), zero-initialized
+    i := 0
+    for i < len(ins.lnames) {
+        cemit("    " + c_type(kind_of(ins.lslots[i])) + " v_" + ins.lnames[i] + " = " + c_zero(kind_of(ins.lslots[i])) + ";\n")
+        i = i + 1
+    }
+    root := func_root(ins.src)
+    cg_block(iid, nodes[root].kids, 1)
+    // a named-return function falls off the end yielding its named locals
+    if len(ins.rnames) > 0 {
+        cemit("    ")
+        emit_named_return(iid)
+    }
+    cemit("}\n\n")
+}
+
+// cg_program assembles the program-specific C: prototypes, bodies, native main.
+// (slice 4a: no externs / structs / globals / json / trampolines yet.)
+func cg_program() {
+    compute_reps()
+    // function prototypes
+    for _, rid := range g_reps { cemit(cg_signature(rid) + ";\n") }
+    cemit("\n")
+    // function bodies
+    for _, rid := range g_reps { cg_function(rid) }
+    // native entry point (only when the program defines main)
+    if func_root("main") >= 0 {
+        cemit("int main(int argc, char** argv) { signal(SIGPIPE, SIG_IGN); mfl_argc = argc; mfl_argv = argv; mfl_main(); return 0; }\n")
+    }
+}

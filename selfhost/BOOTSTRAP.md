@@ -170,8 +170,28 @@ monomorphic, multi-function, and mixed-int/float (two-instance) programs.
 
 **Stage 3 (typecheck) is COMPLETE.** The MFL type checker (`check.src` engine +
 `checkgen.src` constraints + `checkmain.src` driver) reproduces the Go checker's
-inferred types byte-for-byte across the corpus. Next: **Stage 4 — C codegen**
-(`codegen.go`, ~4300 LOC), then the fixpoint milestone (mflc compiles itself).
+inferred types byte-for-byte across the corpus.
+
+### Stage 4 — C codegen (in progress)
+`codegen.go` is ~4300 LOC, but ~2000 of that is a STATIC C runtime prelude (data,
+emitted verbatim). The oracle `machin cgentest --program` runs the Go codegen in a
+new `bodyOnly` mode that skips the prelude and emits only the program-specific C
+(structs/globals/functions/main) — the diff target, so the MFL codegen needn't embed
+the 2000-line prelude to verify emission logic. Modular MFL files, ≤1000 LOC each.
+
+Foundation (commit 89ca31b): the checker records what codegen needs — per-instance
+node→slot pairs (so each expression's kind is queryable) + named-return names.
+
+- ✅ **(4a) scalar + control-flow codegen.** `cgen.src` (expr/stmt emitters:
+  literals, idents, unary, binary incl. string `mfl_cat`/`mfl_strcmp`, assignment,
+  if/while/return/break/continue) + `cgprog.src` (monomorphization dedup + C-name
+  assignment `mfl_main`/`mfl_<src>_<n>`, signatures, function bodies, program
+  assembly, native main) + `cgmain.src` (driver). Verified byte-for-byte vs
+  `cgentest`: a hand battery + **400 random call-free programs, 0 diffs**.
+  `verify-cgen.sh`, `gen-cg.py`.
+  *Next (4b): user-function CALLS — needs call-node→callee-instance recording +
+  seqExprs side-effect ordering. Then (4c) the builtin C table (callBody), (4d)
+  structs/slices/maps/FFI, closures, select. Then the FIXPOINT + perf gate.*
 
 ### Stage 4 — C codegen, Stage 5 — driver, Stage 6 — fixpoint
 (unchanged; see top.)
