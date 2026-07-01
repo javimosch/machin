@@ -45,10 +45,26 @@ func main() {
 EOF
 run "$T/h1.src"
 
-# randomized call-free fuzz
-for seed in $(seq 1 200); do
+# calls: monomorphization, nested calls + seqExprs ordering, recursion
+cat > "$T/h2.src" <<'EOF'
+func add(a, b) (r) { r = a + b }
+func dbl(x) (y) { y = x + x }
+func fib(n) (f) { if n < 2 { f = n  return f }  f = fib(n - 1) + fib(n - 2) }
+func main() {
+    p := add(dbl(3), fib(10))
+    q := add(add(1, 2), dbl(p))
+    s := dbl2("a") + "z"
+}
+func dbl2(x) (y) { y = x + x }
+EOF
+run "$T/h2.src"
+
+# randomized fuzz: call-free (4a) + call-heavy (4b)
+for seed in $(seq 1 150); do
   python3 selfhost/gen-cg.py "$seed" $(( (seed % 16) + 4 )) > "$T/g.src"
   run "$T/g.src"
+  python3 selfhost/gen-cg2.py "$seed" $(( (seed % 12) + 4 )) > "$T/g2.src"
+  run "$T/g2.src"
 done
 
 rm -rf "$T"

@@ -189,9 +189,18 @@ node→slot pairs (so each expression's kind is queryable) + named-return names.
   assembly, native main) + `cgmain.src` (driver). Verified byte-for-byte vs
   `cgentest`: a hand battery + **400 random call-free programs, 0 diffs**.
   `verify-cgen.sh`, `gen-cg.py`.
-  *Next (4b): user-function CALLS — needs call-node→callee-instance recording +
-  seqExprs side-effect ordering. Then (4c) the builtin C table (callBody), (4d)
-  structs/slices/maps/FFI, closures, select. Then the FIXPOINT + perf gate.*
+- ✅ **(4b) user-function calls + seqExprs.** The checker now records per-call-node →
+  callee-instance (`cur_cnodes`/`cur_cinsts` → Inst, saved/restored across nested
+  instantiate — a bug found here: the recording arrays were reset but not
+  save/restored, so a second call clobbered the first). `cgen.src` adds `cg_call`
+  (monomorphized `cname(args)`), `callee_cname`, `expr_has_side_effect`, and
+  `seq_operands` (port of seqExprs: hoist impure multi-operand exprs into `_sq<id>_<i>`
+  temps inside a `({ … })` statement-expression). Binary + call args route through it.
+  Verified byte-for-byte: hand cases (recursion, nested calls, dedup) + **400 random
+  call-heavy programs, 0 diffs**; call-free 4a + checker corpus parity unchanged.
+  *Next (4c): the builtin C table (callBody ~400 LOC: mfl_str/len/append/print/…) +
+  multi-return destructuring. Then (4d) structs/slices/maps/FFI, closures, select.
+  Then the FIXPOINT + perf gate.*
 
 ### Stage 4 — C codegen, Stage 5 — driver, Stage 6 — fixpoint
 (unchanged; see top.)

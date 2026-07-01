@@ -95,21 +95,104 @@ func cg_expr(iid, idx) (out) {
         return out
     }
     if k == K_BIN { out = cg_binary(iid, idx)  return out }
+    if k == K_CALL { out = cg_call(iid, idx)  return out }
     out = "/*unsupported*/0"
+}
+
+// ---- side-effect ordering (port of seqExprs) ----
+var g_tmpid = 0
+
+func expr_has_side_effect(idx) (b) {
+    n := nodes[idx]
+    k := n.kind
+    if k == K_CALL || k == K_CALLV || k == K_RECV { b = 1  return b }
+    if k == K_UNARY || k == K_FIELD { b = expr_has_side_effect(n.a)  return b }
+    if k == K_BIN || k == K_INDEX {
+        if expr_has_side_effect(n.a) == 1 { b = 1  return b }
+        b = expr_has_side_effect(n.b)
+        return b
+    }
+    if k == K_SLICE {
+        for _, e := range n.kids { if expr_has_side_effect(e) == 1 { b = 1  return b } }
+    }
+    if k == K_STRUCT {
+        for _, e := range n.kids { if expr_has_side_effect(e) == 1 { b = 1  return b } }
+    }
+    b = 0
+}
+
+func node_ctype(iid, idx) (s) { s = c_type(node_kind(iid, idx)) }
+
+// seq_operands evaluates the given operand nodes left-to-right. If any has a side
+// effect and there are >=2, it hoists them into _sq temporaries (returning the decl
+// prefix + temp names); otherwise it returns the raw operand strings. wrapped=1 means
+// the caller must wrap its result in a `({ <decls> <body>; })` statement-expression.
+func seq_operands(iid, idxs) (names, decls, wrapped) {
+    names = []string{}
+    strs := []string{}
+    impure := 0
+    i := 0
+    for i < len(idxs) {
+        strs = append(strs, cg_expr(iid, idxs[i]))
+        if expr_has_side_effect(idxs[i]) == 1 { impure = 1 }
+        i = i + 1
+    }
+    if impure == 0 || len(idxs) < 2 {
+        names = strs
+        decls = ""
+        wrapped = 0
+        return names, decls, wrapped
+    }
+    id := g_tmpid
+    g_tmpid = g_tmpid + 1
+    decls = ""
+    i = 0
+    for i < len(idxs) {
+        nm := "_sq" + str(id) + "_" + str(i)
+        names = append(names, nm)
+        decls = decls + node_ctype(iid, idxs[i]) + " " + nm + " = " + strs[i] + "; "
+        i = i + 1
+    }
+    wrapped = 1
+}
+
+// callee_cname: the C name of the callee instance for the call node `idx` in iid.
+func callee_cname(iid, idx) (cn) {
+    ins := g_insts[iid]
+    j := 0
+    for j < len(ins.cnodes) {
+        if ins.cnodes[j] == idx { cn = g_insts[ins.cinsts[j]].cname  return cn }
+        j = j + 1
+    }
+    cn = "/*?*/"
+}
+
+func cg_call(iid, idx) (out) {
+    n := nodes[idx]
+    if func_root(n.s) < 0 { out = "/*builtin TODO*/0"  return out }   // builtins: slice 4c
+    names, decls, wrapped := seq_operands(iid, n.kids)
+    call := callee_cname(iid, idx) + "(" + join(names, ", ") + ")"
+    if wrapped == 1 { out = "({ " + decls + call + "; })" } else { out = call }
 }
 
 func is_cmp(op) (b) {
     b = op == "==" || op == "!=" || op == "<" || op == "<=" || op == ">" || op == ">="
 }
 
-func cg_binary(iid, idx) (out) {
+func binary_combine(iid, idx, l, r) (out) {
     n := nodes[idx]
-    l := cg_expr(iid, n.a)
-    r := cg_expr(iid, n.b)
     op := n.s
     if op == "+" && node_kind(iid, idx) == 5 { out = "mfl_cat(" + l + ", " + r + ")"  return out }
     if is_cmp(op) && node_kind(iid, n.a) == 5 { out = "(mfl_strcmp(" + l + ", " + r + ") " + op + " 0)"  return out }
     out = "(" + l + " " + op + " " + r + ")"
+}
+
+func cg_binary(iid, idx) (out) {
+    n := nodes[idx]
+    idxs := []int{n.a, n.b}
+    names, decls, wrapped := seq_operands(iid, idxs)
+    combined := binary_combine(iid, idx, names[0], names[1])
+    if wrapped == 1 { out = "({ " + decls + combined + "; })" } else { out = combined }
 }
 
 func cg_block(iid, kids, depth) {

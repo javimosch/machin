@@ -45,12 +45,20 @@ type Inst struct {
     lslots []int
     nn []int          // expression node indices ...
     ns []int          //   ... paired with their slot (for codegen's node kinds)
+    cnodes []int      // call node indices ...
+    cinsts []int      //   ... paired with the callee instance id (for codegen's cname)
     cname string      // assigned C function name (mfl_main / mfl_<src>_<n>)
 }
 var g_insts = []Inst{}
-// node-slot recording for the ACTIVE instance (snapshotted into Inst after gen)
+// node-slot + call-instance recording for the ACTIVE instance (snapshotted after gen)
 var cur_nn = []int{}
 var cur_ns = []int{}
+var cur_cnodes = []int{}
+var cur_cinsts = []int{}
+func record_call(call_idx, callee_inst) {
+    cur_cnodes = append(cur_cnodes, call_idx)
+    cur_cinsts = append(cur_cinsts, callee_inst)
+}
 
 // instStack (recursion guard): names currently being instantiated -> their inst id.
 // A top-pointer stack (MFL has no sub-slice op, so we don't shrink the backing array).
@@ -159,12 +167,17 @@ func instantiate(name) (id) {
     g_insts = append(g_insts, Inst{src: name})   // placeholder (for recursion)
     istack_push(name, id)
 
-    // save caller context
+    // save caller context (including the recording arrays — a nested instantiate must
+    // not clobber the caller's node-slot / call-instance recordings)
     s_names := cur_names
     s_slots := cur_slots
     s_lnames := cur_lnames
     s_lslots := cur_lslots
     s_rets := cur_rets
+    s_nn := cur_nn
+    s_ns := cur_ns
+    s_cnodes := cur_cnodes
+    s_cinsts := cur_cinsts
 
     // fresh context
     cur_names = []string{}
@@ -173,6 +186,8 @@ func instantiate(name) (id) {
     cur_lslots = []int{}
     cur_nn = []int{}
     cur_ns = []int{}
+    cur_cnodes = []int{}
+    cur_cinsts = []int{}
 
     pslots := []int{}
     i := 0
@@ -203,7 +218,7 @@ func instantiate(name) (id) {
     // the body to capture the locals discovered during generation.
     g_insts[id] = Inst{src: name, pnames: pnames, rnames: rnames, pslots: pslots, rslots: rslots, lnames: cur_lnames, lslots: cur_lslots}
     gen_block(body)
-    g_insts[id] = Inst{src: name, pnames: pnames, rnames: rnames, pslots: pslots, rslots: rslots, lnames: cur_lnames, lslots: cur_lslots, nn: cur_nn, ns: cur_ns}
+    g_insts[id] = Inst{src: name, pnames: pnames, rnames: rnames, pslots: pslots, rslots: rslots, lnames: cur_lnames, lslots: cur_lslots, nn: cur_nn, ns: cur_ns, cnodes: cur_cnodes, cinsts: cur_cinsts}
 
     // restore caller context and pop the recursion guard
     cur_names = s_names
@@ -211,6 +226,10 @@ func instantiate(name) (id) {
     cur_lnames = s_lnames
     cur_lslots = s_lslots
     cur_rets = s_rets
+    cur_nn = s_nn
+    cur_ns = s_ns
+    cur_cnodes = s_cnodes
+    cur_cinsts = s_cinsts
     istack_pop()
 }
 
@@ -494,6 +513,7 @@ func gen_call(idx) (slot) {
         if n.ival == 1 { g_unsupported = 1  slot = c_void  return slot }         // spread
         inst := instantiate(callee)
         if inst < 0 { slot = c_void  return slot }
+        record_call(idx, inst)
         pslots := g_insts[inst].pslots
         if len(pslots) != len(argslots) { g_check_err = 1  slot = c_void  return slot }
         i := 0
@@ -947,6 +967,7 @@ func gen_multi_assign(idx) {
                 for _, a := range rn.kids { argslots = append(argslots, gen_expr(a)) }
                 inst := instantiate(callee)
                 if inst < 0 { return }
+                record_call(rhs0, inst)
                 pslots := g_insts[inst].pslots
                 if len(pslots) != len(rn.kids) { g_check_err = 1  return }
                 j := 0
