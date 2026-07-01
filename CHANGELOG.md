@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## v0.84.0
+
+- **machin now self-hosts: the compiler compiles itself.** The full compiler —
+  lexer, parser, type checker, and C code generator — is now written in MFL
+  (`selfhost/`, ~4k lines) and reproduces the reference compiler byte-for-byte. The
+  self-hosting **fixpoint** holds: the MFL compiler compiles its own source into a
+  native binary (`mflc2`) that re-emits its own source identically (`mflc2.c ==
+  mflc3.c`), and its generated C matches the Go compiler for arbitrary programs. Every
+  stage was built against a byte-diff oracle (`machin lextest`/`parsetest`/`checktest`/
+  `cgentest`), and the effort surfaced three real compiler bugs (below) plus two
+  general runtime speedups. On the full parse→typecheck→codegen of its own source the
+  self-hosted compiler runs ~0.9× the Go reference (competitive). See `selfhost/`.
+
 - **`join([]string, sep)` is now O(n) instead of O(n²).** It built the result with
   repeated `mfl_cat` (each copying the whole growing string); it now does one length
   pass, a single allocation, and memcpy per piece. Building large strings by collecting
