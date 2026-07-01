@@ -89,9 +89,22 @@ func cg_function(iid) {
 
 // cg_program assembles the program-specific C: prototypes, bodies, native main.
 // (slice 4a: no externs / structs / globals / json / trampolines yet.)
+var g_glob_inits = []int{}   // global-init expr node indices (parallel to g_global_names)
+
 func cg_program() {
     compute_reps()
-    // multi-return result structs (one per instance with >=2 returns)
+    // 1. struct typedefs (declared `type` structs, in declaration order)
+    ntypes := 0
+    for _, d := range g_structdefs {
+        if d.cstruct == 0 {
+            line := "typedef struct {"
+            j := 0
+            for j < len(d.fnames) { line = line + " " + ctype_name(d.ftypes[j]) + " f_" + d.fnames[j] + ";"  j = j + 1 }
+            cemit(line + " } mfl_" + d.name + ";\n")
+            ntypes = ntypes + 1
+        }
+    }
+    // 2. multi-return result structs (one per instance with >=2 returns)
     for _, rid := range g_reps {
         ins := g_insts[rid]
         if len(ins.rslots) >= 2 {
@@ -101,12 +114,30 @@ func cg_program() {
             cemit(line + " } " + ins.cname + "_ret;\n")
         }
     }
-    // function prototypes
+    if ntypes > 0 { cemit("\n") }
+    // 3. package globals: zero-initialized C statics
+    gi := 0
+    for gi < len(g_global_names) {
+        cemit("static " + ctype_slot(g_global_slots[gi]) + " mfl_g_" + g_global_names[gi] + ";\n")
+        gi = gi + 1
+    }
+    if len(g_global_names) > 0 { cemit("\n") }
+    // 4. function prototypes
     for _, rid := range g_reps { cemit(cg_signature(rid) + ";\n") }
     cemit("\n")
-    // function bodies
+    // 5. function bodies
     for _, rid := range g_reps { cg_function(rid) }
-    // native entry point (only when the program defines main)
+    // 6. package-global initializers run in a C constructor (declaration order)
+    if len(g_global_names) > 0 {
+        cemit("__attribute__((constructor)) static void mfl_globals_init(void) {\n")
+        gi = 0
+        for gi < len(g_glob_inits) {
+            cemit("    mfl_g_" + g_global_names[gi] + " = " + cg_expr(0 - 1, g_glob_inits[gi]) + ";\n")
+            gi = gi + 1
+        }
+        cemit("}\n")
+    }
+    // 7. native entry point (only when the program defines main)
     if func_root("main") >= 0 {
         cemit("int main(int argc, char** argv) { signal(SIGPIPE, SIG_IGN); mfl_argc = argc; mfl_argv = argv; mfl_main(); return 0; }\n")
     }

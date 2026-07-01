@@ -247,12 +247,15 @@ func add_pair(a, b) {
     g_pb = append(g_pb, b)
 }
 
-// ---- struct registry (name -> field names + field types), from `type` decls ----
-type StructDef struct { name string  fnames []string  ftypes []string }
+// ---- struct registry (name -> field names + field types), from `type`/`cstruct` ----
+type StructDef struct { name string  fnames []string  ftypes []string  cstruct int }
 var g_structdefs = []StructDef{}
 
 func register_struct(nm, fnames, ftypes) {
-    g_structdefs = append(g_structdefs, StructDef{name: nm, fnames: fnames, ftypes: ftypes})
+    g_structdefs = append(g_structdefs, StructDef{name: nm, fnames: fnames, ftypes: ftypes, cstruct: 0})
+}
+func register_cstruct(nm, fnames, ftypes) {
+    g_structdefs = append(g_structdefs, StructDef{name: nm, fnames: fnames, ftypes: ftypes, cstruct: 1})
 }
 func struct_exists(nm) (b) {
     b = 0

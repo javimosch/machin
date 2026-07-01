@@ -40,7 +40,7 @@ func main() {
             if g_err == 0 {
                 for _, ci := range nodes[eidx].kids {
                     cn := nodes[ci]
-                    register_struct(cn.s, cn.names, cn.names2)
+                    register_cstruct(cn.s, cn.names, cn.names2)
                 }
                 for _, fi := range nodes[eidx].kids2 {
                     fnn := nodes[fi]
@@ -98,6 +98,16 @@ func main() {
     resolve_deferred()
     finalize()
     if g_terr == 1 || g_check_err == 1 { write(1, "(check-error)\n")  return }
+
+    // globals: expose init nodes for the ctor; defer any non-trivial init (needs the
+    // $globals node-slot context, a later part) by marking unsupported.
+    g_glob_inits = global_inits
+    gj := 0
+    for gj < len(global_inits) {
+        ik := nodes[global_inits[gj]].kind
+        if ik != K_INT && ik != K_FLOAT && ik != K_STR && ik != K_BOOL && ik != K_NIL && ik != K_ID { g_cg_unsup = 1 }
+        gj = gj + 1
+    }
 
     cg_program()
     if g_cg_unsup == 1 { write(1, "(unsupported)\n")  return }

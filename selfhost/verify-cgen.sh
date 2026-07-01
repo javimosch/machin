@@ -80,14 +80,33 @@ func main() {
 EOF
 run "$T/h3.src"
 
-# randomized fuzz: call-free (4a) + call-heavy (4b) + builtin-heavy (4c)
-for seed in $(seq 1 120); do
-  python3 selfhost/gen-cg.py "$seed" $(( (seed % 16) + 4 )) > "$T/g.src"
-  run "$T/g.src"
-  python3 selfhost/gen-cg2.py "$seed" $(( (seed % 12) + 4 )) > "$T/g2.src"
-  run "$T/g2.src"
-  python3 selfhost/gen-cg3.py "$seed" $(( (seed % 14) + 4 )) > "$T/g3.src"
-  run "$T/g3.src"
+# aggregates (4d part 1): structs, slices, maps, index/field/range, a package global
+cat > "$T/h4.src" <<'EOF'
+type Pt struct { x int  y int  name string }
+var total = 0
+func main() {
+    p := Pt{x: 1, y: 2, name: "o"}
+    q := Pt{5, 6, "z"}
+    p.y = p.x + q.y
+    xs := []int{10, 20, 30}
+    xs[0] = 99
+    for i, v := range xs { total = total + v + i }
+    m := make(map[string]int)
+    m["k"] = 5
+    b := m["k"]
+    for key, val := range m { total = total + val + len(key) }
+    ss := []string{"a", "bb"}
+    for _, s := range ss { total = total + len(s) }
+}
+EOF
+run "$T/h4.src"
+
+# randomized fuzz: call-free (4a) + call-heavy (4b) + builtin-heavy (4c) + aggregates (4d)
+for seed in $(seq 1 100); do
+  python3 selfhost/gen-cg.py "$seed" $(( (seed % 16) + 4 )) > "$T/g.src";  run "$T/g.src"
+  python3 selfhost/gen-cg2.py "$seed" $(( (seed % 12) + 4 )) > "$T/g2.src"; run "$T/g2.src"
+  python3 selfhost/gen-cg3.py "$seed" $(( (seed % 14) + 4 )) > "$T/g3.src"; run "$T/g3.src"
+  python3 selfhost/gen-cg4.py "$seed" $(( (seed % 14) + 5 )) > "$T/g4.src"; run "$T/g4.src"
 done
 
 rm -rf "$T"

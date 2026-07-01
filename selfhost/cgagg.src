@@ -1,0 +1,243 @@
+// selfhost/cgagg.src — Stage 4 codegen, sub-slice (4d part 1): aggregates —
+// struct/slice/map literals, index x[i], field x.f, index/field assignment, and
+// for-range over slice/string/map. Ports sliceLit/structLit/rangeStmt + the Index/
+// FieldAccess/MakeMap/IndexAssign/FieldAssign emitters. FFI/json/closures/channels are
+// later parts (they set g_cg_unsup).
+
+var g_rangeid = 0
+var g_arenaid = 0
+
+// ctype_name: a declared type string -> its C type (port of cTypeName).
+func ctype_name(t) (s) {
+    if has_prefix(t, "[]") { s = "mfl_slice"  return s }
+    if has_prefix(t, "map[") { s = "mfl_map*"  return s }
+    if has_prefix(t, "chan ") { s = "mfl_chan*"  return s }
+    if t == "int" { s = "int64_t"  return s }
+    if t == "float" { s = "double"  return s }
+    if t == "bool" { s = "int"  return s }
+    if t == "string" { s = "char*"  return s }
+    if t == "func" { s = "mfl_closure"  return s }
+    s = "mfl_" + t
+}
+
+func str_has(arr, v) (b) {
+    b = 0
+    for _, x := range arr { if x == v { b = 1  return b } }
+}
+func struct_def_idx(name) (i) {
+    i = -1
+    j := 0
+    for j < len(g_structdefs) { if g_structdefs[j].name == name && g_structdefs[j].cstruct == 0 { i = j  return i }  j = j + 1 }
+}
+
+// element/map accessors from a node's slot
+func elem_kind_of(iid, idx) (k) {
+    r := node_slot_of(iid, idx)
+    k = 2
+    if r >= 0 { if (g_kind[r] == 7 || g_kind[r] == 9) && g_elem[r] >= 0 { k = kind_of(g_elem[r]) } }
+}
+func map_val_ctype(iid, idx) (s) {
+    r := node_slot_of(iid, idx)
+    s = "int64_t"
+    if r >= 0 { if g_kind[r] == 10 && g_mval[r] >= 0 { s = ctype_slot(g_mval[r]) } }
+}
+func map_key_ctype(iid, idx) (s) {
+    r := node_slot_of(iid, idx)
+    s = "int64_t"
+    if r >= 0 { if g_kind[r] == 10 && g_mkey[r] >= 0 { s = ctype_slot(g_mkey[r]) } }
+}
+func map_key_is_str(iid, idx) (b) {
+    r := node_slot_of(iid, idx)
+    b = 0
+    if r >= 0 { if g_kind[r] == 10 && g_mkey[r] >= 0 { if kind_of(g_mkey[r]) == 5 { b = 1 } } }
+}
+
+// string_zero_inits: designated inits setting every reachable string field to "".
+func string_zero_inits(tn) (inits) {
+    inits = []string{}
+    di := struct_def_idx(tn)
+    if di < 0 { return inits }
+    d := g_structdefs[di]
+    j := 0
+    for j < len(d.fnames) {
+        ft := d.ftypes[j]
+        if ft == "string" {
+            inits = append(inits, ".f_" + d.fnames[j] + " = \"\"")
+        } else {
+            if struct_def_idx(ft) >= 0 {
+                sub := string_zero_inits(ft)
+                if len(sub) > 0 { inits = append(inits, ".f_" + d.fnames[j] + " = (mfl_" + ft + "){" + join(sub, ", ") + "}") }
+            }
+        }
+        j = j + 1
+    }
+}
+
+func cg_slice_lit(iid, idx) (out) {
+    n := nodes[idx]
+    if len(n.kids) == 0 { out = "(mfl_slice){0}"  return out }
+    ek := elem_kind_of(iid, idx)
+    builder := ""
+    cast := ""
+    if ek == 3 { builder = "mfl_lit_f64"  cast = "double" } else {
+    if ek == 5 { builder = "mfl_lit_str"  cast = "char*" } else {
+    if ek == 2 || ek == 4 { builder = "mfl_lit_i64"  cast = "int64_t" } else {
+        g_cg_unsup = 1  out = "0"  return out    // struct / nested-slice elems: build via append
+    }}}
+    names, decls, wrapped := seq_operands(iid, n.kids)
+    parts := str(len(n.kids))
+    i := 0
+    for i < len(names) { parts = parts + ", (" + cast + ")(" + names[i] + ")"  i = i + 1 }
+    body := builder + "(" + parts + ")"
+    if wrapped == 1 { out = "({ " + decls + body + "; })" } else { out = body }
+}
+
+func cg_struct_lit(iid, idx) (out) {
+    n := nodes[idx]
+    tn := n.s
+    names, decls, wrapped := seq_operands(iid, n.kids)
+    body := ""
+    if len(names) > 0 && len(n.names) == 0 {
+        pp := ""
+        i := 0
+        for i < len(names) { if i > 0 { pp = pp + ", " }  pp = pp + "(" + names[i] + ")"  i = i + 1 }
+        body = "(mfl_" + tn + "){" + pp + "}"
+    } else {
+        parts := []string{}
+        provided := []string{}
+        i := 0
+        for i < len(n.names) {
+            parts = append(parts, ".f_" + n.names[i] + " = (" + names[i] + ")")
+            provided = append(provided, n.names[i])
+            i = i + 1
+        }
+        di := struct_def_idx(tn)
+        if di >= 0 {
+            d := g_structdefs[di]
+            j := 0
+            for j < len(d.fnames) {
+                if str_has(provided, d.fnames[j]) == 0 {
+                    ft := d.ftypes[j]
+                    if ft == "string" {
+                        parts = append(parts, ".f_" + d.fnames[j] + " = \"\"")
+                    } else {
+                        if struct_def_idx(ft) >= 0 {
+                            sub := string_zero_inits(ft)
+                            if len(sub) > 0 { parts = append(parts, ".f_" + d.fnames[j] + " = (mfl_" + ft + "){" + join(sub, ", ") + "}") }
+                        }
+                    }
+                }
+                j = j + 1
+            }
+        }
+        if len(parts) == 0 { body = "(mfl_" + tn + "){0}" } else { body = "(mfl_" + tn + "){" + join(parts, ", ") + "}" }
+    }
+    if wrapped == 1 { out = "({ " + decls + body + "; })" } else { out = body }
+}
+
+func cg_index(iid, idx) (out) {
+    n := nodes[idx]
+    xs := cg_expr(iid, n.a)
+    is := cg_expr(iid, n.b)
+    if node_kind(iid, n.a) == 10 {
+        ik, sk := map_key_args(iid, n.a, is)
+        tail := "_g;"
+        if node_kind(iid, idx) == 5 { tail = "_g ? _g : \"\";" }
+        out = "({ " + node_ctype(iid, idx) + " _g; mfl_map_get(" + xs + ", " + ik + ", " + sk + ", &_g); " + tail + " })"
+        return out
+    }
+    ect := elem_ctype(iid, n.a)
+    out = "((" + ect + "*)(" + xs + ").data)[" + is + "]"
+}
+
+func cg_field(iid, idx) (out) {
+    n := nodes[idx]
+    out = "(" + cg_expr(iid, n.a) + ").f_" + n.s
+}
+
+func cg_makemap(iid, idx) (out) {
+    ki := 0
+    if map_key_is_str(iid, idx) == 1 { ki = 1 }
+    out = "mfl_make_map(" + str(ki) + ", sizeof(" + map_val_ctype(iid, idx) + "))"
+}
+
+// ---- statement emitters (caller has emitted the leading indent) ----
+func cg_index_assign(iid, idx, depth) {
+    n := nodes[idx]
+    ixn := nodes[n.a]
+    xs := cg_expr(iid, ixn.a)
+    is := cg_expr(iid, ixn.b)
+    val := cg_expr(iid, n.b)
+    if node_kind(iid, ixn.a) == 10 {
+        ik, sk := map_key_args(iid, ixn.a, is)
+        vt := map_val_ctype(iid, ixn.a)
+        cemit("mfl_map_set(" + xs + ", " + ik + ", " + sk + ", &((" + vt + "[1]){" + val + "})[0]);\n")
+    } else {
+        ect := elem_ctype(iid, ixn.a)
+        cemit("((" + ect + "*)(" + xs + ").data)[" + is + "] = " + val + ";\n")
+    }
+}
+
+func cg_field_assign(iid, idx) {
+    n := nodes[idx]
+    fdn := nodes[n.a]
+    xs := cg_expr(iid, fdn.a)
+    val := cg_expr(iid, n.b)
+    cemit("(" + xs + ").f_" + fdn.s + " = " + val + ";\n")
+}
+
+func cg_range(iid, idx, depth) {
+    n := nodes[idx]     // K_RANGE: s=key, s2=val, a=x, kids=body
+    id := g_rangeid
+    g_rangeid = g_rangeid + 1
+    ids := str(id)
+    x := cg_expr(iid, n.a)
+    haskey := 0
+    if n.s != "" && n.s != "_" { haskey = 1 }
+    hasval := 0
+    if n.s2 != "" && n.s2 != "_" { hasval = 1 }
+    bk := node_kind(iid, n.a)
+    cemit("{\n")
+    if bk == 7 {   // slice
+        ect := elem_ctype(iid, n.a)
+        indent(depth + 1)  cemit("mfl_slice _r" + ids + " = " + x + ";\n")
+        indent(depth + 1)  cemit("for (int64_t _i" + ids + " = 0; _i" + ids + " < _r" + ids + ".len; _i" + ids + "++) {\n")
+        if haskey == 1 { indent(depth + 2)  cemit(var_ref(iid, n.s) + " = _i" + ids + ";\n") }
+        if hasval == 1 { indent(depth + 2)  cemit(var_ref(iid, n.s2) + " = ((" + ect + "*)_r" + ids + ".data)[_i" + ids + "];\n") }
+    } else {
+    if bk == 5 {   // string
+        indent(depth + 1)  cemit("const char* _s" + ids + " = " + x + ";\n")
+        indent(depth + 1)  cemit("for (int64_t _i" + ids + " = 0; _s" + ids + "[_i" + ids + "]; _i" + ids + "++) {\n")
+        if haskey == 1 { indent(depth + 2)  cemit(var_ref(iid, n.s) + " = _i" + ids + ";\n") }
+        if hasval == 1 { indent(depth + 2)  cemit(var_ref(iid, n.s2) + " = mfl_charat(_s" + ids + ", _i" + ids + ");\n") }
+    } else {
+    if bk == 10 {  // map
+        kct := map_key_ctype(iid, n.a)
+        vct := map_val_ctype(iid, n.a)
+        ik := "_k" + ids
+        sk := "NULL"
+        if map_key_is_str(iid, n.a) == 1 { ik = "0"  sk = "_k" + ids }
+        indent(depth + 1)  cemit("mfl_map* _m" + ids + " = " + x + ";\n")
+        indent(depth + 1)  cemit("mfl_slice _ks" + ids + " = mfl_map_keys(_m" + ids + ");\n")
+        indent(depth + 1)  cemit("for (int64_t _i" + ids + " = 0; _i" + ids + " < _ks" + ids + ".len; _i" + ids + "++) {\n")
+        indent(depth + 2)  cemit(kct + " _k" + ids + " = ((" + kct + "*)_ks" + ids + ".data)[_i" + ids + "];\n")
+        if haskey == 1 { indent(depth + 2)  cemit(var_ref(iid, n.s) + " = _k" + ids + ";\n") }
+        if hasval == 1 { indent(depth + 2)  cemit(vct + " _v" + ids + "; mfl_map_get(_m" + ids + ", " + ik + ", " + sk + ", &_v" + ids + "); " + var_ref(iid, n.s2) + " = _v" + ids + ";\n") }
+    } else {
+        g_cg_unsup = 1   // range over channel: later part
+    }}}
+    for _, s := range n.kids { cg_stmt(iid, s, depth + 2) }
+    indent(depth + 1)  cemit("}\n")
+    indent(depth)  cemit("}\n")
+}
+
+func cg_arena(iid, idx, depth) {
+    n := nodes[idx]
+    id := g_arenaid
+    g_arenaid = g_arenaid + 1
+    ids := str(id)
+    cemit("{ mfl_arena _sa" + ids + " = {0}; mfl_arena* _sp" + ids + " = mfl_arena_cur; mfl_arena_cur = &_sa" + ids + ";\n")
+    for _, s := range n.kids { cg_stmt(iid, s, depth + 1) }
+    indent(depth)
+    cemit("mfl_arena_cur = _sp" + ids + "; mfl_arena_free(&_sa" + ids + "); }\n")
+}

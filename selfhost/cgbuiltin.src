@@ -208,10 +208,10 @@ func cg_print(iid, call_idx, depth) {
     if n.s == "println" { cemit("fputs(\"\\n\", stdout);\n") } else { cemit("fflush(stdout);\n") }
 }
 
-func assign_line(name, val, depth) {
+func assign_line(iid, name, val, depth) {
     if name == "_" { return }
     indent(depth + 1)
-    cemit(var_ref(name) + " = " + val + ";\n")
+    cemit(var_ref(iid, name) + " = " + val + ";\n")
 }
 
 func callee_inst_of(iid, idx) (ci) {
@@ -241,7 +241,7 @@ func cg_multi_assign(iid, idx, depth) {
                 indent(depth + 1)
                 cemit(cn + "_ret _t" + str(id) + " = " + cn + "(" + join(argstrs, ", ") + ");\n")
                 i := 0
-                for i < len(n.names) { assign_line(n.names[i], "_t" + str(id) + ".r" + str(i), depth)  i = i + 1 }
+                for i < len(n.names) { assign_line(iid, n.names[i], "_t" + str(id) + ".r" + str(i), depth)  i = i + 1 }
                 indent(depth)
                 cemit("}\n")
                 return
@@ -249,7 +249,7 @@ func cg_multi_assign(iid, idx, depth) {
         }
         if rn.kind == K_RECV { g_cg_unsup = 1  cemit("0;\n")  return }
         if rn.kind == K_CALL && func_root(rn.s) < 0 { g_cg_unsup = 1  cemit("0;\n")  return }
-        cemit(var_ref(n.names[0]) + " = " + cg_expr(iid, rhs0) + ";\n")
+        cemit(var_ref(iid, n.names[0]) + " = " + cg_expr(iid, rhs0) + ";\n")
         return
     }
     // parallel assignment: hoist all RHS into temps, then assign
@@ -263,7 +263,7 @@ func cg_multi_assign(iid, idx, depth) {
         i = i + 1
     }
     i = 0
-    for i < len(n.names) { assign_line(n.names[i], "_t" + str(id) + "_" + str(i), depth)  i = i + 1 }
+    for i < len(n.names) { assign_line(iid, n.names[i], "_t" + str(id) + "_" + str(i), depth)  i = i + 1 }
     indent(depth)
     cemit("}\n")
 }

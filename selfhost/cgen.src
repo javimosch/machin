@@ -80,22 +80,24 @@ func ctype_slot(slot) (s) {
 
 // node_kind / node_slot_of: the inferred Kind / slot of expression node `idx` in `iid`.
 func node_kind(iid, idx) (k) {
+    k = 2   // default int
+    if iid < 0 { return k }
     ins := g_insts[iid]
     j := 0
     for j < len(ins.nn) {
         if ins.nn[j] == idx { k = kind_of(ins.ns[j])  return k }
         j = j + 1
     }
-    k = 2   // default int
 }
 func node_slot_of(iid, idx) (slot) {
+    slot = -1
+    if iid < 0 { return slot }
     ins := g_insts[iid]
     j := 0
     for j < len(ins.nn) {
         if ins.nn[j] == idx { slot = find(ins.ns[j])  return slot }
         j = j + 1
     }
-    slot = -1
 }
 // elem_ctype: the C type of a slice/chan node's element (for append).
 func elem_ctype(iid, idx) (s) {
@@ -113,7 +115,24 @@ func map_key_args(iid, map_idx, keyexpr) (ik, sk) {
     if strkey == 1 { ik = "0"  sk = keyexpr } else { ik = keyexpr  sk = "NULL" }
 }
 
-func var_ref(name) (s) { s = "v_" + name }
+// is_local: is `name` a parameter or local of instance iid?
+func is_local(iid, name) (b) {
+    b = 0
+    if iid < 0 { return b }
+    ins := g_insts[iid]
+    i := 0
+    for i < len(ins.pnames) { if ins.pnames[i] == name { b = 1  return b }  i = i + 1 }
+    i = 0
+    for i < len(ins.lnames) { if ins.lnames[i] == name { b = 1  return b }  i = i + 1 }
+}
+
+// var_ref: mfl_g_<name> for a package global (unless shadowed by a local), else v_<name>.
+func var_ref(iid, name) (s) {
+    fnd := 0
+    _, fnd = global_lookup(name)
+    if fnd == 1 && is_local(iid, name) == 0 { s = "mfl_g_" + name  return s }
+    s = "v_" + name
+}
 
 // c_float renders a float literal like strconv.FormatFloat(v,'g',-1,64) + ".0"-fixup.
 func c_float(lex) (s) {
@@ -129,7 +148,7 @@ func cg_expr(iid, idx) (out) {
     if k == K_STR { out = c_quote(n.s)  return out }
     if k == K_BOOL { if n.ival == 1 { out = "1" } else { out = "0" }  return out }
     if k == K_NIL { out = "0"  return out }
-    if k == K_ID { out = var_ref(n.s)  return out }
+    if k == K_ID { out = var_ref(iid, n.s)  return out }
     if k == K_UNARY {
         op := n.s
         if op == "^" { op = "~" }
@@ -138,7 +157,12 @@ func cg_expr(iid, idx) (out) {
     }
     if k == K_BIN { out = cg_binary(iid, idx)  return out }
     if k == K_CALL { out = cg_call(iid, idx)  return out }
-    g_cg_unsup = 1  out = "0"
+    if k == K_SLICE { out = cg_slice_lit(iid, idx)  return out }
+    if k == K_STRUCT { out = cg_struct_lit(iid, idx)  return out }
+    if k == K_INDEX { out = cg_index(iid, idx)  return out }
+    if k == K_FIELD { out = cg_field(iid, idx)  return out }
+    if k == K_MAKEMAP { out = cg_makemap(iid, idx)  return out }
+    g_cg_unsup = 1  out = "0"    // makechan / recv / funclit / closure / callvalue: later parts
 }
 
 // ---- side-effect ordering (port of seqExprs) ----
@@ -265,7 +289,7 @@ func cg_stmt(iid, idx, depth) {
     }
     if k == K_MULTI { indent(depth)  cg_multi_assign(iid, idx, depth)  return }
     indent(depth)
-    if k == K_ASSIGN { cemit(var_ref(n.s) + " = " + cg_expr(iid, n.a) + ";\n")  return }
+    if k == K_ASSIGN { cemit(var_ref(iid, n.s) + " = " + cg_expr(iid, n.a) + ";\n")  return }
     if k == K_RETURN {
         if len(n.kids) == 0 { emit_named_return(iid)  return }
         if len(n.kids) == 1 { cemit("return (" + cg_expr(iid, n.kids[0]) + ");\n")  return }
@@ -293,22 +317,22 @@ func cg_stmt(iid, idx, depth) {
         cemit("}\n")
         return
     }
-    if k == K_ARENA {
-        g_cg_unsup = 1  cemit("0;\n")
-        return
-    }
-    g_cg_unsup = 1  cemit("0;\n")
+    if k == K_IDXASSIGN { cg_index_assign(iid, idx, depth)  return }
+    if k == K_FLDASSIGN { cg_field_assign(iid, idx)  return }
+    if k == K_RANGE { cg_range(iid, idx, depth)  return }
+    if k == K_ARENA { cg_arena(iid, idx, depth)  return }
+    g_cg_unsup = 1  cemit("0;\n")   // send / select / go: later parts
 }
 
 func emit_named_return(iid) {
     ins := g_insts[iid]
     if len(ins.rnames) == 0 { cemit("return;\n")  return }
-    if len(ins.rnames) == 1 { cemit("return " + var_ref(ins.rnames[0]) + ";\n")  return }
+    if len(ins.rnames) == 1 { cemit("return " + var_ref(iid, ins.rnames[0]) + ";\n")  return }
     s := "return (" + ins.cname + "_ret){ "
     i := 0
     for i < len(ins.rnames) {
         if i > 0 { s = s + ", " }
-        s = s + var_ref(ins.rnames[i])
+        s = s + var_ref(iid, ins.rnames[i])
         i = i + 1
     }
     cemit(s + " };\n")

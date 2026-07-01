@@ -212,8 +212,20 @@ node→slot pairs (so each expression's kind is queryable) + named-return names.
   MFL gotcha: `build.go` picks link libs by *text-scanning* the C for `mfl_xeddsa_`/
   etc — my `"mfl_xeddsa_sign"` string literals falsely pulled in `-lsodium`; split as
   `"mfl_xeddsa"+"_sign"` so the trigger substring never appears contiguously.
-  *Next (4d): structs/slices/maps literals + index/field/range codegen, FFI extern
-  calls, json/parse serializers, closures, select. Then the FIXPOINT + perf gate.*
+- 🔨 **(4d part 1) aggregates.** `cgagg.src`: struct/slice/map literals
+  (sliceLit/structLit with string zero-inits), index `x[i]` (slice + map), field
+  `x.f`, index/field assignment, `for…range` over slice/string/map, `make(map)`,
+  arena blocks. `cgprog.src` grows struct typedefs (declared `type`s) + package-global
+  static decls + the `__attribute__((constructor))` init. `var_ref` now takes `iid`
+  and resolves package globals to `mfl_g_<name>` (unless shadowed). `StructDef` gained
+  a `cstruct` flag (typedefs emitted only for `type` structs). Verified byte-for-byte:
+  hand cases + **400 random aggregate programs, 0 diffs**; corpus codegen PASS 9/FAIL 0
+  (was 1). Global inits limited to scalar literals/idents for now (complex inits →
+  g_cg_unsup). MFL gotcha: flat function scope — `parts := ""` and `parts := []string{}`
+  in sibling if-branches are the SAME var → slice-vs-string clash; use distinct names.
+  *Next (4d part 2+): FFI extern calls + cstruct marshaling, json/parse serializers,
+  channels (make/send/recv/select), closures, complex global inits. Then FIXPOINT +
+  perf gate.*
 
 ### Stage 4 — C codegen, Stage 5 — driver, Stage 6 — fixpoint
 (unchanged; see top.)
