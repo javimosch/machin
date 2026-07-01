@@ -1,0 +1,176 @@
+// selfhost/cgffi.src — Stage 4 codegen, sub-slice (4d part 3): FFI. Extern function
+// calls + cstruct marshaling. Ports callBody's extern path and program()'s extern
+// declarations / cstruct typedefs / mfl_from_/mfl_to_ marshaling. Unlocks the raylib
+// games and any `extern { header/fn/cstruct }` program.
+
+// per extern block: header + ordered cstruct names + ordered fn names (details in
+// g_structdefs / g_extfns). Populated by the driver's pass-1b.
+type ExtBlock struct { header string  cstructs []string  fns []string }
+var g_extblocks = []ExtBlock{}
+func register_extblock(header, cstructs, fns) {
+    g_extblocks = append(g_extblocks, ExtBlock{header: header, cstructs: cstructs, fns: fns})
+}
+
+// ffi_ctype: an FFI scalar type -> its C type (port of ffiCType). "void" otherwise.
+func ffi_ctype(t) (s) {
+    if t == "ptr" { s = "void*"  return s }
+    if t == "int" || t == "i64" { s = "int64_t"  return s }
+    if t == "i32" { s = "int32_t"  return s }
+    if t == "i16" { s = "int16_t"  return s }
+    if t == "i8" { s = "int8_t"  return s }
+    if t == "u64" { s = "uint64_t"  return s }
+    if t == "u32" { s = "uint32_t"  return s }
+    if t == "u16" { s = "uint16_t"  return s }
+    if t == "u8" { s = "uint8_t"  return s }
+    if t == "float" || t == "f64" { s = "double"  return s }
+    if t == "f32" { s = "float"  return s }
+    if t == "bool" { s = "int"  return s }
+    if t == "string" { s = "const char*"  return s }
+    s = "void"
+}
+// extern_ctype: the C type in a foreign prototype (port of externCType).
+func extern_ctype(t) (s) {
+    if t == "" { s = "void"  return s }
+    if is_ffi_scalar(t) == 1 { s = ffi_ctype(t)  return s }
+    s = t   // a cstruct: its raw C name
+}
+// ffi_mfl_type: an FFI scalar -> the MFL type for the synthesized struct field.
+func ffi_mfl_type(t) (s) {
+    if t == "ptr" { s = "int"  return s }
+    if t == "f32" || t == "f64" || t == "float" { s = "float"  return s }
+    if t == "bool" { s = "bool"  return s }
+    if t == "string" { s = "string"  return s }
+    s = "int"
+}
+
+func is_any_struct(name) (b) {
+    b = 0
+    for _, d := range g_structdefs { if d.name == name { b = 1  return b } }
+}
+// the C type of a cstruct field in its mfl_ representation.
+func cstruct_field_ctype(ft) (s) {
+    if is_any_struct(ft) == 1 { s = "mfl_" + ft  return s }
+    s = ctype_name(ffi_mfl_type(ft))
+}
+func ext_struct_idx(name) (i) {
+    i = -1
+    j := 0
+    for j < len(g_structdefs) { if g_structdefs[j].name == name && g_structdefs[j].cstruct == 1 { i = j  return i }  j = j + 1 }
+}
+
+// cg_extern_decls: #include headers, or raw cstruct typedefs + fn prototypes.
+func cg_extern_decls() {
+    for _, eb := range g_extblocks {
+        if eb.header != "" { cemit("#include <" + eb.header + ">\n")  continue }
+        for _, cn := range eb.cstructs {
+            di := ext_struct_idx(cn)
+            if di < 0 { continue }
+            d := g_structdefs[di]
+            line := "typedef struct {"
+            j := 0
+            for j < len(d.fnames) { line = line + " " + ffi_ctype(d.ftypes[j]) + " " + d.fnames[j] + ";"  j = j + 1 }
+            cemit(line + " } " + cn + ";\n")
+        }
+        for _, fnm := range eb.fns {
+            fi := ext_lookup(fnm)
+            if fi < 0 { continue }
+            ef := g_extfns[fi]
+            ps := ""
+            k := 0
+            for k < len(ef.params) { if k > 0 { ps = ps + ", " }  ps = ps + extern_ctype(ef.params[k])  k = k + 1 }
+            if ps == "" { ps = "void" }
+            cemit("extern " + extern_ctype(ef.ret) + " " + fnm + "(" + ps + ");\n")
+        }
+    }
+}
+
+// cg_cstruct_typedefs: emit the mfl_<Name> typedef for every cstruct (in decl order,
+// after the plain `type` typedefs — matching p.Types: types first, then cstructs).
+func cg_cstruct_typedefs() {
+    i := 0
+    for i < len(g_structdefs) { if g_structdefs[i].cstruct == 1 { cg_cstruct_typedef(i) }  i = i + 1 }
+}
+
+// cg_cstruct_typedef: the mfl_<Name> struct for a cstruct (opaque -> one _c field).
+func cg_cstruct_typedef(di) {
+    d := g_structdefs[di]
+    if len(d.fnames) == 0 {
+        cemit("typedef struct { " + d.name + " _c; } mfl_" + d.name + ";\n")
+        return
+    }
+    line := "typedef struct {"
+    j := 0
+    for j < len(d.fnames) { line = line + " " + cstruct_field_ctype(d.ftypes[j]) + " f_" + d.fnames[j] + ";"  j = j + 1 }
+    cemit(line + " } mfl_" + d.name + ";\n")
+}
+
+// cg_ffi_marshaling: mfl_from_<N> / mfl_to_<N> for each cstruct.
+func cg_ffi_marshaling() {
+    for _, d := range g_structdefs {
+        if d.cstruct == 0 { continue }
+        nm := d.name
+        if len(d.fnames) == 0 {
+            cemit("static mfl_" + nm + " mfl_from_" + nm + "(" + nm + " c) { return (mfl_" + nm + "){ ._c = c }; }\n")
+            cemit("static " + nm + " mfl_to_" + nm + "(mfl_" + nm + " m) { return m._c; }\n")
+            continue
+        }
+        from := "static mfl_" + nm + " mfl_from_" + nm + "(" + nm + " c) { return (mfl_" + nm + "){"
+        j := 0
+        for j < len(d.fnames) {
+            fn2 := d.fnames[j]
+            ct := d.ftypes[j]
+            if is_any_struct(ct) == 1 { from = from + " .f_" + fn2 + " = mfl_from_" + ct + "(c." + fn2 + ")," } else {
+            if ct == "ptr" { from = from + " .f_" + fn2 + " = (int64_t)(intptr_t)c." + fn2 + "," } else {
+                from = from + " .f_" + fn2 + " = c." + fn2 + ","
+            }}
+            j = j + 1
+        }
+        cemit(from + " }; }\n")
+        to := "static " + nm + " mfl_to_" + nm + "(mfl_" + nm + " m) { return (" + nm + "){"
+        j = 0
+        for j < len(d.fnames) {
+            fn2 := d.fnames[j]
+            ct := d.ftypes[j]
+            if is_any_struct(ct) == 1 { to = to + " ." + fn2 + " = mfl_to_" + ct + "(m.f_" + fn2 + ")," } else {
+            if ct == "ptr" { to = to + " ." + fn2 + " = (void*)(intptr_t)m.f_" + fn2 + "," } else {
+                to = to + " ." + fn2 + " = (" + ffi_ctype(ct) + ")m.f_" + fn2 + ","
+            }}
+            j = j + 1
+        }
+        cemit(to + " }; }\n")
+    }
+}
+
+// cg_extern_call: the C for a call to extern fn `ef_idx` with evaluated args `names`.
+func cg_extern_call(iid, ef_idx, names) (out) {
+    ef := g_extfns[ef_idx]
+    parts := []string{}
+    pre := []string{}
+    post := []string{}
+    i := 0
+    for i < len(ef.params) {
+        pt := ef.params[i]
+        a := names[i]
+        if pt == "ptr" { parts = append(parts, "(void*)(intptr_t)(" + a + ")") } else {
+        if has_prefix(pt, "*") { parts = append(parts, "(*(" + substr(pt, 1, len(pt)) + "*)(intptr_t)(" + a + "))") } else {
+        if has_suffix(pt, "*") {
+            base := substr(pt, 0, len(pt) - 1)
+            tmp := "_io" + str(i)
+            pre = append(pre, base + " " + tmp + " = mfl_to_" + base + "(" + a + ");")
+            post = append(post, a + " = mfl_from_" + base + "(" + tmp + ");")
+            parts = append(parts, "&" + tmp)
+        } else {
+        if is_ffi_scalar(pt) == 1 { parts = append(parts, "(" + ffi_ctype(pt) + ")(" + a + ")") } else {
+            parts = append(parts, "mfl_to_" + pt + "(" + a + ")")
+        }}}}
+        i = i + 1
+    }
+    call := ef.name + "(" + join(parts, ", ") + ")"
+    if len(pre) > 0 {
+        out = "({ " + join(pre, " ") + " " + call + "; " + join(post, " ") + " })"
+        return out
+    }
+    if ef.ret == "ptr" { out = "(int64_t)(intptr_t)(" + call + ")"  return out }
+    if ef.ret != "" && is_ffi_scalar(ef.ret) == 0 { out = "mfl_from_" + ef.ret + "(" + call + ")"  return out }
+    out = call
+}

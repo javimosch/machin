@@ -115,6 +115,38 @@ func main() {
 EOF
 run "$T/h5.src"
 
+# FFI (4d part 3): cstructs (header + no-header), extern calls, marshaling, ptr, inout
+cat > "$T/h6.src" <<'EOF'
+extern "raylib" {
+    header "raylib.h"
+    cstruct Vector3 { x f32  y f32  z f32 }
+    cstruct Camera3D { position Vector3  target Vector3  fovy f32  projection i32 }
+    fn InitWindow(i32, i32, string)
+    fn GetMousePosition() Vector3
+    fn Vector3Add(Vector3, Vector3) Vector3
+}
+extern "mylib" {
+    cstruct Buf { data ptr  len i32 }
+    fn make_buf() Buf
+    fn fill(Buf*, i32)
+    fn raw_ptr() ptr
+}
+func main() {
+    InitWindow(800, 600, "demo")
+    p := Vector3{x: 1.0, y: 2.0, z: 3.0}
+    q := GetMousePosition()
+    r := Vector3Add(p, q)
+    d := r.x + q.y
+    cam := Camera3D{position: p, fovy: 45.0, projection: 0}
+    f := cam.fovy
+    b := make_buf()
+    fill(b, 42)
+    n := b.len
+    ptr := raw_ptr()
+}
+EOF
+run "$T/h6.src"
+
 # SELF-APPLICATION: the MFL codegen emits byte-identical C for the compiler's OWN
 # source (checker + full codegen) — the fixpoint-adjacent milestone.
 $N "$MACHIN" encode selfhost/lex.src selfhost/parse.src selfhost/check.src \

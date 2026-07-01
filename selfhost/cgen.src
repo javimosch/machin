@@ -46,8 +46,8 @@ func c_quote(v) (out) {
         if c == 10 { out = out + "\\n" } else {
         if c == 9 { out = out + "\\t" } else {
         if c == 13 { out = out + "\\r" } else {
-        if c >= 32 && c < 127 { out = out + substr(v, i, i + 1) } else {
-            out = out + "\\" + oct3(c)
+        if (c >= 32 && c < 127) || c >= 128 { out = out + substr(v, i, i + 1) } else {
+            out = out + "\\" + oct3(c)   // control byte (0-31, 127): octal escape
         }}}}}}
         i = i + 1
     }
@@ -137,9 +137,15 @@ func var_ref(iid, name) (s) {
     s = "v_" + name
 }
 
-// c_float renders a float literal like strconv.FormatFloat(v,'g',-1,64) + ".0"-fixup.
+// c_float renders a float literal to match strconv.FormatFloat(v,'g',-1,64)+".0"-fixup.
+// str() uses C's %g, which shares Go's exponent threshold (e at exp<-4 or exp>=6); the
+// ONLY difference is precision — C's default 6 sig figs vs Go's shortest. So when the
+// %g result round-trips (value needs <=6 sig figs), it is byte-identical to Go's 'g',
+// exponent form included. Values needing >6 figs can't be produced here -> defer.
 func c_float(lex) (s) {
-    s = str(parse_float(lex))
+    v := parse_float(lex)
+    s = str(v)
+    if parse_float(s) != v { g_cg_unsup = 1  s = "0.0"  return s }   // needs >6 sig figs
     if contains(s, ".") == false && contains(s, "e") == false && contains(s, "E") == false { s = s + ".0" }
 }
 
@@ -244,10 +250,15 @@ func cg_call(iid, idx) (out) {
     n := nodes[idx]
     names, decls, wrapped := seq_operands(iid, n.kids)
     body := ""
-    if func_root(n.s) >= 0 {
-        body = callee_cname(iid, idx) + "(" + join(names, ", ") + ")"
+    ei := ext_lookup(n.s)   // an extern (FFI) fn shadows a builtin, matching the checker
+    if ei >= 0 {
+        body = cg_extern_call(iid, ei, names)
     } else {
-        body = cg_builtin(iid, idx, n.s, names)
+        if func_root(n.s) >= 0 {
+            body = callee_cname(iid, idx) + "(" + join(names, ", ") + ")"
+        } else {
+            body = cg_builtin(iid, idx, n.s, names)
+        }
     }
     if wrapped == 1 { out = "({ " + decls + body + "; })" } else { out = body }
 }

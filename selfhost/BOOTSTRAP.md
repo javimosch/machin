@@ -231,10 +231,23 @@ node→slot pairs (so each expression's kind is queryable) + named-return names.
   compiler for the COMPILER'S OWN SOURCE** — the checker (4371 lines of C) and the full
   lex+parse+check+codegen (6406 lines). `verify-cgen.sh` (406) now includes the
   self-application diff. Corpus codegen still PASS 9 / FAIL 0.
-  *Next (4d part 3): FFI extern calls + cstruct marshaling (unlocks the raylib games),
-  then json/parse serializers (backends), channels, closures → full corpus codegen
-  parity. Then the FIXPOINT proper (compile mflc's source to a native binary, run it,
-  assert it reproduces itself) + perf gate.*
+- ✅ **(4d part 3) FFI extern calls + cstruct marshaling.** `cgffi.src`: `ffi_ctype`/
+  `extern_ctype`/`ffi_mfl_type`, extern declarations (`#include` or raw typedef +
+  prototype), `mfl_<cstruct>` typedefs (incl. opaque `_c`), `mfl_from_`/`mfl_to_`
+  marshaling, and the extern call (`ptr`→intptr, `*Name`→deref, `Name*`→inout `_io<i>`
+  writeback, scalar cast, cstruct `mfl_to_`; ret `ptr`/`mfl_from_`). `ExtBlock` recording
+  in `cgmain.src`; `cg_program` order = externs → type+cstruct typedefs → marshaling →
+  ret structs → blank. Two codegen bugs fixed en route: (a) **string escaping** — Go's
+  `strconv.Quote` keeps printable UTF-8 (e.g. `—`) as literal bytes; `c_quote` now emits
+  bytes ≥128 as-is (was octal). (b) **float literals** — C `%g` shares Go's exponent
+  threshold (e at exp<-4 or ≥6); it differs only in precision, so a round-tripping `%g`
+  is byte-identical to Go's shortest `'g'` (defer >6-sig-fig values). Verified: FFI hand
+  cases + **corpus codegen PASS 27 / FAIL 0** (was 9); self-application still identical
+  (6795 C lines). verify-cgen.sh=407.
+  *Next (4d part 4): json/parse serializers (backends), channels (make/send/recv/select),
+  closures (MakeClosure/CallValue) → the last skips. Then the FIXPOINT proper (emit the
+  static runtime prelude → build mflc's source to a native mflc2 → assert it reproduces
+  itself) + perf gate.*
 
 ### Stage 4 — C codegen, Stage 5 — driver, Stage 6 — fixpoint
 (unchanged; see top.)

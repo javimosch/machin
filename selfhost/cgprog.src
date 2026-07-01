@@ -93,18 +93,22 @@ var g_glob_inits = []int{}   // global-init expr node indices (parallel to g_glo
 
 func cg_program() {
     compute_reps()
-    // 1. struct typedefs (declared `type` structs, in declaration order)
-    ntypes := 0
+    // 0. extern (FFI) declarations: #include headers or raw cstruct typedefs + prototypes
+    cg_extern_decls()
+    // 1. struct typedefs — declared `type` structs and cstructs (mfl_ form), in
+    //    declaration order (g_structdefs = types then cstructs, matching p.Types).
     for _, d := range g_structdefs {
         if d.cstruct == 0 {
             line := "typedef struct {"
             j := 0
             for j < len(d.fnames) { line = line + " " + ctype_name(d.ftypes[j]) + " f_" + d.fnames[j] + ";"  j = j + 1 }
             cemit(line + " } mfl_" + d.name + ";\n")
-            ntypes = ntypes + 1
         }
     }
-    // 2. multi-return result structs (one per instance with >=2 returns)
+    cg_cstruct_typedefs()
+    // 2. FFI marshaling (mfl_from_/mfl_to_ per cstruct)
+    cg_ffi_marshaling()
+    // 3. multi-return result structs (one per instance with >=2 returns)
     for _, rid := range g_reps {
         ins := g_insts[rid]
         if len(ins.rslots) >= 2 {
@@ -114,7 +118,8 @@ func cg_program() {
             cemit(line + " } " + ins.cname + "_ret;\n")
         }
     }
-    if ntypes > 0 { cemit("\n") }
+    // 4. blank after typedefs when the program has any struct/cstruct types
+    if len(g_structdefs) > 0 { cemit("\n") }
     // 3. package globals: zero-initialized C statics
     gi := 0
     for gi < len(g_global_names) {
