@@ -12,7 +12,10 @@ func lex_only(line) {
 func main() {
     a := args()
     if len(a) < 3 { write(2, "usage: cgen --program <file.mfl>\n")  exit(2) }
-    if a[1] != "--program" { write(2, "only --program is supported\n")  exit(2) }
+    // --program: body-only C (the oracle diff). --full: complete C (prelude + body),
+    // buildable to a native binary (the fixpoint driver).
+    full := 0
+    if a[1] == "--full" { full = 1 } else { if a[1] != "--program" { write(2, "usage: cgen (--program | --full) <file.mfl>\n")  exit(2) } }
     data := read_file(a[2])
     lines := split(data, "\n")
 
@@ -110,6 +113,7 @@ func main() {
 
     g_glob_inits = global_inits   // init nodes for the ctor (codegen'd with iid == -1)
 
+    if full == 1 { emit_prelude() }
     cg_program()
     if g_cg_unsup == 1 { write(1, "(unsupported)\n")  return }
     write(1, g_out)

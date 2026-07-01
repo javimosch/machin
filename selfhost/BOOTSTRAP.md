@@ -244,10 +244,28 @@ node→slot pairs (so each expression's kind is queryable) + named-return names.
   is byte-identical to Go's shortest `'g'` (defer >6-sig-fig values). Verified: FFI hand
   cases + **corpus codegen PASS 27 / FAIL 0** (was 9); self-application still identical
   (6795 C lines). verify-cgen.sh=407.
-  *Next (4d part 4): json/parse serializers (backends), channels (make/send/recv/select),
-  closures (MakeClosure/CallValue) → the last skips. Then the FIXPOINT proper (emit the
-  static runtime prelude → build mflc's source to a native mflc2 → assert it reproduces
-  itself) + perf gate.*
+
+### ✅ THE SELF-HOSTING FIXPOINT — REACHED
+`cgprelude.src` embeds the static C runtime prelude (cRuntime + netRuntime + ttyRuntime,
+the always-native base) as base64, decoded at runtime, so the MFL compiler can emit a
+COMPLETE C file (`mfl-cgen --full`). The pipeline (`verify-fixpoint.sh`):
+1. Go machin builds the MFL compiler (`mfl-cgen`) from its 11-file MFL source.
+2. `mfl-cgen --full <its own source>` → a 7937-line C file → `cc -O2` → native `mflc2`.
+3. `mflc2 --full <the same source>` → `mflc3.c`.
+4. **`mflc2.c == mflc3.c`, byte-for-byte** — the compiler compiled itself and the result
+   reproduces itself.
+Three-way agreement confirmed: **Go machin ≡ mfl-cgen ≡ self-compiled mflc2** all emit
+byte-identical C for arbitrary programs, and `mflc2`-compiled binaries run correctly
+(`HELLO 41 4`). Stages lex ✅ parse ✅ typecheck ✅ codegen ✅ → **self-hosting done.**
+
+Perf gate (`PERF.md`): the self-hosted compiler is ~7.4× slower than Go on the full
+pipeline — codegen quality is competitive; the gap is O(n) linear-scan symbol/node
+tables (algorithmically fixable, left naive for correctness-first).
+
+Remaining breadth (optional, not needed for the fixpoint): json/parse serializers,
+channels (make/send/recv/select), closures (MakeClosure/CallValue) — the ~11 corpus
+codegen skips. The base prelude covers programs using no math/crypto/sqlite/regex/tls
+builtins (the compiler is one); embedding the gated blocks would generalize `--full`.
 
 ### Stage 4 — C codegen, Stage 5 — driver, Stage 6 — fixpoint
 (unchanged; see top.)

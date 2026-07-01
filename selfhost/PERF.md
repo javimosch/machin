@@ -49,6 +49,27 @@ malloc+copy. Closing that needs a real zero-copy `{ptr,len}` string-view represe
 done now: it's invasive and the lexer is already competitive. Tracked for if/when a
 later stage's profile demands it.
 
+## The fixpoint is reached — and the whole-compiler number
+
+The self-hosting bootstrap is **complete**: the MFL compiler compiles its own source
+to a native binary that reproduces itself byte-for-byte (`verify-fixpoint.sh`). With a
+real self-compiled compiler binary (`mflc2`) we can finally measure the whole pipeline,
+not just the lexer:
+
+| Task (parse + typecheck + codegen of the 11-file compiler source → 7937 lines of C) | Time |
+|---|---:|
+| Go machin (reference) | 251 ms |
+| MFL `mflc2` (self-hosted) | 1865 ms → **7.4× slower** |
+
+So the *generated code* is competitive (raw compute beats Go — see the lexer row after
+the substr fix), but the compiler *as written* is ~7× slower. The cause is not codegen
+quality; it is **O(n) linear scans** used as the compiler's data structures — `node_kind`/
+`node_slot_of` scan the instance's node→slot array per expression, and the symbol tables
+(`func_root`, `callee_cname`, `ext_lookup`, `struct_def_idx`, `g_structdefs`) are linear
+arrays. This is the same class of issue the substr fix addressed (a representation
+choice, not a fundamental limit): swapping the hot linear scans for hash maps / indexed
+lookups would close most of the gap. It was left naive on purpose — correctness first.
+
 ## Takeaway for the keep/drop gate
 
 The decision was framed as "ship the MFL compiler only if it benchmarks competitively."
