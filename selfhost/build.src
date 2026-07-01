@@ -1,0 +1,46 @@
+// selfhost/build.src — the `machin build`/`run` orchestration in MFL: compile a .mfl
+// to full C, write it to a temp file, feature-scan the C for link libs, and invoke cc
+// via system(). Ports BuildBinaryStatic's non-static path. Part of the no-Go bootstrap.
+// (Static-SQLite bundling and FFI extern cflags are follow-ups; the core covers the
+// compiler itself + all libc / TLS / sqlite / crypto / math programs.)
+
+// cc_path: honor $CC (musl-gcc etc.), else "cc".
+func cc_path() (cc) {
+    cc = env("CC")
+    if cc == "" { cc = "cc" }
+}
+
+// build_binary: compile the .mfl at `path` to a native executable at `out`.
+// Returns 0 on success; 1/2/3 = parse/check/unsupported; 10 = cc failed.
+func build_binary(path, out, safe) (rc) {
+    rc = 0
+    compile_to_c(path, 1)                 // full C (prelude + program)
+    if g_compile_rc != 0 { rc = g_compile_rc  return rc }
+    csrc := g_out_str()
+    tmpc := out + ".mfl.c"
+    write_file(tmpc, csrc)
+
+    cmd := cc_path() + " -O2 -std=c11 -pthread -o " + out + " " + tmpc
+    // link libs, only when the feature is actually used (keeps libc-only programs libc-only).
+    // NOTE the needles are split (x + y) so these literals don't appear verbatim in THIS
+    // file's own generated C — otherwise the host build's feature-scan false-triggers them.
+    if contains(csrc, "mfl_tls" + "_dial") { cmd = cmd + " -lssl -lcrypto" }
+    if contains(csrc, "mfl_sqlite" + "_") { cmd = cmd + " -lsqlite3" }
+    if contains(csrc, "mfl_math" + "_") || contains(csrc, "mfl_" + "noise") { cmd = cmd + " -lm" }
+    if contains(csrc, "mfl_crypto" + "_") { cmd = cmd + " -lcrypto" }
+    if contains(csrc, "mfl_xeddsa" + "_") { cmd = cmd + " -lsodium -lcrypto" }
+
+    ec := system(cmd)
+    if ec != 0 { rc = 10  return rc }     // keep tmpc on failure for debugging
+    remove(tmpc)
+}
+
+// run_program: build to a temp binary and exec it; returns the child's exit code.
+func run_program(path, safe) (rc) {
+    tmpbin := "/tmp/mfl-run-bin"
+    rc = build_binary(path, tmpbin, safe)
+    if rc != 0 { return rc }
+    ec := system(tmpbin)
+    remove(tmpbin)
+    rc = ec
+}
