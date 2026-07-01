@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.86.0
+
 - **`machin check [--json]` — agent-native diagnostics.** A machine-first alternative to a
   language server (which renders for a human): `machin check --json a.src` (or `--stdin`)
   runs lex → parse → typecheck **only — no codegen, no `cc`** (milliseconds), and returns
