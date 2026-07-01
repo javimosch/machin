@@ -86,6 +86,23 @@ func env_lookup(name) (slot, found) {
     }
 }
 
+// ---- package globals (typed once, referenced from any function) ----
+var g_global_names = []string{}
+var g_global_slots = []int{}
+func register_global(nm, slot) {
+    g_global_names = append(g_global_names, nm)
+    g_global_slots = append(g_global_slots, slot)
+}
+func global_lookup(name) (slot, found) {
+    slot = -1
+    found = 0
+    i := 0
+    for i < len(g_global_names) {
+        if g_global_names[i] == name { slot = g_global_slots[i]  found = 1  return slot, found }
+        i = i + 1
+    }
+}
+
 // env_set binds name->slot in the env only (used for parameters).
 func env_set(name, slot) {
     cur_names = append(cur_names, name)
@@ -236,6 +253,35 @@ func struct_field_type_at(nm, ix) (t) {
     for _, d := range g_structdefs { if d.name == nm { t = d.ftypes[ix]  return t } }
 }
 
+// ---- extern (FFI) function registry ----
+type ExtFn struct { name string  params []string  ret string }
+var g_extfns = []ExtFn{}
+func register_extfn(nm, params, ret) { g_extfns = append(g_extfns, ExtFn{name: nm, params: params, ret: ret}) }
+func ext_lookup(nm) (idx) {
+    idx = -1
+    i := 0
+    for i < len(g_extfns) { if g_extfns[i].name == nm { idx = i  return idx }  i = i + 1 }
+}
+
+func is_ffi_scalar(t) (b) {
+    b = 0
+    if t == "int" || t == "float" || t == "bool" || t == "string" || t == "ptr" { b = 1  return b }
+    if t == "i8" || t == "i16" || t == "i32" || t == "i64" || t == "u8" || t == "u16" || t == "u32" || t == "u64" || t == "f32" || t == "f64" { b = 1  return b }
+}
+
+// ffi_slot: the slot an FFI type maps to (port of ffiSlot). *Name -> int (pointer),
+// Name* -> cstruct value (inout), scalars -> int/float/bool/string, else cstruct.
+func ffi_slot(t) (s) {
+    if has_prefix(t, "*") { s = c_int  return s }
+    if has_suffix(t, "*") { s = new_struct_slot(substr(t, 0, len(t) - 1))  return s }
+    if t == "" { s = c_void  return s }
+    if t == "float" || t == "f32" || t == "f64" { s = c_float  return s }
+    if t == "bool" { s = c_bool  return s }
+    if t == "string" { s = c_string  return s }
+    if is_ffi_scalar(t) == 1 { s = c_int  return s }
+    s = new_struct_slot(t)
+}
+
 // ---- deferred uses, resolved after solve() once base kinds are known ----
 var g_iu_base = []int{}    // index uses: base[i] / idx[i] -> result[i]
 var g_iu_idx = []int{}
@@ -325,6 +371,9 @@ func type_slot(t) (s) {
     if t == "bytes" { s = c_bytes  return s }
     if t == "func" { s = new_slot(11)  return s }
     if struct_exists(t) == 1 { s = new_struct_slot(t)  return s }
+    // FFI scalar field types (cstruct fields: f32/f64/i8..u64/ptr)
+    if t == "f32" || t == "f64" { s = c_float  return s }
+    if is_ffi_scalar(t) == 1 { s = c_int  return s }
     g_check_err = 1   // unknown type name
     s = new_slot(0)
 }
@@ -341,7 +390,9 @@ func gen_expr(idx) (slot) {
     if k == K_ID {
         s, found := env_lookup(n.s)
         if found == 1 { slot = s  return slot }
-        g_check_err = 1   // undefined (no package globals in main-only slice)
+        gs, gfound := global_lookup(n.s)
+        if gfound == 1 { slot = gs  return slot }
+        g_check_err = 1   // undefined variable
         slot = c_void
         return slot
     }
@@ -403,28 +454,271 @@ func gen_expr(idx) (slot) {
     slot = c_void
 }
 
-// gen_call handles user-function calls with 0 or 1 return value (monomorphized).
-// Builtins, variadic calls, and func-valued locals fall to g_unsupported (later slices).
+// gen_call handles a call in expression position: a user function (monomorphized,
+// 0/1 return) or a builtin. Variadic user calls, spread, and func-valued locals fall
+// to g_unsupported.
 func gen_call(idx) (slot) {
     n := nodes[idx]
     callee := n.s
     argslots := []int{}
     for _, a := range n.kids { argslots = append(argslots, gen_expr(a)) }
+    // an extern (FFI) function shadows a builtin of the same name — check it first
+    extidx := ext_lookup(callee)
+    if extidx >= 0 {
+        ef := g_extfns[extidx]
+        if len(ef.params) != len(argslots) { g_check_err = 1  slot = c_void  return slot }
+        i := 0
+        for i < len(ef.params) { add_pair(argslots[i], ffi_slot(ef.params[i]))  i = i + 1 }
+        slot = ffi_slot(ef.ret)
+        return slot
+    }
     root := func_root(callee)
-    if root < 0 { g_unsupported = 1  slot = c_void  return slot }   // builtin or func-local
-    if nodes[root].b == 1 { g_unsupported = 1  slot = c_void  return slot }  // variadic
-    if n.ival == 1 { g_unsupported = 1  slot = c_void  return slot }         // spread call
-    inst := instantiate(callee)
-    if inst < 0 { slot = c_void  return slot }
-    pslots := g_insts[inst].pslots
-    if len(pslots) != len(argslots) { g_check_err = 1  slot = c_void  return slot }
-    i := 0
-    for i < len(pslots) { add_pair(pslots[i], argslots[i])  i = i + 1 }
-    rets := g_insts[inst].rslots
-    if len(rets) == 0 { slot = c_void  return slot }
-    if len(rets) == 1 { slot = rets[0]  return slot }
-    g_check_err = 1   // multi-return in expression position needs a multi-assignment
+    if root >= 0 {
+        if nodes[root].b == 1 { g_unsupported = 1  slot = c_void  return slot }  // variadic
+        if n.ival == 1 { g_unsupported = 1  slot = c_void  return slot }         // spread
+        inst := instantiate(callee)
+        if inst < 0 { slot = c_void  return slot }
+        pslots := g_insts[inst].pslots
+        if len(pslots) != len(argslots) { g_check_err = 1  slot = c_void  return slot }
+        i := 0
+        for i < len(pslots) { add_pair(pslots[i], argslots[i])  i = i + 1 }
+        rets := g_insts[inst].rslots
+        if len(rets) == 0 { slot = c_void  return slot }
+        if len(rets) == 1 { slot = rets[0]  return slot }
+        g_check_err = 1   // multi-return in expression position needs a multi-assign
+        slot = c_void
+        return slot
+    }
+    handled, bslot := gen_builtin(callee, argslots)
+    if handled == 1 { slot = bslot  return slot }
+    _, isvar := env_lookup(callee)
+    if isvar == 1 { g_unsupported = 1  slot = c_void  return slot }   // func-valued local
+    g_check_err = 1   // undefined function
     slot = c_void
+}
+
+// code_slot / ret_slot map a one-char type code to a slot. 'n' is a FRESH numeric
+// (KNum) so int-literal args to math/int/float unify without being pinned to int.
+func code_slot(code) (s) {
+    if code == "i" { s = c_int  return s }
+    if code == "s" { s = c_string  return s }
+    if code == "b" { s = c_bool  return s }
+    if code == "y" { s = c_bytes  return s }
+    if code == "f" { s = c_float  return s }
+    if code == "n" { s = new_slot(1)  return s }
+    if code == "S" { s = new_slice_slot(c_string)  return s }
+    s = c_void
+}
+func ret_slot(code) (s) {
+    if code == "i" { s = c_int  return s }
+    if code == "s" { s = c_string  return s }
+    if code == "b" { s = c_bool  return s }
+    if code == "y" { s = c_bytes  return s }
+    if code == "f" { s = c_float  return s }
+    if code == "v" { s = c_void  return s }
+    if code == "S" { s = new_slice_slot(c_string)  return s }
+    if code == "I" { s = new_slice_slot(c_int)  return s }
+    s = c_void
+}
+
+// gen_builtin ports genCall's builtin table. Returns handled=0 if `callee` is not a
+// builtin (so the caller can report undefined). Special-shaped builtins (element/kv
+// inference, no-constraint, multi-return) are handled explicitly; the long mechanical
+// tail is a data-driven table (bspec: "<argcodes>><ret>").
+func gen_builtin(callee, argslots) (handled, slot) {
+    handled = 1
+    slot = c_void
+    // no-constraint / polymorphic
+    if callee == "print" || callee == "println" { slot = c_void  return handled, slot }
+    if callee == "len" { slot = c_int  return handled, slot }
+    if callee == "str" { slot = c_string  return handled, slot }
+    if callee == "json" { slot = c_string  return handled, slot }
+    if callee == "close" { slot = c_void  return handled, slot }
+    // element / key inference
+    if callee == "append" {
+        if len(argslots) != 2 { g_check_err = 1  return handled, slot }
+        elem := slice_elem(argslots[0])
+        add_pair(argslots[1], elem)
+        slot = argslots[0]
+        return handled, slot
+    }
+    if callee == "has" || callee == "delete" {
+        if len(argslots) != 2 { g_check_err = 1  return handled, slot }
+        ks, _ := map_kv(argslots[0])
+        add_pair(argslots[1], ks)
+        if callee == "has" { slot = c_bool } else { slot = c_void }
+        return handled, slot
+    }
+    if callee == "keys" {
+        if len(argslots) != 1 { g_check_err = 1  return handled, slot }
+        ks, _ := map_kv(argslots[0])
+        slot = new_slice_slot(ks)
+        return handled, slot
+    }
+    if callee == "join" {
+        if len(argslots) != 2 { g_check_err = 1  return handled, slot }
+        add_pair(argslots[0], new_slice_slot(c_string))
+        add_pair(argslots[1], c_string)
+        slot = c_string
+        return handled, slot
+    }
+    if callee == "parse" {
+        if len(argslots) != 2 { g_check_err = 1  return handled, slot }
+        add_pair(argslots[0], c_string)
+        slot = argslots[1]
+        return handled, slot
+    }
+    if callee == "sqlite_exec" || callee == "sqlite_query" {
+        if len(argslots) != 2 && len(argslots) != 3 { g_check_err = 1  return handled, slot }
+        add_pair(argslots[0], c_int)
+        add_pair(argslots[1], c_string)
+        if len(argslots) == 3 { add_pair(argslots[2], new_slice_slot(c_string)) }
+        if callee == "sqlite_query" { slot = c_string } else { slot = c_int }
+        return handled, slot
+    }
+    // multi-return builtins are invalid in expression position
+    if callee == "http_get" || callee == "http_request" || callee == "json_get" || callee == "exec" {
+        g_check_err = 1
+        return handled, slot
+    }
+    // the mechanical tail
+    spec := bspec(callee)
+    if spec == "" { handled = 0  return handled, slot }
+    gt := index(spec, ">")
+    argcodes := substr(spec, 0, gt)
+    retc := substr(spec, gt + 1, len(spec))
+    if len(argcodes) != len(argslots) { g_check_err = 1  return handled, slot }
+    i := 0
+    for i < len(argcodes) {
+        add_pair(argslots[i], code_slot(substr(argcodes, i, i + 1)))
+        i = i + 1
+    }
+    slot = ret_slot(retc)
+}
+
+// gen_mrb constrains a multi-return builtin (http_get/http_request/json_get/exec) in
+// a multi-assignment. Returns handled=0 if `callee` is not a multi-return builtin.
+func gen_mrb(callee, argnodes, nameslots) (handled) {
+    handled = 1
+    rc := ""
+    if callee == "http_get" || callee == "exec" || callee == "http_request" { rc = "iss" }
+    if callee == "json_get" { rc = "ss" }
+    if rc == "" { handled = 0  return handled }
+    if callee == "http_get" || callee == "exec" {
+        if len(argnodes) != 1 { g_check_err = 1  return handled }
+        add_pair(gen_expr(argnodes[0]), c_string)
+    }
+    if callee == "json_get" {
+        if len(argnodes) != 2 { g_check_err = 1  return handled }
+        add_pair(gen_expr(argnodes[0]), c_string)
+        add_pair(gen_expr(argnodes[1]), c_string)
+    }
+    if callee == "http_request" {
+        if len(argnodes) != 4 { g_check_err = 1  return handled }
+        add_pair(gen_expr(argnodes[0]), c_string)
+        add_pair(gen_expr(argnodes[1]), c_string)
+        add_pair(gen_expr(argnodes[2]), new_slice_slot(c_string))
+        add_pair(gen_expr(argnodes[3]), c_string)
+    }
+    if len(rc) != len(nameslots) { g_check_err = 1  return handled }
+    i := 0
+    for i < len(rc) { add_pair(nameslots[i], ret_slot(substr(rc, i, i + 1)))  i = i + 1 }
+}
+
+// bspec: the mechanical builtin table — arg type codes then '>' then the return code.
+// Codes: i int · s string · b bool · y bytes · f float · n numeric(KNum) · v void ·
+// S []string · I []int. "" means "not a table builtin".
+func bspec(name) (s) {
+    // bytes / hex
+    if name == "bytes" { s = "s>y"  return s }
+    if name == "bytes_str" { s = "y>s"  return s }
+    if name == "to_hex" { s = "y>s"  return s }
+    if name == "from_hex" { s = "s>y"  return s }
+    if name == "byte_at" { s = "yi>i"  return s }
+    if name == "bytes_sub" { s = "yii>y"  return s }
+    if name == "bytes_index" { s = "yyi>i"  return s }
+    if name == "bytes_concat" { s = "yy>y"  return s }
+    if name == "rand_bytes" { s = "i>y"  return s }
+    // crypto
+    if name == "sha256_bytes" || name == "sha1_bytes" || name == "x25519_pub" || name == "ed25519_pub" { s = "y>y"  return s }
+    if name == "hmac_sha256_bytes" || name == "x25519_shared" || name == "ed25519_sign" { s = "yy>y"  return s }
+    if name == "ed25519_verify" || name == "xeddsa_verify" { s = "yyy>b"  return s }
+    if name == "aes_cbc_encrypt" || name == "aes_cbc_decrypt" || name == "xeddsa_sign" { s = "yyy>y"  return s }
+    if name == "aes_gcm_encrypt" || name == "aes_gcm_decrypt" { s = "yyyy>y"  return s }
+    if name == "hkdf_sha256" { s = "yyyi>y"  return s }
+    if name == "pbkdf2_sha256" { s = "yyii>y"  return s }
+    // strings
+    if name == "http_body" || name == "to_upper" || name == "to_lower" || name == "trim" { s = "s>s"  return s }
+    if name == "contains" || name == "has_prefix" || name == "has_suffix" || name == "regex_match" { s = "ss>b"  return s }
+    if name == "index" { s = "ss>i"  return s }
+    if name == "substr" { s = "sii>s"  return s }
+    if name == "charat" { s = "si>s"  return s }
+    if name == "replace" || name == "regex_replace" { s = "sss>s"  return s }
+    if name == "split" || name == "regex_groups" { s = "ss>S"  return s }
+    if name == "regex_find" { s = "ss>s"  return s }
+    // numeric / math
+    if name == "int" { s = "n>i"  return s }
+    if name == "float" { s = "n>f"  return s }
+    if name == "f64_bits" { s = "n>i"  return s }
+    if name == "f64_from_bits" { s = "n>f"  return s }
+    if name == "sin" || name == "cos" || name == "tan" || name == "asin" || name == "acos" || name == "atan" || name == "exp" || name == "log" || name == "log2" || name == "log10" || name == "sqrt" || name == "cbrt" || name == "floor" || name == "ceil" || name == "round" || name == "trunc" || name == "abs" { s = "n>f"  return s }
+    if name == "pow" || name == "atan2" || name == "fmod" || name == "hypot" || name == "noise2" { s = "nn>f"  return s }
+    if name == "pi" { s = ">f"  return s }
+    if name == "noise3" { s = "nnn>f"  return s }
+    // memory / ptr
+    if name == "alloc" { s = "i>i"  return s }
+    if name == "free" { s = "i>v"  return s }
+    if name == "poke_f32" { s = "iin>v"  return s }
+    if name == "poke_i32" || name == "poke_u8" || name == "poke_u16" || name == "poke_ptr" { s = "iii>v"  return s }
+    if name == "peek_f32" { s = "ii>f"  return s }
+    if name == "peek_i32" { s = "ii>i"  return s }
+    if name == "ptr_str" { s = "i>s"  return s }
+    // net / io
+    if name == "listen" || name == "accept" || name == "raw_mode" { s = "i>i"  return s }
+    if name == "dial" { s = "si>i"  return s }
+    if name == "peer_addr" { s = "i>s"  return s }
+    if name == "socket_timeout" { s = "ii>i"  return s }
+    if name == "read" { s = "i>s"  return s }
+    if name == "read_bytes" { s = "i>y"  return s }
+    if name == "input" || name == "read_key" || name == "read_stdin" { s = ">s"  return s }
+    if name == "args" { s = ">S"  return s }
+    if name == "env" { s = "s>s"  return s }
+    if name == "now" || name == "now_ms" { s = ">i"  return s }
+    if name == "time_fields" { s = "i>I"  return s }
+    if name == "time_format" || name == "time_format_utc" { s = "is>s"  return s }
+    if name == "time_make" { s = "iiiiii>i"  return s }
+    if name == "parse_int" { s = "s>i"  return s }
+    if name == "parse_float" { s = "s>f"  return s }
+    if name == "read_file" { s = "s>s"  return s }
+    if name == "read_file_bytes" { s = "s>y"  return s }
+    if name == "write_bytes" { s = "iy>i"  return s }
+    if name == "write_file" { s = "ss>i"  return s }
+    if name == "write_file_bytes" { s = "sy>i"  return s }
+    if name == "remove" || name == "mkdir" || name == "system" { s = "s>i"  return s }
+    if name == "list_dir" { s = "s>S"  return s }
+    if name == "https_get" { s = "s>s"  return s }
+    if name == "https_post" { s = "ss>s"  return s }
+    if name == "exit" || name == "flush" {
+        if name == "flush" { s = ">i"  return s }
+        s = "i>i"
+        return s
+    }
+    if name == "base64_encode" || name == "base64_decode" || name == "url_encode" || name == "url_decode" || name == "sha256" { s = "s>s"  return s }
+    if name == "base64_encode_bytes" { s = "y>s"  return s }
+    if name == "base64_decode_bytes" { s = "s>y"  return s }
+    if name == "hmac_sha256" { s = "ss>s"  return s }
+    if name == "sqlite_open" { s = "s>i"  return s }
+    if name == "sqlite_close" { s = "i>i"  return s }
+    // websockets
+    if name == "wss_open" { s = "s>i"  return s }
+    if name == "wss_send" { s = "is>i"  return s }
+    if name == "wss_recv" { s = "i>s"  return s }
+    if name == "wss_send_bin" { s = "iy>i"  return s }
+    if name == "wss_recv_bin" { s = "i>y"  return s }
+    if name == "wss_close" { s = "i>i"  return s }
+    if name == "write" { s = "is>i"  return s }
+    if name == "sleep" { s = "i>v"  return s }
+    s = ""
 }
 
 // gen_struct_lit handles T{...} — named fields (FieldNames+Vals) or positional (Vals).
@@ -509,7 +803,11 @@ func gen_stmt(idx) {
     if k == K_ASSIGN {
         vs := gen_expr(n.a)
         slot, found := env_lookup(n.s)
-        if found == 0 { slot = env_declare(n.s) }
+        if found == 0 {
+            gs, gfound := global_lookup(n.s)
+            if gfound == 1 && n.s2 == "=" { add_pair(gs, vs)  return }   // assign the global
+            slot = env_declare(n.s)
+        }
         add_pair(slot, vs)
         return
     }
@@ -569,7 +867,14 @@ func gen_stmt(idx) {
         add_pair(vs, eslot)
         return
     }
-    g_unsupported = 1   // multi-assign / select / go (later slices, tied to calls)
+    if k == K_GO {
+        cn := nodes[n.a]
+        if cn.kind != K_CALL { g_check_err = 1  return }
+        if func_root(cn.s) < 0 { g_check_err = 1  return }   // `go` needs a user function
+        gen_expr(n.a)
+        return
+    }
+    g_unsupported = 1   // select (later); funclit/closure bodies
 }
 
 // range_bind: "" or "_" -> a throwaway slot (not named); else reuse/declare a local.
@@ -615,7 +920,11 @@ func gen_multi_assign(idx) {
         if rn.kind == K_CALL {
             callee := rn.s
             root := func_root(callee)
-            if root < 0 { g_unsupported = 1  return }   // multi-return builtin (slice 4)
+            if root < 0 {
+                if gen_mrb(callee, rn.kids, nameslots) == 1 { return }
+                g_unsupported = 1   // single-return builtin destructured, or unknown
+                return
+            }
             if func_arity_of(root) >= 2 {
                 if nodes[root].b == 1 { g_unsupported = 1  return }   // variadic
                 argslots := []int{}

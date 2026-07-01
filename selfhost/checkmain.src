@@ -35,12 +35,27 @@ func main() {
             i = i + 1
         }
     }
-    // pass 1b: register struct field names/types (for field access + struct literals)
+    // pass 1b: register struct field names/types (for field access + struct literals),
+    // and extern (FFI) cstructs + function signatures.
     for _, ln := range lines {
         if has_prefix(ln, "type ") {
             reset(ln)
             tidx := parse_type_decl()
             if g_err == 0 { register_struct(nodes[tidx].s, nodes[tidx].names, nodes[tidx].names2) }
+        }
+        if has_prefix(ln, "extern ") {
+            reset(ln)
+            eidx := parse_extern_decl()
+            if g_err == 0 {
+                for _, ci := range nodes[eidx].kids {
+                    cn := nodes[ci]
+                    register_struct(cn.s, cn.names, cn.names2)
+                }
+                for _, fi := range nodes[eidx].kids2 {
+                    fnn := nodes[fi]
+                    register_extfn(fnn.s, fnn.names, fnn.s2)
+                }
+            }
         }
     }
 
@@ -48,6 +63,8 @@ func main() {
     // them), recording name -> root node index. reset() above already cleared nodes,
     // so accumulation starts clean.
     nodes = []Node{}
+    global_names := []string{}
+    global_inits := []int{}
     for _, ln := range lines {
         if has_prefix(ln, "func ") || has_prefix(ln, "export func ") {
             lex_only(ln)
@@ -56,12 +73,40 @@ func main() {
             g_func_names = append(g_func_names, nodes[r].s)
             g_func_roots = append(g_func_roots, r)
         }
+        if has_prefix(ln, "var ") {
+            lex_only(ln)
+            r := parse_global()
+            if g_err == 0 && pk().kind == 0 {
+                global_names = append(global_names, nodes[r].s)
+                global_inits = append(global_inits, nodes[r].a)
+            }
+        }
     }
 
-    if func_root("main") < 0 { write(1, "(check-error)\n")  return }   // no main
+    // roots: main (if present) plus every `export func` (a library/wasm target may
+    // have no main). Error only when there is neither.
+    has_main := 0
+    if func_root("main") >= 0 { has_main = 1 }
+    exported := []string{}
+    i := 0
+    for i < len(g_func_names) {
+        if nodes[g_func_roots[i]].ival == 1 { exported = append(exported, g_func_names[i]) }
+        i = i + 1
+    }
+    if has_main == 0 && len(exported) == 0 { write(1, "(check-error)\n")  return }
 
     init_consts()
-    instantiate("main")
+    // type package globals in declaration order (a later one may reference an earlier)
+    gi := 0
+    for gi < len(global_names) {
+        vs := gen_expr(global_inits[gi])
+        gslot := new_slot(0)
+        add_pair(gslot, vs)
+        register_global(global_names[gi], gslot)
+        gi = gi + 1
+    }
+    if has_main == 1 { instantiate("main") }
+    for _, en := range exported { instantiate(en) }
     if g_unsupported == 1 { write(1, "(unsupported)\n")  return }
     solve()
     resolve_deferred()

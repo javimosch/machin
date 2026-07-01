@@ -155,7 +155,23 @@ monomorphic, multi-function, and mixed-int/float (two-instance) programs.
    fixed en route: (a) a **compiler** bug — string `< <= > >=` compared pointers not
    contents (now `mfl_strcmp`; CHANGELOG); (b) recursion needed params published to the
    Inst store *before* generating the body. `verify-check3.sh` (276) + `gen-check3.py`.
-4. the builtin signature table (the long tail) → full corpus parity.
+4. ✅ **the builtin signature table → FULL CORPUS parity.** DONE. `checkgen.src` ports
+   genCall's ~110-builtin switch as a compact data-driven table (`bspec`: arg-codes →
+   return-code) plus special cases (append/has/keys/join/parse/sqlite/str/json/len/
+   print/close, the 4 multi-return builtins via `gen_mrb`), extern/FFI calls (`ffi_slot`
+   + an extern registry, checked before builtins so an extern shadows a builtin),
+   package globals (typed in a synthetic context, referenced via a global fallback in
+   K_ID / assignment), `export func` roots (a wasm target may have no main), `go`
+   statements, and FFI scalar field types (`f32`/`i32`/`u8`/… in cstructs). Verified vs
+   `checktest --program` over the WHOLE corpus: **every encodable program in ~/ai +
+   framework, 0 mismatches** — including the checker checking its OWN 116-function
+   source (self-application). Only `select` remains unsupported (1 program).
+   `verify-check4.sh`.
+
+**Stage 3 (typecheck) is COMPLETE.** The MFL type checker (`check.src` engine +
+`checkgen.src` constraints + `checkmain.src` driver) reproduces the Go checker's
+inferred types byte-for-byte across the corpus. Next: **Stage 4 — C codegen**
+(`codegen.go`, ~4300 LOC), then the fixpoint milestone (mflc compiles itself).
 
 ### Stage 4 — C codegen, Stage 5 — driver, Stage 6 — fixpoint
 (unchanged; see top.)
