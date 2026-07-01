@@ -5,10 +5,10 @@
 
 // per extern block: header + ordered cstruct names + ordered fn names (details in
 // g_structdefs / g_extfns). Populated by the driver's pass-1b.
-type ExtBlock struct { header string  cstructs []string  fns []string }
+type ExtBlock struct { header string  cflags string  links []string  cstructs []string  fns []string }
 var g_extblocks = []ExtBlock{}
-func register_extblock(header, cstructs, fns) {
-    g_extblocks = append(g_extblocks, ExtBlock{header: header, cstructs: cstructs, fns: fns})
+func register_extblock(header, cflags, links, cstructs, fns) {
+    g_extblocks = append(g_extblocks, ExtBlock{header: header, cflags: cflags, links: links, cstructs: cstructs, fns: fns})
 }
 
 // ffi_ctype: an FFI scalar type -> its C type (port of ffiCType). "void" otherwise.

@@ -20,16 +20,24 @@ func build_binary(path, out, safe) (rc) {
     tmpc := out + ".mfl.c"
     write_file(tmpc, csrc)
 
-    cmd := cc_path() + " -O2 -std=c11 -pthread -o " + out + " " + tmpc
-    // link libs, only when the feature is actually used (keeps libc-only programs libc-only).
-    // NOTE the needles are split (x + y) so these literals don't appear verbatim in THIS
-    // file's own generated C — otherwise the host build's feature-scan false-triggers them.
-    if contains(csrc, "mfl_tls" + "_dial") { cmd = cmd + " -lssl -lcrypto" }
-    if contains(csrc, "mfl_sqlite" + "_") { cmd = cmd + " -lsqlite3" }
-    if contains(csrc, "mfl_math" + "_") || contains(csrc, "mfl_" + "noise") { cmd = cmd + " -lm" }
-    if contains(csrc, "mfl_crypto" + "_") { cmd = cmd + " -lcrypto" }
-    if contains(csrc, "mfl_xeddsa" + "_") { cmd = cmd + " -lsodium -lcrypto" }
+    // FFI (extern) blocks: cflags go BEFORE the source, -l<link> libs AFTER (Go's order).
+    cflags := ""
+    libs := ""
+    for _, eb := range g_extblocks {
+        if eb.cflags != "" { cflags = cflags + " " + eb.cflags }
+        for _, l := range eb.links { libs = libs + " -l" + l }
+    }
+    // feature-scanned libs, only when the feature is actually used (keeps libc-only
+    // programs libc-only). NOTE the needles are split (x + y) so these literals don't
+    // appear verbatim in THIS file's own generated C — otherwise the host build's
+    // feature-scan false-triggers them (the mfl_xeddsa_ -> -lsodium trap).
+    if contains(csrc, "mfl_tls" + "_dial") { libs = libs + " -lssl -lcrypto" }
+    if contains(csrc, "mfl_sqlite" + "_") { libs = libs + " -lsqlite3" }
+    if contains(csrc, "mfl_math" + "_") || contains(csrc, "mfl_" + "noise") { libs = libs + " -lm" }
+    if contains(csrc, "mfl_crypto" + "_") { libs = libs + " -lcrypto" }
+    if contains(csrc, "mfl_xeddsa" + "_") { libs = libs + " -lsodium -lcrypto" }
 
+    cmd := cc_path() + " -O2 -std=c11 -pthread" + cflags + " -o " + out + " " + tmpc + libs
     ec := system(cmd)
     if ec != 0 { rc = 10  return rc }     // keep tmpc on failure for debugging
     remove(tmpc)

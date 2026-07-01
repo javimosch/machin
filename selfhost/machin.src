@@ -58,6 +58,25 @@ func main() {
         return
     }
 
+    if sub == "pack" {
+        if len(a) < 3 { write(2, "pack: need one .mfl file\n")  exit(2) }
+        data := read_file(a[2])
+        parts := []string{}
+        for _, line := range split(data, "\n") {
+            t := trim(line)
+            if t == "" { continue }
+            // a whitespace-free line is already packed; else base64-encode the decl
+            if contains(t, " ") || contains(t, "\t") {
+                parts = append(parts, base64_encode(t))
+            } else {
+                parts = append(parts, t)
+            }
+            parts = append(parts, "\n\n")
+        }
+        write(1, join(parts, ""))
+        return
+    }
+
     if sub == "run" {
         src := ""
         safe := 0

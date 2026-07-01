@@ -51,7 +51,7 @@ func compile_to_c(path, full) {
                     register_extfn(fnn.s, fnn.names, fnn.s2)
                     fn_names = append(fn_names, fnn.s)
                 }
-                register_extblock(nodes[eidx].s2, cs_names, fn_names)
+                register_extblock(nodes[eidx].s2, nodes[eidx].s3, nodes[eidx].names, cs_names, fn_names)
             }
         }
     }
