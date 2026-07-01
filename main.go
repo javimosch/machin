@@ -34,6 +34,8 @@ func main() {
 		err = cmdBuild(os.Args[2:])
 	case "encode":
 		err = cmdEncode(os.Args[2:])
+	case "check":
+		err = cmdCheck(os.Args[2:]) // agent-native diagnostics (lex/parse/typecheck only, JSON)
 	case "pack":
 		err = cmdPack(os.Args[2:])
 	case "guide":
@@ -89,6 +91,7 @@ usage:
   machin build <file.mfl> --static   fully static binary (bundles SQLite; pair with CC=musl-gcc for FROM scratch)
   machin build <file.mfl> --emit-c   print the generated C and stop
   machin build|run <file.mfl> --safe  insert bounds / div-zero / overflow checks
+  machin check <src...>|--stdin      lex+parse+typecheck only (no cc); add --json for machine-readable diagnostics
   machin encode <src>                mint canonical MFL from loose Go-like text (framework/*.src resolve from the binary)
   machin framework list|<name>|--vendor   the embedded framework modules (machweb, db drivers, …)
   machin pack  <file.mfl>            emit the dense base64 form (distribution)

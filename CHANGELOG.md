@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **`machin check [--json]` — agent-native diagnostics.** A machine-first alternative to a
+  language server (which renders for a human): `machin check --json a.src` (or `--stdin`)
+  runs lex → parse → typecheck **only — no codegen, no `cc`** (milliseconds), and returns
+  the checker's verdict as structured data: `{ok, errorCount, diagnostics:[{severity,
+  phase, code, message, decl, line, snippet}]}`, exit 0 iff clean. An agent in a
+  write → check → fix loop branches on the stable `code` (`type-mismatch`,
+  `undefined-name`, `arity-mismatch`, `parse-*`, `no-main`, …) instead of scraping error
+  prose, and `decl` names the function to fix (the natural unit for a one-declaration-per-
+  line language). Parse errors are reported per-declaration (multiple in one run, each with
+  its source line); the typecheck phase reports one diagnostic (the checker bails on the
+  first — v2 will accumulate). Pairs with `machin guide`: the surface + the verdict, both
+  bulk JSON, no human in the loop. Spec: [`docs/check-json.md`](docs/check-json.md).
+
 ## v0.85.0
 
 - **The no-Go bootstrap: machin is now written in machin, full stop.** v0.84.0 proved the
