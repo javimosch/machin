@@ -12,8 +12,25 @@ func lex_only(line) {
 
 var g_compile_rc = 0
 
+// emit_prelude_gated: the runtime prelude, feature-gated by the g_uses_* flags set as
+// builtins were emitted (precise, matches Go's uses<X>). CORE always; tlsCore once when
+// either TLS or WSS is used; then each block in Go's fixed order.
+func emit_prelude_gated() {
+    cemit(base64_decode(CG_PRELUDE_CORE))
+    if g_uses_tls == 1 || g_uses_wss == 1 { cemit(base64_decode(CG_PRELUDE_TLSCORE)) }
+    if g_uses_tls == 1 { cemit(base64_decode(CG_PRELUDE_TLS)) }
+    if g_uses_wss == 1 { cemit(base64_decode(CG_PRELUDE_WSS)) }
+    if g_uses_math == 1 { cemit(base64_decode(CG_PRELUDE_MATH)) }
+    if g_uses_noise == 1 { cemit(base64_decode(CG_PRELUDE_NOISE)) }
+    if g_uses_regex == 1 { cemit(base64_decode(CG_PRELUDE_REGEX)) }
+    if g_uses_sqlite == 1 { cemit(base64_decode(CG_PRELUDE_SQLITE)) }
+    if g_uses_crypto == 1 { cemit(base64_decode(CG_PRELUDE_CRYPTO)) }
+    if g_uses_xeddsa == 1 { cemit(base64_decode(CG_PRELUDE_XEDDSA)) }
+}
+
 func compile_to_c(path, full) {
     g_compile_rc = 0
+    reset_features()
     data := read_file(path)
     lines := split(data, "\n")
 
@@ -109,7 +126,15 @@ func compile_to_c(path, full) {
 
     g_glob_inits = global_inits
 
-    if full == 1 { emit_prelude() }
     cg_program()
     if g_cg_unsup == 1 { g_compile_rc = 3  return }
+    // full mode: prepend the runtime prelude, feature-gated by what the body uses
+    // (matches Go's uses<X> gating). Body is emitted first, then scanned, then the
+    // prelude + body are re-emitted in order.
+    if full == 1 {
+        body := g_out_str()
+        g_out = []string{}
+        emit_prelude_gated()
+        cemit(body)
+    }
 }
