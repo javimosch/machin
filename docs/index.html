@@ -49,14 +49,26 @@
     padding:14px 16px;overflow:auto;font-size:13.5px;color:#cdd9e5}
   .cm{color:#6b7785}
   footer{padding:40px 0 70px;color:var(--muted);font-size:14px;text-align:center;border-top:1px solid var(--border)}
+  .announce{max-width:640px;margin:20px auto 0;padding:14px 18px;text-align:left;
+    background:linear-gradient(180deg,rgba(88,225,165,.08),rgba(122,162,255,.06));
+    border:1px solid var(--accent);border-radius:12px}
+  .announce b{color:var(--accent)} .announce .k{color:var(--accent2);font-weight:700}
 </style>
 </head>
 <body>
 <header><div class="wrap">
-  <div class="badge">v0.82.0 · as terse as Python, ships like C</div>
+  <div class="badge">v0.84.0 · the compiler now compiles itself</div>
   <h1>machin ⎯ MFL</h1>
   <p class="tag">A language <b>optimized for the AI agent writing it</b>, not the human reading it.<br>
     As terse as Python to write, compiled through C to a tiny native binary. <i>Write it like a script, ship it like C.</i></p>
+  <div class="announce">
+    🧬 <b>New in v0.84.0 — machin is self-hosting.</b> The whole compiler
+    (<span class="k">lexer → parser → type-checker → C codegen</span>) is now written in
+    machin itself and reproduces the reference compiler <b>byte-for-byte</b>. The
+    <b>fixpoint</b> holds: machin compiles its own source into a native binary that
+    re-emits itself identically — and runs at <b>~0.9× the reference speed</b>.
+    <a href="https://github.com/javimosch/machin/tree/main/selfhost">See selfhost/ →</a>
+  </div>
   <div class="cta">
     <a class="primary" href="https://play.intrane.fr">▶ Try in your browser</a>
     <a href="https://github.com/javimosch/machin">GitHub</a>

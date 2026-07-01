@@ -3,6 +3,7 @@
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
   <img src="https://img.shields.io/badge/go-1.22-00ADD8" alt="Go">
   <img src="https://img.shields.io/badge/backend-C%20%E2%86%92%20native-orange" alt="Native">
+  <img src="https://img.shields.io/badge/self--hosting-%E2%9C%93%20fixpoint-58e1a5" alt="Self-hosting">
 </p>
 
 # machin ⎯ Machine-First Language (MFL)
@@ -13,6 +14,15 @@ A language **shaped for AI agents to write and edit cheaply**: zero type annotat
 
 > ### ▶ [Try machin in your browser → **play.intrane.fr**](https://play.intrane.fr)
 > Write MFL, hit Run — it compiles to WebAssembly and runs client-side. No install.
+
+> ### 🧬 New in v0.84.0 — machin is **self-hosting**
+> The whole compiler — lexer, parser, type checker, and C code generator — is now
+> written in machin itself ([`selfhost/`](selfhost/), ~4k lines) and reproduces the
+> reference compiler **byte-for-byte**. The **fixpoint** holds: machin compiles its own
+> source into a native binary that re-emits itself identically, and runs at ~0.9× the
+> reference speed. Every stage was built against a byte-diff oracle, which flushed out
+> three real compiler bugs along the way. See the [`selfhost/`](selfhost/) directory and
+> [`BOOTSTRAP.md`](selfhost/BOOTSTRAP.md).
 
 <p align="center">
   <img src="docs/machin-demo.gif" alt="machin: write a REST+SQLite service, compile to a tiny native binary, run it" width="760">
