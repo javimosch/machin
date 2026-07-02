@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **Fixed: `read_file`/`read_file_bytes` segfaulted on a directory path.** `fopen(dir,
+  "rb")` succeeds on Linux (opening a directory read-only is legal at the syscall
+  level), but `ftell()` on the resulting stream returns `LONG_MAX` — not `-1` — so the
+  existing "if (n < 0) n = 0" guard never caught it, and the runtime tried to allocate
+  ~9.2 exabytes for the "file size." A very easy path to hit in practice: `list_dir()`'s
+  entries can themselves be subdirectories, so `read_file_bytes` on any of those crashed
+  — found building a concurrent file-hasher demo (`machin-hasher`) that reliably
+  segfaulted on any target directory containing so much as one subdirectory, even
+  single-threaded (not a race — a plain crash). Fixed with an explicit `stat()`-based
+  directory check before `fopen`; both builtins now return empty (matching their
+  existing "can't open" behavior) instead of crashing. New `TestReadFileOnDirectory`.
+
 ## v0.97.0
 
 - **`framework/smtp.src` gained STARTTLS support, closing issue #260's SMTP half.**

@@ -906,7 +906,19 @@ static int64_t mfl_parse_int(const char* s) { return (int64_t)strtoll(s, NULL, 1
 static double mfl_parse_float(const char* s) { return strtod(s, NULL); }
 
 /* file system: read/write whole files, list a directory, make a directory */
+
+/* fopen(dir, "rb") SUCCEEDS on Linux (opening a directory read-only is legal
+   at the syscall level), but ftell() on it returns LONG_MAX (not -1) rather
+   than failing — so the usual "if (n < 0) n = 0" guard never catches it, and
+   the caller ends up trying to alloc ~9.2 exabytes. list_dir()'s entries can
+   be subdirectories, so read_file/read_file_bytes on one of those is a real,
+   easy-to-hit path, not a contrived one — check with stat() first. */
+static int mfl_is_dir(const char* path) {
+    struct stat st;
+    return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+}
 static char* mfl_read_file(const char* path) {
+    if (mfl_is_dir(path)) return mfl_dup("");
     FILE* f = fopen(path, "rb");
     if (!f) return mfl_dup("");
     fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
@@ -935,6 +947,7 @@ static int64_t mfl_remove_file(const char* path) { return remove(path) == 0 ? 0 
    Empty bytes if the file can't be opened. */
 static mfl_bytes mfl_read_file_bytes(const char* path) {
     mfl_bytes b; b.len = 0; b.data = (uint8_t*)mfl_alloc(1);
+    if (mfl_is_dir(path)) return b;
     FILE* f = fopen(path, "rb");
     if (!f) return b;
     fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);

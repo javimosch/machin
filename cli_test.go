@@ -63,6 +63,30 @@ func TestFileIO(t *testing.T) {
 	}
 }
 
+// read_file/read_file_bytes on a directory path used to SEGFAULT: fopen(dir,
+// "rb") succeeds on Linux, but ftell() on it returns LONG_MAX (not -1), so
+// the "if (n < 0) n = 0" guard never caught it and the runtime tried to
+// alloc ~9.2 exabytes. This is an easy real path to hit — list_dir()'s
+// entries can themselves be directories — surfaced building a concurrent
+// file-hasher demo (`machin-hasher`) that crashed on any directory
+// containing so much as one subdirectory. Both must now return empty
+// (matching the existing "can't open" behavior), not crash.
+func TestReadFileOnDirectory(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(dir+"/sub", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src := `func main(){
+	println("[" + read_file("` + dir + `/sub") + "]")
+	b := read_file_bytes("` + dir + `/sub")
+	println(str(len(b)))
+}`
+	got := runNative(t, src)
+	if want := "[]\n0\n"; got != want {
+		t.Fatalf("read_file(_bytes) on a directory: got %q, want %q (must not crash)", got, want)
+	}
+}
+
 // loadMFL (used by `machin run`/`build` on a .mfl FILE) used to only accept
 // canonical one-declaration-per-line text or the packed base64 form, so a
 // hand-written .mfl with ordinary Go-like multi-line formatting failed with a
