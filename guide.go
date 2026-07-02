@@ -163,8 +163,13 @@ func machinGuide() guideCatalog {
 				},
 				{
 					Axis:      "cold start & ship size",
-					Result:    "92.9 kB static binary, 0.49 ms cold start, 108 kB resident memory serving the same HTTP hello endpoint as Node (178 MB / 28.9 ms / 51 MB) — 1916x smaller, 59x faster start, 477x less RAM",
+					Result:    "92.9 kB static binary, 0.49 ms cold start, 108 kB resident memory serving the same HTTP hello endpoint as Node (178 MB / 28.9 ms / 51 MB) — 1916x smaller, 59x faster start, 477x less RAM. Note: that figure is the libc+SQLite case only — see the next row for a TLS-calling app, which is bigger and has its own honest number",
 					Reproduce: "bench/cold-start: ./build.sh (sizes); python3 measure.py (cold-start + RSS); ./images.sh (Docker image sizes, needs Docker)",
+				},
+				{
+					Axis:      "TLS-calling app, FROM scratch",
+					Result:    "a program using http_get/https_get: 26.5 kB dynamic vs 5.28 MB fully static (OpenSSL + an embedded ~245 KB CA root bundle) — verified in a genuine empty `FROM scratch` container: a real HTTPS request with full certificate verification succeeds, and a known self-signed/untrusted cert is correctly rejected (proving verification is active, not disabled)",
+					Reproduce: "bench/tls-static: ./run.sh (build+measure+run; verifies the FROM-scratch case too if Docker is installed)",
 				},
 			},
 		},

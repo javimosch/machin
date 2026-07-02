@@ -1257,6 +1257,16 @@ static char* mfl_read_key(void) {
 const tlsCoreRuntime = `#include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <openssl/rand.h>
+#include <openssl/pem.h>
+#include <openssl/x509.h>
+
+#ifdef MFL_HAS_CABUNDLE
+/* Compiled in by build.go (machin build --static) as a separate translation
+   unit from the embedded, gzipped vendor/certs/cacert.pem.gz. Not present in a
+   normal (non-static) build. */
+extern const unsigned char mfl_ca_bundle_pem[];
+extern const unsigned long mfl_ca_bundle_pem_len;
+#endif
 
 static SSL_CTX* mfl_ssl_ctx(void) {
     static SSL_CTX* ctx = NULL;
@@ -1264,7 +1274,24 @@ static SSL_CTX* mfl_ssl_ctx(void) {
     pthread_mutex_lock(&mu);
     if (!ctx) {
         ctx = SSL_CTX_new(TLS_client_method());
-        if (ctx) SSL_CTX_set_default_verify_paths(ctx);
+        if (ctx) {
+            SSL_CTX_set_default_verify_paths(ctx);
+#ifdef MFL_HAS_CABUNDLE
+            /* Fallback trust roots for a static binary running with no system CA
+               store (e.g. FROM scratch) — added alongside, not instead of, whatever
+               the system store above already loaded. */
+            BIO* cabio = BIO_new_mem_buf(mfl_ca_bundle_pem, (int)mfl_ca_bundle_pem_len);
+            if (cabio) {
+                X509_STORE* store = SSL_CTX_get_cert_store(ctx);
+                X509* cert;
+                while ((cert = PEM_read_bio_X509(cabio, NULL, NULL, NULL)) != NULL) {
+                    X509_STORE_add_cert(store, cert); /* dup return (already present) is harmless */
+                    X509_free(cert);
+                }
+                BIO_free(cabio);
+            }
+#endif
+        }
     }
     pthread_mutex_unlock(&mu);
     return ctx;

@@ -21,7 +21,7 @@ trust):
 |---|---|---|
 | **agent writes it** | a REST+SQLite API in ~390 tokens | **ties Python**, ~36 % fewer than Go |
 | **runs** | native, unboxed, no VM | **wins fib & integer loops vs Rust -O3 / Zig**, ties on float, ~1.4× behind on array-heavy |
-| **ships** | 92.9 kB image · 0.49 ms cold start · 0.1 MB RAM (pure compute; a **SQLite** app ships `FROM scratch` too via `--static`, ~1 MB; TLS still needs OpenSSL — see ship step) | **1916× smaller / 59× faster start / 477× less RAM than Node** |
+| **ships** | 92.9 kB image · 0.49 ms cold start · 0.1 MB RAM (pure compute; a **SQLite** app ships `FROM scratch` too via `--static`, ~1 MB; a **TLS-calling** app (http_get/https_get) also ships `FROM scratch` via `--static`, ~5.3 MB — bigger, OpenSSL's static footprint, see ship step) | **1916× smaller / 59× faster start / 477× less RAM than Node** |
 
 Concretely a fit for: a JSON/REST API, a CLI or filter, a webhook receiver, a cron
 / daemon, an internal tool, a static-site or single-page app backend, a database
@@ -105,7 +105,12 @@ machin build app.mfl -o app           # a small native binary (dynamic glibc, ~4
 printf '#!/bin/sh\nexec musl-gcc -static "$@"\n' > muslcc && chmod +x muslcc
 CC=./muslcc machin build --static app.mfl -o app   # statically linked -> FROM scratch (~1 MB)
 # Dockerfile:  FROM scratch / COPY app /app / ENTRYPOINT ["/app"]
-# (TLS apps using the HTTPS client still need OpenSSL — native TLS is tracked in #260.)
+#   (c) FROM scratch, TLS-calling app (http_get/https_get): --static also bundles a
+#       CA root store, so it verifies certs with zero external files — but use the
+#       DEFAULT cc (glibc), not musl-gcc: OpenSSL's static archives here are glibc-
+#       built (`apt install libssl-dev` provides them), musl-gcc won't see them.
+machin build --static app.mfl -o app   # ~5.3 MB, statically linked, zero deps
+# (Server-side TLS termination / STARTTLS is a separate, still-open gap — issue #260.)
 ```
 
 ## Then read the domain skill for what you're building

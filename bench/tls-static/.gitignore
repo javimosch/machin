@@ -1,0 +1,6 @@
+# built artifacts — the source + run.sh are the benchmark
+hello.mfl
+hello-dynamic
+hello-static
+hello-static-stripped
+Dockerfile.scratch
