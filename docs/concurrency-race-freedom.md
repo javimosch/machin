@@ -154,6 +154,15 @@ calls `cb()`). That single pattern was a real race the analysis MISSED.
   Captured *scalar* boxes (the closure-counter analogue) and closures that reach a
   goroutine only transitively (through a normal call that then spawns) are out of scope.
 
+### Slice 1.5 done — surface + docs
+- `docs/check-json.md`: added the `race` phase and the `RACE001/002/004` taxonomy with the
+  reachability/happens-before rules and the `--race-safe` build gate.
+- `guide.go` (`machin guide`, the version-exact agent catalog): `check` now advertises the
+  race phase + codes, `build` advertises `--race-safe`, and a `data-race-safety` gotcha
+  teaches the safe "share by communicating" pattern. So agents discover the guarantee.
+- Version bump + CHANGELOG + release happen at merge (this arc lives on the worktree
+  branch `concurrency-race-spike`, not yet merged to main).
+
 ### Integration points (Go reference compiler)
 - **Types**: the pass needs resolved types for `sharesHeap`. Hook the `Checker` after it
   finishes (`types.go`) and expose a `typeOfPlace(fn, expr)` query, or build a light place-
