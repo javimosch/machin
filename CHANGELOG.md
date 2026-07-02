@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+## v0.96.0
+
+- **Self-hosted concurrency: the MFL-in-MFL compiler now compiles `go`/channels/
+  `select` — and proves them race-free (#280).** The self-hosted compiler
+  (`selfhost/*.src`) gained byte-identical codegen for goroutines (a per-site
+  arg-struct + trampoline + detached `pthread_create`), scalar/string/struct channels
+  (`make`/`send`/`recv`, the `offsetof` string-copy path), `range` over a channel, and
+  `select` (checker + poll-loop). **All five concurrency corpus apps (healthcheck,
+  linkcheck, pipe, pool, wscat) now self-host byte-for-byte** — verified by
+  `verify-cgen.sh` (411 PASS/0 FAIL incl. fuzz + self-application). On top of that, the
+  inferred **data-race analysis** was ported into the self-hosted compiler
+  (`selfhost/racecheck.src`, oracle `machin racetest --program`): local parameter races
+  (type-aware reachability), happens-before precision (live-counting + channel-join
+  barriers + loop multiplicity), package globals (unconditional sharing), and
+  move-on-send (use-after-move) — `verify-race.sh` 22 PASS/0 FAIL, byte-identical to the
+  reference. So machin-in-machin now both compiles concurrent programs *and* infers their
+  race-freedom. Only slice/map (JSON) channels remain of #280 codegen — unused by the
+  corpus.
+
 ## v0.95.0
 
 - **Fixed: `machin run`/`build` rejected hand-written, ordinary-looking MFL
