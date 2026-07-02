@@ -94,6 +94,25 @@ pipe / pool / wscat) + the `examples/complex` goroutine programs:
   parallel writes (`results[i]` per iteration) are flagged even when indices never alias —
   proving disjointness is future precision work.
 
+### Slice 1.2 done — globals + move-on-send
+- **Globals** (`globalRaces`): package `var`s are a single shared cell, so sharing is
+  *unconditional* (even a scalar global races — the canonical shared-counter case).
+  Per-function direct global accesses (shadowing-aware) → transitive footprint over
+  NORMAL calls (a `go` is a separate thread); each `go` site is a goroutine thread with
+  loop multiplicity; the main thread contributes its accesses AFTER the first spawn
+  (a `var` written before `go` is ordered-before → the common init-then-spawn-readers
+  pattern is safe). Race = a global with ≥2 concurrent threads, ≥1 write, ≥1 goroutine.
+- **Move-on-send** (`useAfterSend`): `ch <- v` transfers ownership of a shared value;
+  a flow-sensitive per-function scan (moves cleared on rebind) flags touching `v`
+  afterward as `RACE004` use-after-move — the formal backbone of "share by communicating"
+  (send it, then let it go). Send-then-drop stays clean.
+- Tests: global counter (write/write), goroutine-write+main-read (read/write),
+  init-then-spawn CLEAN, read-only-global CLEAN, use-after-send RACE004, send-then-drop
+  CLEAN. Corpus still 0 false positives; full `go test .` green.
+- Known conservative edges (→ 1.4 precision): only main's *direct* pre-spawn accesses get
+  the happens-before credit (a helper main calls before spawning is still treated as
+  concurrent); move tracking is intraprocedural.
+
 ### Integration points (Go reference compiler)
 - **Types**: the pass needs resolved types for `sharesHeap`. Hook the `Checker` after it
   finishes (`types.go`) and expose a `typeOfPlace(fn, expr)` query, or build a light place-

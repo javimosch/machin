@@ -454,12 +454,571 @@ func detectRaces(prog *Program, c *Checker) []raceFinding {
 			}
 		}
 	}
+	out = append(out, globalRaces(prog, c)...)
+	out = append(out, useAfterSend(prog, c)...)
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Decl != out[j].Decl {
 			return out[i].Decl < out[j].Decl
 		}
 		return out[i].Root < out[j].Root
 	})
+	return out
+}
+
+// ── globals (Slice 1.2) ─────────────────────────────────────────────────────
+// A package-level `var` is a single cell shared by every goroutine — so unlike a
+// parameter (copied at the call boundary), even a SCALAR global races when two
+// concurrent threads touch it and one writes. Sharing is unconditional; no
+// reachability gate. This catches the canonical shared-counter race.
+
+type gAccess struct{ read, write bool }
+type goSite struct {
+	callee string
+	inLoop bool
+}
+
+// collectLocals records the names a function binds (params + `:=` decls + range
+// vars), which SHADOW a package global of the same name (MFL has flat scope).
+func collectLocals(ss []Stmt, into map[string]bool) {
+	for _, s := range ss {
+		switch st := s.(type) {
+		case *AssignStmt:
+			if st.Op == ":=" {
+				into[st.Name] = true
+			}
+		case *MultiAssign:
+			if st.Op == ":=" {
+				for _, n := range st.Names {
+					into[n] = true
+				}
+			}
+		case *RangeStmt:
+			if st.Key != "" {
+				into[st.Key] = true
+			}
+			if st.Val != "" {
+				into[st.Val] = true
+			}
+			collectLocals(st.Body, into)
+		case *IfStmt:
+			collectLocals(st.Then, into)
+			collectLocals(st.Else, into)
+		case *WhileStmt:
+			collectLocals(st.Body, into)
+		case *ArenaStmt:
+			collectLocals(st.Body, into)
+		}
+	}
+}
+
+// mergeGAcc ORs an access into a per-global map; returns true if it changed.
+func mergeGAcc(m map[string]*gAccess, g string, a *gAccess) bool {
+	e := m[g]
+	if e == nil {
+		m[g] = &gAccess{a.read, a.write}
+		return true
+	}
+	changed := false
+	if a.read && !e.read {
+		e.read = true
+		changed = true
+	}
+	if a.write && !e.write {
+		e.write = true
+		changed = true
+	}
+	return changed
+}
+
+// collectGlobalAccess records direct reads/writes of package globals in a body,
+// skipping names shadowed by a local. `sink` receives (global, read, write).
+func collectGlobalAccess(ss []Stmt, gset, local map[string]bool, sink func(g string, read, write bool)) {
+	isG := func(root string) bool { return gset[root] && !local[root] }
+	var rd func(e Expr)
+	rd = func(e Expr) {
+		switch t := e.(type) {
+		case nil:
+			return
+		case *Ident:
+			if isG(t.Name) {
+				sink(t.Name, true, false)
+			}
+		case *Index:
+			if r, _, ok := placeOf(t); ok && isG(r) {
+				sink(r, true, false)
+			}
+			rd(t.X)
+			rd(t.Idx)
+		case *FieldAccess:
+			if r, _, ok := placeOf(t); ok && isG(r) {
+				sink(r, true, false)
+			}
+			rd(t.X)
+		case *Call:
+			for _, a := range t.Args {
+				rd(a)
+			}
+		case *Binary:
+			rd(t.L)
+			rd(t.R)
+		case *Unary:
+			rd(t.X)
+		case *SliceLit:
+			for _, el := range t.Elems {
+				rd(el)
+			}
+		case *StructLit:
+			for _, v := range t.Vals {
+				rd(v)
+			}
+		}
+	}
+	var walk func(ss []Stmt)
+	walk = func(ss []Stmt) {
+		for _, s := range ss {
+			switch st := s.(type) {
+			case *AssignStmt:
+				if st.Op == "=" && isG(st.Name) {
+					sink(st.Name, false, true) // whole-cell write
+				}
+				rd(st.Val)
+			case *MultiAssign:
+				for _, e := range st.Rhs {
+					rd(e)
+				}
+			case *IndexAssign:
+				if r, _, ok := placeOf(st.Target); ok && isG(r) {
+					sink(r, false, true)
+				}
+				rd(st.Target.Idx)
+				rd(st.Val)
+			case *FieldAssign:
+				if r, _, ok := placeOf(st.Target); ok && isG(r) {
+					sink(r, false, true)
+				}
+				rd(st.Val)
+			case *ExprStmt:
+				rd(st.X)
+			case *ReturnStmt:
+				for _, e := range st.Vals {
+					rd(e)
+				}
+			case *SendStmt:
+				rd(st.Ch)
+				rd(st.Val)
+			case *GoStmt:
+				for _, a := range st.Call.Args {
+					rd(a)
+				}
+			case *IfStmt:
+				rd(st.Cond)
+				walk(st.Then)
+				walk(st.Else)
+			case *WhileStmt:
+				rd(st.Cond)
+				walk(st.Body)
+			case *RangeStmt:
+				rd(st.X)
+				walk(st.Body)
+			case *ArenaStmt:
+				walk(st.Body)
+			}
+		}
+	}
+	walk(ss)
+}
+
+// collectCallGraph gathers, per function body, its normal callees and its `go`
+// spawn sites (with loop multiplicity).
+func collectCallGraph(ss []Stmt, inLoop bool, normal *[]string, gos *[]goSite) {
+	var rd func(e Expr)
+	rd = func(e Expr) {
+		switch t := e.(type) {
+		case *Call:
+			*normal = append(*normal, t.Callee)
+			for _, a := range t.Args {
+				rd(a)
+			}
+		case *Binary:
+			rd(t.L)
+			rd(t.R)
+		case *Unary:
+			rd(t.X)
+		case *Index:
+			rd(t.X)
+			rd(t.Idx)
+		case *FieldAccess:
+			rd(t.X)
+		case *SliceLit:
+			for _, el := range t.Elems {
+				rd(el)
+			}
+		case *StructLit:
+			for _, v := range t.Vals {
+				rd(v)
+			}
+		}
+	}
+	for _, s := range ss {
+		switch st := s.(type) {
+		case *GoStmt:
+			*gos = append(*gos, goSite{st.Call.Callee, inLoop})
+			for _, a := range st.Call.Args {
+				rd(a)
+			}
+		case *AssignStmt:
+			rd(st.Val)
+		case *MultiAssign:
+			for _, e := range st.Rhs {
+				rd(e)
+			}
+		case *IndexAssign:
+			rd(st.Val)
+		case *FieldAssign:
+			rd(st.Val)
+		case *ExprStmt:
+			rd(st.X)
+		case *ReturnStmt:
+			for _, e := range st.Vals {
+				rd(e)
+			}
+		case *SendStmt:
+			rd(st.Val)
+		case *IfStmt:
+			rd(st.Cond)
+			collectCallGraph(st.Then, inLoop, normal, gos)
+			collectCallGraph(st.Else, inLoop, normal, gos)
+		case *WhileStmt:
+			collectCallGraph(st.Body, true, normal, gos)
+		case *RangeStmt:
+			collectCallGraph(st.Body, true, normal, gos)
+		case *ArenaStmt:
+			collectCallGraph(st.Body, inLoop, normal, gos)
+		}
+	}
+}
+
+// mainPostGlobals returns main's DIRECT global accesses that occur after its first
+// `go` spawn — the ones concurrent with the goroutines. Accesses strictly before
+// the first spawn are ordered-before (goroutine creation is a happens-before edge)
+// and excluded, so the common "init a global, then spawn readers" pattern is safe.
+func mainPostGlobals(body []Stmt, gset, local map[string]bool) map[string]*gAccess {
+	out := map[string]*gAccess{}
+	spawned := false
+	var walk func(ss []Stmt)
+	walk = func(ss []Stmt) {
+		for _, s := range ss {
+			if _, ok := s.(*GoStmt); ok {
+				spawned = true
+				continue
+			}
+			if !spawned {
+				// descend to catch a spawn nested in an early block, but don't collect
+				if b, ok := blockOf(s); ok {
+					walk(b)
+				}
+				continue
+			}
+			collectGlobalAccess([]Stmt{s}, gset, local, func(g string, r, w bool) {
+				mergeGAcc(out, g, &gAccess{r, w})
+			})
+		}
+	}
+	walk(body)
+	return out
+}
+
+func blockOf(s Stmt) ([]Stmt, bool) {
+	switch st := s.(type) {
+	case *IfStmt:
+		return append(append([]Stmt{}, st.Then...), st.Else...), true
+	case *WhileStmt:
+		return st.Body, true
+	case *RangeStmt:
+		return st.Body, true
+	case *ArenaStmt:
+		return st.Body, true
+	}
+	return nil, false
+}
+
+// globalRaces detects data races on package globals across the whole program.
+func globalRaces(prog *Program, c *Checker) []raceFinding {
+	gset := map[string]bool{}
+	for _, g := range prog.Globals {
+		gset[g.Name] = true
+	}
+	if len(gset) == 0 {
+		return nil
+	}
+	local := map[string]map[string]bool{}
+	gdirect := map[string]map[string]*gAccess{}
+	normalCallees := map[string][]string{}
+	var allGo []goSite
+	var mainFn *FuncDecl
+	for _, f := range prog.Funcs {
+		ln := map[string]bool{}
+		for _, p := range f.Params {
+			ln[p] = true
+		}
+		collectLocals(f.Body, ln)
+		local[f.Name] = ln
+		gd := map[string]*gAccess{}
+		collectGlobalAccess(f.Body, gset, ln, func(g string, r, w bool) { mergeGAcc(gd, g, &gAccess{r, w}) })
+		gdirect[f.Name] = gd
+		var normal []string
+		var gos []goSite
+		collectCallGraph(f.Body, false, &normal, &gos)
+		normalCallees[f.Name] = normal
+		allGo = append(allGo, gos...)
+		if f.Name == "main" {
+			mainFn = f
+		}
+	}
+	// transitive global footprint over NORMAL calls (a goroutine is a separate thread)
+	gall := map[string]map[string]*gAccess{}
+	for n, gd := range gdirect {
+		m := map[string]*gAccess{}
+		for g, a := range gd {
+			m[g] = &gAccess{a.read, a.write}
+		}
+		gall[n] = m
+	}
+	for changed := true; changed; {
+		changed = false
+		for fn, cs := range normalCallees {
+			for _, ce := range cs {
+				for g, a := range gall[ce] {
+					if mergeGAcc(gall[fn], g, a) {
+						changed = true
+					}
+				}
+			}
+		}
+	}
+	// main-thread concurrent footprint: direct post-spawn + normal-callee transitive
+	mainConc := map[string]*gAccess{}
+	if mainFn != nil {
+		for g, a := range mainPostGlobals(mainFn.Body, gset, local["main"]) {
+			mergeGAcc(mainConc, g, a)
+		}
+		for _, ce := range normalCallees["main"] {
+			for g, a := range gall[ce] {
+				mergeGAcc(mainConc, g, a)
+			}
+		}
+	}
+
+	var out []raceFinding
+	for g := range gset {
+		type th struct {
+			write bool
+			mult  int
+			desc  string
+		}
+		var threads []th
+		for _, gs := range allGo {
+			a := gall[gs.callee][g]
+			if a == nil {
+				continue
+			}
+			mult := 1
+			label := "goroutine"
+			if gs.inLoop {
+				mult = 2
+				label = "loop-spawned goroutine"
+			}
+			verb := "reads"
+			if a.write {
+				verb = "writes"
+			}
+			threads = append(threads, th{a.write, mult, fmt.Sprintf("%s `go %s(...)` %s global `%s`", label, gs.callee, verb, g)})
+		}
+		goThreads := len(threads)
+		if a := mainConc[g]; a != nil {
+			verb := "reads"
+			if a.write {
+				verb = "writes"
+			}
+			threads = append(threads, th{a.write, 1, fmt.Sprintf("main thread %s global `%s`", verb, g)})
+		}
+		total, writes := 0, 0
+		for _, t := range threads {
+			total += t.mult
+			if t.write {
+				writes += t.mult
+			}
+		}
+		if goThreads >= 1 && total >= 2 && writes >= 1 {
+			kind := "read/write"
+			if writes >= 2 {
+				kind = "write/write"
+			}
+			descs := make([]string, len(threads))
+			for i, t := range threads {
+				descs[i] = t.desc
+			}
+			sort.Strings(descs)
+			// no single enclosing decl — the message already says "global `g`"
+			out = append(out, raceFinding{Root: g, Decl: "", Kind: kind, Writers: descs})
+		}
+	}
+	return out
+}
+
+// ── move-on-send (Slice 1.2) ─────────────────────────────────────────────────
+// `ch <- v` TRANSFERS ownership of a shared value v to the receiver. Touching v on
+// the sender after the send is a use-after-move: the receiver may now be mutating
+// it concurrently. Enforcing this is the formal backbone of "share by communicating"
+// — send it, then let it go. A flow-sensitive scan per function (moves are cleared
+// when the variable is rebound), shared-typed values only.
+
+// typeSharesHeap reports whether a value of this type carries shared heap (a slice/
+// map, directly or inside a struct) — i.e. sending it aliases, so it must be moved.
+func typeSharesHeap(c *Checker, tname string, depth int) bool {
+	if depth > 8 {
+		return false
+	}
+	if strings.HasPrefix(tname, "[]") || strings.HasPrefix(tname, "map[") {
+		return true
+	}
+	if td := c.structs[tname]; td != nil {
+		for _, fld := range td.Fields {
+			if typeSharesHeap(c, fld.Type, depth+1) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// useAfterSend flags accessing a shared value after it has been sent on a channel.
+func useAfterSend(prog *Program, c *Checker) []raceFinding {
+	var out []raceFinding
+	for _, inst := range c.reps {
+		f := c.instFn[inst]
+		if f == nil {
+			continue
+		}
+		moved := map[string]bool{} // var -> currently moved (owned by a receiver)
+		done := map[string]bool{}  // dedup per var
+		isShared := func(name string) bool {
+			slot, ok := c.vars[inst][name]
+			return ok && typeSharesHeap(c, slotTypeName(c, slot), 0)
+		}
+		flag := func(name string) {
+			if moved[name] && !done[name] {
+				done[name] = true
+				out = append(out, raceFinding{
+					Root: name, Decl: f.Name, Kind: "use-after-move",
+					Writers: []string{fmt.Sprintf("`%s` is used after it was sent on a channel (ownership moved to the receiver)", name)},
+				})
+			}
+		}
+		var uses func(e Expr)
+		uses = func(e Expr) {
+			switch t := e.(type) {
+			case nil:
+				return
+			case *Ident:
+				flag(t.Name)
+			case *Index:
+				if r, _, ok := placeOf(t); ok {
+					flag(r)
+				}
+				uses(t.X)
+				uses(t.Idx)
+			case *FieldAccess:
+				if r, _, ok := placeOf(t); ok {
+					flag(r)
+				}
+				uses(t.X)
+			case *Call:
+				for _, a := range t.Args {
+					uses(a)
+				}
+			case *Binary:
+				uses(t.L)
+				uses(t.R)
+			case *Unary:
+				uses(t.X)
+			case *SliceLit:
+				for _, el := range t.Elems {
+					uses(el)
+				}
+			case *StructLit:
+				for _, v := range t.Vals {
+					uses(v)
+				}
+			}
+		}
+		var scan func(ss []Stmt)
+		scan = func(ss []Stmt) {
+			for _, s := range ss {
+				switch st := s.(type) {
+				case *SendStmt:
+					uses(st.Ch)
+					// the sent value: an already-moved var re-sent is use-after-move;
+					// otherwise a shared var becomes moved.
+					if id, ok := st.Val.(*Ident); ok {
+						if moved[id.Name] {
+							flag(id.Name)
+						} else if isShared(id.Name) {
+							moved[id.Name] = true
+						}
+					} else {
+						uses(st.Val)
+					}
+				case *AssignStmt:
+					uses(st.Val)
+					delete(moved, st.Name) // rebound -> fresh value
+				case *MultiAssign:
+					for _, e := range st.Rhs {
+						uses(e)
+					}
+					for _, n := range st.Names {
+						delete(moved, n)
+					}
+				case *IndexAssign:
+					if r, _, ok := placeOf(st.Target); ok {
+						flag(r) // writing through a moved handle
+					}
+					uses(st.Target.Idx)
+					uses(st.Val)
+				case *FieldAssign:
+					if r, _, ok := placeOf(st.Target); ok {
+						flag(r)
+					}
+					uses(st.Val)
+				case *ExprStmt:
+					uses(st.X)
+				case *ReturnStmt:
+					for _, e := range st.Vals {
+						uses(e)
+					}
+				case *GoStmt:
+					for _, a := range st.Call.Args {
+						uses(a)
+					}
+				case *IfStmt:
+					uses(st.Cond)
+					scan(st.Then)
+					scan(st.Else)
+				case *WhileStmt:
+					uses(st.Cond)
+					scan(st.Body)
+				case *RangeStmt:
+					uses(st.X)
+					delete(moved, st.Key)
+					delete(moved, st.Val)
+					scan(st.Body)
+				case *ArenaStmt:
+					scan(st.Body)
+				}
+			}
+		}
+		scan(f.Body)
+	}
 	return out
 }
 
@@ -503,14 +1062,19 @@ func noteReads(e Expr, note func(root string, path accPath, write, byGo bool, de
 // the code taxonomy and JSON surface; option (a): errors in `machin check`).
 func (rf raceFinding) toDiagnostic() Diagnostic {
 	code := "RACE002" // read/write
-	if rf.Kind == "write/write" {
+	msg := fmt.Sprintf("data race on `%s` (%s): %s", rf.Root, rf.Kind, strings.Join(rf.Writers, "; "))
+	switch rf.Kind {
+	case "write/write":
 		code = "RACE001"
+	case "use-after-move":
+		code = "RACE004"
+		msg = fmt.Sprintf("use after move: %s", strings.Join(rf.Writers, "; "))
 	}
 	return Diagnostic{
 		Severity: "error",
 		Phase:    "race",
 		Code:     code,
-		Message:  fmt.Sprintf("data race on `%s` (%s): %s", rf.Root, rf.Kind, strings.Join(rf.Writers, "; ")),
+		Message:  msg,
 		Decl:     rf.Decl,
 	}
 }

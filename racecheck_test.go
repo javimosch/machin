@@ -139,6 +139,80 @@ func TestRace_ReadOnlyShared(t *testing.T) {
 	}
 }
 
+// ── globals (Slice 1.2) ──────────────────────────────────────────────────────
+
+func TestRace_GlobalCounter(t *testing.T) {
+	// the canonical shared-counter race: a scalar global is shared memory, so two
+	// goroutines incrementing it race even though it's not a slice.
+	fs := rcCheck(t,
+		"var counter = 0",
+		"func incr(){counter=counter+1}",
+		"func main(){go incr() go incr() print(counter)}")
+	rcReport(t, "global shared counter", fs)
+	if len(fs) != 1 || fs[0].Root != "counter" || fs[0].Kind != "write/write" {
+		t.Fatalf("want 1 write/write race on global counter, got %+v", fs)
+	}
+}
+
+func TestRace_GlobalWriteMainRead(t *testing.T) {
+	fs := rcCheck(t,
+		"var total = 0",
+		"func add(n){total=total+n}",
+		"func main(){go add(5) x:=total print(x)}")
+	rcReport(t, "global goroutine-write + main-read", fs)
+	if len(fs) != 1 || fs[0].Kind != "read/write" {
+		t.Fatalf("want 1 read/write race on global, got %+v", fs)
+	}
+}
+
+func TestRace_GlobalInitThenSpawn(t *testing.T) {
+	// writing a global BEFORE the first spawn happens-before the goroutines, so
+	// readers see a stable value — safe (the common init-then-spawn pattern).
+	fs := rcCheck(t,
+		"var config = 0",
+		"func reader(id){x:=config print(x+id)}",
+		"func main(){config=42 go reader(0) go reader(1)}")
+	rcReport(t, "global init-then-spawn readers", fs)
+	if len(fs) != 0 {
+		t.Fatalf("want CLEAN (write ordered-before spawn), got %+v", fs)
+	}
+}
+
+func TestRace_GlobalReadOnly(t *testing.T) {
+	fs := rcCheck(t,
+		"var base = 100",
+		"func reader(id, ch){ch<-base+id}",
+		"func main(){ch:=make(chan int) go reader(0,ch) go reader(1,ch) a:=<-ch b:=<-ch print(a+b)}")
+	rcReport(t, "global read-only shared", fs)
+	if len(fs) != 0 {
+		t.Fatalf("want CLEAN (no writer), got %+v", fs)
+	}
+}
+
+// ── move-on-send (Slice 1.2) ─────────────────────────────────────────────────
+
+func TestRace_UseAfterSend(t *testing.T) {
+	// sending a slice transfers ownership; mutating it afterward races the receiver.
+	fs := rcCheck(t,
+		"func producer(ch){out:=[]int{1,2,3} ch<-out out[0]=99}",
+		"func main(){ch:=make(chan []int) go producer(ch) got:=<-ch print(got[0])}")
+	rcReport(t, "use after send", fs)
+	if len(fs) != 1 || fs[0].Kind != "use-after-move" || fs[0].Root != "out" {
+		t.Fatalf("want 1 use-after-move on out, got %+v", fs)
+	}
+}
+
+func TestRace_SendThenDrop(t *testing.T) {
+	// send and never touch it again — the safe move, no diagnostic.
+	fs := rcCheck(t,
+		"func producer(ch){out:=[]int{1,2,3} ch<-out}",
+		"func main(){ch:=make(chan []int) go producer(ch) got:=<-ch print(got[0])}")
+	rcReport(t, "send then drop", fs)
+	if len(fs) != 0 {
+		t.Fatalf("want CLEAN (value dropped after send), got %+v", fs)
+	}
+}
+
 // ── banner ──────────────────────────────────────────────────────────────────
 
 func TestRace_ZZZBanner(t *testing.T) {
