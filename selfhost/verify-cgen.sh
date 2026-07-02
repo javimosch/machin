@@ -188,6 +188,35 @@ func main() {
 EOF
 run "$T/h8.src"
 
+# h9 — select: recv/send/default/comma-ok cases (Slice 4 of #280).
+cat > "$T/h9.src" <<'EOF'
+func feed(ch) { ch <- 9  close(ch) }
+func drain(ch) { x := <-ch  print(x) }
+func main() {
+    a := make(chan int)
+    b := make(chan int)
+    go feed(a)
+    go drain(b)
+    select {
+    case x, ok := <-a:
+        if ok { print(x) }
+    case b <- 5:
+        print(1)
+    default:
+        print(0)
+    }
+    c := make(chan int)
+    go feed(c)
+    select {
+    case v := <-c:
+        print(v)
+    case <-a:
+        print(7)
+    }
+}
+EOF
+run "$T/h9.src"
+
 # SELF-APPLICATION: the MFL codegen emits byte-identical C for the compiler's OWN
 # source (checker + full codegen) — the fixpoint-adjacent milestone.
 $N "$MACHIN" encode selfhost/lex.src selfhost/parse.src selfhost/check.src \

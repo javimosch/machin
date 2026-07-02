@@ -405,7 +405,76 @@ func cg_stmt(iid, idx, depth) {
         return
     }
     if k == K_GO { cg_go(iid, idx)  return }
-    g_cg_unsup = 1  cemit("0;\n")   // select: later parts
+    if k == K_SELECT { cg_select(iid, idx, depth)  return }
+    g_cg_unsup = 1  cemit("0;\n")
+}
+
+// cg_select: the poll loop over cases (port of selectStmt). Pre-evaluates each
+// channel op into temps, spins trying each case in source order (default, if any,
+// always fires last; otherwise mfl_sleep(1) and retry), then dispatches the winning
+// case body. The leading indent is already emitted by cg_stmt.
+func cg_select(iid, idx, depth) {
+    n := nodes[idx]
+    id := g_tmpid
+    g_tmpid = g_tmpid + 1
+    ids := str(id)
+    cemit("{\n")
+    // setup: pre-evaluate operands into _sc/_sv/_sok temps
+    i := 0
+    for i < len(n.kids) {
+        scn := nodes[n.kids[i]]
+        cis := str(i)
+        indent(depth + 1)
+        ch := cg_expr(iid, scn.a)
+        et := elem_ctype(iid, scn.a)
+        if scn.ival == 0 {
+            cemit("mfl_chan* _sc" + ids + "_" + cis + " = " + ch + "; " + et + " _sv" + ids + "_" + cis + "; int _sok" + ids + "_" + cis + " = 0;\n")
+        } else {
+            cemit("mfl_chan* _sc" + ids + "_" + cis + " = " + ch + "; " + et + " _sv" + ids + "_" + cis + " = " + cg_expr(iid, scn.b) + ";\n")
+        }
+        i = i + 1
+    }
+    indent(depth + 1)  cemit("int _sel" + ids + " = -1;\n")
+    indent(depth + 1)  cemit("for (;;) {\n")
+    i = 0
+    for i < len(n.kids) {
+        scn := nodes[n.kids[i]]
+        cis := str(i)
+        indent(depth + 2)
+        if scn.ival == 0 {
+            cemit("if (mfl_chan_tryrecv2(_sc" + ids + "_" + cis + ", &_sv" + ids + "_" + cis + ", &_sok" + ids + "_" + cis + ")) { _sel" + ids + " = " + cis + "; break; }\n")
+        } else {
+            cemit("{ mfl_chan_send(_sc" + ids + "_" + cis + ", &_sv" + ids + "_" + cis + "); _sel" + ids + " = " + cis + "; break; }\n")
+        }
+        i = i + 1
+    }
+    indent(depth + 2)
+    if n.ival == 1 {
+        cemit("{ _sel" + ids + " = " + str(len(n.kids)) + "; break; }\n")
+    } else {
+        cemit("mfl_sleep(1);\n")
+    }
+    indent(depth + 1)  cemit("}\n")
+    // dispatch the winning case
+    i = 0
+    for i < len(n.kids) {
+        scn := nodes[n.kids[i]]
+        cis := str(i)
+        indent(depth + 1)  cemit("if (_sel" + ids + " == " + cis + ") {\n")
+        if scn.ival == 0 {
+            if scn.s != "" && scn.s != "_" { indent(depth + 2)  cemit(var_ref(iid, scn.s) + " = _sv" + ids + "_" + cis + ";\n") }
+            if scn.s2 != "" && scn.s2 != "_" { indent(depth + 2)  cemit(var_ref(iid, scn.s2) + " = _sok" + ids + "_" + cis + ";\n") }
+        }
+        for _, s := range scn.kids { cg_stmt(iid, s, depth + 2) }
+        indent(depth + 1)  cemit("}\n")
+        i = i + 1
+    }
+    if n.ival == 1 {
+        indent(depth + 1)  cemit("if (_sel" + ids + " == " + str(len(n.kids)) + ") {\n")
+        for _, s := range n.kids2 { cg_stmt(iid, s, depth + 2) }
+        indent(depth + 1)  cemit("}\n")
+    }
+    indent(depth)  cemit("}\n")
 }
 
 // cg_go: `go f(args)` -> an arg struct + trampoline function into g_tramp, and a

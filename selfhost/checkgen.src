@@ -917,7 +917,28 @@ func gen_stmt(idx) {
         gen_expr(n.a)
         return
     }
-    g_unsupported = 1   // select (later); funclit/closure bodies
+    if k == K_SELECT {
+        // n.kids = selcase nodes; n.kids2 = default body. Per case: constrain the
+        // channel op (recv binds the case var to the elem type + ok-name to bool;
+        // send unifies the value with the elem type), then check the body.
+        ci := 0
+        for ci < len(n.kids) {
+            scn := nodes[n.kids[ci]]
+            cs := gen_expr(scn.a)
+            eslot := chan_elem(cs)
+            if scn.ival == 0 {
+                if scn.s != "" && scn.s != "_" { add_pair(range_bind(scn.s), eslot) }
+                if scn.s2 != "" && scn.s2 != "_" { add_pair(range_bind(scn.s2), c_bool) }
+            } else {
+                add_pair(gen_expr(scn.b), eslot)
+            }
+            gen_block(scn.kids)
+            ci = ci + 1
+        }
+        gen_block(n.kids2)
+        return
+    }
+    g_unsupported = 1   // funclit/closure bodies
 }
 
 // range_bind: "" or "_" -> a throwaway slot (not named); else reuse/declare a local.
