@@ -62,7 +62,7 @@ One JSON object on stdout (never streamed/partial — trivially parseable):
 | field | type | notes |
 |---|---|---|
 | `severity` | `"error"` \| `"warning"` | only `"error"` in v1 (machin has no warnings yet) |
-| `phase` | `"lex"` \| `"parse"` \| `"typecheck"` | where it was caught |
+| `phase` | `"lex"` \| `"parse"` \| `"typecheck"` \| `"race"` | where it was caught (`race` = the concurrency analysis, below) |
 | `code` | string | **stable machine code** — the agent branches on this, never on `message`. Enumerated below. |
 | `message` | string | the human-readable detail (the agent may still read it, but shouldn't pattern-match it) |
 | `decl` | string | the declaration (function / global / type name) the error is in — the natural fix unit (see below) |
@@ -74,8 +74,34 @@ One JSON object on stdout (never streamed/partial — trivially parseable):
 ### `code` enumeration (initial, stable)
 `parse-unexpected-token`, `parse-unterminated-string`, `parse-unbalanced-braces`,
 `type-mismatch`, `undefined-name`, `undefined-field`, `arity-mismatch`,
-`not-callable`, `no-main`, `unsupported-construct`. New codes are additive; existing
-codes never change meaning.
+`not-callable`, `no-main`, `unsupported-construct`. Concurrency codes (phase `race`):
+`RACE001`, `RACE002`, `RACE004` (below). New codes are additive; existing codes never
+change meaning.
+
+## Concurrency: inferred data-race diagnostics (phase `race`)
+After a clean typecheck, `check` runs an **inferred data-race analysis** — the guarantee
+Rust gives via `Send`/`Sync`, but with **zero annotations**: it infers which heap
+locations are shared *and* concurrently accessed across goroutine boundaries. Every
+finding names a **counterexample** in `message` (who accesses the location, concurrently,
+and how). The analysis is **sound** (it never misses a real race on the surface it covers)
+and **conservative** (it may over-report rather than stay silent).
+
+| code | meaning |
+|---|---|
+| `RACE001` | write/write — ≥2 concurrent writers of the same shared location (slice/map element, struct-with-slice field, or a package global — even a scalar one) |
+| `RACE002` | read/write — a concurrent read and write of the same shared location |
+| `RACE004` | use-after-move — a value used after it was sent on a channel (ownership transferred to the receiver) |
+
+What is "shared" is **reachability-based**: parameters copy at the goroutine boundary, so
+a value races only when its type reaches a slice/map (a scalar struct field is private; a
+slice *field* keeps its shared backing). Package globals are a single shared cell, so they
+race unconditionally. Closures reach a goroutine only as a func-arg to a `go`-spawned
+function; their captured slices are shared by-reference and analyzed as such.
+
+Happens-before is respected: an access **before** a goroutine is spawned, or **after** a
+channel-join barrier (a goroutine whose last statement signals a channel the spawner then
+receives), is ordered — not a race. Build enforcement: `machin build|run --race-safe`
+refuses to compile a program with an inferred race (plain `build` is unaffected).
 
 ### Top-level fields
 `ok` (bool), `files` (the inputs), `errorCount` (int), `diagnostics` (array, **stable
