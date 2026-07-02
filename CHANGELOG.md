@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+## v0.91.0
+
+- **Inferred data-race freedom — Rust's guarantee, no `Send`/`Sync`.** `machin check`
+  now runs a data-race analysis after typecheck (phase `race`), inferring — with **zero
+  annotations** — which heap locations are shared *and* concurrently accessed across
+  goroutine boundaries, at least one a write. Reported as errors with a counterexample:
+  `RACE001` write/write, `RACE002` read/write, `RACE004` use-after-move (a value used
+  after `ch <- v` transferred it). `machin build|run --race-safe` refuses to compile a
+  program with an inferred race (plain `build` is unaffected). Covers locals across
+  goroutines (reachability-based: a slice-field of a by-value struct still shares its
+  backing; a scalar field doesn't), package globals (one shared cell — even a scalar
+  global races), channel move-on-send, and closures captured into a `go`-spawned function.
+  **Sound** (borrow-checker discipline: never a false negative on the covered surface),
+  with happens-before precision so accesses before a spawn or after a channel-join barrier
+  aren't flagged. Validated against the 5 concurrency corpus apps (0 false positives; a
+  mutation test confirms it engages). New `racecheck.go` + `racecheck_test.go`; documented
+  in `docs/check-json.md`, `docs/concurrency-race-freedom.md`, and `machin guide`.
+
 ## v0.90.0
 
 - **`machin build --static` now works for TLS/crypto-using programs, FROM scratch.**
