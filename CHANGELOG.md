@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.98.0
+
 - **Fixed: `read_file`/`read_file_bytes` segfaulted on a directory path.** `fopen(dir,
   "rb")` succeeds on Linux (opening a directory read-only is legal at the syscall
   level), but `ftell()` on the resulting stream returns `LONG_MAX` — not `-1` — so the
