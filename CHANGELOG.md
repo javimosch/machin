@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- **Fixed: `a < -b` failed to parse after its own canonical form (issue #208).**
+  `machin encode` tightens whitespace around operators, so `x < -1` becomes
+  byte-adjacent `x<-1` — and the lexer greedily merged that into a single
+  channel-receive `<-` token, so a valid comparison against a negative literal
+  failed to parse *after* the round trip through canonical form (the exact
+  loop-integrity contract — generate, canonicalize, re-ingest — an agent runs
+  constantly). Since `ch <- v` (a genuine channel send) is lexically the
+  identical shape (an identifier immediately followed by `<-`), this couldn't
+  be fixed at the lexer: whether `IDENT <- ...` means "send" or "less-than,
+  then negate" depends on grammatical position, not local token context. Fixed
+  in the parser instead: the one call site that recognizes send statements
+  (a simple statement's leading expression) still stops at a bare `<-` as
+  before; everywhere else (`if`/`while` conditions, assignment/return values,
+  call arguments, nested sub-expressions) now reinterprets an unexpected `<-`
+  found while precedence-climbing as `<` followed by unary `-` on the next
+  operand — exactly how the un-tightened source already parsed. Verified:
+  the reported case, operator-precedence preservation (`a && b < -1` parses as
+  `a && (b < -1)`, not `(a && b) < -1`), composition with further arithmetic
+  (`c < -1 + 10`), and non-regression on channel send/receive/select (the
+  exact same ambiguous token shape, still correctly recognized). New
+  `TestLessThanNegative` / `TestLessThanNegativeChannelSendUnaffected`.
+  **Follow-up, not done here:** the self-hosted parser (`selfhost/parse.src`)
+  has its own independent precedence-climbing implementation with the same
+  `<-` handling shape, so it likely has the identical bug — left for a
+  separate change to avoid colliding with the in-flight self-hosted
+  concurrency-parity work (issue #280).
+
 ## v0.93.0
 
 - **`machin guide`'s `proof` section gains a 5th entry: data-race safety —

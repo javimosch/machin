@@ -922,6 +922,46 @@ func TestBitwise(t *testing.T) {
 	}
 }
 
+// issue #208: `encode` tightens whitespace, so `x < -1` becomes byte-adjacent
+// `x<-1` in canonical form — and the lexer used to greedily merge `<` and `-`
+// into a single channel-receive token there, so a valid comparison against a
+// negative literal failed to parse AFTER the round trip through canonical
+// form. buildRun exercises the real pipeline (loose source -> tighten -> lex
+// -> parse -> compile -> run), the same path that broke.
+func TestLessThanNegative(t *testing.T) {
+	main := `func main() {
+	x := 5
+	if x < -1 { println("neg") } else { println("ok") }
+	h := 0.5
+	if h < -0.7 { println("below") } else { println("above") }
+	// precedence: && binds looser than <, so this must parse as a && (b < -1)
+	a := true
+	b := 10
+	if a && b < -1 { println("wrong") } else { println("precedence-ok") }
+	// the implicit unary minus still composes with what follows it
+	c := 5
+	if c < -1 + 10 { println("chain-ok") } else { println("chain-wrong") }
+}`
+	out, _ := buildRun(t, main)
+	want := "ok\nabove\nprecedence-ok\nchain-ok\n"
+	if out != want {
+		t.Fatalf("x < -1 after tightening: got %q, want %q", out, want)
+	}
+}
+
+// Same fix, non-regression: `ch <- v` (channel send) is lexically the exact
+// same ambiguous shape (IDENT immediately followed by `<-`) as `x < -1` in
+// canonical form, and must still be recognized as a send, not split into a
+// comparison.
+func TestLessThanNegativeChannelSendUnaffected(t *testing.T) {
+	out := runNative(t,
+		`func recv(ch) { v := <-ch  println("got " + str(v)) }`,
+		`func main() { ch := make(chan int)  go recv(ch)  ch <- 42  sleep(50) }`)
+	if out != "got 42\n" {
+		t.Fatalf("channel send regressed: got %q", out)
+	}
+}
+
 // Opaque FFI handles: `cstruct Name {}` (empty body) wraps a by-value C struct
 // machin can hold and pass back without naming its fields — for APIs whose
 // structs contain pointers (raylib Sound/Music, ...). Codegen-level (no link).
