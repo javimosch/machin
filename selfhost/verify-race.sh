@@ -92,6 +92,45 @@ func main() { d := []int{0, 0} go w(d) d[1] = 7 }
 EOF
 run "$T/h5.src"
 
+# globals: g1 shared counter (write/write), g2 go-write+main-read (read/write),
+# g3 init-then-spawn (clean, pre-spawn ordered), g4 read-only (clean)
+cat > "$T/g1.src" <<'EOF'
+var counter = 0
+func incr() { counter = counter + 1 }
+func main() { go incr() go incr() print(counter) }
+EOF
+run "$T/g1.src"
+cat > "$T/g2.src" <<'EOF'
+var total = 0
+func add(n) { total = total + n }
+func main() { go add(5) x := total print(x) }
+EOF
+run "$T/g2.src"
+cat > "$T/g3.src" <<'EOF'
+var config = 0
+func reader(id) { x := config print(x + id) }
+func main() { config = 42 go reader(0) go reader(1) }
+EOF
+run "$T/g3.src"
+cat > "$T/g4.src" <<'EOF'
+var base = 100
+func reader(id, ch) { ch <- base + id }
+func main() { ch := make(chan int) go reader(0, ch) go reader(1, ch) a := <-ch b := <-ch print(a + b) }
+EOF
+run "$T/g4.src"
+
+# move-on-send: m1 use-after-send (RACE004), m2 send-then-drop (clean)
+cat > "$T/m1.src" <<'EOF'
+func producer(ch) { out := []int{1, 2, 3} ch <- out out[0] = 99 }
+func main() { ch := make(chan []int) go producer(ch) got := <-ch print(got[0]) }
+EOF
+run "$T/m1.src"
+cat > "$T/m2.src" <<'EOF'
+func producer(ch) { out := []int{1, 2, 3} ch <- out }
+func main() { ch := make(chan []int) go producer(ch) got := <-ch print(got[0]) }
+EOF
+run "$T/m2.src"
+
 # the race-free concurrency corpus must stay clean (empty) on both sides
 for app in machin-healthcheck machin-linkcheck machin-pipe machin-pool machin-wscat; do
   s=$(ls ../$app/*.src 2>/dev/null | head -1)

@@ -655,3 +655,423 @@ func dump_races() (out) {
     i = 0
     for i < len(lines) { out = out + lines[i]  i = i + 1 }
 }
+
+// ── package globals (a `var` is one shared cell -> unconditional sharing) ──
+var g_gd_fn = []string{}
+var g_gd_g = []string{}
+var g_gd_r = []int{}
+var g_gd_w = []int{}
+var g_gall_fn = []string{}
+var g_gall_g = []string{}
+var g_gall_r = []int{}
+var g_gall_w = []int{}
+var g_nc_fn = []string{}
+var g_nc_ce = []string{}
+var g_go_ce = []string{}
+var g_go_loop = []int{}
+var g_mc_g = []string{}
+var g_mc_r = []int{}
+var g_mc_w = []int{}
+
+func is_global_name(name) (b) {
+    _, f := global_lookup(name)
+    b = f
+}
+func name_in(name, xs) (b) {
+    b = 0
+    i := 0
+    for i < len(xs) { if xs[i] == name { b = 1  return b }  i = i + 1 }
+}
+func is_gaccess(name, locals) (b) {
+    b = 0
+    if is_global_name(name) == 1 && name_in(name, locals) == 0 { b = 1 }
+}
+
+func gd_merge(dst, fn, g, r, w) (changed) {
+    // dst==0 -> g_gd_*, dst==1 -> g_gall_*
+    changed = 0
+    if dst == 0 {
+        i := 0
+        for i < len(g_gd_fn) { if g_gd_fn[i] == fn && g_gd_g[i] == g { if r == 1 { g_gd_r[i] = 1 }  if w == 1 { g_gd_w[i] = 1 }  return changed }  i = i + 1 }
+        g_gd_fn = append(g_gd_fn, fn)  g_gd_g = append(g_gd_g, g)  g_gd_r = append(g_gd_r, r)  g_gd_w = append(g_gd_w, w)
+        changed = 1
+        return changed
+    }
+    i := 0
+    for i < len(g_gall_fn) {
+        if g_gall_fn[i] == fn && g_gall_g[i] == g {
+            if r == 1 && g_gall_r[i] == 0 { g_gall_r[i] = 1  changed = 1 }
+            if w == 1 && g_gall_w[i] == 0 { g_gall_w[i] = 1  changed = 1 }
+            return changed
+        }
+        i = i + 1
+    }
+    g_gall_fn = append(g_gall_fn, fn)  g_gall_g = append(g_gall_g, g)  g_gall_r = append(g_gall_r, r)  g_gall_w = append(g_gall_w, w)
+    changed = 1
+}
+
+// gd_rd: record global element/field/bare-ident READS in an expression.
+func gd_rd(fn, locals, idx) {
+    n := nodes[idx]
+    k := n.kind
+    if k == K_ID { if is_gaccess(n.s, locals) == 1 { gd_merge(0, fn, n.s, 1, 0) }  return }
+    if k == K_INDEX {
+        root, ok := place_root(idx)
+        if ok == 1 { if is_gaccess(root, locals) == 1 { gd_merge(0, fn, root, 1, 0) } }
+        gd_rd(fn, locals, n.a)  gd_rd(fn, locals, n.b)
+        return
+    }
+    if k == K_FIELD {
+        root, ok := place_root(idx)
+        if ok == 1 { if is_gaccess(root, locals) == 1 { gd_merge(0, fn, root, 1, 0) } }
+        gd_rd(fn, locals, n.a)
+        return
+    }
+    if k == K_CALL { for _, a := range n.kids { gd_rd(fn, locals, a) }  return }
+    if k == K_BIN { gd_rd(fn, locals, n.a)  gd_rd(fn, locals, n.b)  return }
+    if k == K_UNARY { gd_rd(fn, locals, n.a)  return }
+    if k == K_SLICE || k == K_STRUCT { for _, e := range n.kids { gd_rd(fn, locals, e) }  return }
+}
+
+// gd_walk: direct global accesses (writes + reads) + normal-callee/go edges.
+func gd_walk(fn, locals, kids) {
+    for _, s := range kids {
+        n := nodes[s]
+        k := n.kind
+        if k == K_ASSIGN {
+            if n.s2 == "=" { if is_gaccess(n.s, locals) == 1 { gd_merge(0, fn, n.s, 0, 1) } }
+            gd_rd(fn, locals, n.a)
+        } else { if k == K_MULTI {
+            for _, e := range n.kids { gd_rd(fn, locals, e) }
+        } else { if k == K_IDXASSIGN {
+            root, ok := place_root(n.a)
+            if ok == 1 { if is_gaccess(root, locals) == 1 { gd_merge(0, fn, root, 0, 1) } }
+            gd_rd(fn, locals, nodes[n.a].b)
+            gd_rd(fn, locals, n.b)
+        } else { if k == K_FLDASSIGN {
+            root, ok := place_root(n.a)
+            if ok == 1 { if is_gaccess(root, locals) == 1 { gd_merge(0, fn, root, 0, 1) } }
+            gd_rd(fn, locals, n.b)
+        } else { if k == K_EXPRSTMT {
+            cn := nodes[n.a]
+            if cn.kind == K_CALL { g_nc_fn = append(g_nc_fn, fn)  g_nc_ce = append(g_nc_ce, cn.s) }
+            gd_rd(fn, locals, n.a)
+        } else { if k == K_SEND {
+            gd_rd(fn, locals, n.a)  gd_rd(fn, locals, n.b)
+        } else { if k == K_RETURN {
+            for _, e := range n.kids { gd_rd(fn, locals, e) }
+        } else { if k == K_GO {
+            gc := nodes[n.a]
+            g_go_ce = append(g_go_ce, gc.s)  g_go_loop = append(g_go_loop, 0)
+            for _, a := range gc.kids { gd_rd(fn, locals, a) }
+        } else { if k == K_IF {
+            gd_rd(fn, locals, n.a)  gd_walk(fn, locals, n.kids)  gd_walk(fn, locals, n.kids2)
+        } else { if k == K_WHILE {
+            gd_rd(fn, locals, n.a)  gd_walk_loop(fn, locals, n.kids)
+        } else { if k == K_RANGE {
+            gd_rd(fn, locals, n.a)  gd_walk_loop(fn, locals, n.kids)
+        } else { if k == K_ARENA {
+            gd_walk(fn, locals, n.kids)
+        }}}}}}}}}}}}
+    }
+}
+// gd_walk_loop: like gd_walk but go sites inside are loop-spawned (multiplicity).
+func gd_walk_loop(fn, locals, kids) {
+    for _, s := range kids {
+        n := nodes[s]
+        k := n.kind
+        if k == K_GO {
+            gc := nodes[n.a]
+            g_go_ce = append(g_go_ce, gc.s)  g_go_loop = append(g_go_loop, 1)
+            for _, a := range gc.kids { gd_rd(fn, locals, a) }
+        } else { if k == K_EXPRSTMT {
+            cn := nodes[n.a]
+            if cn.kind == K_CALL { g_nc_fn = append(g_nc_fn, fn)  g_nc_ce = append(g_nc_ce, cn.s) }
+            gd_rd(fn, locals, n.a)
+        } else { if k == K_ASSIGN { gd_rd(fn, locals, n.a)
+        } else { if k == K_IDXASSIGN {
+            root, ok := place_root(n.a)
+            if ok == 1 { if is_gaccess(root, locals) == 1 { gd_merge(0, fn, root, 0, 1) } }
+            gd_rd(fn, locals, nodes[n.a].b)  gd_rd(fn, locals, n.b)
+        } else { if k == K_FLDASSIGN {
+            root, ok := place_root(n.a)
+            if ok == 1 { if is_gaccess(root, locals) == 1 { gd_merge(0, fn, root, 0, 1) } }
+            gd_rd(fn, locals, n.b)
+        } else { if k == K_IF { gd_rd(fn, locals, n.a)  gd_walk_loop(fn, locals, n.kids)  gd_walk_loop(fn, locals, n.kids2)
+        } else { if k == K_WHILE || k == K_RANGE || k == K_ARENA { gd_walk_loop(fn, locals, n.kids)
+        } else { if k == K_SEND { gd_rd(fn, locals, n.a)  gd_rd(fn, locals, n.b)
+        }}}}}}}}
+    }
+}
+
+func collect_locals(kids, into) (out) {
+    out = into
+    for _, s := range kids {
+        n := nodes[s]
+        k := n.kind
+        if k == K_ASSIGN { if n.s2 == ":=" { out = append(out, n.s) }
+        } else { if k == K_MULTI { if n.s2 == ":=" { for _, nm := range n.names { out = append(out, nm) } }
+        } else { if k == K_RANGE {
+            if n.s != "" { out = append(out, n.s) }
+            if n.s2 != "" { out = append(out, n.s2) }
+            out = collect_locals(n.kids, out)
+        } else { if k == K_IF { out = collect_locals(n.kids, out)  out = collect_locals(n.kids2, out)
+        } else { if k == K_WHILE || k == K_ARENA { out = collect_locals(n.kids, out)
+        }}}}}
+    }
+}
+
+func mc_merge(g, r, w) {
+    i := 0
+    for i < len(g_mc_g) { if g_mc_g[i] == g { if r == 1 { g_mc_r[i] = 1 }  if w == 1 { g_mc_w[i] = 1 }  return }  i = i + 1 }
+    g_mc_g = append(g_mc_g, g)  g_mc_r = append(g_mc_r, r)  g_mc_w = append(g_mc_w, w)
+}
+
+func global_races() {
+    if len(g_global_names) == 0 { return }
+    g_gd_fn = []string{}  g_gd_g = []string{}  g_gd_r = []int{}  g_gd_w = []int{}
+    g_gall_fn = []string{}  g_gall_g = []string{}  g_gall_r = []int{}  g_gall_w = []int{}
+    g_nc_fn = []string{}  g_nc_ce = []string{}
+    g_go_ce = []string{}  g_go_loop = []int{}
+    g_mc_g = []string{}  g_mc_r = []int{}  g_mc_w = []int{}
+
+    // direct global accesses per source function (+ normal-callee / go edges)
+    fi := 0
+    for fi < len(g_func_names) {
+        fr := g_func_roots[fi]
+        locals := []string{}
+        for _, p := range nodes[fr].names { locals = append(locals, p) }
+        locals = collect_locals(nodes[fr].kids, locals)
+        gd_walk(g_func_names[fi], locals, nodes[fr].kids)
+        fi = fi + 1
+    }
+    // seed gall = gdirect
+    gi := 0
+    for gi < len(g_gd_fn) { gd_merge(1, g_gd_fn[gi], g_gd_g[gi], g_gd_r[gi], g_gd_w[gi])  gi = gi + 1 }
+    // transitive over NORMAL calls
+    run := 1
+    for run == 1 {
+        run = 0
+        ei := 0
+        for ei < len(g_nc_fn) {
+            fn := g_nc_fn[ei]
+            ce := g_nc_ce[ei]
+            ai := 0
+            for ai < len(g_gall_fn) {
+                if g_gall_fn[ai] == ce { if gd_merge(1, fn, g_gall_g[ai], g_gall_r[ai], g_gall_w[ai]) == 1 { run = 1 } }
+                ai = ai + 1
+            }
+            ei = ei + 1
+        }
+    }
+    // main-thread concurrent globals: direct post-spawn + normal-callee transitive
+    mr := func_root("main")
+    if mr >= 0 {
+        mlocals := []string{}
+        for _, p := range nodes[mr].names { mlocals = append(mlocals, p) }
+        mlocals = collect_locals(nodes[mr].kids, mlocals)
+        main_post_globals(mlocals, nodes[mr].kids)
+        // normal callees of main -> their gall
+        ei := 0
+        for ei < len(g_nc_fn) {
+            if g_nc_fn[ei] == "main" {
+                ai := 0
+                for ai < len(g_gall_fn) {
+                    if g_gall_fn[ai] == g_nc_ce[ei] { mc_merge(g_gall_g[ai], g_gall_r[ai], g_gall_w[ai]) }
+                    ai = ai + 1
+                }
+            }
+            ei = ei + 1
+        }
+    }
+
+    // per global G: gather concurrent threads
+    ni := 0
+    for ni < len(g_global_names) {
+        g := g_global_names[ni]
+        total := 0
+        writes := 0
+        gothreads := 0
+        descs := []string{}
+        // goroutine threads (any `go` site whose callee's gall footprint touches G)
+        si := 0
+        for si < len(g_go_ce) {
+            ce := g_go_ce[si]
+            ai := 0
+            for ai < len(g_gall_fn) {
+                if g_gall_fn[ai] == ce && g_gall_g[ai] == g {
+                    mult := 1
+                    label := "goroutine"
+                    if g_go_loop[si] == 1 { mult = 2  label = "loop-spawned goroutine" }
+                    verb := "reads"
+                    isw := 0
+                    if g_gall_w[ai] == 1 { verb = "writes"  isw = 1 }
+                    total = total + mult
+                    if isw == 1 { writes = writes + mult }
+                    gothreads = gothreads + 1
+                    descs = append(descs, label + " `go " + ce + "(...)` " + verb + " global `" + g + "`")
+                }
+                ai = ai + 1
+            }
+            si = si + 1
+        }
+        // main thread
+        mi := 0
+        for mi < len(g_mc_g) {
+            if g_mc_g[mi] == g {
+                verb := "reads"
+                isw := 0
+                if g_mc_w[mi] == 1 { verb = "writes"  isw = 1 }
+                total = total + 1
+                if isw == 1 { writes = writes + 1 }
+                descs = append(descs, "main thread " + verb + " global `" + g + "`")
+            }
+            mi = mi + 1
+        }
+        if gothreads >= 1 && total >= 2 && writes >= 1 {
+            kind := "read/write"
+            if writes >= 2 { kind = "write/write" }
+            descs = sort_strings(descs)
+            g_rf_decl = append(g_rf_decl, "")
+            g_rf_kind = append(g_rf_kind, kind)
+            g_rf_root = append(g_rf_root, g)
+            g_rf_writers = append(g_rf_writers, join(descs, "\x01"))
+        }
+        ni = ni + 1
+    }
+}
+
+// main_post_globals: main's DIRECT global accesses AFTER the first `go` spawn (a write
+// before the spawn is ordered-before it), collected into g_mc_*.
+var g_mpg_spawned = 0
+func main_post_globals(locals, kids) {
+    g_mpg_spawned = 0
+    mpg_walk(locals, kids)
+}
+func mpg_walk(locals, kids) {
+    for _, s := range kids {
+        n := nodes[s]
+        k := n.kind
+        if k == K_GO { g_mpg_spawned = 1
+        } else {
+            if g_mpg_spawned == 1 {
+                mpg_stmt(locals, s)
+            } else {
+                b, ok := mpg_block(s)
+                if ok == 1 { mpg_walk(locals, b) }
+            }
+        }
+    }
+}
+func mpg_block(s) (b, ok) {
+    n := nodes[s]
+    k := n.kind
+    ok = 0
+    b = []int{}
+    if k == K_IF { b = n.kids  ok = 1  bi := 0  for bi < len(n.kids2) { b = append(b, n.kids2[bi])  bi = bi + 1 }  return b, ok }
+    if k == K_WHILE || k == K_RANGE || k == K_ARENA { b = n.kids  ok = 1 }
+}
+// mpg_stmt: record a single post-spawn statement's direct globals into g_mc_*.
+func mpg_stmt(locals, s) {
+    // reuse gd_walk into a temp fn name, then fold new g_gd_* rows for that fn into g_mc_*
+    before := len(g_gd_fn)
+    one := []int{}
+    one = append(one, s)
+    gd_walk("\x02mpg", locals, one)
+    i := before
+    for i < len(g_gd_fn) {
+        if g_gd_fn[i] == "\x02mpg" { mc_merge(g_gd_g[i], g_gd_r[i], g_gd_w[i]) }
+        i = i + 1
+    }
+}
+
+// ── move-on-send: `ch <- v` transfers ownership; touching v afterward = use-after-move ──
+var g_moved = []string{}
+var g_uam_done = []string{}   // dedup keyed by src\x00name (across instances of a src)
+var g_uam_iid = 0
+
+func moved_has(name) (b) {
+    b = 0
+    i := 0
+    for i < len(g_moved) { if g_moved[i] == name { b = 1  return b }  i = i + 1 }
+}
+func moved_add(name) { if moved_has(name) == 0 { g_moved = append(g_moved, name) } }
+func moved_del(name) {
+    nm := []string{}
+    i := 0
+    for i < len(g_moved) { if g_moved[i] != name { nm = append(nm, g_moved[i]) }  i = i + 1 }
+    g_moved = nm
+}
+func uam_flag(name) {
+    if moved_has(name) == 0 { return }
+    key := g_insts[g_uam_iid].src + "\x00" + name
+    if name_in(key, g_uam_done) == 1 { return }
+    g_uam_done = append(g_uam_done, key)
+    g_rf_decl = append(g_rf_decl, g_insts[g_uam_iid].src)
+    g_rf_kind = append(g_rf_kind, "use-after-move")
+    g_rf_root = append(g_rf_root, name)
+    g_rf_writers = append(g_rf_writers, "`" + name + "` is used after it was sent on a channel (ownership moved to the receiver)")
+}
+func uam_uses(idx) {
+    n := nodes[idx]
+    k := n.kind
+    if k == K_ID { uam_flag(n.s)  return }
+    if k == K_INDEX { root, ok := place_root(idx)  if ok == 1 { uam_flag(root) }  uam_uses(n.a)  uam_uses(n.b)  return }
+    if k == K_FIELD { root, ok := place_root(idx)  if ok == 1 { uam_flag(root) }  uam_uses(n.a)  return }
+    if k == K_CALL { for _, a := range n.kids { uam_uses(a) }  return }
+    if k == K_BIN { uam_uses(n.a)  uam_uses(n.b)  return }
+    if k == K_UNARY { uam_uses(n.a)  return }
+    if k == K_SLICE || k == K_STRUCT { for _, e := range n.kids { uam_uses(e) }  return }
+}
+func uam_shared(iid, name) (b) {
+    b = 0
+    slot := inst_var_slot(iid, name)
+    if slot < 0 { return b }
+    if chan_needs_json(slot_type_name(slot)) == 1 { b = 1 }
+}
+func uam_scan(iid, kids) {
+    for _, s := range kids {
+        n := nodes[s]
+        k := n.kind
+        if k == K_SEND {
+            uam_uses(n.a)
+            vn := nodes[n.b]
+            if vn.kind == K_ID {
+                if moved_has(vn.s) == 1 { uam_flag(vn.s) } else { if uam_shared(iid, vn.s) == 1 { moved_add(vn.s) } }
+            } else { uam_uses(n.b) }
+        } else { if k == K_ASSIGN {
+            uam_uses(n.a)  moved_del(n.s)
+        } else { if k == K_MULTI {
+            for _, e := range n.kids { uam_uses(e) }
+            for _, nm := range n.names { moved_del(nm) }
+        } else { if k == K_IDXASSIGN {
+            root, ok := place_root(n.a)
+            if ok == 1 { uam_flag(root) }
+            uam_uses(nodes[n.a].b)  uam_uses(n.b)
+        } else { if k == K_FLDASSIGN {
+            root, ok := place_root(n.a)
+            if ok == 1 { uam_flag(root) }
+            uam_uses(n.b)
+        } else { if k == K_EXPRSTMT { uam_uses(n.a)
+        } else { if k == K_RETURN { for _, e := range n.kids { uam_uses(e) }
+        } else { if k == K_GO { gc := nodes[n.a]  for _, a := range gc.kids { uam_uses(a) }
+        } else { if k == K_IF { uam_uses(n.a)  uam_scan(iid, n.kids)  uam_scan(iid, n.kids2)
+        } else { if k == K_WHILE { uam_uses(n.a)  uam_scan(iid, n.kids)
+        } else { if k == K_RANGE { uam_uses(n.a)  moved_del(n.s)  moved_del(n.s2)  uam_scan(iid, n.kids)
+        } else { if k == K_ARENA { uam_scan(iid, n.kids)
+        }}}}}}}}}}}}
+    }
+}
+func use_after_send() {
+    g_uam_done = []string{}
+    ri := 0
+    for ri < len(g_insts) {
+        ins := g_insts[ri]
+        fr := func_root(ins.src)
+        if fr < 0 { ri = ri + 1  continue }
+        g_moved = []string{}
+        g_uam_iid = ri
+        uam_scan(ri, nodes[fr].kids)
+        ri = ri + 1
+    }
+}

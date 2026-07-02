@@ -94,5 +94,7 @@ func main() {
 
     // the race pass
     detect_races()
+    global_races()
+    use_after_send()
     write(1, dump_races())
 }
