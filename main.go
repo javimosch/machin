@@ -48,6 +48,12 @@ func main() {
 			os.Exit(1)
 		}
 		return
+	case "racetest":
+		if err := cmdRaceTest(os.Args[2:]); err != nil { // self-hosting oracle: dump race findings canonically
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
 	case "uftest":
 		if err := cmdUFTest(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
