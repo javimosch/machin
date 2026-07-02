@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.90.0
+
 - **`machin build --static` now works for TLS/crypto-using programs, FROM scratch.**
   The static OpenSSL link already worked (this host's `libssl-dev` ships static
   archives — no vendoring, no musl needed for this part); the missing piece was
