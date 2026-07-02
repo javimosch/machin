@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- **`framework/smtp.src` gained STARTTLS support, closing issue #260's SMTP half.**
+  `smtp_send` takes a new `use_tls` argument: after `EHLO`, it sends `STARTTLS`, upgrades
+  the connection in place via `tls_client_fd` (shipped v0.92.0), and re-issues `EHLO` over
+  the now-encrypted channel per RFC 3207 (capabilities can change post-upgrade, and
+  skipping this would let a MITM strip the plaintext EHLO unnoticed) — the rest of the
+  session (AUTH/MAIL/RCPT/DATA/QUIT) then runs over the TLS handle. New `smtp_write`/
+  `smtp_close` helpers dispatch to the TLS handle or the plain fd depending on whether the
+  session was upgraded. A real submission relay that *requires* TLS (Gmail/SendGrid/SES on
+  `:587`) is now reachable; a local catcher or a relay that accepts plaintext submission
+  still works with `use_tls=0`. Verified two ways: `machin-mail`'s new `--starttls 1` flag
+  against a genuinely live `smtp.gmail.com:587` — the full plaintext dance, the upgrade, and
+  the post-upgrade `EHLO` all succeed, failing only at the expected, auth-gated `MAIL FROM`
+  step (no real credentials supplied) — and a new `TestSMTPSendStartTLS` against a local Go
+  SMTP-shaped server, confirming an untrusted/self-signed cert is correctly **rejected**
+  (verification is active, not disabled). Hit MFL's flat-function-scope gotcha along the
+  way: `smtp_close`'s two branches return different types (`tls_close`'s `int` vs `close`'s
+  void), so neither result is captured into a shared variable.
+
 ## v0.96.0
 
 - **Self-hosted concurrency: the MFL-in-MFL compiler now compiles `go`/channels/

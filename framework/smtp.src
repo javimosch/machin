@@ -1,25 +1,30 @@
 // smtp.src — a pure-MFL SMTP toolkit: a client that SENDS mail and the server side that
 // RECEIVES it, both over dial()/listen() + read/write. No external library, no cgo.
 //
-//   smtp_send(host, port, from, to, subject, body, user, pass) -> (ok, errmsg)   // a sender
-//   smtp_recv(conn) -> (Mail, ok)                                                 // one server session
+//   smtp_send(host, port, from, to, subject, body, user, pass, use_tls) -> (ok, errmsg)  // a sender
+//   smtp_recv(conn) -> (Mail, ok)                                                         // one server session
 //
 // The protocol is line-oriented (CRLF), so reads go through a small buffered line reader
-// (the slice-box trick, so a line split across packets reassembles). This is plaintext
-// SMTP + AUTH LOGIN/PLAIN — enough to talk to a submission relay that doesn't force TLS,
-// and to a local catcher. (STARTTLS/implicit TLS would need a TLS-wrap-an-fd primitive.)
+// (the slice-box trick, so a line split across packets reassembles). Plaintext SMTP +
+// AUTH LOGIN/PLAIN, with optional STARTTLS (use_tls=1): dial plaintext, EHLO, STARTTLS,
+// tls_client_fd to upgrade in place, re-EHLO (RFC 3207 — capabilities can change post-
+// upgrade, and re-issuing it prevents a plaintext command-injection downgrade), then the
+// rest of the session over the tls handle. Enough to talk to a submission relay that
+// requires TLS (Gmail/SendGrid/SES on :587) as well as one that doesn't, and to a local
+// catcher (which stays plaintext-only — it's a dev sink, not a public relay).
 
-// ---- a buffered line reader over a socket fd ----
+// ---- a buffered line reader over a socket fd (or, after STARTTLS, a tls handle) ----
 
 type LineReader struct {
     fd  int
+    tls int      // 0 = read from fd; else a tls_client_fd handle — read from that instead
     buf []bytes
 }
 
 func line_reader(fd) (r) {
     bx := []bytes{}
     bx = append(bx, bytes(""))
-    r = LineReader{fd: fd, buf: bx}
+    r = LineReader{fd: fd, tls: 0, buf: bx}
 }
 
 // read_line returns the next CRLF/LF-delimited line (without the terminator), ok=0 on EOF.
@@ -36,7 +41,8 @@ func read_line(r) (line, ok) {
             ok = 1
             return
         }
-        chunk := read_bytes(r.fd)
+        chunk := bytes("")
+        if r.tls != 0 { chunk = tls_read_bytes(r.tls) } else { chunk = read_bytes(r.fd) }
         if len(chunk) == 0 {
             if len(r.buf[0]) > 0 { line = bytes_str(r.buf[0])  r.buf[0] = bytes("")  ok = 1 }
             return
@@ -82,14 +88,33 @@ func smtp_build(from, to, subject, body) (m) {
     }
 }
 
-// smtp_send sends one message. user=="" skips AUTH. Returns (1,"") on success, else
-// (0, reason). Expects the standard 220/250/334/235/354/250 reply codes.
-func smtp_send(host, port, from, to, subject, body, user, pass) (ok, errmsg) {
+// smtp_write sends s over the tls handle if the session was upgraded via
+// STARTTLS (tls != 0), else over the plain fd.
+func smtp_write(fd, tls, s) (n) {
+    n = 0
+    if tls != 0 { n = tls_write(tls, s) } else { n = write(fd, s) }
+}
+
+// smtp_close tears down a session: tls_close (which also closes the
+// underlying fd) if upgraded, else a plain close. Its two branches return
+// different types (int vs void), so neither result is captured — MFL's flat
+// function scope would otherwise unify them into a single conflicting `c`.
+func smtp_close(fd, tls) {
+    if tls != 0 { tls_close(tls) } else { close(fd) }
+}
+
+// smtp_send sends one message. user=="" skips AUTH; use_tls==1 upgrades to
+// TLS via STARTTLS right after EHLO (required by Gmail/SendGrid/SES on :587;
+// a local catcher or a relay that accepts plaintext submission wants 0).
+// Returns (1,"") on success, else (0, reason). Expects the standard
+// 220/250/334/235/354/250 reply codes.
+func smtp_send(host, port, from, to, subject, body, user, pass, use_tls) (ok, errmsg) {
     ok = 0
     errmsg = ""
     conn := dial(host, port)
     if conn < 0 { errmsg = "dial failed"  return }
     r := line_reader(conn)
+    tls := 0
 
     code, good := read_reply(r)
     if good == 0 || code != 220 { errmsg = "no 220 greeting"  close(conn)  return }
@@ -98,43 +123,58 @@ func smtp_send(host, port, from, to, subject, body, user, pass) (ok, errmsg) {
     code, good = read_reply(r)
     if code != 250 { errmsg = "EHLO rejected"  close(conn)  return }
 
-    if user != "" {
-        w = write(conn, "AUTH LOGIN\r\n")
+    if use_tls == 1 {
+        w = write(conn, "STARTTLS\r\n")
         code, good = read_reply(r)
-        if code != 334 { errmsg = "AUTH LOGIN unsupported"  close(conn)  return }
-        w = write(conn, base64_encode(user) + "\r\n")
+        if code != 220 { errmsg = "STARTTLS rejected"  close(conn)  return }
+        tls = tls_client_fd(conn, host)
+        if tls == 0 { errmsg = "TLS handshake failed"  close(conn)  return }
+        r.tls = tls
+        // re-EHLO over the encrypted channel (RFC 3207): capabilities can
+        // differ post-upgrade, and skipping this would let a MITM strip the
+        // plaintext EHLO's capabilities without the client noticing.
+        w = smtp_write(conn, tls, "EHLO machin-mail\r\n")
         code, good = read_reply(r)
-        if code != 334 { errmsg = "AUTH username rejected"  close(conn)  return }
-        w = write(conn, base64_encode(pass) + "\r\n")
-        code, good = read_reply(r)
-        if code != 235 { errmsg = "authentication failed"  close(conn)  return }
+        if code != 250 { errmsg = "post-STARTTLS EHLO rejected"  smtp_close(conn, tls)  return }
     }
 
-    w = write(conn, "MAIL FROM:<" + from + ">\r\n")
+    if user != "" {
+        w = smtp_write(conn, tls, "AUTH LOGIN\r\n")
+        code, good = read_reply(r)
+        if code != 334 { errmsg = "AUTH LOGIN unsupported"  smtp_close(conn, tls)  return }
+        w = smtp_write(conn, tls, base64_encode(user) + "\r\n")
+        code, good = read_reply(r)
+        if code != 334 { errmsg = "AUTH username rejected"  smtp_close(conn, tls)  return }
+        w = smtp_write(conn, tls, base64_encode(pass) + "\r\n")
+        code, good = read_reply(r)
+        if code != 235 { errmsg = "authentication failed"  smtp_close(conn, tls)  return }
+    }
+
+    w = smtp_write(conn, tls, "MAIL FROM:<" + from + ">\r\n")
     code, good = read_reply(r)
-    if code != 250 { errmsg = "MAIL FROM rejected"  close(conn)  return }
+    if code != 250 { errmsg = "MAIL FROM rejected"  smtp_close(conn, tls)  return }
 
     for _, rcpt := range split(to, ",") {
         addr := trim(rcpt)
         if addr != "" {
-            w = write(conn, "RCPT TO:<" + addr + ">\r\n")
+            w = smtp_write(conn, tls, "RCPT TO:<" + addr + ">\r\n")
             code, good = read_reply(r)
-            if code != 250 { errmsg = "RCPT rejected: " + addr  close(conn)  return }
+            if code != 250 { errmsg = "RCPT rejected: " + addr  smtp_close(conn, tls)  return }
         }
     }
 
-    w = write(conn, "DATA\r\n")
+    w = smtp_write(conn, tls, "DATA\r\n")
     code, good = read_reply(r)
-    if code != 354 { errmsg = "DATA rejected"  close(conn)  return }
+    if code != 354 { errmsg = "DATA rejected"  smtp_close(conn, tls)  return }
 
-    w = write(conn, smtp_build(from, to, subject, body))
-    w = write(conn, "\r\n.\r\n")
+    w = smtp_write(conn, tls, smtp_build(from, to, subject, body))
+    w = smtp_write(conn, tls, "\r\n.\r\n")
     code, good = read_reply(r)
-    if code != 250 { errmsg = "message rejected"  close(conn)  return }
+    if code != 250 { errmsg = "message rejected"  smtp_close(conn, tls)  return }
 
-    w = write(conn, "QUIT\r\n")
+    w = smtp_write(conn, tls, "QUIT\r\n")
     cq, gq := read_reply(r)
-    close(conn)
+    smtp_close(conn, tls)
     ok = 1
 }
 
