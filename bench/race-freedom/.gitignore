@@ -1,0 +1,10 @@
+# built artifacts — the source + run.sh are the benchmark
+racy.mfl
+safe.mfl
+racy-race-safe
+racy-machin
+racy-go
+racy_no_unsafe
+racy_naive
+safe-rust
+safe-machin
