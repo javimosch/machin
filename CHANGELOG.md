@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.92.0
+
 - **Server-side TLS + STARTTLS — machweb can terminate HTTPS itself, no reverse
   proxy needed.** New builtins `tls_server_ctx(certfile, keyfile) -> int`,
   `tls_accept(ctx, fd) -> int` (server handshake), `tls_client_fd(fd, hostname)
