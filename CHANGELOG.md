@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- **Server-side TLS + STARTTLS — machweb can terminate HTTPS itself, no reverse
+  proxy needed.** New builtins `tls_server_ctx(certfile, keyfile) -> int`,
+  `tls_accept(ctx, fd) -> int` (server handshake), `tls_client_fd(fd, hostname)
+  -> int` (the STARTTLS primitive — upgrade an already-connected, plaintext-
+  negotiated fd to verified TLS in place), and `tls_read[_bytes]`/
+  `tls_write[_bytes]`/`tls_close` (mirroring the plain fd read/write/close
+  builtins over a tls handle). New `framework/machweb.src` function
+  `serve_tls(port, certfile, keyfile, handler)` — `serve`'s TLS-terminating
+  sibling, reusing the same router/handler/Response machinery; v1 scope is
+  plain request/response only (`res.is_hijack`/`res.is_stream` get a 501 rather
+  than misbehaving over a tls handle — a documented, deliberate limitation, not
+  an oversight). Verified end-to-end: a real Go TLS client driving a full HTTP
+  round trip through `serve_tls` and a router, and a STARTTLS upgrade correctly
+  **rejecting** an untrusted/self-signed certificate (proving verification is
+  active on the upgrade path too, same discipline as `--static`'s CA bundle
+  work in v0.90.0). `tls_client_fd` shares `mfl_tls_dial_e`'s already-proven
+  handshake code — the dial-vs-upgrade split is just where the fd came from.
+  Closes the "you still need nginx in front of it" gap in the single-binary
+  pitch; see issue #260 (STARTTLS wiring into `machin-mail` is a follow-up in
+  that separate repo, not part of this change).
+
 ## v0.90.0
 
 - **`machin build --static` now works for TLS/crypto-using programs, FROM scratch.**

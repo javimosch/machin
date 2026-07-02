@@ -337,6 +337,14 @@ startup (before `main`; at `_initialize` for a wasm reactor).
 | `wss_send_bin` | `(int, bytes) -> int` | send a binary message (opcode `0x2`) — NUL-safe |
 | `wss_recv_bin` | `(int) -> bytes` | next message as `bytes` (blocks); empty `bytes` on close |
 | `wss_close` | `(int) -> int` | send close and tear down the connection |
+| `tls_server_ctx` | `(string, string) -> int` | load a cert+key (PEM files) → a server TLS context handle (0 on fail); for terminating HTTPS/TLS yourself, see `serve_tls` |
+| `tls_accept` | `(int, int) -> int` | `(ctx, fd)` — complete a server-side TLS handshake on an `accept()`'d fd → a tls handle (0 on fail) |
+| `tls_client_fd` | `(int, string) -> int` | `(fd, hostname)` — the STARTTLS primitive: upgrade an already-connected, plaintext-negotiated fd to a verified TLS handle in place (0 on fail) |
+| `tls_read` | `(int) -> string` | read one chunk from a tls handle (blocks; `""` at EOF/error) |
+| `tls_read_bytes` | `(int) -> bytes` | read one chunk from a tls handle as raw bytes, NUL-safe |
+| `tls_write` | `(int, string) -> int` | write to a tls handle |
+| `tls_write_bytes` | `(int, bytes) -> int` | write raw bytes to a tls handle, NUL-safe |
+| `tls_close` | `(int) -> int` | shut down a tls handle and close its underlying fd |
 
 ---
 

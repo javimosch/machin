@@ -1297,6 +1297,23 @@ static SSL_CTX* mfl_ssl_ctx(void) {
     return ctx;
 }
 
+/* the handshake half of a client dial: SNI + verified hostname on an already-
+   connected fd. Does NOT close fd on failure — used both by dial (which owns
+   the fd it just opened) and by tls_client_fd/STARTTLS (which upgrades a
+   caller-owned fd already in use for a plaintext exchange; the caller decides
+   whether to close it). On failure, *stage (if non-NULL) is set to "tls". */
+static SSL* mfl_tls_handshake_client(int fd, const char* host, const char** stage) {
+    SSL_CTX* ctx = mfl_ssl_ctx();
+    if (!ctx) { if (stage) *stage = "tls"; return NULL; }
+    SSL* ssl = SSL_new(ctx);
+    SSL_set_fd(ssl, fd);
+    SSL_set_tlsext_host_name(ssl, host);
+    SSL_set1_host(ssl, host);
+    SSL_set_verify(ssl, SSL_VERIFY_PEER, NULL);
+    if (SSL_connect(ssl) != 1) { if (stage) *stage = "tls"; SSL_free(ssl); return NULL; }
+    return ssl;
+}
+
 /* dial host:port and complete a verified TLS handshake (SNI + hostname).
    Returns a connected SSL* (fd retrievable via SSL_get_fd) or NULL. On failure,
    *stage (if non-NULL) is set to why: "dns", "connect", or "tls". */
@@ -1318,14 +1335,8 @@ static SSL* mfl_tls_dial_e(const char* host, int port, const char** stage) {
     }
     freeaddrinfo(res);
     if (fd < 0) { if (stage) *stage = "connect"; return NULL; }
-    SSL_CTX* ctx = mfl_ssl_ctx();
-    if (!ctx) { if (stage) *stage = "tls"; close(fd); return NULL; }
-    SSL* ssl = SSL_new(ctx);
-    SSL_set_fd(ssl, fd);
-    SSL_set_tlsext_host_name(ssl, host);
-    SSL_set1_host(ssl, host);
-    SSL_set_verify(ssl, SSL_VERIFY_PEER, NULL);
-    if (SSL_connect(ssl) != 1) { if (stage) *stage = "tls"; SSL_free(ssl); close(fd); return NULL; }
+    SSL* ssl = mfl_tls_handshake_client(fd, host, stage);
+    if (!ssl) { close(fd); return NULL; } /* dial owns fd: close it on handshake failure */
     return ssl;
 }
 
@@ -1338,6 +1349,73 @@ static void mfl_tls_hangup(SSL* ssl) {
     if (fd >= 0) close(fd);
     SSL_free(ssl);
 }
+
+/* tls_client_fd: the STARTTLS primitive — upgrade an already-connected,
+   plaintext-negotiated fd (from a plain dial()) to TLS in place. Does not close
+   fd on failure (caller owns it, e.g. to log/close/retry plaintext). */
+static int64_t mfl_tls_client_fd(int64_t fd, const char* host) {
+    SSL* ssl = mfl_tls_handshake_client((int)fd, host, NULL);
+    return ssl ? (int64_t)(intptr_t)ssl : 0;
+}
+
+/* tls_server_ctx/tls_accept: server-side TLS termination — serve_tls in
+   framework/machweb.src is the MFL-side consumer. No client-cert verification
+   (not mutual TLS) and one cert per ctx (no SNI multi-cert) — v1 scope. */
+static int64_t mfl_tls_server_ctx(const char* certfile, const char* keyfile) {
+    SSL_CTX* ctx = SSL_CTX_new(TLS_server_method());
+    if (!ctx) return 0;
+    if (SSL_CTX_use_certificate_file(ctx, certfile, SSL_FILETYPE_PEM) != 1 ||
+        SSL_CTX_use_PrivateKey_file(ctx, keyfile, SSL_FILETYPE_PEM) != 1) {
+        SSL_CTX_free(ctx);
+        return 0;
+    }
+    return (int64_t)(intptr_t)ctx;
+}
+static int64_t mfl_tls_accept(int64_t ctxHandle, int64_t fd) {
+    SSL_CTX* ctx = (SSL_CTX*)(intptr_t)ctxHandle;
+    if (!ctx) return 0;
+    SSL* ssl = SSL_new(ctx);
+    SSL_set_fd(ssl, (int)fd);
+    if (SSL_accept(ssl) != 1) { SSL_free(ssl); return 0; }
+    return (int64_t)(intptr_t)ssl;
+}
+
+/* generic read/write/close over a tls handle (an SSL*, from tls_accept or
+   tls_client_fd) — mirror mfl_read/mfl_read_bytes/mfl_write/mfl_write_bytes's
+   chunk semantics (one SSL_read's worth, up to 64K; a full-write loop) exactly,
+   just over SSL_read/SSL_write instead of read(2)/write(2). */
+static char* mfl_tls_read_str(int64_t h) {
+    SSL* ssl = (SSL*)(intptr_t)h;
+    char* buf = mfl_alloc(65536);
+    int n = ssl ? SSL_read(ssl, buf, 65535) : 0;
+    if (n < 0) n = 0;
+    buf[n] = 0;
+    return buf;
+}
+static mfl_bytes mfl_tls_read_bytes_h(int64_t h) {
+    SSL* ssl = (SSL*)(intptr_t)h;
+    mfl_bytes b; b.data = (uint8_t*)mfl_alloc(65536);
+    int n = ssl ? SSL_read(ssl, b.data, 65536) : 0;
+    if (n < 0) n = 0;
+    b.len = (int64_t)n;
+    return b;
+}
+static int64_t mfl_tls_write_str(int64_t h, const char* s) {
+    SSL* ssl = (SSL*)(intptr_t)h;
+    return ssl ? (int64_t)SSL_write(ssl, s, (int)strlen(s)) : -1;
+}
+static int64_t mfl_tls_write_bytes_h(int64_t h, mfl_bytes b) {
+    SSL* ssl = (SSL*)(intptr_t)h;
+    if (!ssl) return -1;
+    size_t off = 0;
+    while (off < (size_t)b.len) {
+        int w = SSL_write(ssl, b.data + off, (int)((size_t)b.len - off));
+        if (w <= 0) break;
+        off += (size_t)w;
+    }
+    return (int64_t)off;
+}
+static int64_t mfl_tls_close_h(int64_t h) { mfl_tls_hangup((SSL*)(intptr_t)h); return 0; }
 `
 
 // tlsRuntime is a minimal HTTPS/1.1 client built on tlsCoreRuntime. Emitted only
@@ -4504,6 +4582,30 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 	case "wss_close":
 		g.usesWSS = true
 		return fmt.Sprintf("mfl_wss_close(%s)", args[0]), nil
+	case "tls_client_fd":
+		g.usesTLS = true
+		return fmt.Sprintf("mfl_tls_client_fd(%s, %s)", args[0], args[1]), nil
+	case "tls_server_ctx":
+		g.usesTLS = true
+		return fmt.Sprintf("mfl_tls_server_ctx(%s, %s)", args[0], args[1]), nil
+	case "tls_accept":
+		g.usesTLS = true
+		return fmt.Sprintf("mfl_tls_accept(%s, %s)", args[0], args[1]), nil
+	case "tls_read":
+		g.usesTLS = true
+		return fmt.Sprintf("mfl_tls_read_str(%s)", args[0]), nil
+	case "tls_read_bytes":
+		g.usesTLS = true
+		return fmt.Sprintf("mfl_tls_read_bytes_h(%s)", args[0]), nil
+	case "tls_write":
+		g.usesTLS = true
+		return fmt.Sprintf("mfl_tls_write_str(%s, %s)", args[0], args[1]), nil
+	case "tls_write_bytes":
+		g.usesTLS = true
+		return fmt.Sprintf("mfl_tls_write_bytes_h(%s, %s)", args[0], args[1]), nil
+	case "tls_close":
+		g.usesTLS = true
+		return fmt.Sprintf("mfl_tls_close_h(%s)", args[0]), nil
 	case "print", "println":
 		return "", fmt.Errorf("print/println may only be used as a statement")
 	}

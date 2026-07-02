@@ -2419,6 +2419,59 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		}
 		c.addPair(argSlots[0], c.cInt)
 		return c.cInt, nil
+	case "tls_client_fd":
+		if len(argSlots) != 2 {
+			return 0, fmt.Errorf("tls_client_fd: 2 args (fd int, hostname string)")
+		}
+		c.addPair(argSlots[0], c.cInt)
+		c.addPair(argSlots[1], c.cString)
+		return c.cInt, nil
+	case "tls_server_ctx":
+		if len(argSlots) != 2 {
+			return 0, fmt.Errorf("tls_server_ctx: 2 args (certfile, keyfile — both string)")
+		}
+		c.addPair(argSlots[0], c.cString)
+		c.addPair(argSlots[1], c.cString)
+		return c.cInt, nil
+	case "tls_accept":
+		if len(argSlots) != 2 {
+			return 0, fmt.Errorf("tls_accept: 2 args (ctx int, fd int)")
+		}
+		c.addPair(argSlots[0], c.cInt)
+		c.addPair(argSlots[1], c.cInt)
+		return c.cInt, nil
+	case "tls_read":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("tls_read: 1 arg (tls int)")
+		}
+		c.addPair(argSlots[0], c.cInt)
+		return c.cString, nil
+	case "tls_read_bytes":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("tls_read_bytes: 1 arg (tls int)")
+		}
+		c.addPair(argSlots[0], c.cInt)
+		return c.cBytes, nil
+	case "tls_write":
+		if len(argSlots) != 2 {
+			return 0, fmt.Errorf("tls_write: 2 args (tls int, data string)")
+		}
+		c.addPair(argSlots[0], c.cInt)
+		c.addPair(argSlots[1], c.cString)
+		return c.cInt, nil
+	case "tls_write_bytes":
+		if len(argSlots) != 2 {
+			return 0, fmt.Errorf("tls_write_bytes: 2 args (tls int, data bytes)")
+		}
+		c.addPair(argSlots[0], c.cInt)
+		c.addPair(argSlots[1], c.cBytes)
+		return c.cInt, nil
+	case "tls_close":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("tls_close: 1 arg (tls int)")
+		}
+		c.addPair(argSlots[0], c.cInt)
+		return c.cInt, nil
 	case "write":
 		if len(argSlots) != 2 {
 			return 0, fmt.Errorf("write: 2 args")
