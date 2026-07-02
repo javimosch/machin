@@ -166,6 +166,28 @@ func main() {
 EOF
 run "$T/h7.src"
 
+# h8 — string channels + range over a channel (Slice 2 of #280).
+cat > "$T/h8.src" <<'EOF'
+func gen(ch) { ch <- "a"  ch <- "b"  close(ch) }
+func nums(ch) { ch <- 5  ch <- 7  close(ch) }
+func main() {
+    sc := make(chan string)
+    go gen(sc)
+    for s := range sc { print(s) }
+    nc := make(chan int)
+    go nums(nc)
+    total := 0
+    for v := range nc { total = total + v }
+    print(total)
+    dc := make(chan int)
+    go nums(dc)
+    cnt := 0
+    for _ := range dc { cnt = cnt + 1 }
+    print(cnt)
+}
+EOF
+run "$T/h8.src"
+
 # SELF-APPLICATION: the MFL codegen emits byte-identical C for the compiler's OWN
 # source (checker + full codegen) — the fixpoint-adjacent milestone.
 $N "$MACHIN" encode selfhost/lex.src selfhost/parse.src selfhost/check.src \

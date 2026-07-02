@@ -224,8 +224,19 @@ func cg_range(iid, idx, depth) {
         if haskey == 1 { indent(depth + 2)  cemit(var_ref(iid, n.s) + " = _k" + ids + ";\n") }
         if hasval == 1 { indent(depth + 2)  cemit(vct + " _v" + ids + "; mfl_map_get(_m" + ids + ", " + ik + ", " + sk + ", &_v" + ids + "); " + var_ref(iid, n.s2) + " = _v" + ids + ";\n") }
     } else {
-        g_cg_unsup = 1   // range over channel: later part
-    }}}
+    if bk == 9 {   // channel: receive into the key var each iteration; stop when
+                   // the channel is closed and drained (mfl_chan_recv2 -> 0).
+        ect := elem_ctype(iid, n.a)
+        indent(depth + 1)  cemit("mfl_chan* _ch" + ids + " = " + x + ";\n")
+        indent(depth + 1)
+        if haskey == 1 {
+            cemit("while (mfl_chan_recv2(_ch" + ids + ", &" + var_ref(iid, n.s) + ")) {\n")
+        } else {
+            cemit(ect + " _cd" + ids + "; while (mfl_chan_recv2(_ch" + ids + ", &_cd" + ids + ")) {\n")
+        }
+    } else {
+        g_cg_unsup = 1   // (no other rangeable kinds)
+    }}}}
     for _, s := range n.kids { cg_stmt(iid, s, depth + 2) }
     indent(depth + 1)  cemit("}\n")
     indent(depth)  cemit("}\n")

@@ -212,6 +212,10 @@ func cg_expr(iid, idx) (out) {
             out = "mfl_make_chan(sizeof(" + elem_ctype(iid, idx) + "), 0, 0, 0)"
             return out
         }
+        if ek == 5 {   // string element: one string-offset at byte 0 (fast in-place copy)
+            out = "mfl_make_chan(sizeof(" + elem_ctype(iid, idx) + "), 0, 0, 1, (int)(0))"
+            return out
+        }
         g_cg_unsup = 1  out = "0"  return out
     }
     if k == K_RECV {
