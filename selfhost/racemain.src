@@ -1,0 +1,98 @@
+// selfhost/racemain.src — `machin racetest --program <file.mfl>` for the self-hosted
+// data-race pass. Runs the same parse -> check pipeline as checkmain, then the race
+// analysis, dumping findings in the canonical hex form the Go-reference oracle emits.
+
+func main() {
+    a := args()
+    if len(a) < 3 { write(2, "usage: racetest --program <file.mfl>\n")  exit(2) }
+    if a[1] != "--program" { write(2, "only --program is supported\n")  exit(2) }
+    data := read_file(a[2])
+    lines := split(data, "\n")
+
+    // pass 1: seed struct names so T{...} parses
+    for _, ln := range lines {
+        reset(ln)
+        i := 0
+        while i + 1 < len(T) {
+            if T[i].val == "type" || T[i].val == "cstruct" {
+                if T[i + 1].kind == 1 { g_structs = append(g_structs, T[i + 1].val) }
+            }
+            i = i + 1
+        }
+    }
+    // pass 1b: register struct field names/types + extern cstructs/fns
+    for _, ln := range lines {
+        if has_prefix(ln, "type ") {
+            reset(ln)
+            tidx := parse_type_decl()
+            if g_err == 0 { register_struct(nodes[tidx].s, nodes[tidx].names, nodes[tidx].names2) }
+        }
+        if has_prefix(ln, "extern ") {
+            reset(ln)
+            eidx := parse_extern_decl()
+            if g_err == 0 {
+                for _, ci := range nodes[eidx].kids {
+                    cn := nodes[ci]
+                    register_struct(cn.s, cn.names, cn.names2)
+                }
+                for _, fi := range nodes[eidx].kids2 {
+                    fnn := nodes[fi]
+                    register_extfn(fnn.s, fnn.names, fnn.s2)
+                }
+            }
+        }
+    }
+
+    // pass 2: parse every function + global into the shared nodes array
+    nodes = []Node{}
+    global_names := []string{}
+    global_inits := []int{}
+    for _, ln := range lines {
+        if has_prefix(ln, "func ") || has_prefix(ln, "export func ") {
+            lex_only(ln)
+            r := parse_func_decl()
+            if g_err == 1 || pk().kind != 0 { write(1, "(parse-error)\n")  return }
+            g_func_names = append(g_func_names, nodes[r].s)
+            g_func_roots = append(g_func_roots, r)
+        }
+        if has_prefix(ln, "var ") {
+            lex_only(ln)
+            r := parse_global()
+            if g_err == 0 && pk().kind == 0 {
+                global_names = append(global_names, nodes[r].s)
+                global_inits = append(global_inits, nodes[r].a)
+            }
+        }
+    }
+
+    has_main := 0
+    if func_root("main") >= 0 { has_main = 1 }
+    exported := []string{}
+    i := 0
+    for i < len(g_func_names) {
+        if nodes[g_func_roots[i]].ival == 1 { exported = append(exported, g_func_names[i]) }
+        i = i + 1
+    }
+    if has_main == 0 && len(exported) == 0 { write(1, "(check-error)\n")  return }
+
+    init_consts()
+    gi := 0
+    for gi < len(global_names) {
+        vs := gen_expr(global_inits[gi])
+        gslot := new_slot(0)
+        add_pair(gslot, vs)
+        register_global(global_names[gi], gslot)
+        gi = gi + 1
+    }
+    if has_main == 1 { instantiate("main") }
+    for _, en := range exported { instantiate(en) }
+    if g_unsupported == 1 { write(1, "(unsupported)\n")  return }
+    solve()
+    resolve_deferred()
+    finalize()
+    if g_terr == 1 || g_check_err == 1 { write(1, "(check-error)\n")  return }
+
+    // the race pass
+    detect_races()
+    write(1, dump_races())
+}
