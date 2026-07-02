@@ -147,6 +147,91 @@ func main() {
 EOF
 run "$T/h6.src"
 
+# h7 — concurrency: go + scalar channels (trampoline + make/send/recv). Slice 1 of #280.
+cat > "$T/h7.src" <<'EOF'
+func worker(ch, n) { ch <- n * 2 }
+func producer(ch) { ch <- true }
+func main() {
+    ch := make(chan int)
+    go worker(ch, 21)
+    go worker(ch, 10)
+    a := <-ch
+    b := <-ch
+    bc := make(chan bool)
+    go producer(bc)
+    v, ok := <-bc
+    if ok { print(a + b) }
+    print(v)
+}
+EOF
+run "$T/h7.src"
+
+# h8 — string channels + range over a channel (Slice 2 of #280).
+cat > "$T/h8.src" <<'EOF'
+func gen(ch) { ch <- "a"  ch <- "b"  close(ch) }
+func nums(ch) { ch <- 5  ch <- 7  close(ch) }
+func main() {
+    sc := make(chan string)
+    go gen(sc)
+    for s := range sc { print(s) }
+    nc := make(chan int)
+    go nums(nc)
+    total := 0
+    for v := range nc { total = total + v }
+    print(total)
+    dc := make(chan int)
+    go nums(dc)
+    cnt := 0
+    for _ := range dc { cnt = cnt + 1 }
+    print(cnt)
+}
+EOF
+run "$T/h8.src"
+
+# h9 — select: recv/send/default/comma-ok cases (Slice 4 of #280).
+cat > "$T/h9.src" <<'EOF'
+func feed(ch) { ch <- 9  close(ch) }
+func drain(ch) { x := <-ch  print(x) }
+func main() {
+    a := make(chan int)
+    b := make(chan int)
+    go feed(a)
+    go drain(b)
+    select {
+    case x, ok := <-a:
+        if ok { print(x) }
+    case b <- 5:
+        print(1)
+    default:
+        print(0)
+    }
+    c := make(chan int)
+    go feed(c)
+    select {
+    case v := <-c:
+        print(v)
+    case <-a:
+        print(7)
+    }
+}
+EOF
+run "$T/h9.src"
+
+# h10 — struct channels via the string-offset copy path (Slice 3 of #280).
+cat > "$T/h10.src" <<'EOF'
+type Result struct { url string  status int  label string  ok bool }
+func work(ch, u) { r := Result{u, 200, "ok", true}  ch <- r }
+func main() {
+    ch := make(chan Result)
+    go work(ch, "a")
+    go work(ch, "bb")
+    r1 := <-ch
+    r2 := <-ch
+    print(r1.status + r2.status)
+}
+EOF
+run "$T/h10.src"
+
 # SELF-APPLICATION: the MFL codegen emits byte-identical C for the compiler's OWN
 # source (checker + full codegen) — the fixpoint-adjacent milestone.
 $N "$MACHIN" encode selfhost/lex.src selfhost/parse.src selfhost/check.src \

@@ -140,6 +140,22 @@ func elem_ctype(iid, idx) (s) {
     }
     s = "int64_t"
 }
+
+// chan_elem_typename: the MFL type-NAME of a channel node's element ("string", a
+// struct name, or a []/map[ form for slice/map elements; any scalar -> "int", which
+// carries no strings/structs so the string-offset walk is a no-op).
+func chan_elem_typename(iid, idx) (tn) {
+    tn = "int"
+    r := node_slot_of(iid, idx)
+    if r < 0 { return tn }
+    if g_elem[r] < 0 { return tn }
+    er := find(g_elem[r])
+    ek := g_kind[er]
+    if ek == 5 { tn = "string"  return tn }
+    if ek == 8 { tn = g_sname[er]  return tn }
+    if ek == 7 { tn = "[]x"  return tn }      // slice element -> chan_needs_json (defer)
+    if ek == 10 { tn = "map[x]x"  return tn }  // map element -> chan_needs_json (defer)
+}
 // map_key_args: (ik, sk) for a map op — string keys pass ("0", key), else (key, "NULL").
 func map_key_args(iid, map_idx, keyexpr) (ik, sk) {
     r := node_slot_of(iid, map_idx)
@@ -201,11 +217,40 @@ func cg_expr(iid, idx) (out) {
     if k == K_INDEX { out = cg_index(iid, idx)  return out }
     if k == K_FIELD { out = cg_field(iid, idx)  return out }
     if k == K_MAKEMAP { out = cg_makemap(iid, idx)  return out }
-    g_cg_unsup = 1  out = "0"    // makechan / recv / funclit / closure / callvalue: later parts
+    if k == K_MAKECHAN {
+        // scalar: mfl_make_chan(sizeof(T), 0, 0, 0). string / struct-with-strings: the
+        // fast string-offset copy path (offsetof of each string field). slice/map (or a
+        // struct reaching one): a JSON round-trip -> deferred to a later slice.
+        ect := elem_ctype(iid, idx)
+        tn := chan_elem_typename(iid, idx)
+        if chan_needs_json(tn) == 1 { g_cg_unsup = 1  out = "0"  return out }
+        offs := chan_str_offsets(tn, "")
+        if len(offs) == 0 {
+            out = "mfl_make_chan(sizeof(" + ect + "), 0, 0, 0)"
+            return out
+        }
+        casted := []string{}
+        j := 0
+        for j < len(offs) { casted = append(casted, "(int)(" + offs[j] + ")")  j = j + 1 }
+        out = "mfl_make_chan(sizeof(" + ect + "), 0, 0, " + str(len(offs)) + ", " + join(casted, ", ") + ")"
+        return out
+    }
+    if k == K_RECV {
+        out = "({ " + node_ctype(iid, idx) + " _r; mfl_chan_recv(" + cg_expr(iid, n.a) + ", &_r); _r; })"
+        return out
+    }
+    g_cg_unsup = 1  out = "0"    // funclit / closure / callvalue: later parts
 }
 
 // ---- side-effect ordering (port of seqExprs) ----
 var g_tmpid = 0
+
+// goroutine trampolines: each `go f(args)` emits an arg-struct + a trampoline
+// function into g_tramp (spliced BEFORE the function bodies in cg_program), then a
+// detached pthread_create at the call site.
+var g_goid = 0
+var g_tramp = []string{}
+func tramp_emit(s) { g_tramp = append(g_tramp, s) }
 
 func expr_has_side_effect(idx) (b) {
     n := nodes[idx]
@@ -369,7 +414,124 @@ func cg_stmt(iid, idx, depth) {
     if k == K_FLDASSIGN { cg_field_assign(iid, idx)  return }
     if k == K_RANGE { cg_range(iid, idx, depth)  return }
     if k == K_ARENA { cg_arena(iid, idx, depth)  return }
-    g_cg_unsup = 1  cemit("0;\n")   // send / select / go: later parts
+    if k == K_SEND {
+        ch := cg_expr(iid, n.a)
+        val := cg_expr(iid, n.b)
+        ect := elem_ctype(iid, n.a)
+        cemit("mfl_chan_send(" + ch + ", &((" + ect + "[1]){" + val + "})[0]);\n")
+        return
+    }
+    if k == K_GO { cg_go(iid, idx)  return }
+    if k == K_SELECT { cg_select(iid, idx, depth)  return }
+    g_cg_unsup = 1  cemit("0;\n")
+}
+
+// cg_select: the poll loop over cases (port of selectStmt). Pre-evaluates each
+// channel op into temps, spins trying each case in source order (default, if any,
+// always fires last; otherwise mfl_sleep(1) and retry), then dispatches the winning
+// case body. The leading indent is already emitted by cg_stmt.
+func cg_select(iid, idx, depth) {
+    n := nodes[idx]
+    id := g_tmpid
+    g_tmpid = g_tmpid + 1
+    ids := str(id)
+    cemit("{\n")
+    // setup: pre-evaluate operands into _sc/_sv/_sok temps
+    i := 0
+    for i < len(n.kids) {
+        scn := nodes[n.kids[i]]
+        cis := str(i)
+        indent(depth + 1)
+        ch := cg_expr(iid, scn.a)
+        et := elem_ctype(iid, scn.a)
+        if scn.ival == 0 {
+            cemit("mfl_chan* _sc" + ids + "_" + cis + " = " + ch + "; " + et + " _sv" + ids + "_" + cis + "; int _sok" + ids + "_" + cis + " = 0;\n")
+        } else {
+            cemit("mfl_chan* _sc" + ids + "_" + cis + " = " + ch + "; " + et + " _sv" + ids + "_" + cis + " = " + cg_expr(iid, scn.b) + ";\n")
+        }
+        i = i + 1
+    }
+    indent(depth + 1)  cemit("int _sel" + ids + " = -1;\n")
+    indent(depth + 1)  cemit("for (;;) {\n")
+    i = 0
+    for i < len(n.kids) {
+        scn := nodes[n.kids[i]]
+        cis := str(i)
+        indent(depth + 2)
+        if scn.ival == 0 {
+            cemit("if (mfl_chan_tryrecv2(_sc" + ids + "_" + cis + ", &_sv" + ids + "_" + cis + ", &_sok" + ids + "_" + cis + ")) { _sel" + ids + " = " + cis + "; break; }\n")
+        } else {
+            cemit("{ mfl_chan_send(_sc" + ids + "_" + cis + ", &_sv" + ids + "_" + cis + "); _sel" + ids + " = " + cis + "; break; }\n")
+        }
+        i = i + 1
+    }
+    indent(depth + 2)
+    if n.ival == 1 {
+        cemit("{ _sel" + ids + " = " + str(len(n.kids)) + "; break; }\n")
+    } else {
+        cemit("mfl_sleep(1);\n")
+    }
+    indent(depth + 1)  cemit("}\n")
+    // dispatch the winning case
+    i = 0
+    for i < len(n.kids) {
+        scn := nodes[n.kids[i]]
+        cis := str(i)
+        indent(depth + 1)  cemit("if (_sel" + ids + " == " + cis + ") {\n")
+        if scn.ival == 0 {
+            if scn.s != "" && scn.s != "_" { indent(depth + 2)  cemit(var_ref(iid, scn.s) + " = _sv" + ids + "_" + cis + ";\n") }
+            if scn.s2 != "" && scn.s2 != "_" { indent(depth + 2)  cemit(var_ref(iid, scn.s2) + " = _sok" + ids + "_" + cis + ";\n") }
+        }
+        for _, s := range scn.kids { cg_stmt(iid, s, depth + 2) }
+        indent(depth + 1)  cemit("}\n")
+        i = i + 1
+    }
+    if n.ival == 1 {
+        indent(depth + 1)  cemit("if (_sel" + ids + " == " + str(len(n.kids)) + ") {\n")
+        for _, s := range n.kids2 { cg_stmt(iid, s, depth + 2) }
+        indent(depth + 1)  cemit("}\n")
+    }
+    indent(depth)  cemit("}\n")
+}
+
+// cg_go: `go f(args)` -> an arg struct + trampoline function into g_tramp, and a
+// detached pthread_create at the call site (the leading indent is already emitted).
+func cg_go(iid, idx) {
+    n := nodes[idx]
+    callnode := n.a
+    cinst := callee_inst_of(iid, callnode)
+    cn := g_insts[cinst].cname
+    cargs := nodes[callnode].kids
+    id := g_goid
+    g_goid = g_goid + 1
+    ids := str(id)
+    // arg struct (a leading dummy field avoids an empty struct)
+    sline := "struct mfl_go_" + ids + " { char _;"
+    i := 0
+    for i < len(cargs) {
+        sline = sline + " " + ctype_slot(g_insts[cinst].pslots[i]) + " a" + str(i) + ";"
+        i = i + 1
+    }
+    tramp_emit(sline + " };\n")
+    // trampoline function
+    rline := "static void* mfl_go_run_" + ids + "(void* p) { mfl_arena _a = {0}; mfl_arena_cur = &_a; struct mfl_go_" + ids + "* s = (struct mfl_go_" + ids + "*)p; " + cn + "("
+    i = 0
+    for i < len(cargs) {
+        if i > 0 { rline = rline + ", " }
+        rline = rline + "s->a" + str(i)
+        i = i + 1
+    }
+    tramp_emit(rline + "); free(s); mfl_arena_free(&_a); return NULL; }\n")
+    // call site
+    cemit("{\n")
+    cemit("        struct mfl_go_" + ids + "* s = malloc(sizeof(*s));\n")
+    i = 0
+    for i < len(cargs) {
+        cemit("        s->a" + str(i) + " = (" + cg_expr(iid, cargs[i]) + ");\n")
+        i = i + 1
+    }
+    cemit("        pthread_t t; pthread_create(&t, NULL, mfl_go_run_" + ids + ", s); pthread_detach(t);\n")
+    cemit("    }\n")
 }
 
 func emit_named_return(iid) {

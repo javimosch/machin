@@ -1,0 +1,1077 @@
+// selfhost/racecheck.src — the inferred data-race pass, ported from racecheck.go.
+//
+// Slice A: LOCAL parameter races (write/write + read/write) across goroutines,
+// type-aware (reachability). Happens-before precision, package globals, and
+// move-on-send are later slices; the self-hosted checker doesn't lift closures, so
+// closure-capture races are out of scope here.
+//
+// A place's access PATH is encoded as a string: "#" = an index step, ".field" = a
+// field step (field names are identifiers, so the encoding is unambiguous).
+
+// ---- place decomposition ----
+func place_root(idx) (root, ok) {
+    n := nodes[idx]
+    if n.kind == K_ID { root = n.s  ok = 1  return root, ok }
+    if n.kind == K_INDEX { root, ok = place_root(n.a)  return root, ok }
+    if n.kind == K_FIELD { root, ok = place_root(n.a)  return root, ok }
+    ok = 0
+}
+func place_path(idx) (p) {
+    n := nodes[idx]
+    p = ""
+    if n.kind == K_INDEX { p = place_path(n.a) + "#" }
+    if n.kind == K_FIELD { p = place_path(n.a) + "." + n.s }
+}
+
+// ---- stage 1: per-function parameter access summary (fixed-point) ----
+// Parallel arrays: for each recorded access, the function name, the parameter
+// index, the access-path string, and write(1)/read(0).
+var g_ac_fn = []string{}
+var g_ac_pi = []int{}
+var g_ac_path = []string{}
+var g_ac_w = []int{}
+
+func ac_has(fn, pi, path, w) (b) {
+    b = 0
+    i := 0
+    for i < len(g_ac_fn) {
+        if g_ac_fn[i] == fn && g_ac_pi[i] == pi && g_ac_path[i] == path && g_ac_w[i] == w { b = 1  return b }
+        i = i + 1
+    }
+}
+func ac_add(fn, pi, path, w) (changed) {
+    changed = 0
+    if ac_has(fn, pi, path, w) == 1 { return changed }
+    g_ac_fn = append(g_ac_fn, fn)
+    g_ac_pi = append(g_ac_pi, pi)
+    g_ac_path = append(g_ac_path, path)
+    g_ac_w = append(g_ac_w, w)
+    changed = 1
+}
+
+// param_index: the index of `name` among function `fn`'s parameters, or -1.
+func param_index(fnroot, name) (pi) {
+    pi = 0 - 1
+    ps := nodes[fnroot].names
+    i := 0
+    for i < len(ps) { if ps[i] == name { pi = i  return pi }  i = i + 1 }
+}
+
+// record a place access of `fn`'s param (if the place is rooted in one).
+func ac_record_place(fn, fnroot, placeIdx, w) (changed) {
+    changed = 0
+    root, ok := place_root(placeIdx)
+    if ok == 0 { return changed }
+    pi := param_index(fnroot, root)
+    if pi < 0 { return changed }
+    changed = ac_add(fn, pi, place_path(placeIdx), w)
+}
+
+// ac_visit_reads: record every element/field READ in an expression.
+func ac_visit_reads(fn, fnroot, idx) (changed) {
+    changed = 0
+    n := nodes[idx]
+    k := n.kind
+    if k == K_INDEX {
+        if ac_record_place(fn, fnroot, idx, 0) == 1 { changed = 1 }
+        if ac_visit_reads(fn, fnroot, n.a) == 1 { changed = 1 }
+        if ac_visit_reads(fn, fnroot, n.b) == 1 { changed = 1 }
+        return changed
+    }
+    if k == K_FIELD {
+        if ac_record_place(fn, fnroot, idx, 0) == 1 { changed = 1 }
+        if ac_visit_reads(fn, fnroot, n.a) == 1 { changed = 1 }
+        return changed
+    }
+    if k == K_CALL {
+        if ac_prop_call(fn, fnroot, n.s, n.kids) == 1 { changed = 1 }
+        for _, a := range n.kids { if ac_visit_reads(fn, fnroot, a) == 1 { changed = 1 } }
+        return changed
+    }
+    if k == K_BIN { if ac_visit_reads(fn, fnroot, n.a) == 1 { changed = 1 }  if ac_visit_reads(fn, fnroot, n.b) == 1 { changed = 1 }  return changed }
+    if k == K_UNARY { changed = ac_visit_reads(fn, fnroot, n.a)  return changed }
+    if k == K_SLICE || k == K_STRUCT { for _, e := range n.kids { if ac_visit_reads(fn, fnroot, e) == 1 { changed = 1 } }  return changed }
+}
+
+// ac_prop_call: re-root each callee param access onto our matching argument.
+func ac_prop_call(fn, fnroot, callee, argidxs) (changed) {
+    changed = 0
+    j := 0
+    for j < len(argidxs) {
+        root, ok := place_root(argidxs[j])
+        if ok == 1 {
+            pi := param_index(fnroot, root)
+            if pi >= 0 {
+                pfx := place_path(argidxs[j])
+                i := 0
+                for i < len(g_ac_fn) {
+                    if g_ac_fn[i] == callee && g_ac_pi[i] == j {
+                        if ac_add(fn, pi, pfx + g_ac_path[i], g_ac_w[i]) == 1 { changed = 1 }
+                    }
+                    i = i + 1
+                }
+            }
+        }
+        j = j + 1
+    }
+}
+
+// ac_visit_stmts: walk a body accumulating param accesses.
+func ac_visit_stmts(fn, fnroot, kids) (changed) {
+    changed = 0
+    for _, s := range kids {
+        n := nodes[s]
+        k := n.kind
+        if k == K_IDXASSIGN || k == K_FLDASSIGN {
+            if ac_record_place(fn, fnroot, n.a, 1) == 1 { changed = 1 }
+            if ac_visit_reads(fn, fnroot, n.b) == 1 { changed = 1 }
+        } else { if k == K_ASSIGN {
+            if ac_visit_reads(fn, fnroot, n.a) == 1 { changed = 1 }
+        } else { if k == K_EXPRSTMT {
+            if ac_visit_reads(fn, fnroot, n.a) == 1 { changed = 1 }
+        } else { if k == K_RETURN || k == K_MULTI {
+            for _, e := range n.kids { if ac_visit_reads(fn, fnroot, e) == 1 { changed = 1 } }
+        } else { if k == K_SEND {
+            if ac_visit_reads(fn, fnroot, n.a) == 1 { changed = 1 }
+            if ac_visit_reads(fn, fnroot, n.b) == 1 { changed = 1 }
+        } else { if k == K_GO {
+            gc := nodes[n.a]
+            if ac_prop_call(fn, fnroot, gc.s, gc.kids) == 1 { changed = 1 }
+        } else { if k == K_IF {
+            if ac_visit_reads(fn, fnroot, n.a) == 1 { changed = 1 }
+            if ac_visit_stmts(fn, fnroot, n.kids) == 1 { changed = 1 }
+            if ac_visit_stmts(fn, fnroot, n.kids2) == 1 { changed = 1 }
+        } else { if k == K_WHILE {
+            if ac_visit_reads(fn, fnroot, n.a) == 1 { changed = 1 }
+            if ac_visit_stmts(fn, fnroot, n.kids) == 1 { changed = 1 }
+        } else { if k == K_RANGE {
+            if ac_visit_reads(fn, fnroot, n.a) == 1 { changed = 1 }
+            if ac_visit_stmts(fn, fnroot, n.kids) == 1 { changed = 1 }
+        } else { if k == K_ARENA {
+            if ac_visit_stmts(fn, fnroot, n.kids) == 1 { changed = 1 }
+        }}}}}}}}}}
+    }
+}
+
+func build_access_summary() {
+    run := 1
+    for run == 1 {
+        run = 0
+        fi := 0
+        for fi < len(g_func_names) {
+            fn := g_func_names[fi]
+            fr := g_func_roots[fi]
+            if ac_visit_stmts(fn, fr, nodes[fr].kids) == 1 { run = 1 }
+            fi = fi + 1
+        }
+    }
+}
+
+// ---- type reachability (does a path reach shared heap?) ----
+// slot_type_name: MFL type-name of a slot ("string", struct name, "[]..", "map[..",
+// else "int" scalar placeholder).
+func slot_type_name(slot) (s) {
+    r := find(slot)
+    k := g_kind[r]
+    if k == 5 { s = "string"  return s }
+    if k == 8 { s = g_sname[r]  return s }
+    if k == 7 { s = "[]" + slot_type_name(g_elem[r])  return s }
+    if k == 10 { s = "map[x]x"  return s }
+    s = "int"
+}
+
+// path_shared: walk the encoded path against type-name tn; shared once it crosses a
+// slice/map indirection (the shared backing), staying private through struct fields.
+func path_shared(tn, path) (b) {
+    b = 0
+    cur := tn
+    i := 0
+    for i < len(path) {
+        c := substr(path, i, i + 1)
+        if c == "#" {
+            if has_prefix(cur, "[]") { b = 1  cur = substr(cur, 2, len(cur)) } else {
+                if has_prefix(cur, "map[") { b = 1  cur = "int" } else { return b }
+            }
+            i = i + 1
+        } else {
+            // ".field": read the field name up to the next "#" or "." delimiter
+            j := i + 1
+            done := 0
+            for j < len(path) && done == 0 {
+                cc := substr(path, j, j + 1)
+                if cc == "#" || cc == "." { done = 1 } else { j = j + 1 }
+            }
+            fld := substr(path, i + 1, j)
+            di := struct_def_idx(cur)
+            if di < 0 { return b }
+            d := g_structdefs[di]
+            fi := 0
+            found := 0
+            for fi < len(d.fnames) { if d.fnames[fi] == fld { cur = d.ftypes[fi]  found = 1  fi = len(d.fnames) } else { fi = fi + 1 } }
+            if found == 0 { return b }
+            i = j
+        }
+    }
+}
+
+// ---- instance variable slot by name ----
+func inst_var_slot(iid, name) (slot) {
+    slot = 0 - 1
+    ins := g_insts[iid]
+    i := 0
+    for i < len(ins.pnames) { if ins.pnames[i] == name { slot = ins.pslots[i]  return slot }  i = i + 1 }
+    i = 0
+    for i < len(ins.lnames) { if ins.lnames[i] == name { slot = ins.lslots[i]  return slot }  i = i + 1 }
+}
+
+// ---- stage 2: race detection per representative instance ----
+// Accessors for the current instance's roots (parallel arrays, reset per instance).
+var g_x_root = []string{}
+var g_x_write = []int{}
+var g_x_go = []int{}
+var g_x_mult = []int{}
+var g_x_desc = []string{}
+
+// ── happens-before state (Slice: order sensitivity + channel-join barriers) ──
+// live[root] = spawned-but-not-yet-joined goroutines touching root; a THIS-THREAD
+// access is concurrent only while live>0. Goroutine accessors are always recorded.
+var g_live_root = []string{}
+var g_live_n = []int{}
+// join bookkeeping (top-level linear path only): a `go f(...,done)` whose callee's
+// LAST statement is `done <- ...` provably completes before a receiver reads `done`.
+var g_spawn_ch = []string{}
+var g_spawn_n = []int{}
+var g_recv_ch = []string{}
+var g_recv_n = []int{}
+var g_pend_ch = []string{}
+var g_pend_root = []string{}
+var g_pend_n = []int{}
+
+func live_get(root) (v) {
+    v = 0
+    i := 0
+    for i < len(g_live_root) { if g_live_root[i] == root { v = g_live_n[i]  return v }  i = i + 1 }
+}
+func live_add(root, d) {
+    i := 0
+    for i < len(g_live_root) {
+        if g_live_root[i] == root { nv := g_live_n[i] + d  if nv < 0 { nv = 0 }  g_live_n[i] = nv  return }
+        i = i + 1
+    }
+    nv := d
+    if nv < 0 { nv = 0 }
+    g_live_root = append(g_live_root, root)
+    g_live_n = append(g_live_n, nv)
+}
+
+func ctr_get(chs, cns, ch) (v) {
+    v = 0
+    i := 0
+    for i < len(chs) { if chs[i] == ch { v = cns[i]  return v }  i = i + 1 }
+}
+
+func spawn_inc(ch) {
+    i := 0
+    for i < len(g_spawn_ch) { if g_spawn_ch[i] == ch { g_spawn_n[i] = g_spawn_n[i] + 1  return }  i = i + 1 }
+    g_spawn_ch = append(g_spawn_ch, ch)
+    g_spawn_n = append(g_spawn_n, 1)
+}
+func spawn_set0(ch) {
+    i := 0
+    for i < len(g_spawn_ch) { if g_spawn_ch[i] == ch { g_spawn_n[i] = 0  return }  i = i + 1 }
+}
+func recv_inc(ch) (v) {
+    i := 0
+    for i < len(g_recv_ch) { if g_recv_ch[i] == ch { g_recv_n[i] = g_recv_n[i] + 1  v = g_recv_n[i]  return v }  i = i + 1 }
+    g_recv_ch = append(g_recv_ch, ch)
+    g_recv_n = append(g_recv_n, 1)
+    v = 1
+}
+func recv_set0(ch) {
+    i := 0
+    for i < len(g_recv_ch) { if g_recv_ch[i] == ch { g_recv_n[i] = 0  return }  i = i + 1 }
+}
+func pend_add(ch, root) {
+    i := 0
+    for i < len(g_pend_ch) {
+        if g_pend_ch[i] == ch && g_pend_root[i] == root { g_pend_n[i] = g_pend_n[i] + 1  return }
+        i = i + 1
+    }
+    g_pend_ch = append(g_pend_ch, ch)
+    g_pend_root = append(g_pend_root, root)
+    g_pend_n = append(g_pend_n, 1)
+}
+
+// param_signals_complete: is callee's param #j the channel it signals completion on
+// (its LAST statement is `param_j <- ...`)? The sound basis for a channel-join barrier.
+func param_signals_complete(callee, j) (b) {
+    b = 0
+    fr := func_root(callee)
+    if fr < 0 { return b }
+    ps := nodes[fr].names
+    if j >= len(ps) { return b }
+    pname := ps[j]
+    kids := nodes[fr].kids
+    if len(kids) == 0 { return b }
+    last := nodes[kids[len(kids) - 1]]
+    if last.kind == K_SEND {
+        chn := nodes[last.a]
+        if chn.kind == K_ID { if chn.s == pname { b = 1 } }
+    }
+}
+
+func rc_note_go(iid, root, path, write, mult, desc) {
+    slot := inst_var_slot(iid, root)
+    if slot < 0 { return }
+    if path_shared(slot_type_name(slot), path) == 0 { return }
+    g_x_root = append(g_x_root, root)
+    g_x_write = append(g_x_write, write)
+    g_x_go = append(g_x_go, 1)
+    g_x_mult = append(g_x_mult, mult)
+    g_x_desc = append(g_x_desc, desc)
+}
+func rc_note_this(iid, root, path, write, desc) {
+    if live_get(root) <= 0 { return }
+    slot := inst_var_slot(iid, root)
+    if slot < 0 { return }
+    if path_shared(slot_type_name(slot), path) == 0 { return }
+    g_x_root = append(g_x_root, root)
+    g_x_write = append(g_x_write, write)
+    g_x_go = append(g_x_go, 0)
+    g_x_mult = append(g_x_mult, 1)
+    g_x_desc = append(g_x_desc, desc)
+}
+
+// rc_reads: this-thread element/field reads in an expression (live-gated).
+func rc_reads(iid, fnroot, idx) {
+    n := nodes[idx]
+    k := n.kind
+    if k == K_INDEX {
+        root, ok := place_root(idx)
+        if ok == 1 { rc_note_this(iid, root, place_path(idx), 0, "this thread reads `" + root + "`") }
+        rc_reads(iid, fnroot, n.a)
+        rc_reads(iid, fnroot, n.b)
+        return
+    }
+    if k == K_FIELD {
+        root, ok := place_root(idx)
+        if ok == 1 { rc_note_this(iid, root, place_path(idx), 0, "this thread reads `" + root + "`") }
+        rc_reads(iid, fnroot, n.a)
+        return
+    }
+    if k == K_CALL { for _, a := range n.kids { rc_reads(iid, fnroot, a) }  return }
+    if k == K_BIN { rc_reads(iid, fnroot, n.a)  rc_reads(iid, fnroot, n.b)  return }
+    if k == K_UNARY { rc_reads(iid, fnroot, n.a)  return }
+    if k == K_SLICE || k == K_STRUCT { for _, e := range n.kids { rc_reads(iid, fnroot, e) }  return }
+}
+
+func live_set(root, v) {
+    i := 0
+    for i < len(g_live_root) { if g_live_root[i] == root { g_live_n[i] = v  return }  i = i + 1 }
+    g_live_root = append(g_live_root, root)
+    g_live_n = append(g_live_n, v)
+}
+func pend_clear(ch) {
+    nc := []string{}
+    nr := []string{}
+    nn := []int{}
+    i := 0
+    for i < len(g_pend_ch) {
+        if g_pend_ch[i] != ch { nc = append(nc, g_pend_ch[i])  nr = append(nr, g_pend_root[i])  nn = append(nn, g_pend_n[i]) }
+        i = i + 1
+    }
+    g_pend_ch = nc
+    g_pend_root = nr
+    g_pend_n = nn
+}
+
+// join_recv: a top-level `<-ch`. Once received >= times spawned on a signalling
+// channel, the joined goroutines have finished — drain their roots from live.
+func join_recv(valexpr) {
+    vn := nodes[valexpr]
+    if vn.kind != K_RECV { return }
+    chn := nodes[vn.a]
+    if chn.kind != K_ID { return }
+    ch := chn.s
+    rc := recv_inc(ch)
+    sc := ctr_get(g_spawn_ch, g_spawn_n, ch)
+    if sc >= 1 && rc >= sc {
+        i := 0
+        for i < len(g_pend_ch) {
+            if g_pend_ch[i] == ch { live_add(g_pend_root[i], 0 - g_pend_n[i]) }
+            i = i + 1
+        }
+        pend_clear(ch)
+        spawn_set0(ch)
+        recv_set0(ch)
+    }
+}
+
+// mark_loop_spawns: pre-mark roots touched by goroutines inside a loop body as live,
+// so every this-thread access in the loop is treated as concurrent.
+func mark_loop_spawns(kids) {
+    for _, s := range kids {
+        n := nodes[s]
+        k := n.kind
+        if k == K_GO {
+            gc := nodes[n.a]
+            g := gc.s
+            j := 0
+            for j < len(gc.kids) {
+                root, ok := place_root(gc.kids[j])
+                if ok == 1 {
+                    i := 0
+                    for i < len(g_ac_fn) { if g_ac_fn[i] == g && g_ac_pi[i] == j { live_add(root, 1) }  i = i + 1 }
+                }
+                j = j + 1
+            }
+        } else { if k == K_IF { mark_loop_spawns(n.kids)  mark_loop_spawns(n.kids2)
+        } else { if k == K_WHILE || k == K_RANGE || k == K_ARENA { mark_loop_spawns(n.kids)
+        }}}
+    }
+}
+
+// rc_visit: order-sensitive collection. `inLoop` gives loop-spawn multiplicity;
+// `top` (function's linear statement list) enables join bookkeeping. This-thread
+// accesses are recorded only while live>0; goroutine accessors always.
+func rc_visit(iid, fnroot, kids, inLoop, top) {
+    for _, s := range kids {
+        n := nodes[s]
+        k := n.kind
+        if k == K_GO {
+            gc := nodes[n.a]
+            g := gc.s
+            mult := 1
+            label := "goroutine"
+            if inLoop == 1 { mult = 2  label = "loop-spawned goroutine" }
+            touched := []string{}
+            j := 0
+            for j < len(gc.kids) {
+                root, ok := place_root(gc.kids[j])
+                if ok == 1 {
+                    pfx := place_path(gc.kids[j])
+                    i := 0
+                    for i < len(g_ac_fn) {
+                        if g_ac_fn[i] == g && g_ac_pi[i] == j {
+                            verb := "reads"
+                            if g_ac_w[i] == 1 { verb = "writes" }
+                            rc_note_go(iid, root, pfx + g_ac_path[i], g_ac_w[i], mult, label + " `go " + g + "(...)` " + verb + " `" + root + "`")
+                            seen := 0
+                            ti := 0
+                            for ti < len(touched) { if touched[ti] == root { seen = 1  ti = len(touched) } else { ti = ti + 1 } }
+                            if seen == 0 { touched = append(touched, root) }
+                        }
+                        i = i + 1
+                    }
+                }
+                j = j + 1
+            }
+            ti := 0
+            for ti < len(touched) { live_add(touched[ti], 1)  ti = ti + 1 }
+            if top == 1 && inLoop == 0 {
+                j = 0
+                for j < len(gc.kids) {
+                    an := nodes[gc.kids[j]]
+                    if an.kind == K_ID {
+                        if param_signals_complete(g, j) == 1 {
+                            spawn_inc(an.s)
+                            ti = 0
+                            for ti < len(touched) { pend_add(an.s, touched[ti])  ti = ti + 1 }
+                        }
+                    }
+                    j = j + 1
+                }
+            }
+        } else { if k == K_IDXASSIGN || k == K_FLDASSIGN {
+            root, ok := place_root(n.a)
+            if ok == 1 { rc_note_this(iid, root, place_path(n.a), 1, "this thread writes `" + root + "`") }
+        } else { if k == K_EXPRSTMT {
+            if top == 1 && inLoop == 0 { join_recv(n.a) }
+            rc_reads(iid, fnroot, n.a)
+        } else { if k == K_ASSIGN {
+            if top == 1 && inLoop == 0 { join_recv(n.a) }
+            rc_reads(iid, fnroot, n.a)
+        } else { if k == K_MULTI {
+            for _, e := range n.kids { if top == 1 && inLoop == 0 { join_recv(e) }  rc_reads(iid, fnroot, e) }
+        } else { if k == K_RETURN { for _, e := range n.kids { rc_reads(iid, fnroot, e) }
+        } else { if k == K_IF {
+            rc_reads(iid, fnroot, n.a)
+            sr := []string{}
+            sn := []int{}
+            ci := 0
+            for ci < len(g_live_root) { sr = append(sr, g_live_root[ci])  sn = append(sn, g_live_n[ci])  ci = ci + 1 }
+            rc_visit(iid, fnroot, n.kids, inLoop, 0)
+            tr := g_live_root
+            tn := g_live_n
+            g_live_root = sr
+            g_live_n = sn
+            rc_visit(iid, fnroot, n.kids2, inLoop, 0)
+            mi := 0
+            for mi < len(tr) { if tn[mi] > live_get(tr[mi]) { live_set(tr[mi], tn[mi]) }  mi = mi + 1 }
+        } else { if k == K_WHILE {
+            rc_reads(iid, fnroot, n.a)
+            mark_loop_spawns(n.kids)
+            rc_visit(iid, fnroot, n.kids, 1, 0)
+        } else { if k == K_RANGE {
+            rc_reads(iid, fnroot, n.a)
+            mark_loop_spawns(n.kids)
+            rc_visit(iid, fnroot, n.kids, 1, 0)
+        } else { if k == K_ARENA {
+            rc_visit(iid, fnroot, n.kids, inLoop, top)
+        }}}}}}}}}}
+    }
+}
+
+// ---- findings ----
+var g_rf_decl = []string{}
+var g_rf_kind = []string{}
+var g_rf_root = []string{}
+var g_rf_writers = []string{}   // comma-joined sorted writer descriptions
+
+// sort_strings: ascending byte order (matches Go sort.Strings), insertion sort.
+func sort_strings(xs) (out) {
+    out = xs
+    i := 1
+    for i < len(out) {
+        j := i
+        for j > 0 {
+            if str_lt(out[j], out[j - 1]) == 1 {
+                tmp := out[j]  out[j] = out[j - 1]  out[j - 1] = tmp
+                j = j - 1
+            } else { j = 0 }
+        }
+        i = i + 1
+    }
+}
+func str_lt(a, b) (r) {
+    r = 0
+    i := 0
+    na := len(a)
+    nb := len(b)
+    for i < na {
+        if i >= nb { return r }
+        ca := byte_at(bytes(a), i)
+        cb := byte_at(bytes(b), i)
+        if ca < cb { r = 1  return r }
+        if ca > cb { return r }
+        i = i + 1
+    }
+    if nb > na { r = 1 }
+}
+
+func detect_races() {
+    build_access_summary()
+    ri := 0
+    for ri < len(g_insts) {
+        iid := ri
+        ins := g_insts[iid]
+        fnroot := func_root(ins.src)
+        if fnroot < 0 { ri = ri + 1  continue }
+        g_x_root = []string{}
+        g_x_write = []int{}
+        g_x_go = []int{}
+        g_x_mult = []int{}
+        g_x_desc = []string{}
+        g_live_root = []string{}
+        g_live_n = []int{}
+        g_spawn_ch = []string{}
+        g_spawn_n = []int{}
+        g_recv_ch = []string{}
+        g_recv_n = []int{}
+        g_pend_ch = []string{}
+        g_pend_root = []string{}
+        g_pend_n = []int{}
+        rc_visit(iid, fnroot, nodes[fnroot].kids, 0, 1)
+        // group accessors by distinct root; a root with >=2 accessors, >=1 write and
+        // >=1 goroutine is a race.
+        seen := []string{}
+        ai := 0
+        for ai < len(g_x_root) {
+            root := g_x_root[ai]
+            already := 0
+            si := 0
+            for si < len(seen) { if seen[si] == root { already = 1  si = len(seen) } else { si = si + 1 } }
+            if already == 0 {
+                seen = append(seen, root)
+                total := 0
+                writes := 0
+                gos := 0
+                descs := []string{}
+                bi := 0
+                for bi < len(g_x_root) {
+                    if g_x_root[bi] == root {
+                        total = total + g_x_mult[bi]
+                        if g_x_write[bi] == 1 { writes = writes + g_x_mult[bi] }
+                        if g_x_go[bi] == 1 { gos = gos + 1 }
+                        descs = append(descs, g_x_desc[bi])
+                    }
+                    bi = bi + 1
+                }
+                if gos >= 1 && total >= 2 && writes >= 1 {
+                    kind := "read/write"
+                    if writes >= 2 { kind = "write/write" }
+                    descs = sort_strings(descs)
+                    g_rf_decl = append(g_rf_decl, ins.src)
+                    g_rf_kind = append(g_rf_kind, kind)
+                    g_rf_root = append(g_rf_root, root)
+                    g_rf_writers = append(g_rf_writers, join(descs, "\x01"))
+                }
+            }
+            ai = ai + 1
+        }
+        ri = ri + 1
+    }
+}
+
+// dump_races: findings sorted by (decl, root), one hex-encoded line each — the exact
+// canonical form of `machin racetest --program` (the Go-reference oracle).
+func dump_races() (out) {
+    out = ""
+    keys := []string{}
+    lines := []string{}
+    k := 0
+    for k < len(g_rf_decl) {
+        ws := split(g_rf_writers[k], "\x01")
+        hws := []string{}
+        wi := 0
+        for wi < len(ws) { hws = append(hws, to_hex(bytes(ws[wi])))  wi = wi + 1 }
+        line := to_hex(bytes(g_rf_decl[k])) + "|" + to_hex(bytes(g_rf_kind[k])) + "|" + to_hex(bytes(g_rf_root[k])) + "|" + join(hws, ",") + "\n"
+        keys = append(keys, g_rf_decl[k] + "\x00" + g_rf_root[k])
+        lines = append(lines, line)
+        k = k + 1
+    }
+    i := 1
+    for i < len(lines) {
+        j := i
+        for j > 0 {
+            if str_lt(keys[j], keys[j - 1]) == 1 {
+                tk := keys[j]  keys[j] = keys[j - 1]  keys[j - 1] = tk
+                tl := lines[j]  lines[j] = lines[j - 1]  lines[j - 1] = tl
+                j = j - 1
+            } else { j = 0 }
+        }
+        i = i + 1
+    }
+    i = 0
+    for i < len(lines) { out = out + lines[i]  i = i + 1 }
+}
+
+// ── package globals (a `var` is one shared cell -> unconditional sharing) ──
+var g_gd_fn = []string{}
+var g_gd_g = []string{}
+var g_gd_r = []int{}
+var g_gd_w = []int{}
+var g_gall_fn = []string{}
+var g_gall_g = []string{}
+var g_gall_r = []int{}
+var g_gall_w = []int{}
+var g_nc_fn = []string{}
+var g_nc_ce = []string{}
+var g_go_ce = []string{}
+var g_go_loop = []int{}
+var g_mc_g = []string{}
+var g_mc_r = []int{}
+var g_mc_w = []int{}
+
+func is_global_name(name) (b) {
+    _, f := global_lookup(name)
+    b = f
+}
+func name_in(name, xs) (b) {
+    b = 0
+    i := 0
+    for i < len(xs) { if xs[i] == name { b = 1  return b }  i = i + 1 }
+}
+func is_gaccess(name, locals) (b) {
+    b = 0
+    if is_global_name(name) == 1 && name_in(name, locals) == 0 { b = 1 }
+}
+
+func gd_merge(dst, fn, g, r, w) (changed) {
+    // dst==0 -> g_gd_*, dst==1 -> g_gall_*
+    changed = 0
+    if dst == 0 {
+        i := 0
+        for i < len(g_gd_fn) { if g_gd_fn[i] == fn && g_gd_g[i] == g { if r == 1 { g_gd_r[i] = 1 }  if w == 1 { g_gd_w[i] = 1 }  return changed }  i = i + 1 }
+        g_gd_fn = append(g_gd_fn, fn)  g_gd_g = append(g_gd_g, g)  g_gd_r = append(g_gd_r, r)  g_gd_w = append(g_gd_w, w)
+        changed = 1
+        return changed
+    }
+    i := 0
+    for i < len(g_gall_fn) {
+        if g_gall_fn[i] == fn && g_gall_g[i] == g {
+            if r == 1 && g_gall_r[i] == 0 { g_gall_r[i] = 1  changed = 1 }
+            if w == 1 && g_gall_w[i] == 0 { g_gall_w[i] = 1  changed = 1 }
+            return changed
+        }
+        i = i + 1
+    }
+    g_gall_fn = append(g_gall_fn, fn)  g_gall_g = append(g_gall_g, g)  g_gall_r = append(g_gall_r, r)  g_gall_w = append(g_gall_w, w)
+    changed = 1
+}
+
+// gd_rd: record global element/field/bare-ident READS in an expression.
+func gd_rd(fn, locals, idx) {
+    n := nodes[idx]
+    k := n.kind
+    if k == K_ID { if is_gaccess(n.s, locals) == 1 { gd_merge(0, fn, n.s, 1, 0) }  return }
+    if k == K_INDEX {
+        root, ok := place_root(idx)
+        if ok == 1 { if is_gaccess(root, locals) == 1 { gd_merge(0, fn, root, 1, 0) } }
+        gd_rd(fn, locals, n.a)  gd_rd(fn, locals, n.b)
+        return
+    }
+    if k == K_FIELD {
+        root, ok := place_root(idx)
+        if ok == 1 { if is_gaccess(root, locals) == 1 { gd_merge(0, fn, root, 1, 0) } }
+        gd_rd(fn, locals, n.a)
+        return
+    }
+    if k == K_CALL { for _, a := range n.kids { gd_rd(fn, locals, a) }  return }
+    if k == K_BIN { gd_rd(fn, locals, n.a)  gd_rd(fn, locals, n.b)  return }
+    if k == K_UNARY { gd_rd(fn, locals, n.a)  return }
+    if k == K_SLICE || k == K_STRUCT { for _, e := range n.kids { gd_rd(fn, locals, e) }  return }
+}
+
+// gd_walk: direct global accesses (writes + reads) + normal-callee/go edges.
+func gd_walk(fn, locals, kids) {
+    for _, s := range kids {
+        n := nodes[s]
+        k := n.kind
+        if k == K_ASSIGN {
+            if n.s2 == "=" { if is_gaccess(n.s, locals) == 1 { gd_merge(0, fn, n.s, 0, 1) } }
+            gd_rd(fn, locals, n.a)
+        } else { if k == K_MULTI {
+            for _, e := range n.kids { gd_rd(fn, locals, e) }
+        } else { if k == K_IDXASSIGN {
+            root, ok := place_root(n.a)
+            if ok == 1 { if is_gaccess(root, locals) == 1 { gd_merge(0, fn, root, 0, 1) } }
+            gd_rd(fn, locals, nodes[n.a].b)
+            gd_rd(fn, locals, n.b)
+        } else { if k == K_FLDASSIGN {
+            root, ok := place_root(n.a)
+            if ok == 1 { if is_gaccess(root, locals) == 1 { gd_merge(0, fn, root, 0, 1) } }
+            gd_rd(fn, locals, n.b)
+        } else { if k == K_EXPRSTMT {
+            cn := nodes[n.a]
+            if cn.kind == K_CALL { g_nc_fn = append(g_nc_fn, fn)  g_nc_ce = append(g_nc_ce, cn.s) }
+            gd_rd(fn, locals, n.a)
+        } else { if k == K_SEND {
+            gd_rd(fn, locals, n.a)  gd_rd(fn, locals, n.b)
+        } else { if k == K_RETURN {
+            for _, e := range n.kids { gd_rd(fn, locals, e) }
+        } else { if k == K_GO {
+            gc := nodes[n.a]
+            g_go_ce = append(g_go_ce, gc.s)  g_go_loop = append(g_go_loop, 0)
+            for _, a := range gc.kids { gd_rd(fn, locals, a) }
+        } else { if k == K_IF {
+            gd_rd(fn, locals, n.a)  gd_walk(fn, locals, n.kids)  gd_walk(fn, locals, n.kids2)
+        } else { if k == K_WHILE {
+            gd_rd(fn, locals, n.a)  gd_walk_loop(fn, locals, n.kids)
+        } else { if k == K_RANGE {
+            gd_rd(fn, locals, n.a)  gd_walk_loop(fn, locals, n.kids)
+        } else { if k == K_ARENA {
+            gd_walk(fn, locals, n.kids)
+        }}}}}}}}}}}}
+    }
+}
+// gd_walk_loop: like gd_walk but go sites inside are loop-spawned (multiplicity).
+func gd_walk_loop(fn, locals, kids) {
+    for _, s := range kids {
+        n := nodes[s]
+        k := n.kind
+        if k == K_GO {
+            gc := nodes[n.a]
+            g_go_ce = append(g_go_ce, gc.s)  g_go_loop = append(g_go_loop, 1)
+            for _, a := range gc.kids { gd_rd(fn, locals, a) }
+        } else { if k == K_EXPRSTMT {
+            cn := nodes[n.a]
+            if cn.kind == K_CALL { g_nc_fn = append(g_nc_fn, fn)  g_nc_ce = append(g_nc_ce, cn.s) }
+            gd_rd(fn, locals, n.a)
+        } else { if k == K_ASSIGN { gd_rd(fn, locals, n.a)
+        } else { if k == K_IDXASSIGN {
+            root, ok := place_root(n.a)
+            if ok == 1 { if is_gaccess(root, locals) == 1 { gd_merge(0, fn, root, 0, 1) } }
+            gd_rd(fn, locals, nodes[n.a].b)  gd_rd(fn, locals, n.b)
+        } else { if k == K_FLDASSIGN {
+            root, ok := place_root(n.a)
+            if ok == 1 { if is_gaccess(root, locals) == 1 { gd_merge(0, fn, root, 0, 1) } }
+            gd_rd(fn, locals, n.b)
+        } else { if k == K_IF { gd_rd(fn, locals, n.a)  gd_walk_loop(fn, locals, n.kids)  gd_walk_loop(fn, locals, n.kids2)
+        } else { if k == K_WHILE || k == K_RANGE || k == K_ARENA { gd_walk_loop(fn, locals, n.kids)
+        } else { if k == K_SEND { gd_rd(fn, locals, n.a)  gd_rd(fn, locals, n.b)
+        }}}}}}}}
+    }
+}
+
+func collect_locals(kids, into) (out) {
+    out = into
+    for _, s := range kids {
+        n := nodes[s]
+        k := n.kind
+        if k == K_ASSIGN { if n.s2 == ":=" { out = append(out, n.s) }
+        } else { if k == K_MULTI { if n.s2 == ":=" { for _, nm := range n.names { out = append(out, nm) } }
+        } else { if k == K_RANGE {
+            if n.s != "" { out = append(out, n.s) }
+            if n.s2 != "" { out = append(out, n.s2) }
+            out = collect_locals(n.kids, out)
+        } else { if k == K_IF { out = collect_locals(n.kids, out)  out = collect_locals(n.kids2, out)
+        } else { if k == K_WHILE || k == K_ARENA { out = collect_locals(n.kids, out)
+        }}}}}
+    }
+}
+
+func mc_merge(g, r, w) {
+    i := 0
+    for i < len(g_mc_g) { if g_mc_g[i] == g { if r == 1 { g_mc_r[i] = 1 }  if w == 1 { g_mc_w[i] = 1 }  return }  i = i + 1 }
+    g_mc_g = append(g_mc_g, g)  g_mc_r = append(g_mc_r, r)  g_mc_w = append(g_mc_w, w)
+}
+
+func global_races() {
+    if len(g_global_names) == 0 { return }
+    g_gd_fn = []string{}  g_gd_g = []string{}  g_gd_r = []int{}  g_gd_w = []int{}
+    g_gall_fn = []string{}  g_gall_g = []string{}  g_gall_r = []int{}  g_gall_w = []int{}
+    g_nc_fn = []string{}  g_nc_ce = []string{}
+    g_go_ce = []string{}  g_go_loop = []int{}
+    g_mc_g = []string{}  g_mc_r = []int{}  g_mc_w = []int{}
+
+    // direct global accesses per source function (+ normal-callee / go edges)
+    fi := 0
+    for fi < len(g_func_names) {
+        fr := g_func_roots[fi]
+        locals := []string{}
+        for _, p := range nodes[fr].names { locals = append(locals, p) }
+        locals = collect_locals(nodes[fr].kids, locals)
+        gd_walk(g_func_names[fi], locals, nodes[fr].kids)
+        fi = fi + 1
+    }
+    // seed gall = gdirect
+    gi := 0
+    for gi < len(g_gd_fn) { gd_merge(1, g_gd_fn[gi], g_gd_g[gi], g_gd_r[gi], g_gd_w[gi])  gi = gi + 1 }
+    // transitive over NORMAL calls
+    run := 1
+    for run == 1 {
+        run = 0
+        ei := 0
+        for ei < len(g_nc_fn) {
+            fn := g_nc_fn[ei]
+            ce := g_nc_ce[ei]
+            ai := 0
+            for ai < len(g_gall_fn) {
+                if g_gall_fn[ai] == ce { if gd_merge(1, fn, g_gall_g[ai], g_gall_r[ai], g_gall_w[ai]) == 1 { run = 1 } }
+                ai = ai + 1
+            }
+            ei = ei + 1
+        }
+    }
+    // main-thread concurrent globals: direct post-spawn + normal-callee transitive
+    mr := func_root("main")
+    if mr >= 0 {
+        mlocals := []string{}
+        for _, p := range nodes[mr].names { mlocals = append(mlocals, p) }
+        mlocals = collect_locals(nodes[mr].kids, mlocals)
+        main_post_globals(mlocals, nodes[mr].kids)
+        // normal callees of main -> their gall
+        ei := 0
+        for ei < len(g_nc_fn) {
+            if g_nc_fn[ei] == "main" {
+                ai := 0
+                for ai < len(g_gall_fn) {
+                    if g_gall_fn[ai] == g_nc_ce[ei] { mc_merge(g_gall_g[ai], g_gall_r[ai], g_gall_w[ai]) }
+                    ai = ai + 1
+                }
+            }
+            ei = ei + 1
+        }
+    }
+
+    // per global G: gather concurrent threads
+    ni := 0
+    for ni < len(g_global_names) {
+        g := g_global_names[ni]
+        total := 0
+        writes := 0
+        gothreads := 0
+        descs := []string{}
+        // goroutine threads (any `go` site whose callee's gall footprint touches G)
+        si := 0
+        for si < len(g_go_ce) {
+            ce := g_go_ce[si]
+            ai := 0
+            for ai < len(g_gall_fn) {
+                if g_gall_fn[ai] == ce && g_gall_g[ai] == g {
+                    mult := 1
+                    label := "goroutine"
+                    if g_go_loop[si] == 1 { mult = 2  label = "loop-spawned goroutine" }
+                    verb := "reads"
+                    isw := 0
+                    if g_gall_w[ai] == 1 { verb = "writes"  isw = 1 }
+                    total = total + mult
+                    if isw == 1 { writes = writes + mult }
+                    gothreads = gothreads + 1
+                    descs = append(descs, label + " `go " + ce + "(...)` " + verb + " global `" + g + "`")
+                }
+                ai = ai + 1
+            }
+            si = si + 1
+        }
+        // main thread
+        mi := 0
+        for mi < len(g_mc_g) {
+            if g_mc_g[mi] == g {
+                verb := "reads"
+                isw := 0
+                if g_mc_w[mi] == 1 { verb = "writes"  isw = 1 }
+                total = total + 1
+                if isw == 1 { writes = writes + 1 }
+                descs = append(descs, "main thread " + verb + " global `" + g + "`")
+            }
+            mi = mi + 1
+        }
+        if gothreads >= 1 && total >= 2 && writes >= 1 {
+            kind := "read/write"
+            if writes >= 2 { kind = "write/write" }
+            descs = sort_strings(descs)
+            g_rf_decl = append(g_rf_decl, "")
+            g_rf_kind = append(g_rf_kind, kind)
+            g_rf_root = append(g_rf_root, g)
+            g_rf_writers = append(g_rf_writers, join(descs, "\x01"))
+        }
+        ni = ni + 1
+    }
+}
+
+// main_post_globals: main's DIRECT global accesses AFTER the first `go` spawn (a write
+// before the spawn is ordered-before it), collected into g_mc_*.
+var g_mpg_spawned = 0
+func main_post_globals(locals, kids) {
+    g_mpg_spawned = 0
+    mpg_walk(locals, kids)
+}
+func mpg_walk(locals, kids) {
+    for _, s := range kids {
+        n := nodes[s]
+        k := n.kind
+        if k == K_GO { g_mpg_spawned = 1
+        } else {
+            if g_mpg_spawned == 1 {
+                mpg_stmt(locals, s)
+            } else {
+                b, ok := mpg_block(s)
+                if ok == 1 { mpg_walk(locals, b) }
+            }
+        }
+    }
+}
+func mpg_block(s) (b, ok) {
+    n := nodes[s]
+    k := n.kind
+    ok = 0
+    b = []int{}
+    if k == K_IF { b = n.kids  ok = 1  bi := 0  for bi < len(n.kids2) { b = append(b, n.kids2[bi])  bi = bi + 1 }  return b, ok }
+    if k == K_WHILE || k == K_RANGE || k == K_ARENA { b = n.kids  ok = 1 }
+}
+// mpg_stmt: record a single post-spawn statement's direct globals into g_mc_*.
+func mpg_stmt(locals, s) {
+    // reuse gd_walk into a temp fn name, then fold new g_gd_* rows for that fn into g_mc_*
+    before := len(g_gd_fn)
+    one := []int{}
+    one = append(one, s)
+    gd_walk("\x02mpg", locals, one)
+    i := before
+    for i < len(g_gd_fn) {
+        if g_gd_fn[i] == "\x02mpg" { mc_merge(g_gd_g[i], g_gd_r[i], g_gd_w[i]) }
+        i = i + 1
+    }
+}
+
+// ── move-on-send: `ch <- v` transfers ownership; touching v afterward = use-after-move ──
+var g_moved = []string{}
+var g_uam_done = []string{}   // dedup keyed by src\x00name (across instances of a src)
+var g_uam_iid = 0
+
+func moved_has(name) (b) {
+    b = 0
+    i := 0
+    for i < len(g_moved) { if g_moved[i] == name { b = 1  return b }  i = i + 1 }
+}
+func moved_add(name) { if moved_has(name) == 0 { g_moved = append(g_moved, name) } }
+func moved_del(name) {
+    nm := []string{}
+    i := 0
+    for i < len(g_moved) { if g_moved[i] != name { nm = append(nm, g_moved[i]) }  i = i + 1 }
+    g_moved = nm
+}
+func uam_flag(name) {
+    if moved_has(name) == 0 { return }
+    key := g_insts[g_uam_iid].src + "\x00" + name
+    if name_in(key, g_uam_done) == 1 { return }
+    g_uam_done = append(g_uam_done, key)
+    g_rf_decl = append(g_rf_decl, g_insts[g_uam_iid].src)
+    g_rf_kind = append(g_rf_kind, "use-after-move")
+    g_rf_root = append(g_rf_root, name)
+    g_rf_writers = append(g_rf_writers, "`" + name + "` is used after it was sent on a channel (ownership moved to the receiver)")
+}
+func uam_uses(idx) {
+    n := nodes[idx]
+    k := n.kind
+    if k == K_ID { uam_flag(n.s)  return }
+    if k == K_INDEX { root, ok := place_root(idx)  if ok == 1 { uam_flag(root) }  uam_uses(n.a)  uam_uses(n.b)  return }
+    if k == K_FIELD { root, ok := place_root(idx)  if ok == 1 { uam_flag(root) }  uam_uses(n.a)  return }
+    if k == K_CALL { for _, a := range n.kids { uam_uses(a) }  return }
+    if k == K_BIN { uam_uses(n.a)  uam_uses(n.b)  return }
+    if k == K_UNARY { uam_uses(n.a)  return }
+    if k == K_SLICE || k == K_STRUCT { for _, e := range n.kids { uam_uses(e) }  return }
+}
+func uam_shared(iid, name) (b) {
+    b = 0
+    slot := inst_var_slot(iid, name)
+    if slot < 0 { return b }
+    if chan_needs_json(slot_type_name(slot)) == 1 { b = 1 }
+}
+func uam_scan(iid, kids) {
+    for _, s := range kids {
+        n := nodes[s]
+        k := n.kind
+        if k == K_SEND {
+            uam_uses(n.a)
+            vn := nodes[n.b]
+            if vn.kind == K_ID {
+                if moved_has(vn.s) == 1 { uam_flag(vn.s) } else { if uam_shared(iid, vn.s) == 1 { moved_add(vn.s) } }
+            } else { uam_uses(n.b) }
+        } else { if k == K_ASSIGN {
+            uam_uses(n.a)  moved_del(n.s)
+        } else { if k == K_MULTI {
+            for _, e := range n.kids { uam_uses(e) }
+            for _, nm := range n.names { moved_del(nm) }
+        } else { if k == K_IDXASSIGN {
+            root, ok := place_root(n.a)
+            if ok == 1 { uam_flag(root) }
+            uam_uses(nodes[n.a].b)  uam_uses(n.b)
+        } else { if k == K_FLDASSIGN {
+            root, ok := place_root(n.a)
+            if ok == 1 { uam_flag(root) }
+            uam_uses(n.b)
+        } else { if k == K_EXPRSTMT { uam_uses(n.a)
+        } else { if k == K_RETURN { for _, e := range n.kids { uam_uses(e) }
+        } else { if k == K_GO { gc := nodes[n.a]  for _, a := range gc.kids { uam_uses(a) }
+        } else { if k == K_IF { uam_uses(n.a)  uam_scan(iid, n.kids)  uam_scan(iid, n.kids2)
+        } else { if k == K_WHILE { uam_uses(n.a)  uam_scan(iid, n.kids)
+        } else { if k == K_RANGE { uam_uses(n.a)  moved_del(n.s)  moved_del(n.s2)  uam_scan(iid, n.kids)
+        } else { if k == K_ARENA { uam_scan(iid, n.kids)
+        }}}}}}}}}}}}
+    }
+}
+func use_after_send() {
+    g_uam_done = []string{}
+    ri := 0
+    for ri < len(g_insts) {
+        ins := g_insts[ri]
+        fr := func_root(ins.src)
+        if fr < 0 { ri = ri + 1  continue }
+        g_moved = []string{}
+        g_uam_iid = ri
+        uam_scan(ri, nodes[fr].kids)
+        ri = ri + 1
+    }
+}

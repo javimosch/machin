@@ -132,8 +132,18 @@ func cg_program() {
     // 4. function prototypes
     for _, rid := range g_reps { cemit(cg_signature(rid) + ";\n") }
     cemit("\n")
-    // 5. function bodies
+    // 5. function bodies — generated into a temp buffer so goroutine trampolines
+    //    (populated during body codegen via g_tramp) can be spliced BEFORE the
+    //    bodies, matching the reference compiler's tramp/buf split.
+    g_goid = 0
+    g_tramp = []string{}
+    saved := g_out
+    g_out = []string{}
     for _, rid := range g_reps { cg_function(rid) }
+    bodies := g_out
+    g_out = saved
+    for _, t := range g_tramp { cemit(t) }
+    for _, b := range bodies { cemit(b) }
     // 6. package-global initializers run in a C constructor (declaration order)
     if len(g_global_names) > 0 {
         cemit("__attribute__((constructor)) static void mfl_globals_init(void) {\n")
