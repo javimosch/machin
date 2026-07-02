@@ -64,6 +64,34 @@ func main() { g := Bag{[]int{0, 0}} go w(g, 0) go w(g, 1) }
 EOF
 run "$T/r6.src"
 
+# happens-before: h1 pre-spawn setup (clean), h2 join barrier (clean), h3 signal-before-
+# write (race), h4 loop-spawn writer (race, multiplicity), h5 post-spawn write (race)
+cat > "$T/h1.src" <<'EOF'
+func w(xs) { xs[0] = 9 }
+func main() { d := []int{0, 0} d[0] = 5 go w(d) }
+EOF
+run "$T/h1.src"
+cat > "$T/h2.src" <<'EOF'
+func w(xs, done) { xs[0] = 9  done <- 1 }
+func main() { d := []int{0, 0} done := make(chan int) go w(d, done) x := <-done print(d[0] + x) }
+EOF
+run "$T/h2.src"
+cat > "$T/h3.src" <<'EOF'
+func w(xs, done) { done <- 1  xs[0] = 9 }
+func main() { d := []int{0, 0} done := make(chan int) go w(d, done) x := <-done print(d[0] + x) }
+EOF
+run "$T/h3.src"
+cat > "$T/h4.src" <<'EOF'
+func w(xs, i) { xs[i] = i }
+func main() { d := []int{0, 0} i := 0 while i < 2 { go w(d, i) i = i + 1 } }
+EOF
+run "$T/h4.src"
+cat > "$T/h5.src" <<'EOF'
+func w(xs) { xs[0] = 9 }
+func main() { d := []int{0, 0} go w(d) d[1] = 7 }
+EOF
+run "$T/h5.src"
+
 # the race-free concurrency corpus must stay clean (empty) on both sides
 for app in machin-healthcheck machin-linkcheck machin-pipe machin-pool machin-wscat; do
   s=$(ls ../$app/*.src 2>/dev/null | head -1)
