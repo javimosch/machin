@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+- **Fixed: `machin run`/`build` rejected hand-written, ordinary-looking MFL
+  with a misleading "illegal base64 data" error.** Found by dogfooding: 5
+  parallel demos were built to stress the least battle-tested recent features
+  (`serve_tls`, `--static` + `serve_tls` + SQLite combined, `tls_client_fd`
+  against a real SMTP server, `--race-safe` against a deliberately-introduced
+  bug, secp256k1/keccak256 outside EIP-712) — every one of those *features*
+  came back clean, but **3 of 5 agents independently hit the same friction**:
+  writing a normal multi-line, Go-like-formatted `.mfl` file (the natural way
+  to write code) and running it directly failed, because `loadMFL` only
+  understood canonical one-declaration-per-line text or the packed base64
+  form — a line like `println(x)` has no whitespace, so it looked like a
+  malformed packed declaration instead of a fragment of a multi-line function
+  body. `machin check` already tolerated this shape (via the same
+  encode-style `splitFunctionsLoc`/`normalize` machinery `machin encode`
+  uses) — `run`/`build` now do too, closing the inconsistency rather than
+  just improving the error message. New `TestLoadMFLAcceptsLooseSource` /
+  `TestLoadMFLStillAcceptsCanonicalAndPacked`; the whole `examples/` corpus
+  (39 files) re-verified with zero regressions.
+- **Fixed: `serve`/`serve_tls`'s startup banner silently vanished under any
+  redirected/piped/daemonized deployment** (`nohup`, systemd, Docker,
+  `&> log`) — `println` before the accept loop was never followed by
+  `flush()`, so it sat in libc's pipe buffer forever (the accept loop never
+  returns to flush it later). Also found via the dogfood demos. One-line fix
+  in both `serve` and `serve_tls` (`framework/machweb.src`).
+- **Fixed a stale gotcha**: `machin guide`'s `no-tls-without-https` still said
+  "there is no raw TLS socket," directly contradicted by `tls_client_fd`/
+  `tls_server_ctx`/`tls_accept` (shipped two releases ago, documented in the
+  `server-tls-v1` gotcha two entries below it). Found via the same dogfood
+  exercise — an agent skimming gotchas top-to-bottom could be misled into
+  thinking STARTTLS isn't possible.
+
 ## v0.94.0
 
 - **Fixed: `a < -b` failed to parse after its own canonical form (issue #208).**

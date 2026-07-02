@@ -107,25 +107,17 @@ blank line between functions. `+"`machin run`"+` also reads the packed base64 fo
 `)
 }
 
-// loadMFL reads a .mfl file — one declaration per non-blank line — and parses
-// it into a Program (struct types + functions). The canonical form is plain
-// text; packed (base64) lines are accepted too (see declFromLine).
+// loadMFL reads a .mfl file and parses it into a Program (struct types and
+// functions). Accepts canonical plain text, the packed base64 form, and
+// loose/spaced multi-line source — see loadDecls.
 func loadMFL(path string) (*Program, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	var decls []string
-	for n, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		decl, err := declFromLine(line)
-		if err != nil {
-			return nil, fmt.Errorf("%s line %d: %w", path, n+1, err)
-		}
-		decls = append(decls, decl)
+	decls, err := loadDecls(string(data))
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	prog, err := ParseProgram(decls)
 	if err != nil {
@@ -135,6 +127,60 @@ func loadMFL(path string) (*Program, error) {
 		return nil, fmt.Errorf("%s: no functions", path)
 	}
 	return prog, nil
+}
+
+// loadDecls turns .mfl file content into one normalized declaration per
+// element, tolerating three source shapes:
+//   - the packed base64 form (`machin pack`'s distribution form: one
+//     base64-encoded declaration per line — recognizable because base64 has
+//     no whitespace, so a file where EVERY non-blank line lacks whitespace is
+//     treated as fully packed);
+//   - canonical plain text (already one normalized declaration per line);
+//   - loose/spaced multi-line source (ordinary Go-like formatting, a
+//     declaration's body spanning several physical lines).
+//
+// The last two are handled identically, via splitFunctionsLoc + normalize —
+// the exact machinery `machin encode`/`check` already use, so `machin
+// build`/`run` tolerate hand-written .mfl the same way `check` already does,
+// instead of misreading a line like `println(x)` (no whitespace, but plainly
+// not base64) as a malformed packed declaration. (Found via dogfooding.)
+func loadDecls(content string) ([]string, error) {
+	allPacked, sawLine := true, false
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		sawLine = true
+		if strings.ContainsAny(line, " \t") {
+			allPacked = false
+			break
+		}
+	}
+	if sawLine && allPacked {
+		var decls []string
+		for n, line := range strings.Split(content, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			raw, err := base64.StdEncoding.DecodeString(line)
+			if err != nil {
+				return nil, fmt.Errorf("line %d: not valid packed (base64) MFL: %w", n+1, err)
+			}
+			decls = append(decls, string(raw))
+		}
+		return decls, nil
+	}
+	blocks, _, err := splitFunctionsLoc(content)
+	if err != nil {
+		return nil, err
+	}
+	decls := make([]string, len(blocks))
+	for i, b := range blocks {
+		decls[i] = normalize(b)
+	}
+	return decls, nil
 }
 
 // declFromLine yields one declaration from a .mfl line. Canonical MFL is plain

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"os"
 	"os/exec"
 	"testing"
@@ -59,5 +60,75 @@ func TestFileIO(t *testing.T) {
 	got := runNative(t, src)
 	if want := "hi there\n1\n\n"; got != want {
 		t.Fatalf("file I/O: got %q, want %q", got, want)
+	}
+}
+
+// loadMFL (used by `machin run`/`build` on a .mfl FILE) used to only accept
+// canonical one-declaration-per-line text or the packed base64 form, so a
+// hand-written .mfl with ordinary Go-like multi-line formatting failed with a
+// misleading "line is neither plain MFL nor base64" error — a line like
+// `println(x)` has no whitespace, so it looked like a malformed packed
+// declaration rather than a fragment of a multi-line function body. `machin
+// check` already tolerated this shape (it uses the same encode-style
+// splitFunctionsLoc/normalize machinery); this closes the inconsistency.
+// Surfaced independently by 3 of 5 dogfood agents in one session (2026-07).
+func TestLoadMFLAcceptsLooseSource(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/loose.mfl"
+	loose := "func main() {\n" +
+		"\tx := 5\n" +
+		"\tif x < 10 {\n" +
+		"\t\tprintln(\"hi\")\n" +
+		"\t}\n" +
+		"}\n"
+	if err := os.WriteFile(path, []byte(loose), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prog, err := loadMFL(path)
+	if err != nil {
+		t.Fatalf("loadMFL on loose multi-line source: %v", err)
+	}
+	if len(prog.Funcs) != 1 || prog.Funcs[0].Name != "main" {
+		t.Fatalf("expected one main() func, got %+v", prog.Funcs)
+	}
+
+	bin, err := os.CreateTemp("", "mfl-loose-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin.Close()
+	defer os.Remove(bin.Name())
+	if err := BuildBinary(prog, bin.Name(), false); err != nil {
+		t.Fatalf("build from loose-source-loaded program: %v", err)
+	}
+	out, err := exec.Command(bin.Name()).Output()
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if string(out) != "hi\n" {
+		t.Fatalf("got %q, want \"hi\\n\"", out)
+	}
+}
+
+// Non-regression: loadMFL must still accept canonical (one decl/line) and
+// packed (base64) .mfl files exactly as before.
+func TestLoadMFLStillAcceptsCanonicalAndPacked(t *testing.T) {
+	dir := t.TempDir()
+
+	canonical := dir + "/canon.mfl"
+	if err := os.WriteFile(canonical, []byte(`func main(){println("canon")}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if prog, err := loadMFL(canonical); err != nil || len(prog.Funcs) != 1 {
+		t.Fatalf("canonical .mfl: prog=%+v err=%v", prog, err)
+	}
+
+	packed := dir + "/packed.mfl"
+	enc := base64.StdEncoding.EncodeToString([]byte(`func main(){println("packed")}`))
+	if err := os.WriteFile(packed, []byte(enc+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if prog, err := loadMFL(packed); err != nil || len(prog.Funcs) != 1 {
+		t.Fatalf("packed .mfl: prog=%+v err=%v", prog, err)
 	}
 }
