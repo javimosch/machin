@@ -213,6 +213,57 @@ func TestRace_SendThenDrop(t *testing.T) {
 	}
 }
 
+// ── happens-before precision (Slice 1.4) ─────────────────────────────────────
+
+func TestRace_PreSpawnSetup(t *testing.T) {
+	// filling a buffer BEFORE spawning a worker is ordered-before the goroutine —
+	// not a race (was a false positive before 1.4).
+	fs := rcCheck(t,
+		"func worker(xs){xs[0]=99}",
+		"func main(){data:=[]int{0,0} data[0]=5 go worker(data)}")
+	rcReport(t, "pre-spawn setup", fs)
+	if len(fs) != 0 {
+		t.Fatalf("want CLEAN (write ordered-before spawn), got %+v", fs)
+	}
+}
+
+func TestRace_JoinBarrier(t *testing.T) {
+	// a goroutine that signals completion (its LAST statement) on a channel the
+	// main thread receives establishes happens-before: reading the data after the
+	// receive is safe.
+	fs := rcCheck(t,
+		"func worker(xs, done){xs[0]=99 done<-1}",
+		"func main(){data:=[]int{0,0} done:=make(chan int) go worker(data,done) x:=<-done print(data[0]+x)}")
+	rcReport(t, "join barrier then read", fs)
+	if len(fs) != 0 {
+		t.Fatalf("want CLEAN (joined before read), got %+v", fs)
+	}
+}
+
+func TestRace_JoinSignalBeforeWrite(t *testing.T) {
+	// SOUNDNESS: the goroutine signals BEFORE it writes (send is not last), so the
+	// receive does NOT establish happens-before on the write — must still flag.
+	fs := rcCheck(t,
+		"func worker(xs, done){done<-1 xs[0]=99}",
+		"func main(){data:=[]int{0,0} done:=make(chan int) go worker(data,done) x:=<-done print(data[0]+x)}")
+	rcReport(t, "signal-before-write (must flag)", fs)
+	if len(fs) == 0 {
+		t.Fatalf("want RACE (send not last -> no valid join), got CLEAN")
+	}
+}
+
+func TestRace_JoinTooFewReceives(t *testing.T) {
+	// SOUNDNESS: two goroutines signal, only one receive — the second is still live
+	// when main reads. Must still flag.
+	fs := rcCheck(t,
+		"func worker(xs, done){xs[0]=99 done<-1}",
+		"func main(){data:=[]int{0,0} done:=make(chan int) go worker(data,done) go worker(data,done) x:=<-done print(data[0]+x)}")
+	rcReport(t, "too-few-receives (must flag)", fs)
+	if len(fs) == 0 {
+		t.Fatalf("want RACE (recv < spawn -> no full join), got CLEAN")
+	}
+}
+
 // ── banner ──────────────────────────────────────────────────────────────────
 
 func TestRace_ZZZBanner(t *testing.T) {

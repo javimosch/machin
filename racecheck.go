@@ -333,9 +333,113 @@ func mapValType(t string) string {
 	return "?"
 }
 
+// goAcc is one access a goroutine performs on a caller variable.
+type goAcc struct {
+	root  string
+	path  accPath
+	write bool
+	mult  int
+	desc  string
+}
+
+// goAccessorsOf re-roots a goroutine's parameter accesses onto the caller's args.
+func goAccessorsOf(st *GoStmt, inLoop bool, sum map[string][]paramAcc) []goAcc {
+	g := st.Call.Callee
+	mult, label := 1, "goroutine"
+	if inLoop {
+		mult, label = 2, "loop-spawned goroutine"
+	}
+	var out []goAcc
+	for j, a := range st.Call.Args {
+		r, pfx, ok := placeOf(a)
+		if !ok {
+			continue
+		}
+		for _, ca := range sum[g] {
+			if ca.idx != j {
+				continue
+			}
+			full := append(clonePath(pfx), ca.path...)
+			verb := "reads"
+			if ca.write {
+				verb = "writes"
+			}
+			out = append(out, goAcc{r, full, ca.write, mult,
+				fmt.Sprintf("%s `go %s(...)` %s `%s`", label, g, verb, r)})
+		}
+	}
+	return out
+}
+
+// sigCompleteParams returns the parameter indices a function "signals complete" on:
+// its LAST statement is `p <- ...`. Because the send is last, every access in the
+// body happens-before it, so a caller that receives from that channel has provably
+// waited for the whole body — the sound basis for a channel-join barrier.
+func sigCompleteParams(f *FuncDecl) map[int]bool {
+	out := map[int]bool{}
+	if f == nil || len(f.Body) == 0 {
+		return out
+	}
+	if ss, ok := f.Body[len(f.Body)-1].(*SendStmt); ok {
+		if id, ok := ss.Ch.(*Ident); ok {
+			for i, p := range f.Params {
+				if p == id.Name {
+					out[i] = true
+				}
+			}
+		}
+	}
+	return out
+}
+
+// recvChanName returns the channel a bare `<-ch` receive reads.
+func recvChanName(e Expr) (string, bool) {
+	if r, ok := e.(*Recv); ok {
+		if id, ok := r.Ch.(*Ident); ok {
+			return id.Name, true
+		}
+	}
+	return "", false
+}
+
+// markLoopSpawns pre-marks roots touched by goroutines inside a loop body as live,
+// so every this-thread access in the loop is treated as concurrent (a later
+// iteration's access races an earlier iteration's goroutine).
+func markLoopSpawns(ss []Stmt, live map[string]int, sum map[string][]paramAcc) {
+	for _, s := range ss {
+		switch st := s.(type) {
+		case *GoStmt:
+			for _, a := range goAccessorsOf(st, true, sum) {
+				live[a.root]++
+			}
+		case *IfStmt:
+			markLoopSpawns(st.Then, live, sum)
+			markLoopSpawns(st.Else, live, sum)
+		case *WhileStmt:
+			markLoopSpawns(st.Body, live, sum)
+		case *RangeStmt:
+			markLoopSpawns(st.Body, live, sum)
+		case *ArenaStmt:
+			markLoopSpawns(st.Body, live, sum)
+		}
+	}
+}
+
+func copyIntMap(m map[string]int) map[string]int {
+	n := make(map[string]int, len(m))
+	for k, v := range m {
+		n[k] = v
+	}
+	return n
+}
+
 // detectRaces runs the inferred data-race analysis over a type-checked program.
 func detectRaces(prog *Program, c *Checker) []raceFinding {
 	sum := accessSummary(prog)
+	byName := map[string]*FuncDecl{}
+	for _, fn := range prog.Funcs {
+		byName[fn.Name] = fn
+	}
 	var out []raceFinding
 	seen := map[string]bool{}
 
@@ -344,82 +448,140 @@ func detectRaces(prog *Program, c *Checker) []raceFinding {
 		if f == nil {
 			continue
 		}
-		// gather accesses to each root within this instance's body
+		// Order-sensitive accessor gathering (Slice 1.4 happens-before). `live[root]`
+		// counts spawned-but-not-yet-joined goroutines touching root; a THIS-THREAD
+		// access is concurrent only while live>0. Accesses before the first relevant
+		// spawn are ordered-before it; accesses after a channel-join barrier that
+		// drains all such goroutines are ordered-after — both are safe. Goroutine
+		// accessors are always recorded (they overlap each other and post-spawn code).
 		accs := map[string][]accessor{}
-		note := func(root string, path accPath, write, byGo bool, mult int, desc string) {
+		recordGo := func(a goAcc) {
+			slot, ok := c.vars[inst][a.root]
+			if !ok || !typeShared(c, slotTypeName(c, slot), a.path) {
+				return
+			}
+			accs[a.root] = append(accs[a.root], accessor{a.write, true, a.mult, a.desc})
+		}
+		recordThis := func(root string, path accPath, write bool, live map[string]int, desc string) {
+			if live[root] <= 0 { // ordered-before, or post-join: not concurrent
+				return
+			}
 			slot, ok := c.vars[inst][root]
-			if !ok {
-				return // not a local/param of this instance (globals: Slice 1.2)
+			if !ok || !typeShared(c, slotTypeName(c, slot), path) {
+				return
 			}
-			if !typeShared(c, slotTypeName(c, slot), path) {
-				return // access doesn't reach shared heap -> cannot race
+			accs[root] = append(accs[root], accessor{write, false, 1, desc})
+		}
+
+		var visit func(ss []Stmt, inLoop, top bool, live, spawnCnt, recvCnt map[string]int, pending map[string]map[string]int)
+		visit = func(ss []Stmt, inLoop, top bool, live, spawnCnt, recvCnt map[string]int, pending map[string]map[string]int) {
+			reads := func(e Expr) {
+				noteReads(e, func(root string, path accPath, write, byGo bool, desc string) {
+					recordThis(root, path, write, live, desc)
+				})
 			}
-			accs[root] = append(accs[root], accessor{write, byGo, mult, desc})
-		}
-		noteRead := func(root string, path accPath, write, byGo bool, desc string) {
-			note(root, path, write, byGo, 1, desc)
-		}
-		var visit func(ss []Stmt, inLoop bool)
-		visit = func(ss []Stmt, inLoop bool) {
+			// a top-level receive on a join channel: once received >= spawned, every
+			// goroutine that signals-complete on it has finished -> drain their roots.
+			joinRecv := func(e Expr) {
+				if !top || inLoop {
+					return
+				}
+				ch, ok := recvChanName(e)
+				if !ok {
+					return
+				}
+				recvCnt[ch]++
+				if spawnCnt[ch] >= 1 && recvCnt[ch] >= spawnCnt[ch] {
+					for root, n := range pending[ch] {
+						if live[root] -= n; live[root] < 0 {
+							live[root] = 0
+						}
+					}
+					pending[ch] = map[string]int{}
+					spawnCnt[ch] = 0
+					recvCnt[ch] = 0
+				}
+			}
 			for _, s := range ss {
 				switch st := s.(type) {
 				case *GoStmt:
-					g := st.Call.Callee
-					// a goroutine spawned in a loop = N concurrent instances of itself
-					mult, label := 1, "goroutine"
-					if inLoop {
-						mult, label = 2, "loop-spawned goroutine"
+					touched := map[string]bool{}
+					for _, a := range goAccessorsOf(st, inLoop, sum) {
+						recordGo(a)
+						touched[a.root] = true
 					}
-					for j, a := range st.Call.Args {
-						r, pfx, ok := placeOf(a)
-						if !ok {
-							continue
-						}
-						for _, ca := range sum[g] {
-							if ca.idx != j {
+					for r := range touched {
+						live[r]++
+					}
+					if top && !inLoop { // join bookkeeping (sound only on the linear path)
+						sig := sigCompleteParams(byName[st.Call.Callee])
+						for j, arg := range st.Call.Args {
+							if !sig[j] {
 								continue
 							}
-							full := append(clonePath(pfx), ca.path...)
-							verb := "reads"
-							if ca.write {
-								verb = "writes"
+							if id, ok := arg.(*Ident); ok {
+								spawnCnt[id.Name]++
+								if pending[id.Name] == nil {
+									pending[id.Name] = map[string]int{}
+								}
+								for r := range touched {
+									pending[id.Name][r]++
+								}
 							}
-							note(r, full, ca.write, true, mult,
-								fmt.Sprintf("%s `go %s(...)` %s `%s`", label, g, verb, r))
 						}
 					}
 				case *IndexAssign:
 					if r, p, ok := placeOf(st.Target); ok {
-						noteRead(r, p, true, false, fmt.Sprintf("this thread writes `%s`", r))
+						recordThis(r, p, true, live, fmt.Sprintf("this thread writes `%s`", r))
 					}
 				case *FieldAssign:
 					if r, p, ok := placeOf(st.Target); ok {
-						noteRead(r, p, true, false, fmt.Sprintf("this thread writes `%s`", r))
+						recordThis(r, p, true, live, fmt.Sprintf("this thread writes `%s`", r))
 					}
 				case *ExprStmt:
-					noteReads(st.X, noteRead)
+					joinRecv(st.X)
+					reads(st.X)
 				case *AssignStmt:
-					noteReads(st.Val, noteRead)
+					joinRecv(st.Val)
+					reads(st.Val)
+				case *MultiAssign:
+					for _, e := range st.Rhs {
+						joinRecv(e)
+						reads(e)
+					}
 				case *ReturnStmt:
 					for _, e := range st.Vals {
-						noteReads(e, noteRead)
+						reads(e)
 					}
 				case *IfStmt:
-					noteReads(st.Cond, noteRead)
-					visit(st.Then, inLoop)
-					visit(st.Else, inLoop)
+					reads(st.Cond)
+					thenLive, elseLive := copyIntMap(live), copyIntMap(live)
+					visit(st.Then, inLoop, false, thenLive, spawnCnt, recvCnt, pending)
+					visit(st.Else, inLoop, false, elseLive, spawnCnt, recvCnt, pending)
+					for k, v := range thenLive { // conservative merge: live if either branch
+						if v > live[k] {
+							live[k] = v
+						}
+					}
+					for k, v := range elseLive {
+						if v > live[k] {
+							live[k] = v
+						}
+					}
 				case *WhileStmt:
-					noteReads(st.Cond, noteRead)
-					visit(st.Body, true)
+					reads(st.Cond)
+					markLoopSpawns(st.Body, live, sum)
+					visit(st.Body, true, false, live, spawnCnt, recvCnt, pending)
 				case *RangeStmt:
-					noteReads(st.X, noteRead)
-					visit(st.Body, true)
+					reads(st.X)
+					markLoopSpawns(st.Body, live, sum)
+					visit(st.Body, true, false, live, spawnCnt, recvCnt, pending)
 				case *ArenaStmt:
-					visit(st.Body, inLoop)
+					visit(st.Body, inLoop, top, live, spawnCnt, recvCnt, pending)
 				}
 			}
 		}
-		visit(f.Body, false)
+		visit(f.Body, false, true, map[string]int{}, map[string]int{}, map[string]int{}, map[string]map[string]int{})
 
 		// a race: >=2 concurrent "threads" reach a shared root, >=1 of them a write,
 		// >=1 a goroutine. Multiplicity counts a loop-spawned goroutine as 2 threads,

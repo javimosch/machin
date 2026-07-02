@@ -113,6 +113,28 @@ pipe / pool / wscat) + the `examples/complex` goroutine programs:
   the happens-before credit (a helper main calls before spawning is still treated as
   concurrent); move tracking is intraprocedural.
 
+### Slice 1.4 done — happens-before precision (sound false-positive reduction)
+Made the per-instance analysis **order-sensitive** so it removes findings only where
+happens-before provably holds (removing a real race would be a false negative — the one
+thing this arc must never do):
+- **`live[root]`** counts spawned-but-not-yet-joined goroutines touching a root. A
+  THIS-THREAD access is concurrent only while `live>0`. So an access **before** the first
+  relevant spawn is ordered-before it (the common "fill a buffer, then spawn workers"
+  pattern is now clean); goroutine accessors are still always recorded (they overlap).
+- **Channel-join barrier**: a `go f(...done)` whose callee's LAST statement is `done<-…`
+  provably completes its whole body before a receiver reads `done`. When main receives on
+  such a channel at least as many times as it spawned (counted on the linear path), the
+  joined goroutines' roots are drained from `live`, so post-join reads are clean.
+- Branches use copied `live` merged conservatively (live if either branch); loops pre-mark
+  their spawned roots so every iteration's access is concurrent. Join counting runs only
+  on the non-loop linear path (unbounded loop receives stay conservative).
+- **Soundness verified by adversarial tests**: signal-before-write (send not last),
+  post-spawn access, and too-few-receives all STILL flag; only provably-ordered accesses
+  are suppressed. Corpus still 0 false positives; earlier races all still caught.
+- Remaining conservative case (documented, → future): two goroutines that are sequentially
+  joined then re-spawned are still reported as racing each other (goroutine-vs-goroutine
+  accessors aren't liveness-gated — that needs a full happens-before graph).
+
 ### Integration points (Go reference compiler)
 - **Types**: the pass needs resolved types for `sharesHeap`. Hook the `Checker` after it
   finishes (`types.go`) and expose a `typeOfPlace(fn, expr)` query, or build a light place-
