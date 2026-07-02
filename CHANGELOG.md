@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.89.0
+
 - **`machin guide` gained a `proof` section — the "why trust these claims" answer, as
   structured data an agent can read and relay, not a blog post a human has to find.**
   Schema bumped to `machin.guide/v3`. `proof.selfHosting` states the self-hosting fixpoint;
