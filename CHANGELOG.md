@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.95.0
+
 - **Fixed: `machin run`/`build` rejected hand-written, ordinary-looking MFL
   with a misleading "illegal base64 data" error.** Found by dogfooding: 5
   parallel demos were built to stress the least battle-tested recent features
