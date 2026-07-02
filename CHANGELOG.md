@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.94.0
+
 - **Fixed: `a < -b` failed to parse after its own canonical form (issue #208).**
   `machin encode` tightens whitespace around operators, so `x < -1` becomes
   byte-adjacent `x<-1` — and the lexer greedily merged that into a single
