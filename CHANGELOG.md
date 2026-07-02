@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.97.0
+
 - **`framework/smtp.src` gained STARTTLS support, closing issue #260's SMTP half.**
   `smtp_send` takes a new `use_tls` argument: after `EHLO`, it sends `STARTTLS`, upgrades
   the connection in place via `tls_client_fd` (shipped v0.92.0), and re-issues `EHLO` over
