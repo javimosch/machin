@@ -171,6 +171,11 @@ func machinGuide() guideCatalog {
 					Result:    "a program using http_get/https_get: 26.5 kB dynamic vs 5.28 MB fully static (OpenSSL + an embedded ~245 KB CA root bundle) — verified in a genuine empty `FROM scratch` container: a real HTTPS request with full certificate verification succeeds, and a known self-signed/untrusted cert is correctly rejected (proving verification is active, not disabled)",
 					Reproduce: "bench/tls-static: ./run.sh (build+measure+run; verifies the FROM-scratch case too if Docker is installed)",
 				},
+				{
+					Axis:      "data-race safety",
+					Result:    "a textbook shared-counter race (4 threads, no sync): `machin check` catches it at compile time on the untouched code (RACE001) and `--race-safe` refuses the build; Go's compiler accepts it silently (and visibly corrupted the output on this run — confirmed an independent bug, not a false claim, via `go run -race`); Rust's naive translation fails to compile (E0133), and its safe fix needs `Arc<AtomicI64>`/`Ordering` wrapper types machin's zero-annotation channel-based fix doesn't. Numeric output alone is NOT reliable evidence of a race either way (machin's racy build printed the correct sum here too) — which is exactly why compile-time detection beats hoping a test run exposes it",
+					Reproduce: "bench/race-freedom: ./run.sh (needs machin, go, rustc)",
+				},
 			},
 		},
 		Types: []guideNote{

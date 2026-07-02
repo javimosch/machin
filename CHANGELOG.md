@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- **`machin guide`'s `proof` section gains a 5th entry: data-race safety —
+  closing the gap where the project's flagship differentiator (v0.91.0's
+  inferred data-race freedom) had prose docs but no reproducible benchmark,
+  unlike everything else in that section.** New `bench/race-freedom`: the same
+  textbook shared-counter race (4 threads, no sync, expected sum 8,000,000) in
+  machin, Go, and Rust. `machin check` catches it at compile time on the
+  untouched code (`RACE001`) and `--race-safe` refuses the build; Go's compiler
+  accepts it silently (and visibly corrupted the output on this run — 3
+  wrong numbers, confirmed a genuine bug via `go run -race`, not a false
+  claim); Rust's naive translation fails to compile (`E0133`), and its actual
+  safe fix needs `Arc<AtomicI64>`/`Ordering` wrapper types machin's
+  zero-annotation channel-based fix doesn't need. The more useful finding than
+  "it crashes": numeric output alone is NOT reliable evidence of a race either
+  way — machin's racy build printed the correct sum on this run too, and so
+  did Rust's `unsafe`-escaped version — which is exactly why compile-time
+  detection matters more than hoping a test run happens to expose the bug.
+  See issue #287.
+
 ## v0.92.0
 
 - **Server-side TLS + STARTTLS — machweb can terminate HTTPS itself, no reverse
