@@ -140,6 +140,22 @@ func elem_ctype(iid, idx) (s) {
     }
     s = "int64_t"
 }
+
+// chan_elem_typename: the MFL type-NAME of a channel node's element ("string", a
+// struct name, or a []/map[ form for slice/map elements; any scalar -> "int", which
+// carries no strings/structs so the string-offset walk is a no-op).
+func chan_elem_typename(iid, idx) (tn) {
+    tn = "int"
+    r := node_slot_of(iid, idx)
+    if r < 0 { return tn }
+    if g_elem[r] < 0 { return tn }
+    er := find(g_elem[r])
+    ek := g_kind[er]
+    if ek == 5 { tn = "string"  return tn }
+    if ek == 8 { tn = g_sname[er]  return tn }
+    if ek == 7 { tn = "[]x"  return tn }      // slice element -> chan_needs_json (defer)
+    if ek == 10 { tn = "map[x]x"  return tn }  // map element -> chan_needs_json (defer)
+}
 // map_key_args: (ik, sk) for a map op — string keys pass ("0", key), else (key, "NULL").
 func map_key_args(iid, map_idx, keyexpr) (ik, sk) {
     r := node_slot_of(iid, map_idx)
@@ -202,21 +218,22 @@ func cg_expr(iid, idx) (out) {
     if k == K_FIELD { out = cg_field(iid, idx)  return out }
     if k == K_MAKEMAP { out = cg_makemap(iid, idx)  return out }
     if k == K_MAKECHAN {
-        // scalar element (int/float/bool): mfl_make_chan(sizeof(T), 0, 0, 0). String /
-        // slice / map / struct elements (JSON round-trip or string-offset copy) are
-        // later slices.
-        r := node_slot_of(iid, idx)
-        ek := 0 - 1
-        if r >= 0 { if g_elem[r] >= 0 { ek = kind_of(g_elem[r]) } }
-        if ek == 1 || ek == 2 || ek == 3 || ek == 4 {
-            out = "mfl_make_chan(sizeof(" + elem_ctype(iid, idx) + "), 0, 0, 0)"
+        // scalar: mfl_make_chan(sizeof(T), 0, 0, 0). string / struct-with-strings: the
+        // fast string-offset copy path (offsetof of each string field). slice/map (or a
+        // struct reaching one): a JSON round-trip -> deferred to a later slice.
+        ect := elem_ctype(iid, idx)
+        tn := chan_elem_typename(iid, idx)
+        if chan_needs_json(tn) == 1 { g_cg_unsup = 1  out = "0"  return out }
+        offs := chan_str_offsets(tn, "")
+        if len(offs) == 0 {
+            out = "mfl_make_chan(sizeof(" + ect + "), 0, 0, 0)"
             return out
         }
-        if ek == 5 {   // string element: one string-offset at byte 0 (fast in-place copy)
-            out = "mfl_make_chan(sizeof(" + elem_ctype(iid, idx) + "), 0, 0, 1, (int)(0))"
-            return out
-        }
-        g_cg_unsup = 1  out = "0"  return out
+        casted := []string{}
+        j := 0
+        for j < len(offs) { casted = append(casted, "(int)(" + offs[j] + ")")  j = j + 1 }
+        out = "mfl_make_chan(sizeof(" + ect + "), 0, 0, " + str(len(offs)) + ", " + join(casted, ", ") + ")"
+        return out
     }
     if k == K_RECV {
         out = "({ " + node_ctype(iid, idx) + " _r; mfl_chan_recv(" + cg_expr(iid, n.a) + ", &_r); _r; })"

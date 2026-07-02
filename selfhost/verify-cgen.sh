@@ -217,6 +217,21 @@ func main() {
 EOF
 run "$T/h9.src"
 
+# h10 — struct channels via the string-offset copy path (Slice 3 of #280).
+cat > "$T/h10.src" <<'EOF'
+type Result struct { url string  status int  label string  ok bool }
+func work(ch, u) { r := Result{u, 200, "ok", true}  ch <- r }
+func main() {
+    ch := make(chan Result)
+    go work(ch, "a")
+    go work(ch, "bb")
+    r1 := <-ch
+    r2 := <-ch
+    print(r1.status + r2.status)
+}
+EOF
+run "$T/h10.src"
+
 # SELF-APPLICATION: the MFL codegen emits byte-identical C for the compiler's OWN
 # source (checker + full codegen) — the fixpoint-adjacent milestone.
 $N "$MACHIN" encode selfhost/lex.src selfhost/parse.src selfhost/check.src \

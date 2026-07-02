@@ -30,6 +30,48 @@ func struct_def_idx(name) (i) {
     for j < len(g_structdefs) { if g_structdefs[j].name == name && g_structdefs[j].cstruct == 0 { i = j  return i }  j = j + 1 }
 }
 
+// chan_needs_json: does a channel element of type-name `tn` reach a slice or map (by
+// value)? Those can't be deep-copied by the flat string-offset path and instead go
+// through a JSON round-trip (a later slice) -> deferred here.
+func chan_needs_json(tn) (b) {
+    b = 0
+    if has_prefix(tn, "[]") || has_prefix(tn, "map[") { b = 1  return b }
+    di := struct_def_idx(tn)
+    if di < 0 { return b }
+    d := g_structdefs[di]
+    j := 0
+    for j < len(d.fnames) {
+        if chan_needs_json(d.ftypes[j]) == 1 { b = 1  return b }
+        j = j + 1
+    }
+}
+
+// chan_str_offsets: the byte offsets (as offsetof() C expressions) of every string
+// field reachable in a channel element of type-name `tn` — the fast in-place
+// string-copy path. A plain string element sits at `base`+0.
+func chan_str_offsets(tn, base) (offs) {
+    offs = []string{}
+    if tn == "string" { offs = append(offs, base + "0")  return offs }
+    di := struct_def_idx(tn)
+    if di < 0 { return offs }
+    d := g_structdefs[di]
+    cs := "mfl_" + tn
+    j := 0
+    for j < len(d.fnames) {
+        fo := base + "offsetof(" + cs + ", f_" + d.fnames[j] + ")"
+        if d.ftypes[j] == "string" {
+            offs = append(offs, fo)
+        } else {
+            if struct_def_idx(d.ftypes[j]) >= 0 {
+                sub := chan_str_offsets(d.ftypes[j], fo + " + ")
+                k := 0
+                for k < len(sub) { offs = append(offs, sub[k])  k = k + 1 }
+            }
+        }
+        j = j + 1
+    }
+}
+
 // element/map accessors from a node's slot
 func elem_kind_of(iid, idx) (k) {
     r := node_slot_of(iid, idx)
