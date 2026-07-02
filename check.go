@@ -126,7 +126,7 @@ func analyzeSource(combined string, srcNames []string) CheckResult {
 		prog, perr := ParseProgram(decls)
 		if perr != nil {
 			diags = append(diags, Diagnostic{Severity: "error", Phase: "parse", Code: classifyParse(perr.Error()), Message: perr.Error()})
-		} else if _, cerr := Check(prog); cerr != nil {
+		} else if c, cerr := Check(prog); cerr != nil {
 			msg := strings.TrimPrefix(cerr.Error(), "typecheck: ")
 			decl, line := locateCheckError(msg, decls, blockLines)
 			diags = append(diags, Diagnostic{
@@ -136,6 +136,18 @@ func analyzeSource(combined string, srcNames []string) CheckResult {
 				Decl:    decl,
 				Line:    line,
 			})
+		} else {
+			// concurrency phase: inferred data-race freedom (Slice 1.1). Only runs
+			// on a clean typecheck. Reported as errors in `check` (option a).
+			declLine := map[string]int{}
+			for i, d := range decls {
+				declLine[declName(d)] = blockLines[i]
+			}
+			for _, rf := range detectRaces(prog, c) {
+				d := rf.toDiagnostic()
+				d.Line = declLine[rf.Decl]
+				diags = append(diags, d)
+			}
 		}
 	}
 

@@ -91,6 +91,7 @@ usage:
   machin build <file.mfl> --static   fully static binary (bundles SQLite; pair with CC=musl-gcc for FROM scratch)
   machin build <file.mfl> --emit-c   print the generated C and stop
   machin build|run <file.mfl> --safe  insert bounds / div-zero / overflow checks
+  machin build|run <file.mfl> --race-safe  refuse to build if a data race is inferred
   machin check <src...>|--stdin      lex+parse+typecheck only (no cc); add --json for machine-readable diagnostics
   machin encode <src>                mint canonical MFL from loose Go-like text (framework/*.src resolve from the binary)
   machin framework list|<name>|--vendor   the embedded framework modules (machweb, db drivers, …)
@@ -151,13 +152,36 @@ func declFromLine(line string) (string, error) {
 	return string(raw), nil
 }
 
+// raceGate runs the inferred data-race analysis and returns a non-nil error listing
+// every race, for use under `--race-safe` (option a: build/run refuses on a race).
+func raceGate(prog *Program) error {
+	c, err := Check(prog)
+	if err != nil {
+		return nil // let the normal compile path report the type error
+	}
+	fs := detectRaces(prog, c)
+	if len(fs) == 0 {
+		return nil
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "data race(s) detected (--race-safe): %d\n", len(fs))
+	for _, rf := range fs {
+		fmt.Fprintf(&b, "  %s in %s(): data race on `%s` — %s\n",
+			rf.Kind, rf.Decl, rf.Root, strings.Join(rf.Writers, "; "))
+	}
+	return fmt.Errorf("%s", b.String())
+}
+
 func cmdRun(args []string) error {
-	safe := false
+	safe, raceSafe := false, false
 	var src string
 	for _, a := range args {
-		if a == "--safe" {
+		switch a {
+		case "--safe":
 			safe = true
-		} else {
+		case "--race-safe":
+			raceSafe = true
+		default:
 			src = a
 		}
 	}
@@ -167,6 +191,11 @@ func cmdRun(args []string) error {
 	prog, err := loadMFL(src)
 	if err != nil {
 		return err
+	}
+	if raceSafe {
+		if err := raceGate(prog); err != nil {
+			return err
+		}
 	}
 	bin, err := os.CreateTemp("", "mfl-run-*")
 	if err != nil {
@@ -190,7 +219,7 @@ func cmdRun(args []string) error {
 
 func cmdBuild(args []string) error {
 	var src, out, target string
-	emitC, safe, static := false, false, false
+	emitC, safe, static, raceSafe := false, false, false, false
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "-o":
@@ -211,6 +240,8 @@ func cmdBuild(args []string) error {
 			safe = true
 		case "--static":
 			static = true
+		case "--race-safe":
+			raceSafe = true
 		default:
 			src = args[i]
 		}
@@ -231,6 +262,11 @@ func cmdBuild(args []string) error {
 	prog, err := loadMFL(src)
 	if err != nil {
 		return err
+	}
+	if raceSafe {
+		if err := raceGate(prog); err != nil {
+			return err
+		}
 	}
 	if emitC {
 		c, _, err := CompileToCTarget(prog, safe, target)
@@ -263,7 +299,8 @@ func cmdBuild(args []string) error {
 // cmdEncode lifts loose Go-like text into canonical MFL: one normalized function
 // per line, a blank line between functions. Multiple source files are
 // concatenated in order, so a framework can be composed with an app:
-//   machin encode framework/machweb.src myapp.src > app.mfl
+//
+//	machin encode framework/machweb.src myapp.src > app.mfl
 func cmdEncode(args []string) error {
 	if len(args) < 1 {
 		return fmt.Errorf("encode: need at least one source file")

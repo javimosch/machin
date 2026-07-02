@@ -28,7 +28,7 @@ var skillDeploy string
 
 // machinVersion is the single version string for the toolchain. Bump it when
 // cutting a release (alongside README badge / SPEC / CHANGELOG).
-const machinVersion = "0.90.0"
+const machinVersion = "0.91.0"
 
 // ---- the source-of-truth feature catalog ----
 //
@@ -57,8 +57,8 @@ type guideNote struct {
 
 type guideDomain struct {
 	Name    string `json:"name"`
-	Skill   string `json:"skill"`   // run `machin guide --skill <this>` for the full how-to ("" = none yet)
-	Howto   string `json:"howto"`   // where the how-to lives
+	Skill   string `json:"skill"` // run `machin guide --skill <this>` for the full how-to ("" = none yet)
+	Howto   string `json:"howto"` // where the how-to lives
 	Summary string `json:"summary"`
 }
 
@@ -139,9 +139,9 @@ func machinGuide() guideCatalog {
 		},
 		Commands: []guideCommand{
 			{"run", "machin run <file.mfl> [--safe]", "compile to native and execute in one step"},
-			{"build", "machin build <file.mfl> [-o out] [--target wasm] [--static] [--emit-c] [--safe]", "compile to a native binary (or a wasm module with --target wasm; mark exports with `export func`). --static bundles SQLite for a FROM-scratch binary (pair with CC=musl-gcc); --emit-c prints the generated C and stops; --safe inserts bounds/div-zero/overflow checks."},
+			{"build", "machin build <file.mfl> [-o out] [--target wasm] [--static] [--emit-c] [--safe] [--race-safe]", "compile to a native binary (or a wasm module with --target wasm; mark exports with `export func`). --static bundles SQLite for a FROM-scratch binary (pair with CC=musl-gcc); --emit-c prints the generated C and stops; --safe inserts bounds/div-zero/overflow checks; --race-safe refuses to build if a data race is inferred (see `check`)."},
 			{"encode", "machin encode <src...>", "mint canonical MFL (one declaration/line) from loose Go-like .src; multiple files concatenate (compose a framework with an app); framework/*.src resolve from the binary."},
-			{"check", "machin check [--json] <src...>|--stdin", "lex/parse/typecheck ONLY — no cc, milliseconds — the fast write→check→fix loop. --json returns {ok, errorCount, diagnostics:[{severity, phase, code, message, decl, line, snippet}]}, exit 0 iff clean. Branch on the stable `code` (type-mismatch/undefined-name/undefined-field/arity-mismatch/parse-*/no-main/unsupported-construct/...), NOT the message text; `decl` is the function to fix. Reserve a full `build` for when you actually need the binary."},
+			{"check", "machin check [--json] <src...>|--stdin", "lex/parse/typecheck + inferred data-race analysis — no cc, milliseconds — the fast write→check→fix loop. --json returns {ok, errorCount, diagnostics:[{severity, phase, code, message, decl, line, snippet}]}, exit 0 iff clean. Branch on the stable `code` (type-mismatch/undefined-name/undefined-field/arity-mismatch/parse-*/no-main/unsupported-construct/...), NOT the message text; `decl` is the function to fix. The `race` phase reports inferred data races with NO annotations (the guarantee Rust needs Send/Sync for): RACE001 write/write, RACE002 read/write, RACE004 use-after-move (value used after `ch <- v` moved it), each with a counterexample in `message`. Reserve a full `build` for when you actually need the binary."},
 			{"pack", "machin pack <file.mfl>", "emit the dense base64 distribution form (`run` reads either plain or packed)"},
 			{"guide", "machin guide [--text] [--skill <name>]", "this version-exact catalog as JSON (--text for prose); --skill <start|web|gamedev|backend|deploy> prints a domain how-to"},
 			{"framework", "machin framework list|<name>|--vendor", "inspect the embedded framework modules (machweb, db drivers, …); --vendor writes a local copy"},
@@ -427,6 +427,7 @@ func handle_one(ctx, fd) { tls := tls_accept(ctx, fd)
 			{"composite-literal", "T{...} literals need T to be a known struct type at parse time. `machin encode` registers all `type` decls first, so this just works in normal builds."},
 			{"stdout-buffering", "libc fully buffers stdout when it's a pipe; a streaming program must call flush() after a write to appear promptly downstream. A TTY is line-buffered."},
 			{"channels-cross-goroutine", "Values sent over a channel are deep-copied across the goroutine/arena boundary (strings fast; slices/maps/structs via JSON), so they survive the sender goroutine. Channels of closures/funcs are not deep-copied."},
+			{"data-race-safety", "`machin check` INFERS data-race freedom with no annotations (the guarantee Rust needs Send/Sync for) and reports races as errors (phase `race`: RACE001 write/write, RACE002 read/write, RACE004 use-after-move); `build|run --race-safe` refuses to compile one. What races: a slice/map (or struct-with-slice field) shared across goroutines and written by one; a package global touched concurrently (even a scalar — globals are one shared cell); a captured slice in a closure passed to a `go`-spawned function. The safe pattern is SHARE BY COMMUNICATING: give each goroutine its own data and pass results over a channel — after `ch <- v`, don't touch `v` (ownership moved). Reads-only sharing is fine; a value written before a `go` (or read after joining the goroutine via a channel receive) is ordered, not a race."},
 			{"select-closed", "A closed channel makes its select receive case ready, firing repeatedly (with ok==false if you wrote `case v, ok := <-ch:`). Detect close and stop selecting on it."},
 			{"no-tls-without-https", "There is no raw TLS socket; use https_get/https_post (REST) and wss_* (WebSocket). Plain dial/listen are TCP without TLS."},
 			{"server-tls-v1", "tls_server_ctx/tls_accept let machweb terminate HTTPS itself (serve_tls in framework/machweb.src) — no reverse proxy needed for a simple/internal service. v1 scope: one cert per tls_server_ctx (no SNI multi-cert virtual hosting), no client-cert verification (not mutual TLS), no ACME/auto-renewal (bring your own cert+key, renew it yourself), and serve_tls does NOT support res.is_hijack/res.is_stream (protocol upgrades, SSE) yet — those get a 501 rather than misbehaving; use serve behind a reverse proxy for those endpoints. tls_client_fd is the STARTTLS primitive (upgrade an already-connected, plaintext-negotiated fd to TLS in place, e.g. after SMTP EHLO/STARTTLS) — it verifies the remote cert exactly like https_get does, so an untrusted/self-signed cert is rejected, not silently accepted."},
