@@ -1793,13 +1793,13 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		}
 		c.addPair(argSlots[0], c.cInt)
 		return c.cBytes, nil
-	case "sha256_bytes", "sha1_bytes", "x25519_pub", "ed25519_pub":
+	case "sha256_bytes", "sha1_bytes", "x25519_pub", "ed25519_pub", "keccak256", "secp256k1_pubkey":
 		if len(argSlots) != 1 {
 			return 0, fmt.Errorf("%s: 1 arg (bytes)", ex.Callee)
 		}
 		c.addPair(argSlots[0], c.cBytes)
 		return c.cBytes, nil
-	case "hmac_sha256_bytes", "x25519_shared", "ed25519_sign":
+	case "hmac_sha256_bytes", "x25519_shared", "ed25519_sign", "secp256k1_sign_recoverable", "secp256k1_recover":
 		if len(argSlots) != 2 {
 			return 0, fmt.Errorf("%s: 2 args (bytes, bytes)", ex.Callee)
 		}

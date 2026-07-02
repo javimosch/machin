@@ -257,6 +257,10 @@ func machinGuide() guideCatalog {
 			{"aes_cbc_decrypt", "(bytes, bytes, bytes) -> bytes", "AES-CBC decrypt (key, iv, ciphertext) -> plaintext (empty on bad padding)", "crypto"},
 			{"xeddsa_sign", "(bytes, bytes, bytes) -> bytes", "XEdDSA sign over Curve25519 (priv32, msg, random64) -> 64-byte sig (Signal/WhatsApp identity sigs); needs libsodium", "crypto"},
 			{"xeddsa_verify", "(bytes, bytes, bytes) -> bool", "XEdDSA verify (curve25519 pub32, msg, sig64); needs libsodium", "crypto"},
+			{"keccak256", "(bytes) -> bytes", "Keccak-256 (Ethereum's hash — NOT NIST SHA3-256, different padding) -> 32-byte digest; for EIP-712/tx hashing", "crypto"},
+			{"secp256k1_pubkey", "(bytes) -> bytes", "secp256k1 public key from a 32-byte private key -> 65-byte uncompressed point (0x04||X||Y); an Ethereum address is the last 20 bytes of keccak256(pub[1:])", "crypto"},
+			{"secp256k1_sign_recoverable", "(bytes, bytes) -> bytes", "secp256k1 ECDSA sign (priv32, hash32) -> 65-byte r||s||v (EIP-2 canonical low-S; v is 27/28) — the primitive behind eth_sign/EIP-712/raw tx signing", "crypto"},
+			{"secp256k1_recover", "(bytes, bytes) -> bytes", "secp256k1 ECDSA recover (hash32, sig65 r||s||v) -> the 65-byte uncompressed public key (empty bytes if invalid) — same math Solidity's ecrecover uses, for self-checking a signature before broadcasting it", "crypto"},
 			// sqlite (libsqlite3, linked only when used)
 			{"sqlite_open", "(string) -> int", "open/create a SQLite db file -> handle (0 on fail); \":memory:\" for in-memory", "db"},
 			{"sqlite_exec", "(int, string[, []string]) -> int", "run SQL with no result; optional []string binds the ? params (injection-safe); 0 ok", "db"},
@@ -334,6 +338,12 @@ func main() { println(str(id(42)) + " " + id("hi")) }`},
 	println(str(total)) }`},
 			{"ffi-extern", `extern "m" { cflags "-lm" header "math.h" fn sqrt(float) float }
 func main() { println(str(sqrt(2.0))) }`},
+			{"eip712-sign", `func eip712_digest(domainSeparator, structHash) (h) { prefix := from_hex("1901")  h = keccak256(bytes_concat(bytes_concat(prefix, domainSeparator), structHash)) }
+func main() { priv := rand_bytes(32)  pub := secp256k1_pubkey(priv)
+	domainSeparator := keccak256(bytes("name:MyApp,chainId:1"))  structHash := keccak256(bytes("Mail(string contents)hello"))
+	digest := eip712_digest(domainSeparator, structHash)
+	sig := secp256k1_sign_recoverable(priv, digest)
+	println(to_hex(secp256k1_recover(digest, sig)) == to_hex(pub)) }`},
 		},
 		Gotchas: []guideNote{
 			{"struct-value-semantics", "Structs are VALUE types: passing or assigning one copies it, so a function cannot mutate a caller's struct (and a builder must return the updated struct). For shared mutable state use a map — a reference type, so m[k]=v survives the holder being passed by value (see framework/flags.src)."},
@@ -357,6 +367,7 @@ func main() { println(str(sqrt(2.0))) }`},
 			{"channels-cross-goroutine", "Values sent over a channel are deep-copied across the goroutine/arena boundary (strings fast; slices/maps/structs via JSON), so they survive the sender goroutine. Channels of closures/funcs are not deep-copied."},
 			{"select-closed", "A closed channel makes its select receive case ready, firing repeatedly (with ok==false if you wrote `case v, ok := <-ch:`). Detect close and stop selecting on it."},
 			{"no-tls-without-https", "There is no raw TLS socket; use https_get/https_post (REST) and wss_* (WebSocket). Plain dial/listen are TCP without TLS."},
+			{"eip712-uint256", "keccak256/secp256k1_pubkey/secp256k1_sign_recoverable/secp256k1_recover give the primitives for Ethereum-style signing (EIP-712 typed data, eth_sign, raw tx signing), but a full EIP-712 ABI encoder is NOT a builtin — you assemble domainSeparator/structHash by hand from keccak256 + bytes_concat (see the eip712-sign idiom). The real gap: Solidity `uint256` struct fields (token IDs, amounts, salts) routinely exceed MFL's 64-bit `int`, so encode them as 32-byte big-endian `bytes` (from a hex string the caller already has, e.g. from an API) rather than as `int` — MFL has no builtin decimal-string-to-bytes32 bignum conversion. An Ethereum address is the last 20 bytes of keccak256(pub[1:]) (pub is the 65-byte uncompressed key, so skip its 0x04 prefix first — bytes_sub(pub, 1, 65))."},
 			{"floats-over-chan-json", "A slice/map channel element round-trips through JSON, which formats floats with %g (not bit-exact for pathological doubles)."},
 			{"memory", "Per-goroutine arena, reclaimed in bulk when the goroutine returns; wrap a hot allocating loop in `arena { ... }` to keep peak memory flat. Build with --safe for bounds/overflow/div-zero checks."},
 			{"wasm-target", "`machin build app.mfl --target wasm` compiles to a WebAssembly reactor module (needs `zig` as the C->wasm compiler; override with ZIG=). Mark host-callable functions `export func name(...)` — they become wasm exports under their clean name (and are reachability roots, so a wasm module needs no main). A headerless `extern \"env\" { fn dom_set(string) }` becomes a wasm IMPORT the JS host supplies (the `extern \"<lib>\"` name is the import module). Marshaling host-side: machin ints are i64 -> pass/return BigInt; strings are a pointer into the exported `memory` (decode NUL-terminated UTF-8). App state can live in machin via package globals (`var count = 0`), which persist across export calls. See docs/NORTH-STAR-WEB.md."},
