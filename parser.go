@@ -570,8 +570,11 @@ func (p *Parser) parseStmt() (Stmt, error) {
 		}
 		return &AssignStmt{Name: name, Op: ":=", Val: val}, nil
 	}
-	// expression, possibly an assignment target (ident = / slice[i] =)
-	x, err := p.parseExpr()
+	// expression, possibly an assignment target (ident = / slice[i] =), or the
+	// channel of a send statement (ch <- v) — parseExprForStmt (unlike parseExpr)
+	// does NOT reinterpret a trailing `<-` as `<` + unary `-`, so it's left
+	// here for the send-statement check below to claim.
+	x, err := p.parseExprForStmt()
 	if err != nil {
 		return nil, err
 	}
@@ -876,25 +879,75 @@ var precedence = map[string]int{
 }
 
 func (p *Parser) parseExpr() (Expr, error) {
-	return p.parseBinary(1)
-}
-
-func (p *Parser) parseBinary(minPrec int) (Expr, error) {
 	left, err := p.parseUnary()
 	if err != nil {
 		return nil, err
 	}
+	return p.parseBinaryFrom(left, 1)
+}
+
+// parseExprForStmt is parseExpr for the ONE context where a bare `<-`
+// immediately after the parsed expression must NOT be reinterpreted: the
+// leading expression of a simple statement, which may turn out to be the
+// channel of a send (ch <- v). Every other caller (if/while conditions,
+// assignment/return values, call arguments, nested sub-expressions, ...) uses
+// parseExpr, which does reinterpret it — see parseBinaryFrom.
+func (p *Parser) parseExprForStmt() (Expr, error) {
+	left, err := p.parseUnary()
+	if err != nil {
+		return nil, err
+	}
+	if p.peek().Val == "<-" {
+		// don't split: this may be a channel send (ch <- v) — leave `<-`
+		// for parseSimpleStmt's send-statement check to claim.
+		return left, nil
+	}
+	return p.parseBinaryFrom(left, 1)
+}
+
+// parseBinaryFrom is precedence-climbing from an already-parsed left operand.
+func (p *Parser) parseBinaryFrom(left Expr, minPrec int) (Expr, error) {
 	for {
 		t := p.peek()
 		if t.Kind != TOp {
 			break
+		}
+		// `x < -1`: machin's canonical form tightens whitespace, so `< -1`
+		// becomes byte-adjacent and the lexer greedily merges it into one
+		// `<-` token — indistinguishable, at the lexer, from a channel
+		// receive/send marker. `<-` is never a valid infix operator, so if
+		// we're looking for one and see it, the only sensible reading is `<`
+		// followed by unary `-` on the next operand (issue #208). A genuine
+		// channel send's `<-` is never reached here: parseExprForStmt (used
+		// only for a statement's leading expression) stops at it before
+		// calling this method, leaving it for the send-statement check.
+		if t.Val == "<-" {
+			ltPrec := precedence["<"]
+			if ltPrec < minPrec {
+				break
+			}
+			p.next() // consume the merged `<-`
+			operand, err := p.parseUnary()
+			if err != nil {
+				return nil, err
+			}
+			right, err := p.parseBinaryFrom(&Unary{Op: "-", X: operand}, ltPrec+1)
+			if err != nil {
+				return nil, err
+			}
+			left = &Binary{Op: "<", L: left, R: right}
+			continue
 		}
 		prec, ok := precedence[t.Val]
 		if !ok || prec < minPrec {
 			break
 		}
 		op := p.next().Val
-		right, err := p.parseBinary(prec + 1)
+		rightOperand, err := p.parseUnary()
+		if err != nil {
+			return nil, err
+		}
+		right, err := p.parseBinaryFrom(rightOperand, prec+1)
 		if err != nil {
 			return nil, err
 		}
