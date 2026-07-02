@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.88.0
+
 - **`keccak256` + secp256k1 signing — the primitives EIP-712/Ethereum-style signing
   needs.** New builtins: `keccak256(bytes) -> bytes` (Ethereum's hash — a self-contained
   Keccak-f[1600] sponge, distinct from NIST SHA3-256's padding), `secp256k1_pubkey(bytes)
