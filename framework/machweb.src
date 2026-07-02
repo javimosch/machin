@@ -538,6 +538,7 @@ func machweb_handle(conn, handler) {
 func serve(port, handler) {
     server := listen(port)
     println("machweb on http://localhost:" + str(port))
+    flush() // otherwise this line never reaches a log file/pipe (nohup, systemd, Docker) — see the stdout-buffering gotcha
     for {
         conn := accept(server)
         go machweb_handle(conn, handler)
@@ -639,6 +640,7 @@ func serve_tls(port, certfile, keyfile, handler) {
     }
     server := listen(port)
     println("machweb on https://localhost:" + str(port))
+    flush() // otherwise this line never reaches a log file/pipe (nohup, systemd, Docker) — see the stdout-buffering gotcha
     for {
         fd := accept(server)
         go machweb_accept_tls(ctx, fd, handler)
