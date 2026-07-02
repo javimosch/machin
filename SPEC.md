@@ -306,6 +306,10 @@ startup (before `main`; at `_initialize` for a wasm reactor).
 | `aes_cbc_decrypt` | `(bytes, bytes, bytes) -> bytes` | AES-CBC decrypt → plaintext (empty on bad padding) |
 | `xeddsa_sign` | `(bytes, bytes, bytes) -> bytes` | XEdDSA signature over Curve25519 `(priv32, msg, random64)` → 64 bytes (Signal/WhatsApp identity signatures); links libsodium |
 | `xeddsa_verify` | `(bytes, bytes, bytes) -> bool` | XEdDSA verify `(curve25519 pub32, msg, sig64)`; links libsodium |
+| `keccak256` | `(bytes) -> bytes` | Keccak-256 (Ethereum's hash — NOT NIST SHA3-256, different padding) → 32-byte digest |
+| `secp256k1_pubkey` | `(bytes) -> bytes` | secp256k1 public key from a 32-byte private key → 65-byte uncompressed point (`0x04‖X‖Y`) |
+| `secp256k1_sign_recoverable` | `(bytes, bytes) -> bytes` | secp256k1 ECDSA sign `(priv32, hash32)` → 65-byte `r‖s‖v` (EIP-2 canonical low-S; `v` is 27/28) |
+| `secp256k1_recover` | `(bytes, bytes) -> bytes` | secp256k1 ECDSA recover `(hash32, sig65)` → the 65-byte uncompressed pubkey (empty `bytes` if invalid); same math as Solidity's `ecrecover` |
 | `url_encode` | `(string) -> string` | percent-encode for URLs (RFC 3986: keeps `A-Za-z0-9-._~`, encodes the rest, space → `%20`) |
 | `url_decode` | `(string) -> string` | percent-decode a URL component (lenient: `+` → space, malformed `%XX` passes through) |
 | `sha256` | `(string) -> string` | SHA-256 of text, lowercase hex |

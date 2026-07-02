@@ -1970,6 +1970,10 @@ const cryptoRuntime = `#include <openssl/evp.h>
 #include <openssl/hmac.h>
 #include <openssl/sha.h>
 #include <openssl/kdf.h>
+#include <openssl/ec.h>
+#include <openssl/ecdsa.h>
+#include <openssl/obj_mac.h>
+#include <string.h>
 
 static mfl_bytes mfl_crypto_buf(int64_t n) {
     mfl_bytes b; b.len = n < 0 ? 0 : n; b.data = (uint8_t*)mfl_alloc(b.len ? b.len : 1); return b;
@@ -2126,6 +2130,223 @@ static mfl_bytes mfl_crypto_aes_cbc_dec(mfl_bytes key, mfl_bytes iv, mfl_bytes c
         if (EVP_DecryptFinal_ex(c, out.data + t, &l) > 0) out.len = t + l;  /* else 0: bad pad */
     }
     if (c) EVP_CIPHER_CTX_free(c);
+    return out;
+}
+
+/* Keccak-256 (Ethereum's hash; NOT the NIST SHA3-256 final standard — the
+   sponge padding domain byte differs: 0x01 here vs SHA3's 0x06). Compact
+   Keccak-f[1600] permutation + sponge construction, little-endian hosts only
+   (x86_64/arm64 — the only targets machin builds for). */
+static const uint64_t mfl_keccakf_rndc[24] = {
+    0x0000000000000001ULL, 0x0000000000008082ULL, 0x800000000000808aULL,
+    0x8000000080008000ULL, 0x000000000000808bULL, 0x0000000080000001ULL,
+    0x8000000080008081ULL, 0x8000000000008009ULL, 0x000000000000008aULL,
+    0x0000000000000088ULL, 0x0000000080008009ULL, 0x000000008000000aULL,
+    0x000000008000808bULL, 0x800000000000008bULL, 0x8000000000008089ULL,
+    0x8000000000008003ULL, 0x8000000000008002ULL, 0x8000000000000080ULL,
+    0x000000000000800aULL, 0x800000008000000aULL, 0x8000000080008081ULL,
+    0x8000000000008080ULL, 0x0000000080000001ULL, 0x8000000080008008ULL
+};
+static const int mfl_keccakf_rotc[24] = {
+    1, 3, 6, 10, 15, 21, 28, 36, 45, 55, 2, 14,
+    27, 41, 56, 8, 25, 43, 62, 18, 39, 61, 20, 44
+};
+static const int mfl_keccakf_piln[24] = {
+    10, 7, 11, 17, 18, 3, 5, 16, 8, 21, 24, 4,
+    15, 23, 19, 13, 12, 2, 20, 14, 22, 9, 6, 1
+};
+static uint64_t mfl_rotl64(uint64_t x, int y) { return (x << y) | (x >> (64 - y)); }
+static void mfl_keccakf(uint64_t st[25]) {
+    int i, j, r;
+    uint64_t t, bc[5];
+    for (r = 0; r < 24; r++) {
+        for (i = 0; i < 5; i++) bc[i] = st[i] ^ st[i+5] ^ st[i+10] ^ st[i+15] ^ st[i+20];
+        for (i = 0; i < 5; i++) {
+            t = bc[(i+4)%5] ^ mfl_rotl64(bc[(i+1)%5], 1);
+            for (j = 0; j < 25; j += 5) st[j+i] ^= t;
+        }
+        t = st[1];
+        for (i = 0; i < 24; i++) {
+            j = mfl_keccakf_piln[i];
+            bc[0] = st[j];
+            st[j] = mfl_rotl64(t, mfl_keccakf_rotc[i]);
+            t = bc[0];
+        }
+        for (j = 0; j < 25; j += 5) {
+            for (i = 0; i < 5; i++) bc[i] = st[j+i];
+            for (i = 0; i < 5; i++) st[j+i] ^= (~bc[(i+1)%5]) & bc[(i+2)%5];
+        }
+        st[0] ^= mfl_keccakf_rndc[r];
+    }
+}
+static void mfl_keccak256_raw(const uint8_t* in, size_t inlen, uint8_t out[32]) {
+    uint64_t st[25];
+    const size_t rate = 136; /* 1088-bit rate for a 256-bit Keccak (512-bit capacity) */
+    uint8_t* stb = (uint8_t*)st;
+    size_t i;
+    memset(st, 0, sizeof(st));
+    while (inlen >= rate) {
+        for (i = 0; i < rate; i++) stb[i] ^= in[i];
+        mfl_keccakf(st);
+        in += rate; inlen -= rate;
+    }
+    {
+        uint8_t tmp[136];
+        memset(tmp, 0, rate);
+        memcpy(tmp, in, inlen);
+        tmp[inlen] |= 0x01;      /* Keccak domain byte (SHA3 final uses 0x06) */
+        tmp[rate - 1] |= 0x80;   /* pad10*1 end bit; ORs into the same byte when inlen==rate-1 */
+        for (i = 0; i < rate; i++) stb[i] ^= tmp[i];
+        mfl_keccakf(st);
+    }
+    memcpy(out, stb, 32);
+}
+static mfl_bytes mfl_crypto_keccak256(mfl_bytes m) {
+    mfl_bytes out = mfl_crypto_buf(32);
+    mfl_keccak256_raw(m.data, (size_t)m.len, out.data);
+    return out;
+}
+
+/* secp256k1 (Ethereum signing) over OpenSSL's generic EC API (NID_secp256k1).
+   OpenSSL has no recoverable-ECDSA entry point, so the recovery id (v) is
+   derived by trying both y-parities of R and matching the resulting candidate
+   public key against the real one — the standard technique for signers that
+   don't link a dedicated secp256k1 library. Signatures are EIP-2 canonical
+   (low-S); v is returned as 27/28 (ecrecover convention). */
+static EC_POINT* mfl_secp256k1_recover_point(const EC_GROUP* group, BN_CTX* ctx, const BIGNUM* order,
+                                              const BIGNUM* r, const BIGNUM* s, const uint8_t* hash32, int recId) {
+    if (BN_is_zero(r) || BN_cmp(r, order) >= 0 || BN_is_zero(s) || BN_cmp(s, order) >= 0) return NULL;
+    EC_POINT* R = EC_POINT_new(group);
+    if (!R) return NULL;
+    if (EC_POINT_set_compressed_coordinates(group, R, r, recId & 1, ctx) != 1 ||
+        EC_POINT_is_on_curve(group, R, ctx) != 1) {
+        EC_POINT_free(R);
+        return NULL;
+    }
+    BIGNUM* z = BN_bin2bn(hash32, 32, NULL);
+    BIGNUM* rInv = z ? BN_mod_inverse(NULL, r, order, ctx) : NULL;
+    BIGNUM* tmp = BN_new();
+    BIGNUM* zero = BN_new();
+    BIGNUM* u1 = BN_new();
+    BIGNUM* u2 = BN_new();
+    EC_POINT* Q = EC_POINT_new(group);
+    int ok = 0;
+    if (z && rInv && tmp && zero && u1 && u2 && Q) {
+        BN_zero(zero);
+        ok = BN_mod_mul(tmp, z, rInv, order, ctx) == 1 &&      /* tmp = z*r^-1 mod n      */
+             BN_mod_sub(u1, zero, tmp, order, ctx) == 1 &&     /* u1  = -z*r^-1 mod n     */
+             BN_mod_mul(u2, s, rInv, order, ctx) == 1 &&       /* u2  = s*r^-1 mod n      */
+             EC_POINT_mul(group, Q, u1, R, u2, ctx) == 1;      /* Q   = u1*G + u2*R       */
+    }
+    EC_POINT_free(R);
+    if (z) BN_free(z);
+    if (rInv) BN_free(rInv);
+    if (tmp) BN_free(tmp);
+    if (zero) BN_free(zero);
+    if (u1) BN_free(u1);
+    if (u2) BN_free(u2);
+    if (!ok) { if (Q) EC_POINT_free(Q); return NULL; }
+    return Q;
+}
+static mfl_bytes mfl_crypto_secp256k1_pubkey(mfl_bytes priv) {
+    mfl_bytes out = mfl_crypto_buf(65); out.len = 0;
+    if (priv.len != 32) return out;
+    EC_GROUP* group = EC_GROUP_new_by_curve_name(NID_secp256k1);
+    BN_CTX* ctx = BN_CTX_new();
+    BIGNUM* d = BN_bin2bn(priv.data, 32, NULL);
+    EC_POINT* Q = group ? EC_POINT_new(group) : NULL;
+    if (group && ctx && d && Q && EC_POINT_mul(group, Q, d, NULL, NULL, ctx) == 1) {
+        size_t n = EC_POINT_point2oct(group, Q, POINT_CONVERSION_UNCOMPRESSED, out.data, 65, ctx);
+        if (n == 65) out.len = 65;
+    }
+    if (Q) EC_POINT_free(Q);
+    if (d) BN_free(d);
+    if (ctx) BN_CTX_free(ctx);
+    if (group) EC_GROUP_free(group);
+    return out;
+}
+static mfl_bytes mfl_crypto_secp256k1_sign_recoverable(mfl_bytes priv, mfl_bytes hash) {
+    mfl_bytes out = mfl_crypto_buf(65); out.len = 0;
+    if (priv.len != 32 || hash.len != 32) return out;
+    EC_GROUP* group = EC_GROUP_new_by_curve_name(NID_secp256k1);
+    BN_CTX* ctx = BN_CTX_new();
+    EC_KEY* eckey = EC_KEY_new();
+    BIGNUM* d = BN_bin2bn(priv.data, 32, NULL);
+    BIGNUM* order = BN_new();
+    EC_POINT* Qreal = group ? EC_POINT_new(group) : NULL;
+    ECDSA_SIG* sig = NULL;
+
+    if (group && ctx && eckey && d && order && Qreal &&
+        EC_KEY_set_group(eckey, group) == 1 &&
+        EC_KEY_set_private_key(eckey, d) == 1 &&
+        EC_GROUP_get_order(group, order, ctx) == 1 &&
+        EC_POINT_mul(group, Qreal, d, NULL, NULL, ctx) == 1 &&
+        EC_KEY_set_public_key(eckey, Qreal) == 1) {
+        sig = ECDSA_do_sign(hash.data, 32, eckey);
+    }
+    if (sig) {
+        const BIGNUM *r0, *s0;
+        ECDSA_SIG_get0(sig, &r0, &s0);
+        BIGNUM* r = BN_dup(r0);
+        BIGNUM* s = BN_dup(s0);
+        BIGNUM* half = BN_new();
+        if (r && s && half) {
+            BN_rshift1(half, order);
+            if (BN_cmp(s, half) > 0) BN_sub(s, order, s); /* EIP-2 canonical low-S */
+            EC_POINT* Qmatch = NULL;
+            int cand;
+            for (cand = 0; cand < 2 && !Qmatch; cand++) {
+                EC_POINT* Qtry = mfl_secp256k1_recover_point(group, ctx, order, r, s, hash.data, cand);
+                if (!Qtry) continue;
+                if (EC_POINT_cmp(group, Qtry, Qreal, ctx) == 0) {
+                    Qmatch = Qtry;
+                    if (BN_bn2binpad(r, out.data, 32) == 32 && BN_bn2binpad(s, out.data + 32, 32) == 32) {
+                        out.data[64] = (uint8_t)(27 + cand);
+                        out.len = 65;
+                    }
+                } else {
+                    EC_POINT_free(Qtry);
+                }
+            }
+            if (Qmatch) EC_POINT_free(Qmatch);
+        }
+        if (half) BN_free(half);
+        if (r) BN_free(r);
+        if (s) BN_free(s);
+        ECDSA_SIG_free(sig);
+    }
+    if (Qreal) EC_POINT_free(Qreal);
+    if (order) BN_free(order);
+    if (d) BN_free(d);
+    if (eckey) EC_KEY_free(eckey);
+    if (ctx) BN_CTX_free(ctx);
+    if (group) EC_GROUP_free(group);
+    return out;
+}
+static mfl_bytes mfl_crypto_secp256k1_recover(mfl_bytes hash, mfl_bytes sig) {
+    mfl_bytes out = mfl_crypto_buf(65); out.len = 0;
+    if (hash.len != 32 || sig.len != 65) return out;
+    int v = sig.data[64];
+    int recId = (v == 27 || v == 28) ? v - 27 : v;
+    if (recId != 0 && recId != 1) return out;
+    EC_GROUP* group = EC_GROUP_new_by_curve_name(NID_secp256k1);
+    BN_CTX* ctx = BN_CTX_new();
+    BIGNUM* order = BN_new();
+    BIGNUM* r = BN_bin2bn(sig.data, 32, NULL);
+    BIGNUM* s = BN_bin2bn(sig.data + 32, 32, NULL);
+    if (group && ctx && order && r && s && EC_GROUP_get_order(group, order, ctx) == 1) {
+        EC_POINT* Q = mfl_secp256k1_recover_point(group, ctx, order, r, s, hash.data, recId);
+        if (Q) {
+            size_t n = EC_POINT_point2oct(group, Q, POINT_CONVERSION_UNCOMPRESSED, out.data, 65, ctx);
+            if (n == 65) out.len = 65;
+            EC_POINT_free(Q);
+        }
+    }
+    if (r) BN_free(r);
+    if (s) BN_free(s);
+    if (order) BN_free(order);
+    if (ctx) BN_CTX_free(ctx);
+    if (group) EC_GROUP_free(group);
     return out;
 }
 `
@@ -3990,6 +4211,18 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 	case "xeddsa_verify":
 		g.usesXEdDSA = true
 		return fmt.Sprintf("mfl_xeddsa_verify(%s, %s, %s)", args[0], args[1], args[2]), nil
+	case "keccak256":
+		g.usesCrypto = true
+		return fmt.Sprintf("mfl_crypto_keccak256(%s)", args[0]), nil
+	case "secp256k1_pubkey":
+		g.usesCrypto = true
+		return fmt.Sprintf("mfl_crypto_secp256k1_pubkey(%s)", args[0]), nil
+	case "secp256k1_sign_recoverable":
+		g.usesCrypto = true
+		return fmt.Sprintf("mfl_crypto_secp256k1_sign_recoverable(%s, %s)", args[0], args[1]), nil
+	case "secp256k1_recover":
+		g.usesCrypto = true
+		return fmt.Sprintf("mfl_crypto_secp256k1_recover(%s, %s)", args[0], args[1]), nil
 	case "has":
 		ik, sk := g.mapKeyArgs(ex.Args[0], args[1])
 		return fmt.Sprintf("mfl_map_has(%s, %s, %s)", args[0], ik, sk), nil

@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- **`keccak256` + secp256k1 signing — the primitives EIP-712/Ethereum-style signing
+  needs.** New builtins: `keccak256(bytes) -> bytes` (Ethereum's hash — a self-contained
+  Keccak-f[1600] sponge, distinct from NIST SHA3-256's padding), `secp256k1_pubkey(bytes)
+  -> bytes` (65-byte uncompressed pubkey from a 32-byte private key), `secp256k1_sign_recoverable(bytes,
+  bytes) -> bytes` (priv32, hash32 -> 65-byte r||s||v, EIP-2 canonical low-S, v as 27/28),
+  and `secp256k1_recover(bytes, bytes) -> bytes` (hash32, sig65 -> the recovered pubkey,
+  same math as Solidity's `ecrecover`). Implemented over OpenSSL's generic EC API
+  (`NID_secp256k1`, already linked via `-lcrypto` — no new dependency); OpenSSL has no
+  recoverable-ECDSA entry point, so the recovery id is derived by testing both y-parities
+  of R and matching the resulting candidate pubkey, the standard technique for signers
+  that don't link a dedicated secp256k1 library. Verified against the known-vector G point
+  (priv=1), the two published Keccak-256 test vectors, and a signature produced
+  independently by Python's `coincurve` (a real libsecp256k1 binding — a different
+  codebase than OpenSSL, ruling out curve/recovery-math bugs a self-consistent
+  OpenSSL-only round trip could hide). New `eip712-sign` guide idiom; a full EIP-712 ABI
+  encoder is not a builtin (see the `eip712-uint256` gotcha — MFL's 64-bit `int` can't
+  hold Solidity `uint256` fields, encode those as 32-byte `bytes` by hand). Driven by
+  javika-machin's `printer`, whose Polymarket order signer was blocked on exactly this
+  (MFL had `sha256`/`hmac_sha256` but no keccak/secp256k1).
+
 ## v0.87.0
 
 - **`machin guide` now enumerates the CLI — a structured `commands` section.** The catalog

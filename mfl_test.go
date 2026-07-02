@@ -822,6 +822,63 @@ func TestCrypto(t *testing.T) {
 	}
 }
 
+// Keccak-256 (Ethereum's hash, distinct from NIST SHA3-256) against the two
+// canonical published test vectors.
+func TestKeccak256(t *testing.T) {
+	main := `func main() {
+	println(to_hex(keccak256(bytes(""))))
+	println(to_hex(keccak256(bytes("abc"))))
+}`
+	out, _ := buildRun(t, main)
+	want := "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470\n" +
+		"4e03657aea45a94fc7d47ba826c8d667c0d1e6e33a64a036ec44f58fa12d6c45\n"
+	if out != want {
+		t.Fatalf("keccak256: got %q, want %q", out, want)
+	}
+}
+
+// secp256k1 (Ethereum signing): pubkey derivation against the well-known
+// generator-point vector (priv=1 -> pub=G), a cross-check against a signature
+// independently produced by Python's coincurve (a real libsecp256k1 binding —
+// a different codebase than OpenSSL, so this catches curve/recovery-math bugs
+// a self-consistent OpenSSL-only round trip could hide), and a self round-trip
+// (sign then recover reproduces the signer's own pubkey).
+func TestSecp256k1(t *testing.T) {
+	main := `func main() {
+	// priv=1 -> pub is the secp256k1 generator point G (a public constant)
+	g := secp256k1_pubkey(from_hex("0000000000000000000000000000000000000000000000000000000000000001"))
+	println(to_hex(g))
+
+	// cross-check vs a signature generated independently by Python coincurve/libsecp256k1
+	priv := from_hex("307fb3b1869f707a2ca5136904ed3c1de1d5ce097b493de4f303d9adcf07b748")
+	expectedPub := "042a9d3210951b9765dbab10f8e846b4d1835053c2e58dfcf41cfe437d03e7ca0740289a468bbb05ec363aeafd881a3b2ba9d38d37f402366993d9ddb026ea4887"
+	println(to_hex(secp256k1_pubkey(priv)) == expectedPub)
+	hash := from_hex("da8f53d107c2678f816c59ae65d92a666e1aa8377fb97ba3854607860e80bc7f")
+	rs := from_hex("36878653aa09d6e72d2cd43574b1e4324268765645d9b7393888d72f8c69d93f28e99499d061809b07adcd0bb75491ea7dac64851705053315af742ce46b35b4")
+	sig := bytes_concat(rs, from_hex("1b"))
+	println(to_hex(secp256k1_recover(hash, sig)) == expectedPub)
+
+	// self round-trip: sign with a fresh random key, recover reproduces the pubkey
+	p2 := rand_bytes(32)
+	pub2 := secp256k1_pubkey(p2)
+	msg := keccak256(bytes("machin eip712 self-test"))
+	sig2 := secp256k1_sign_recoverable(p2, msg)
+	println(str(len(sig2)))
+	v := byte_at(sig2, 64)
+	println(v == 27 || v == 28)
+	println(to_hex(secp256k1_recover(msg, sig2)) == to_hex(pub2))
+
+	// a bad signature must not recover (empty bytes, not a garbage point)
+	println(str(len(secp256k1_recover(msg, from_hex("00")))))
+}`
+	out, _ := buildRun(t, main)
+	want := "0479be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8\n" +
+		"true\ntrue\n65\ntrue\ntrue\n0\n"
+	if out != want {
+		t.Fatalf("secp256k1: got %q, want %q", out, want)
+	}
+}
+
 // XEdDSA (Curve25519 signatures) is gated like the other external runtimes:
 // emitted only when xeddsa_* is used. Compile-level (linking needs libsodium-dev,
 // so the behavioral check lives in machin-signal/machin-wapair, not the suite).
