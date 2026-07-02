@@ -78,6 +78,20 @@ func TestRace_SliceFieldInStruct(t *testing.T) {
 	}
 }
 
+func TestRace_LoopSpawnedWriter(t *testing.T) {
+	// a `go` inside a loop = N concurrent instances; one loop-spawned writer of a
+	// shared slice races itself, even with no other accessor (soundness — this was
+	// a false negative surfaced by corpus validation against machin-healthcheck's
+	// `while ... { go check(a[i], ...) }` shape).
+	fs := rcCheck(t,
+		"func check(url, results, idx){results[idx]=len(url)}",
+		"func main(){urls:=[]string{\"a\",\"bb\"} results:=[]int{0,0} i:=0 while i<len(urls){go check(urls[i],results,i) i=i+1}}")
+	rcReport(t, "loop-spawned shared writer", fs)
+	if len(fs) != 1 || fs[0].Root != "results" || fs[0].Kind != "write/write" {
+		t.Fatalf("want 1 write/write race on results (loop multiplicity), got %+v", fs)
+	}
+}
+
 // ── SAFE ──────────────────────────────────────────────────────────────────
 
 func TestRace_ScalarStructField(t *testing.T) {

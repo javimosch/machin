@@ -243,7 +243,9 @@ type raceFinding struct {
 type accessor struct {
 	write bool
 	byGo  bool
-	desc  string
+	mult  int // concurrency multiplicity: 2 for a goroutine spawned inside a loop
+	//         (N concurrent instances from one site), else 1
+	desc string
 }
 
 // slotTypeName renders a checker type slot as an MFL type string ("[]int",
@@ -344,7 +346,7 @@ func detectRaces(prog *Program, c *Checker) []raceFinding {
 		}
 		// gather accesses to each root within this instance's body
 		accs := map[string][]accessor{}
-		note := func(root string, path accPath, write, byGo bool, desc string) {
+		note := func(root string, path accPath, write, byGo bool, mult int, desc string) {
 			slot, ok := c.vars[inst][root]
 			if !ok {
 				return // not a local/param of this instance (globals: Slice 1.2)
@@ -352,14 +354,22 @@ func detectRaces(prog *Program, c *Checker) []raceFinding {
 			if !typeShared(c, slotTypeName(c, slot), path) {
 				return // access doesn't reach shared heap -> cannot race
 			}
-			accs[root] = append(accs[root], accessor{write, byGo, desc})
+			accs[root] = append(accs[root], accessor{write, byGo, mult, desc})
 		}
-		var visit func(ss []Stmt)
-		visit = func(ss []Stmt) {
+		noteRead := func(root string, path accPath, write, byGo bool, desc string) {
+			note(root, path, write, byGo, 1, desc)
+		}
+		var visit func(ss []Stmt, inLoop bool)
+		visit = func(ss []Stmt, inLoop bool) {
 			for _, s := range ss {
 				switch st := s.(type) {
 				case *GoStmt:
 					g := st.Call.Callee
+					// a goroutine spawned in a loop = N concurrent instances of itself
+					mult, label := 1, "goroutine"
+					if inLoop {
+						mult, label = 2, "loop-spawned goroutine"
+					}
 					for j, a := range st.Call.Args {
 						r, pfx, ok := placeOf(a)
 						if !ok {
@@ -374,57 +384,60 @@ func detectRaces(prog *Program, c *Checker) []raceFinding {
 							if ca.write {
 								verb = "writes"
 							}
-							note(r, full, ca.write, true,
-								fmt.Sprintf("goroutine `go %s(...)` %s `%s`", g, verb, r))
+							note(r, full, ca.write, true, mult,
+								fmt.Sprintf("%s `go %s(...)` %s `%s`", label, g, verb, r))
 						}
 					}
 				case *IndexAssign:
 					if r, p, ok := placeOf(st.Target); ok {
-						note(r, p, true, false, fmt.Sprintf("this thread writes `%s`", r))
+						noteRead(r, p, true, false, fmt.Sprintf("this thread writes `%s`", r))
 					}
 				case *FieldAssign:
 					if r, p, ok := placeOf(st.Target); ok {
-						note(r, p, true, false, fmt.Sprintf("this thread writes `%s`", r))
+						noteRead(r, p, true, false, fmt.Sprintf("this thread writes `%s`", r))
 					}
 				case *ExprStmt:
-					noteReads(st.X, note)
+					noteReads(st.X, noteRead)
 				case *AssignStmt:
-					noteReads(st.Val, note)
+					noteReads(st.Val, noteRead)
 				case *ReturnStmt:
 					for _, e := range st.Vals {
-						noteReads(e, note)
+						noteReads(e, noteRead)
 					}
 				case *IfStmt:
-					noteReads(st.Cond, note)
-					visit(st.Then)
-					visit(st.Else)
+					noteReads(st.Cond, noteRead)
+					visit(st.Then, inLoop)
+					visit(st.Else, inLoop)
 				case *WhileStmt:
-					noteReads(st.Cond, note)
-					visit(st.Body)
+					noteReads(st.Cond, noteRead)
+					visit(st.Body, true)
 				case *RangeStmt:
-					noteReads(st.X, note)
-					visit(st.Body)
+					noteReads(st.X, noteRead)
+					visit(st.Body, true)
 				case *ArenaStmt:
-					visit(st.Body)
+					visit(st.Body, inLoop)
 				}
 			}
 		}
-		visit(f.Body)
+		visit(f.Body, false)
 
-		// a race: a root with >=2 concurrent accessors, >=1 a goroutine, >=1 a write
+		// a race: >=2 concurrent "threads" reach a shared root, >=1 of them a write,
+		// >=1 a goroutine. Multiplicity counts a loop-spawned goroutine as 2 threads,
+		// so a single loop-spawned writer races itself (write/write).
 		for root, as := range accs {
-			goCount, writeCount := 0, 0
+			goCount, threads, writeThreads := 0, 0, 0
 			for _, a := range as {
+				threads += a.mult
 				if a.byGo {
 					goCount++
 				}
 				if a.write {
-					writeCount++
+					writeThreads += a.mult
 				}
 			}
-			if goCount >= 1 && len(as) >= 2 && writeCount >= 1 {
+			if goCount >= 1 && threads >= 2 && writeThreads >= 1 {
 				kind := "read/write"
-				if writeCount >= 2 {
+				if writeThreads >= 2 {
 					kind = "write/write"
 				}
 				descs := make([]string, len(as))

@@ -78,6 +78,22 @@ so the pass runs **after** typecheck (see Integration).
   **zero false positives** on correct programs, or a genuine race surfaced. Plus expanded
   unit tests (the spike's six, grown to cover 1.1–1.4).
 
+### Slice 1.1 corpus validation (done)
+Ran the checker against the five real concurrency apps (machin-healthcheck / linkcheck /
+pipe / pool / wscat) + the `examples/complex` goroutine programs:
+- **Zero false positives** — all real apps clean. They pass **channels** to goroutines
+  (share-by-communicating), which never reach shared heap, so there is correctly nothing
+  to flag. (A good signal that the safe idiom is the natural one.)
+- **Engagement proven by mutation test** — injecting a real shared-slice race
+  (goroutines writing a shared `results` slice instead of a channel) is caught: `RACE002`.
+- **Soundness gap found & fixed** — a `go` inside a loop spawns N concurrent instances
+  from one site; the initial "≥2 accessors" rule missed a lone loop-spawned writer (false
+  negative). Fixed with **multiplicity**: a loop-spawned goroutine counts as 2 threads, so
+  a single loop-spawned writer of a shared root races itself (`RACE001` write/write).
+  Regression-tested. Known sound over-approximation this introduces: disjoint-index
+  parallel writes (`results[i]` per iteration) are flagged even when indices never alias —
+  proving disjointness is future precision work.
+
 ### Integration points (Go reference compiler)
 - **Types**: the pass needs resolved types for `sharesHeap`. Hook the `Checker` after it
   finishes (`types.go`) and expose a `typeOfPlace(fn, expr)` query, or build a light place-
