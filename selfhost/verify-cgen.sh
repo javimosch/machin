@@ -147,6 +147,25 @@ func main() {
 EOF
 run "$T/h6.src"
 
+# h7 — concurrency: go + scalar channels (trampoline + make/send/recv). Slice 1 of #280.
+cat > "$T/h7.src" <<'EOF'
+func worker(ch, n) { ch <- n * 2 }
+func producer(ch) { ch <- true }
+func main() {
+    ch := make(chan int)
+    go worker(ch, 21)
+    go worker(ch, 10)
+    a := <-ch
+    b := <-ch
+    bc := make(chan bool)
+    go producer(bc)
+    v, ok := <-bc
+    if ok { print(a + b) }
+    print(v)
+}
+EOF
+run "$T/h7.src"
+
 # SELF-APPLICATION: the MFL codegen emits byte-identical C for the compiler's OWN
 # source (checker + full codegen) — the fixpoint-adjacent milestone.
 $N "$MACHIN" encode selfhost/lex.src selfhost/parse.src selfhost/check.src \

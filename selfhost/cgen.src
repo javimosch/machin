@@ -201,11 +201,35 @@ func cg_expr(iid, idx) (out) {
     if k == K_INDEX { out = cg_index(iid, idx)  return out }
     if k == K_FIELD { out = cg_field(iid, idx)  return out }
     if k == K_MAKEMAP { out = cg_makemap(iid, idx)  return out }
-    g_cg_unsup = 1  out = "0"    // makechan / recv / funclit / closure / callvalue: later parts
+    if k == K_MAKECHAN {
+        // scalar element (int/float/bool): mfl_make_chan(sizeof(T), 0, 0, 0). String /
+        // slice / map / struct elements (JSON round-trip or string-offset copy) are
+        // later slices.
+        r := node_slot_of(iid, idx)
+        ek := 0 - 1
+        if r >= 0 { if g_elem[r] >= 0 { ek = kind_of(g_elem[r]) } }
+        if ek == 1 || ek == 2 || ek == 3 || ek == 4 {
+            out = "mfl_make_chan(sizeof(" + elem_ctype(iid, idx) + "), 0, 0, 0)"
+            return out
+        }
+        g_cg_unsup = 1  out = "0"  return out
+    }
+    if k == K_RECV {
+        out = "({ " + node_ctype(iid, idx) + " _r; mfl_chan_recv(" + cg_expr(iid, n.a) + ", &_r); _r; })"
+        return out
+    }
+    g_cg_unsup = 1  out = "0"    // funclit / closure / callvalue: later parts
 }
 
 // ---- side-effect ordering (port of seqExprs) ----
 var g_tmpid = 0
+
+// goroutine trampolines: each `go f(args)` emits an arg-struct + a trampoline
+// function into g_tramp (spliced BEFORE the function bodies in cg_program), then a
+// detached pthread_create at the call site.
+var g_goid = 0
+var g_tramp = []string{}
+func tramp_emit(s) { g_tramp = append(g_tramp, s) }
 
 func expr_has_side_effect(idx) (b) {
     n := nodes[idx]
@@ -369,7 +393,55 @@ func cg_stmt(iid, idx, depth) {
     if k == K_FLDASSIGN { cg_field_assign(iid, idx)  return }
     if k == K_RANGE { cg_range(iid, idx, depth)  return }
     if k == K_ARENA { cg_arena(iid, idx, depth)  return }
-    g_cg_unsup = 1  cemit("0;\n")   // send / select / go: later parts
+    if k == K_SEND {
+        ch := cg_expr(iid, n.a)
+        val := cg_expr(iid, n.b)
+        ect := elem_ctype(iid, n.a)
+        cemit("mfl_chan_send(" + ch + ", &((" + ect + "[1]){" + val + "})[0]);\n")
+        return
+    }
+    if k == K_GO { cg_go(iid, idx)  return }
+    g_cg_unsup = 1  cemit("0;\n")   // select: later parts
+}
+
+// cg_go: `go f(args)` -> an arg struct + trampoline function into g_tramp, and a
+// detached pthread_create at the call site (the leading indent is already emitted).
+func cg_go(iid, idx) {
+    n := nodes[idx]
+    callnode := n.a
+    cinst := callee_inst_of(iid, callnode)
+    cn := g_insts[cinst].cname
+    cargs := nodes[callnode].kids
+    id := g_goid
+    g_goid = g_goid + 1
+    ids := str(id)
+    // arg struct (a leading dummy field avoids an empty struct)
+    sline := "struct mfl_go_" + ids + " { char _;"
+    i := 0
+    for i < len(cargs) {
+        sline = sline + " " + ctype_slot(g_insts[cinst].pslots[i]) + " a" + str(i) + ";"
+        i = i + 1
+    }
+    tramp_emit(sline + " };\n")
+    // trampoline function
+    rline := "static void* mfl_go_run_" + ids + "(void* p) { mfl_arena _a = {0}; mfl_arena_cur = &_a; struct mfl_go_" + ids + "* s = (struct mfl_go_" + ids + "*)p; " + cn + "("
+    i = 0
+    for i < len(cargs) {
+        if i > 0 { rline = rline + ", " }
+        rline = rline + "s->a" + str(i)
+        i = i + 1
+    }
+    tramp_emit(rline + "); free(s); mfl_arena_free(&_a); return NULL; }\n")
+    // call site
+    cemit("{\n")
+    cemit("        struct mfl_go_" + ids + "* s = malloc(sizeof(*s));\n")
+    i = 0
+    for i < len(cargs) {
+        cemit("        s->a" + str(i) + " = (" + cg_expr(iid, cargs[i]) + ");\n")
+        i = i + 1
+    }
+    cemit("        pthread_t t; pthread_create(&t, NULL, mfl_go_run_" + ids + ", s); pthread_detach(t);\n")
+    cemit("    }\n")
 }
 
 func emit_named_return(iid) {
