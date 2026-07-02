@@ -1,0 +1,159 @@
+package main
+
+import (
+	"strings"
+	"testing"
+)
+
+// rcCheck parses + typechecks canonical MFL decls and runs the race pass.
+func rcCheck(t *testing.T, decls ...string) []raceFinding {
+	t.Helper()
+	prog, err := ParseProgram(decls)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	c, err := Check(prog)
+	if err != nil {
+		t.Fatalf("typecheck: %v", err)
+	}
+	return detectRaces(prog, c)
+}
+
+func rcReport(t *testing.T, title string, fs []raceFinding) {
+	t.Helper()
+	if len(fs) == 0 {
+		t.Logf("  %-34s => CLEAN", title)
+		return
+	}
+	for _, f := range fs {
+		t.Logf("  %-34s => RACE [%s] on `%s` in %s(): %s",
+			title, f.Kind, f.Root, f.Decl, strings.Join(f.Writers, " || "))
+	}
+}
+
+// ── RACY ────────────────────────────────────────────────────────────────────
+
+func TestRace_WriteWrite(t *testing.T) {
+	fs := rcCheck(t,
+		"func worker(xs, id){xs[id]=id*2}",
+		"func main(){data:=[]int{0,0,0,0} go worker(data,0) go worker(data,1)}")
+	rcReport(t, "write/write two goroutines", fs)
+	if len(fs) != 1 || fs[0].Root != "data" || fs[0].Kind != "write/write" {
+		t.Fatalf("want 1 write/write race on data, got %+v", fs)
+	}
+}
+
+func TestRace_ReadWrite(t *testing.T) {
+	// goroutine writes the slice while this thread reads it — a genuine data race
+	// (index-insensitive, sound). Fixes the spike's read-blindness.
+	fs := rcCheck(t,
+		"func worker(xs){xs[0]=99}",
+		"func main(){data:=[]int{0,0} go worker(data) v:=data[1] print(v)}")
+	rcReport(t, "read/write goroutine+main", fs)
+	if len(fs) != 1 || fs[0].Kind != "read/write" {
+		t.Fatalf("want 1 read/write race, got %+v", fs)
+	}
+}
+
+func TestRace_Transitive(t *testing.T) {
+	fs := rcCheck(t,
+		"func poke(ys, k){ys[k]=1}",
+		"func worker(xs, id){poke(xs, id)}",
+		"func main(){data:=[]int{0,0} go worker(data,0) go worker(data,1)}")
+	rcReport(t, "transitive mutation", fs)
+	if len(fs) != 1 {
+		t.Fatalf("want 1 race via transitive mutation, got %+v", fs)
+	}
+}
+
+func TestRace_SliceFieldInStruct(t *testing.T) {
+	// struct passes by value, but its slice field keeps a shared backing array.
+	fs := rcCheck(t,
+		"type Bag struct{items []int}",
+		"func worker(b, id){b.items[id]=id}",
+		"func main(){bag:=Bag{[]int{0,0}} go worker(bag,0) go worker(bag,1)}")
+	rcReport(t, "slice field in struct", fs)
+	if len(fs) != 1 || fs[0].Root != "bag" {
+		t.Fatalf("want 1 race on bag (shared slice field), got %+v", fs)
+	}
+}
+
+// ── SAFE ──────────────────────────────────────────────────────────────────
+
+func TestRace_ScalarStructField(t *testing.T) {
+	// struct copied by value; a scalar-field write races nothing.
+	fs := rcCheck(t,
+		"type Box struct{n int}",
+		"func worker(b){b.n=99}",
+		"func main(){box:=Box{0} go worker(box) go worker(box)}")
+	rcReport(t, "scalar struct field (copied)", fs)
+	if len(fs) != 0 {
+		t.Fatalf("want CLEAN (struct copied by value), got %+v", fs)
+	}
+}
+
+func TestRace_DistinctSlices(t *testing.T) {
+	fs := rcCheck(t,
+		"func worker(xs, id){xs[id]=id*2}",
+		"func main(){a:=[]int{0,0} b:=[]int{0,0} go worker(a,0) go worker(b,1)}")
+	rcReport(t, "distinct slices", fs)
+	if len(fs) != 0 {
+		t.Fatalf("want CLEAN (distinct slices), got %+v", fs)
+	}
+}
+
+func TestRace_ShareByCommunicating(t *testing.T) {
+	// the slice is produced inside the goroutine and MOVED out over a channel; the
+	// receiver reads only its own received value. No shared mutable arg => clean.
+	fs := rcCheck(t,
+		"func producer(ch){out:=[]int{1,2,3} ch<-out}",
+		"func main(){ch:=make(chan []int) go producer(ch) got:=<-ch print(got[0])}")
+	rcReport(t, "share by communicating", fs)
+	if len(fs) != 0 {
+		t.Fatalf("want CLEAN (move via channel), got %+v", fs)
+	}
+}
+
+func TestRace_ReadOnlyShared(t *testing.T) {
+	// two goroutines share a slice but only READ it — no writer, no race.
+	fs := rcCheck(t,
+		"func reader(xs, id){v:=xs[id] print(v)}",
+		"func main(){data:=[]int{0,0} go reader(data,0) go reader(data,1)}")
+	rcReport(t, "read-only shared", fs)
+	if len(fs) != 0 {
+		t.Fatalf("want CLEAN (no writer), got %+v", fs)
+	}
+}
+
+// ── banner ──────────────────────────────────────────────────────────────────
+
+func TestRace_ZZZBanner(t *testing.T) {
+	t.Log("── Slice 1.1: inferred data-race verdicts (no Send/Sync) ──")
+	rows := []struct {
+		name  string
+		decls []string
+	}{
+		{"RACY  write/write shared slice", []string{
+			"func w(xs,i){xs[i]=i}", "func main(){d:=[]int{0,0} go w(d,0) go w(d,1)}"}},
+		{"RACY  read/write shared slice", []string{
+			"func w(xs){xs[0]=1}", "func main(){d:=[]int{0,0} go w(d) v:=d[1] print(v)}"}},
+		{"RACY  shared slice field in struct", []string{
+			"type Bag struct{items []int}", "func w(b,i){b.items[i]=i}",
+			"func main(){g:=Bag{[]int{0,0}} go w(g,0) go w(g,1)}"}},
+		{"SAFE  scalar struct field (copied)", []string{
+			"type Box struct{n int}", "func w(b){b.n=1}",
+			"func main(){x:=Box{0} go w(x) go w(x)}"}},
+		{"SAFE  distinct slices", []string{
+			"func w(xs,i){xs[i]=i}", "func main(){a:=[]int{0,0} b:=[]int{0,0} go w(a,0) go w(b,1)}"}},
+		{"SAFE  share by communicating", []string{
+			"func p(ch){o:=[]int{1} ch<-o}", "func main(){ch:=make(chan []int) go p(ch) g:=<-ch print(g[0])}"}},
+	}
+	for _, r := range rows {
+		fs := rcCheck(t, r.decls...)
+		if len(fs) > 0 {
+			t.Logf("  [DATA RACE] %-34s %s: %s", r.name, fs[0].Kind, strings.Join(fs[0].Writers, " || "))
+		} else {
+			t.Logf("  [   ok    ] %-34s CLEAN", r.name)
+		}
+	}
+}
