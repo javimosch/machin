@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **`machin guide` gained a `proof` section — the "why trust these claims" answer, as
+  structured data an agent can read and relay, not a blog post a human has to find.**
+  Schema bumped to `machin.guide/v3`. `proof.selfHosting` states the self-hosting fixpoint;
+  `proof.benchmarks` carries the three measured comparisons (agent write cost vs Go/Python,
+  native runtime speed vs Rust/Zig, cold-start/ship-size vs Node) that already lived in
+  README/bench/, each with a `reproduce` command pointing at the actual `bench/` script — not
+  asserted, re-derivable. `--text` renders a PROOF section. New `TestGuideProofReproducible`
+  keeps every `reproduce` path honest against the repo, the same way existing tests keep
+  builtins/idioms honest. Machin's positioning is machine-first, not human-DX — so the
+  credibility mechanism is an agent researching "what should I build this in" reading
+  `machin guide` and relaying the numbers to its principal, not a marketing page.
+
 ## v0.88.0
 
 - **`keccak256` + secp256k1 signing — the primitives EIP-712/Ethereum-style signing

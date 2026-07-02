@@ -62,6 +62,25 @@ type guideDomain struct {
 	Summary string `json:"summary"`
 }
 
+// guideBenchmark is one measured (not claimed) comparison — see bench/ in the
+// repo. Reproduce is the exact command an agent (or a skeptical human) runs to
+// re-derive the number itself, not just a pointer to trust.
+type guideBenchmark struct {
+	Axis      string `json:"axis"`
+	Result    string `json:"result"`
+	Reproduce string `json:"reproduce"`
+}
+
+// guideProof is the "why trust these claims" section — deliberately structured
+// data, not prose, so another agent evaluating machin (for itself or on behalf
+// of its principal) can read and relay it, the same way it reads Builtins or
+// Idioms. Every number here is reproducible from the repo (see Reproduce on
+// each benchmark), not asserted.
+type guideProof struct {
+	SelfHosting string           `json:"selfHosting"`
+	Benchmarks  []guideBenchmark `json:"benchmarks"`
+}
+
 // guideCommand is one CLI subcommand — so an agent can enumerate the whole tool
 // surface, not just the language.
 type guideCommand struct {
@@ -77,6 +96,7 @@ type guideCatalog struct {
 	Keywords []string       `json:"keywords"`
 	Commands []guideCommand `json:"commands"`
 	Domains  []guideDomain  `json:"domains"`
+	Proof    guideProof     `json:"proof"`
 	Types    []guideNote    `json:"types"`
 	Builtins []guideBuiltin `json:"builtins"`
 	Idioms   []guideIdiom   `json:"idioms"`
@@ -110,7 +130,7 @@ func isBuiltinName(n string) bool {
 func machinGuide() guideCatalog {
 	return guideCatalog{
 		Version: machinVersion,
-		Schema:  "machin.guide/v2",
+		Schema:  "machin.guide/v3",
 		Tagline: "Go-flavored, type-inferred, machine-first language; MFL compiles through C to a single native binary. Plain-text source, one declaration per line.",
 		Keywords: []string{
 			"func", "return", "if", "else", "while", "for", "range", "break", "continue",
@@ -128,6 +148,26 @@ func machinGuide() guideCatalog {
 			{"skill", "machin skill install", "register the agent skills where coding agents look (~/.agents/skills + detected editor dirs)"},
 		},
 		Domains: guideDomains,
+		Proof: guideProof{
+			SelfHosting: "The compiler is written in machin: it compiles its own source (lex -> parse -> typecheck -> codegen) and the result reproduces itself byte-for-byte — a full bootstrap fixpoint, zero Go in the toolchain. See CHANGELOG v0.84.0 (compiles itself) and v0.85.0 (the no-Go bootstrap).",
+			Benchmarks: []guideBenchmark{
+				{
+					Axis:      "agent write cost",
+					Result:    "a REST+SQLite API: 388 tokens to author (ties Python's 383, ~36% fewer than Go's 527), ships as a 44 KB dependency-free static binary",
+					Reproduce: "bench/rest-sqlite: ./run.sh (build+smoke-test); python3 measure.py (token counts, needs tiktoken)",
+				},
+				{
+					Axis:      "native runtime speed",
+					Result:    "vs Rust -O3 / Zig ReleaseFast on 4 kernels with byte-identical output: wins fib(40) and a 10^9 integer-sum loop by ~20-25%, ties a float-heavy mandelbrot within 2%, trails an array-heavy sieve by ~1.4x",
+					Reproduce: "bench/native-speed: ./run.sh (needs machin, cc, rustc, zig, python3)",
+				},
+				{
+					Axis:      "cold start & ship size",
+					Result:    "92.9 kB static binary, 0.49 ms cold start, 108 kB resident memory serving the same HTTP hello endpoint as Node (178 MB / 28.9 ms / 51 MB) — 1916x smaller, 59x faster start, 477x less RAM",
+					Reproduce: "bench/cold-start: ./build.sh (sizes); python3 measure.py (cold-start + RSS); ./images.sh (Docker image sizes, needs Docker)",
+				},
+			},
+		},
 		Types: []guideNote{
 			{"int", "64-bit signed"},
 			{"float", "double"},
@@ -435,6 +475,13 @@ func renderGuideText(g guideCatalog) string {
 	for _, d := range g.Domains {
 		fmt.Fprintf(&b, "  %-8s %s\n           %s\n", d.Name, d.Howto, d.Summary)
 	}
+
+	b.WriteString("\nPROOF — measured, not claimed; reproduce any of it yourself:\n")
+	fmt.Fprintf(&b, "  self-hosting: %s\n", g.Proof.SelfHosting)
+	for _, bm := range g.Proof.Benchmarks {
+		fmt.Fprintf(&b, "  [%s] %s\n      reproduce: %s\n", bm.Axis, bm.Result, bm.Reproduce)
+	}
+
 	b.WriteString("\nTYPES\n")
 	for _, t := range g.Types {
 		fmt.Fprintf(&b, "  %-10s %s\n", t.Topic, t.Note)

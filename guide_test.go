@@ -35,6 +35,31 @@ func TestGuideCatalog(t *testing.T) {
 	if _, err := json.Marshal(g); err != nil {
 		t.Fatalf("guide JSON: %v", err)
 	}
+	if g.Proof.SelfHosting == "" || len(g.Proof.Benchmarks) == 0 {
+		t.Fatal("guide missing the proof section (selfHosting / benchmarks)")
+	}
+	for _, bm := range g.Proof.Benchmarks {
+		if bm.Axis == "" || bm.Result == "" || bm.Reproduce == "" {
+			t.Fatalf("benchmark %q missing axis/result/reproduce", bm.Axis)
+		}
+	}
+}
+
+// The proof section's whole point is "reproducible, not asserted" — so each
+// benchmark's Reproduce path must point at a real directory in the repo, the
+// same way TestGuideBuiltinsRecognized keeps builtins honest and
+// TestGuideIdiomsCompile keeps idioms honest.
+func TestGuideProofReproducible(t *testing.T) {
+	for _, bm := range machinGuide().Proof.Benchmarks {
+		path := bm.Reproduce
+		if i := strings.Index(path, ":"); i >= 0 {
+			path = path[:i]
+		}
+		path = strings.TrimSpace(path)
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("benchmark %q: reproduce path %q does not exist: %v", bm.Axis, path, err)
+		}
+	}
 }
 
 // The catalog version is the toolchain version; it must match the README badge,
