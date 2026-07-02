@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/tls"
+	"net"
 	"os"
 	"strings"
 	"testing"
@@ -42,7 +44,7 @@ func main() {
     if srv < 0 { println("listen-failed")  return }
     go catch(srv)
     sleep(50)
-    ok, errmsg := smtp_send("127.0.0.1", port, "alice@x", "b@y, c@z", "Hello", "line one\n.dotline\nline three", "user", "pass")
+    ok, errmsg := smtp_send("127.0.0.1", port, "alice@x", "b@y, c@z", "Hello", "line one\n.dotline\nline three", "user", "pass", 0)
     println("SENT ok=" + str(ok) + " err=[" + errmsg + "]")
     sleep(60)
 }`
@@ -63,5 +65,58 @@ func main() {
 	// dot-stuffing round-tripped: the body line ".dotline" survives intact (not "" / "dotline")
 	if !strings.Contains(out, ".dotline") {
 		t.Fatalf("a dot-prefixed body line should survive dot-stuffing; got:\n%s", out)
+	}
+}
+
+// smtp_send's STARTTLS path (use_tls=1): dial plaintext, EHLO, STARTTLS,
+// tls_client_fd to upgrade, re-EHLO — driven against a real Go SMTP-shaped
+// server that speaks the plaintext dance then upgrades with tls.Server,
+// exactly like a real relay (Gmail/SendGrid/SES on :587). Its cert is
+// self-signed and untrusted, so tls_client_fd — which verifies, same as
+// https_get — must REJECT it: proves the upgrade path's verification is
+// genuinely active, the same discipline as TestSTARTTLS in
+// tls_server_test.go. The positive case (a real successful STARTTLS
+// negotiation all the way to the auth-gated MAIL FROM step) was verified
+// manually against smtp.gmail.com:587 with machin-mail — see issue #260.
+func TestSMTPSendStartTLS(t *testing.T) {
+	dir := t.TempDir()
+	certPath, keyPath := genSelfSignedCert(t, dir, "localhost")
+	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const port = 48262
+	ln, err := net.Listen("tcp", "127.0.0.1:"+itoa(port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		buf := make([]byte, 4096)
+		conn.Write([]byte("220 test.local ESMTP\r\n"))
+		conn.Read(buf) // EHLO
+		conn.Write([]byte("250-test.local\r\n250 STARTTLS\r\n"))
+		conn.Read(buf) // STARTTLS
+		conn.Write([]byte("220 2.0.0 Ready to start TLS\r\n"))
+		tconn := tls.Server(conn, &tls.Config{Certificates: []tls.Certificate{cert}})
+		tconn.Handshake() // expected to fail: the MFL client won't trust this cert
+	}()
+
+	app := `func main() {
+	ok, errmsg := smtp_send("127.0.0.1", ` + itoa(port) + `, "a@x", "b@y", "Hi", "body", "", "", 1)
+	println("SENT ok=" + str(ok) + " err=[" + errmsg + "]")
+}`
+	out, err := RunCaptured(smtpProg(t, app))
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !strings.Contains(out, "SENT ok=0 err=[TLS handshake failed]") {
+		t.Fatalf("expected the untrusted STARTTLS cert to be rejected, got:\n%s", out)
 	}
 }
