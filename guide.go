@@ -343,6 +343,14 @@ func machinGuide() guideCatalog {
 			{"wss_send_bin", "(int, bytes) -> int", "send a binary message (opcode 0x2) — NUL-safe, for binary protocols", "ws"},
 			{"wss_recv_bin", "(int) -> bytes", "next message as bytes (blocks; empty bytes on close; NUL-safe)", "ws"},
 			{"wss_close", "(int) -> int", "send close and tear down", "ws"},
+			{"tls_server_ctx", "(string, string) -> int", "load a cert+key (PEM files) -> a server TLS context handle (0 on fail) — for terminating HTTPS/TLS yourself (no reverse proxy). See serve_tls in framework/machweb.src", "tls"},
+			{"tls_accept", "(int, int) -> int", "(ctx, fd) — complete a server-side TLS handshake on an accept()'d fd -> a tls handle (0 on fail)", "tls"},
+			{"tls_client_fd", "(int, string) -> int", "(fd, hostname) — the STARTTLS primitive: upgrade an already-connected, plaintext-negotiated fd to a verified TLS handle in place (0 on fail) — e.g. SMTP: dial, EHLO/STARTTLS in plaintext, then upgrade", "tls"},
+			{"tls_read", "(int) -> string", "read one chunk from a tls handle (blocks; \"\" at EOF/error) — mirrors read(fd)", "tls"},
+			{"tls_read_bytes", "(int) -> bytes", "read one chunk from a tls handle as raw bytes, NUL-safe — mirrors read_bytes(fd)", "tls"},
+			{"tls_write", "(int, string) -> int", "write to a tls handle — mirrors write(fd, s)", "tls"},
+			{"tls_write_bytes", "(int, bytes) -> int", "write raw bytes to a tls handle, NUL-safe — mirrors write_bytes(fd, b)", "tls"},
+			{"tls_close", "(int) -> int", "shut down a tls handle (from tls_accept or tls_client_fd) AND close its underlying fd — the connection is fully torn down, don't also call close(fd) on it", "tls"},
 		},
 		Idioms: []guideIdiom{
 			{"hello", `func main() { println("hello") }`},
@@ -389,6 +397,15 @@ func main() { priv := rand_bytes(32)  pub := secp256k1_pubkey(priv)
 	digest := eip712_digest(domainSeparator, structHash)
 	sig := secp256k1_sign_recoverable(priv, digest)
 	println(to_hex(secp256k1_recover(digest, sig)) == to_hex(pub)) }`},
+			{"tls-server", `func main() { ctx := tls_server_ctx("server.crt", "server.key")
+	if ctx == 0 { println("bad cert/key")  exit(1) }
+	srv := listen(8443)
+	for { fd := accept(srv)  go handle_one(ctx, fd) } }
+func handle_one(ctx, fd) { tls := tls_accept(ctx, fd)
+	if tls == 0 { close(fd)  return }
+	req := tls_read(tls)
+	tls_write(tls, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi")
+	tls_close(tls) }`},
 		},
 		Gotchas: []guideNote{
 			{"struct-value-semantics", "Structs are VALUE types: passing or assigning one copies it, so a function cannot mutate a caller's struct (and a builder must return the updated struct). For shared mutable state use a map — a reference type, so m[k]=v survives the holder being passed by value (see framework/flags.src)."},
@@ -413,6 +430,7 @@ func main() { priv := rand_bytes(32)  pub := secp256k1_pubkey(priv)
 			{"data-race-safety", "`machin check` INFERS data-race freedom with no annotations (the guarantee Rust needs Send/Sync for) and reports races as errors (phase `race`: RACE001 write/write, RACE002 read/write, RACE004 use-after-move); `build|run --race-safe` refuses to compile one. What races: a slice/map (or struct-with-slice field) shared across goroutines and written by one; a package global touched concurrently (even a scalar — globals are one shared cell); a captured slice in a closure passed to a `go`-spawned function. The safe pattern is SHARE BY COMMUNICATING: give each goroutine its own data and pass results over a channel — after `ch <- v`, don't touch `v` (ownership moved). Reads-only sharing is fine; a value written before a `go` (or read after joining the goroutine via a channel receive) is ordered, not a race."},
 			{"select-closed", "A closed channel makes its select receive case ready, firing repeatedly (with ok==false if you wrote `case v, ok := <-ch:`). Detect close and stop selecting on it."},
 			{"no-tls-without-https", "There is no raw TLS socket; use https_get/https_post (REST) and wss_* (WebSocket). Plain dial/listen are TCP without TLS."},
+			{"server-tls-v1", "tls_server_ctx/tls_accept let machweb terminate HTTPS itself (serve_tls in framework/machweb.src) — no reverse proxy needed for a simple/internal service. v1 scope: one cert per tls_server_ctx (no SNI multi-cert virtual hosting), no client-cert verification (not mutual TLS), no ACME/auto-renewal (bring your own cert+key, renew it yourself), and serve_tls does NOT support res.is_hijack/res.is_stream (protocol upgrades, SSE) yet — those get a 501 rather than misbehaving; use serve behind a reverse proxy for those endpoints. tls_client_fd is the STARTTLS primitive (upgrade an already-connected, plaintext-negotiated fd to TLS in place, e.g. after SMTP EHLO/STARTTLS) — it verifies the remote cert exactly like https_get does, so an untrusted/self-signed cert is rejected, not silently accepted."},
 			{"eip712-uint256", "keccak256/secp256k1_pubkey/secp256k1_sign_recoverable/secp256k1_recover give the primitives for Ethereum-style signing (EIP-712 typed data, eth_sign, raw tx signing), but a full EIP-712 ABI encoder is NOT a builtin — you assemble domainSeparator/structHash by hand from keccak256 + bytes_concat (see the eip712-sign idiom). The real gap: Solidity `uint256` struct fields (token IDs, amounts, salts) routinely exceed MFL's 64-bit `int`, so encode them as 32-byte big-endian `bytes` (from a hex string the caller already has, e.g. from an API) rather than as `int` — MFL has no builtin decimal-string-to-bytes32 bignum conversion. An Ethereum address is the last 20 bytes of keccak256(pub[1:]) (pub is the 65-byte uncompressed key, so skip its 0x04 prefix first — bytes_sub(pub, 1, 65))."},
 			{"floats-over-chan-json", "A slice/map channel element round-trips through JSON, which formats floats with %g (not bit-exact for pathological doubles)."},
 			{"memory", "Per-goroutine arena, reclaimed in bulk when the goroutine returns; wrap a hot allocating loop in `arena { ... }` to keep peak memory flat. Build with --safe for bounds/overflow/div-zero checks."},

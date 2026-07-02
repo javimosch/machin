@@ -12,6 +12,15 @@ Traefik, or Cloudflare. You do **not** need machin to speak TLS itself; the prox
 HTTPS and forwards plain HTTP to your app. This skill is about making the app *correct and
 safe* in that setup.
 
+`serve_tls(port, certfile, keyfile, handler)` (`framework/machweb.src`) lets machweb
+terminate HTTPS itself with no proxy in front — for a simple/internal service where you
+already have a cert+key file and don't want another moving part. It's **not yet a
+replacement for the proxy setup below** for anything public-facing: no ACME/Let's Encrypt
+auto-renewal (bring your own cert, renew it yourself), and `res.is_hijack`/`res.is_stream`
+(protocol upgrades, SSE) aren't supported over it yet — use `serve` behind a proxy for
+those. Reach for `serve_tls` when you want zero infra for a small/internal HTTPS service;
+reach for the reverse-proxy shape below for anything public production-facing.
+
 > Build the app with the [`machin-web`](web) / [`machin-backend`](backend) skills; this is
 > the *operate it in production* how-to.
 

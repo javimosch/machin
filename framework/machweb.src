@@ -544,6 +544,107 @@ func serve(port, handler) {
     }
 }
 
+// ---- native TLS termination (no reverse proxy) ----
+//
+// serve_tls is `serve`, but the process terminates HTTPS itself via tls_server_ctx
+// / tls_accept (issue #260) instead of expecting nginx/Caddy/Traefik in front of
+// it. v1 scope: plain request/response only — res.is_hijack (protocol upgrades,
+// e.g. a raw WebSocket handoff) and res.is_stream (SSE) are NOT supported here
+// yet (they hand the raw `conn` to a callback that does plain read/write; over
+// TLS that callback would need to be tls_read/tls_write-aware instead, which is
+// a separate follow-up) — such a handler gets a 501 rather than silently
+// misbehaving. Use `serve` behind a reverse proxy for hijack/stream endpoints
+// until that lands.
+
+// read_request_bytes_tls is read_request_bytes, over a tls handle instead of a
+// raw fd.
+func read_request_bytes_tls(tls) (raw) {
+    raw = tls_read_bytes(tls)
+    sep := bytes_index(raw, bytes("\r\n\r\n"), 0)
+    if sep >= 0 {
+        clen := content_length(bytes_str(bytes_sub(raw, 0, sep)))
+        if machweb_max_body == 0 || clen <= machweb_max_body {
+            body_start := sep + 4
+            for len(raw) - body_start < clen {
+                chunk := tls_read_bytes(tls)
+                if len(chunk) == 0 { break }
+                raw = bytes_concat(raw, chunk)
+            }
+        }
+    }
+}
+
+// machweb_handle_tls is machweb_handle, over a tls handle for the HTTP
+// read/write (fd is still the raw socket, used only for socket_timeout/peer_addr
+// — TLS framing doesn't change what those mean).
+func machweb_handle_tls(fd, tls, handler) {
+    started := now_ms()
+    if machweb_read_timeout > 0 { t := socket_timeout(fd, machweb_read_timeout) }
+    raw := read_request_bytes_tls(tls)
+    req := parse_request_bytes(raw)
+    req.remote = peer_addr(fd)
+    if machweb_max_body > 0 && parse_int(header(req, "content-length")) > machweb_max_body {
+        body := "request body exceeds the limit"
+        out := "HTTP/1.1 413 Payload Too Large\r\nContent-Type: text/plain\r\nContent-Length: " + str(len(body)) + "\r\nConnection: close\r\n\r\n" + body
+        tls_write(tls, out)
+        tls_close(tls)
+        if machweb_access_log == 1 { access_log(req, "413 Payload Too Large", len(body), now_ms() - started) }
+        return
+    }
+    res := handler(req)
+    if res.is_hijack == 1 || res.is_stream == 1 {
+        body := "hijack/stream responses are not yet supported over serve_tls"
+        out := "HTTP/1.1 501 Not Implemented\r\nContent-Type: text/plain\r\nContent-Length: " + str(len(body)) + "\r\nConnection: close\r\n\r\n" + body
+        tls_write(tls, out)
+        tls_close(tls)
+        if machweb_access_log == 1 { access_log(req, "501 Not Implemented (hijack/stream)", len(body), now_ms() - started) }
+        return
+    }
+    nbytes := 0
+    if res.is_bin == 1 {
+        head := "HTTP/1.1 " + res.status + "\r\nContent-Type: " + res.ctype + "\r\nContent-Length: " + str(len(res.bin)) + "\r\n" + cookie_lines(res) + "Connection: close\r\n\r\n"
+        tls_write(tls, head)
+        tls_write_bytes(tls, res.bin)
+        nbytes = len(res.bin)
+    } else {
+        out := "HTTP/1.1 " + res.status + "\r\nContent-Type: " + res.ctype + "\r\nContent-Length: " + str(len(res.body)) + "\r\n" + cookie_lines(res) + "Connection: close\r\n\r\n" + res.body
+        tls_write(tls, out)
+        nbytes = len(res.body)
+    }
+    tls_close(tls)
+    if machweb_access_log == 1 { access_log(req, res.status, nbytes, now_ms() - started) }
+}
+
+// machweb_accept_tls completes the server-side handshake for one connection,
+// then hands off to machweb_handle_tls. A handshake failure just drops the fd
+// (matches a browser hitting a plaintext port with https:// — no valid response
+// is possible before a handshake completes).
+func machweb_accept_tls(ctx, fd, handler) {
+    tls := tls_accept(ctx, fd)
+    if tls == 0 {
+        close(fd)
+        return
+    }
+    machweb_handle_tls(fd, tls, handler)
+}
+
+// serve_tls runs the HTTPS server directly — no reverse proxy needed. certfile/
+// keyfile are PEM paths (see tls_server_ctx). Each connection is handled (handshake
+// + request + response) in its own goroutine, same concurrency shape as serve.
+func serve_tls(port, certfile, keyfile, handler) {
+    ctx := tls_server_ctx(certfile, keyfile)
+    if ctx == 0 {
+        println("serve_tls: failed to load " + certfile + " / " + keyfile)
+        return
+    }
+    server := listen(port)
+    println("machweb on https://localhost:" + str(port))
+    for {
+        fd := accept(server)
+        go machweb_accept_tls(ctx, fd, handler)
+    }
+}
+
 // ---- map-based router ----
 //
 // A router maps "METHOD PATH" to a handler closure func(Request) Response.
