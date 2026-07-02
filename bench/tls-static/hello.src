@@ -1,0 +1,8 @@
+func main() {
+	status, body, err := http_get("https://example.com/")
+	if len(err) > 0 {
+		println("ERR: " + err)
+		exit(1)
+	}
+	println("status=" + str(status) + " bodylen=" + str(len(body)))
+}

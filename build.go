@@ -22,6 +22,15 @@ var sqliteAmalgGz []byte
 //go:embed vendor/sqlite/sqlite3.h.gz
 var sqliteHdrGz []byte
 
+// A CA root bundle (Mozilla's store, as shipped by Debian/Ubuntu), gzipped and
+// embedded so `machin build --static` can compile it directly into a TLS-using
+// program — a static binary can then verify server certificates with zero
+// external files (no system CA store needed), so it runs FROM scratch. See
+// vendor/certs/README.md and issue #283.
+//
+//go:embed vendor/certs/cacert.pem.gz
+var caBundleGz []byte
+
 func gunzip(b []byte) ([]byte, error) {
 	r, err := gzip.NewReader(bytes.NewReader(b))
 	if err != nil {
@@ -29,6 +38,26 @@ func gunzip(b []byte) ([]byte, error) {
 	}
 	defer r.Close()
 	return io.ReadAll(r)
+}
+
+// cBytesLiteral renders data as a C translation unit defining a byte array
+// `name` and a `name_len` length constant — the standard way to embed an
+// arbitrary binary blob (here, a CA bundle) directly into a compiled program.
+func cBytesLiteral(name string, data []byte) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "const unsigned char %s[] = {\n", name)
+	for i, by := range data {
+		if i%20 == 0 {
+			b.WriteString("  ")
+		}
+		fmt.Fprintf(&b, "0x%02x,", by)
+		if i%20 == 19 {
+			b.WriteByte('\n')
+		}
+	}
+	b.WriteString("\n};\n")
+	fmt.Fprintf(&b, "const unsigned long %s_len = %dUL;\n", name, len(data))
+	return b.String()
 }
 
 // ccPath is the C compiler used to turn emitted C into a native binary.
@@ -49,7 +78,11 @@ func BuildBinary(prog *Program, outPath string, safe bool) error {
 // BuildBinaryStatic is BuildBinary plus an optional fully-static link (`-static`).
 // In static mode, a SQLite-using program gets the embedded amalgamation compiled
 // directly in (no libsqlite3), so with `CC=musl-gcc` it produces a libc-free binary
-// that runs FROM scratch. TLS/crypto (OpenSSL) is not bundled — see issue #260.
+// that runs FROM scratch. A TLS-using program gets a static OpenSSL link (needs
+// libssl-dev's static archives on the build host, no musl required) plus an
+// embedded CA root bundle, so it can verify certificates FROM scratch too — see
+// vendor/certs/README.md and issue #283. Server-side TLS/STARTTLS is a separate,
+// still-open capability gap — see issue #260.
 func BuildBinaryStatic(prog *Program, outPath string, safe, static bool) error {
 	csrc, err := CompileToC(prog, safe)
 	if err != nil {
@@ -105,11 +138,38 @@ func BuildBinaryStatic(prog *Program, outPath string, safe, static bool) error {
 			"-DSQLITE_THREADSAFE=1")        // safe across machweb's per-connection goroutines
 		srcs = append(srcs, cpath)
 	}
+	bundleCABundle := static && usesTLS
+	if bundleCABundle {
+		// Decompress the embedded CA bundle, compile it in as a byte array, and tell
+		// mfl_ssl_ctx() (codegen.go) it exists via -DMFL_HAS_CABUNDLE — so a static
+		// binary can verify server certificates with no external CA store. See
+		// vendor/certs/README.md and issue #283.
+		dir, err := os.MkdirTemp("", "mfl-cabundle-*")
+		if err != nil {
+			return err
+		}
+		defer os.RemoveAll(dir)
+		pem, err := gunzip(caBundleGz)
+		if err != nil {
+			return fmt.Errorf("ca bundle: %w", err)
+		}
+		cpath := filepath.Join(dir, "mfl_cabundle.c")
+		src := "#include <stddef.h>\n" + cBytesLiteral("mfl_ca_bundle_pem", pem)
+		if err := os.WriteFile(cpath, []byte(src), 0o644); err != nil {
+			return err
+		}
+		args = append(args, "-DMFL_HAS_CABUNDLE")
+		srcs = append(srcs, cpath)
+	}
 	if static && (usesTLS || usesCrypto || usesSodium) {
-		fmt.Fprintln(os.Stderr, "machin: --static note: this program uses TLS/crypto, which "+
-			"link OpenSSL/libsodium — machin bundles only SQLite statically. The link needs "+
-			"static OpenSSL libs present, or it will fail. Native TLS (no OpenSSL) is tracked "+
-			"in issue #260.")
+		note := "machin: --static + TLS/crypto: linking a static OpenSSL (needs libssl-dev's " +
+			"static archives — .a files — on the build host; a plain `apt install libssl-dev` " +
+			"provides them, no musl needed for this part, unlike --static SQLite)."
+		if bundleCABundle {
+			note += " Bundling a CA root store so the binary verifies certificates with no " +
+				"external files (FROM scratch)."
+		}
+		fmt.Fprintln(os.Stderr, note)
 	}
 
 	var libs []string

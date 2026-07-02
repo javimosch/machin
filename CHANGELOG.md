@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- **`machin build --static` now works for TLS/crypto-using programs, FROM scratch.**
+  The static OpenSSL link already worked (this host's `libssl-dev` ships static
+  archives — no vendoring, no musl needed for this part); the missing piece was
+  certificate verification with no system CA store. A public CA root bundle
+  (Mozilla's, as shipped by Debian/Ubuntu's `ca-certificates`, ~245 KB) is now
+  gzipped and embedded (`vendor/certs/`, same pattern as the SQLite amalgamation),
+  compiled into static builds, and loaded into the `SSL_CTX` as a fallback
+  alongside the system store. Verified in a genuinely empty `FROM scratch` Docker
+  image: a real HTTPS request with full certificate verification succeeds, and a
+  known self-signed/untrusted certificate is correctly **rejected** — proving
+  verification is active, not disabled. New `bench/tls-static` (a 4th entry in
+  `machin guide`'s `proof.benchmarks`): 26.5 kB dynamic vs **5.28 MB fully static**
+  — a different, honest number from the libc-only 92.9 kB figure, not folded into
+  it. New `TestStaticBuildBundlesCACerts`. Distinct from issue #260 (server-side
+  TLS/STARTTLS — still open); this closes issue #283 (the packaging/FROM-scratch
+  gap). Pair with the default `cc`, not `CC=musl-gcc` — the static OpenSSL here is
+  glibc-built.
+
 ## v0.89.0
 
 - **`machin guide` gained a `proof` section — the "why trust these claims" answer, as
