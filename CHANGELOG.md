@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.93.0
+
 - **`machin guide`'s `proof` section gains a 5th entry: data-race safety —
   closing the gap where the project's flagship differentiator (v0.91.0's
   inferred data-race freedom) had prose docs but no reproducible benchmark,
