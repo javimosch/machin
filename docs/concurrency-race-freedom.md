@@ -135,6 +135,25 @@ thing this arc must never do):
   joined then re-spawned are still reported as racing each other (goroutine-vs-goroutine
   accessors aren't liveness-gated — that needs a full happens-before graph).
 
+### Slice 1.3 done — closure captures
+Empirically pinned the closure→goroutine surface: MFL's `go` **rejects** IIFEs
+(`go func(){}()` — parse error) and closure-valued callees (`go f()` — "not a user
+function"). So the ONLY way captured state reaches a goroutine is a **closure passed as a
+func-arg to a `go`-spawned function that invokes it** (`go runner(f)` where `runner`
+calls `cb()`). That single pattern was a real race the analysis MISSED.
+- Closures are lifted during parse, so `detectRaces` sees the lifted form: a top-level
+  `lambda_N` with captures as its leading params, bound by `MakeClosure{FuncName,Captures}`.
+  Its captured-slice accesses are therefore already in `accessSummary`.
+- `collectClosureVars` maps closure variables → their `MakeClosure`; at a `go` site, a
+  closure arg re-roots `sum[lambda]` onto the CAPTURED outer variables (capture i ↔ lambda
+  param i), which are shared by-reference with the enclosing scope — feeding the same
+  accessor machinery (multiplicity, happens-before, join all apply).
+- Tests: capture-write→goroutine RACE, closure-read vs main-write read/write RACE;
+  synchronous (no `go`) and read-only-escape stay CLEAN. Corpus 0 false positives.
+- Scope note: covers captured slice/map (shared-heap) accesses — the realistic case.
+  Captured *scalar* boxes (the closure-counter analogue) and closures that reach a
+  goroutine only transitively (through a normal call that then spawns) are out of scope.
+
 ### Integration points (Go reference compiler)
 - **Types**: the pass needs resolved types for `sharesHeap`. Hook the `Checker` after it
   finishes (`types.go`) and expose a `typeOfPlace(fn, expr)` query, or build a light place-

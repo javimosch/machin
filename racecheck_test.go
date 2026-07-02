@@ -264,6 +264,53 @@ func TestRace_JoinTooFewReceives(t *testing.T) {
 	}
 }
 
+// ── closure captures (Slice 1.3) ─────────────────────────────────────────────
+
+func TestRace_ClosureCaptureEscapes(t *testing.T) {
+	// the only way a closure reaches a goroutine in MFL: captured shared state
+	// travels as a func-arg to a go-spawned function that invokes it. Was missed.
+	fs := rcCheck(t,
+		"func runner(cb){cb()}",
+		"func main(){data:=[]int{0,0} f:=func(){data[0]=1} go runner(f) data[1]=2 print(data[0])}")
+	rcReport(t, "closure capture -> goroutine", fs)
+	if len(fs) != 1 || fs[0].Root != "data" {
+		t.Fatalf("want 1 race on captured data, got %+v", fs)
+	}
+}
+
+func TestRace_ClosureNotEscaping(t *testing.T) {
+	// closure invoked synchronously (no `go`) — single-threaded, no race.
+	fs := rcCheck(t,
+		"func runner(cb){cb()}",
+		"func main(){data:=[]int{0,0} f:=func(){data[0]=1} runner(f) data[1]=2 print(data[0])}")
+	rcReport(t, "closure not escaping", fs)
+	if len(fs) != 0 {
+		t.Fatalf("want CLEAN (synchronous closure), got %+v", fs)
+	}
+}
+
+func TestRace_ClosureReadOnlyEscape(t *testing.T) {
+	// closure only reads its capture; main only reads too — no writer, no race.
+	fs := rcCheck(t,
+		"func runner(cb){cb()}",
+		"func main(){data:=[]int{5,6} f:=func(){print(data[0])} go runner(f) x:=data[1] print(x)}")
+	rcReport(t, "closure read-only escape", fs)
+	if len(fs) != 0 {
+		t.Fatalf("want CLEAN (no writer), got %+v", fs)
+	}
+}
+
+func TestRace_ClosureReadVsMainWrite(t *testing.T) {
+	// captured read in the goroutine vs a write on this thread — read/write race.
+	fs := rcCheck(t,
+		"func runner(cb){cb()}",
+		"func main(){data:=[]int{5,6} f:=func(){print(data[0])} go runner(f) data[1]=9 print(data[0])}")
+	rcReport(t, "closure read vs main write", fs)
+	if len(fs) != 1 || fs[0].Kind != "read/write" {
+		t.Fatalf("want 1 read/write race, got %+v", fs)
+	}
+}
+
 // ── banner ──────────────────────────────────────────────────────────────────
 
 func TestRace_ZZZBanner(t *testing.T) {

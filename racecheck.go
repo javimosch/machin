@@ -425,6 +425,31 @@ func markLoopSpawns(ss []Stmt, live map[string]int, sum map[string][]paramAcc) {
 	}
 }
 
+// collectClosureVars maps each variable bound to a closure literal to its
+// MakeClosure (lifted lambda + captured outer-variable names). Closures are the
+// only way captured state reaches a goroutine in MFL: `go` rejects lambdas and
+// closure-valued callees, so a capturing closure must travel as a func-valued
+// argument to a `go`-spawned function that invokes it (Slice 1.3).
+func collectClosureVars(ss []Stmt, into map[string]*MakeClosure) {
+	for _, s := range ss {
+		switch st := s.(type) {
+		case *AssignStmt:
+			if mc, ok := st.Val.(*MakeClosure); ok {
+				into[st.Name] = mc
+			}
+		case *IfStmt:
+			collectClosureVars(st.Then, into)
+			collectClosureVars(st.Else, into)
+		case *WhileStmt:
+			collectClosureVars(st.Body, into)
+		case *RangeStmt:
+			collectClosureVars(st.Body, into)
+		case *ArenaStmt:
+			collectClosureVars(st.Body, into)
+		}
+	}
+}
+
 func copyIntMap(m map[string]int) map[string]int {
 	n := make(map[string]int, len(m))
 	for k, v := range m {
@@ -455,6 +480,8 @@ func detectRaces(prog *Program, c *Checker) []raceFinding {
 		// drains all such goroutines are ordered-after — both are safe. Goroutine
 		// accessors are always recorded (they overlap each other and post-spawn code).
 		accs := map[string][]accessor{}
+		closureVars := map[string]*MakeClosure{}
+		collectClosureVars(f.Body, closureVars)
 		recordGo := func(a goAcc) {
 			slot, ok := c.vars[inst][a.root]
 			if !ok || !typeShared(c, slotTypeName(c, slot), a.path) {
@@ -505,10 +532,42 @@ func detectRaces(prog *Program, c *Checker) []raceFinding {
 			for _, s := range ss {
 				switch st := s.(type) {
 				case *GoStmt:
+					mult, label := 1, "goroutine"
+					if inLoop {
+						mult, label = 2, "loop-spawned goroutine"
+					}
 					touched := map[string]bool{}
 					for _, a := range goAccessorsOf(st, inLoop, sum) {
 						recordGo(a)
 						touched[a.root] = true
+					}
+					// closure captures escaping to the goroutine (Slice 1.3): a closure
+					// arg re-roots its lifted lambda's accesses onto the CAPTURED outer
+					// variables, which are shared by-reference with this scope.
+					for _, arg := range st.Call.Args {
+						var mc *MakeClosure
+						switch av := arg.(type) {
+						case *MakeClosure:
+							mc = av
+						case *Ident:
+							mc = closureVars[av.Name]
+						}
+						if mc == nil {
+							continue
+						}
+						for _, ca := range sum[mc.FuncName] {
+							if ca.idx >= len(mc.Captures) {
+								continue
+							}
+							outer := mc.Captures[ca.idx]
+							verb := "reads"
+							if ca.write {
+								verb = "writes"
+							}
+							recordGo(goAcc{outer, ca.path, ca.write, mult,
+								fmt.Sprintf("%s closure in `go %s(...)` %s captured `%s`", label, st.Call.Callee, verb, outer)})
+							touched[outer] = true
+						}
 					}
 					for r := range touched {
 						live[r]++
