@@ -1,0 +1,39 @@
+// flags_test — exercises framework/flags.src's parser directly, in MFL, via
+// `machin test`. Run from the repo root:
+//   machin test framework/tests/flags_test.src
+// (machin test composes framework/test.src automatically; flags.src is
+// composed explicitly below since machin test only auto-adds test.src.)
+
+func main() {
+    fs := new_flags("mytool")
+    fs = flag_str(fs, "out", "o", "-", "output file")
+    fs = flag_int(fs, "count", "c", "1", "how many")
+    fs = flag_bool(fs, "verbose", "v", "chatty output")
+
+    // defaults, before parsing
+    assert_eq_str(flag_get(fs, "out"), "-", "default out")
+    assert_eq_int(flag_int_val(fs, "count"), 1, "default count")
+    assert(flag_on(fs, "verbose") == false, "default verbose is off")
+
+    // long form, space value; short form with =; bool short form; positionals
+    p := flag_resolve(fs, "o")
+    assert_eq_str(p, "out", "short 'o' resolves to long 'out'")
+
+    fs2 := parse_flags(fs, []string{"prog", "--out", "result.txt", "-c=5", "-v", "posarg"})
+    assert_eq_str(flag_get(fs2, "out"), "result.txt", "long form space value")
+    assert_eq_int(flag_int_val(fs2, "count"), 5, "short form = value")
+    assert(flag_on(fs2, "verbose"), "short bool flag set")
+    rest := flag_args(fs2)
+    assert_eq_int(len(rest), 1, "one positional")
+    assert_eq_str(rest[0], "posarg", "positional value")
+
+    // an unknown flag is skipped, not an error, and doesn't corrupt state
+    fs3 := parse_flags(fs, []string{"prog", "--nope", "--count=9"})
+    assert_eq_int(flag_int_val(fs3, "count"), 9, "known flag still parses after an unknown one")
+
+    // --help sets the auto-registered help flag
+    fs4 := parse_flags(fs, []string{"prog", "--help"})
+    assert(flag_on(fs4, "help"), "--help sets the auto-registered help flag")
+
+    test_summary()
+}

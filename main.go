@@ -36,6 +36,8 @@ func main() {
 		err = cmdEncode(os.Args[2:])
 	case "check":
 		err = cmdCheck(os.Args[2:]) // agent-native diagnostics (lex/parse/typecheck only, JSON)
+	case "test":
+		err = cmdTest(os.Args[2:]) // native MFL test runner (framework/test.src assert helpers)
 	case "pack":
 		err = cmdPack(os.Args[2:])
 	case "guide":
@@ -99,6 +101,7 @@ usage:
   machin build|run <file.mfl> --safe  insert bounds / div-zero / overflow checks
   machin build|run <file.mfl> --race-safe  refuse to build if a data race is inferred
   machin check <src...>|--stdin      lex+parse+typecheck only (no cc); add --json for machine-readable diagnostics
+  machin test [--json] <src...>      run MFL test files (framework/test.src: assert/assert_eq_int/assert_eq_str)
   machin encode <src>                mint canonical MFL from loose Go-like text (framework/*.src resolve from the binary)
   machin framework list|<name>|--vendor   the embedded framework modules (machweb, db drivers, …)
   machin pack  <file.mfl>            emit the dense base64 form (distribution)
@@ -357,18 +360,33 @@ func cmdEncode(args []string) error {
 	if len(args) < 1 {
 		return fmt.Errorf("encode: need at least one source file")
 	}
+	_, out, err := composeSources(args)
+	if err != nil {
+		return err
+	}
+	fmt.Print(out)
+	return nil
+}
+
+// composeSources reads and concatenates one or more sources (local files or
+// embedded framework modules, resolved via readModule), splits them into
+// per-function blocks, normalizes each into canonical form, and parses +
+// typechecks the result. Returns the typechecked Program and the canonical
+// text (what `machin encode` prints) — shared by cmdEncode and cmdTest so
+// composing a framework module ahead of a file behaves identically in both.
+func composeSources(paths []string) (*Program, string, error) {
 	var combined strings.Builder
-	for _, path := range args {
+	for _, path := range paths {
 		data, err := readModule(path) // local file, else an embedded framework module
 		if err != nil {
-			return err
+			return nil, "", err
 		}
 		combined.Write(data)
 		combined.WriteByte('\n')
 	}
 	blocks, err := splitFunctions(combined.String())
 	if err != nil {
-		return err
+		return nil, "", err
 	}
 	var decls []string
 	var out strings.Builder
@@ -380,13 +398,12 @@ func cmdEncode(args []string) error {
 	}
 	prog, err := ParseProgram(decls)
 	if err != nil {
-		return fmt.Errorf("parse: %w", err)
+		return nil, "", fmt.Errorf("parse: %w", err)
 	}
 	if _, err := Check(prog); err != nil {
-		return fmt.Errorf("typecheck: %w", err)
+		return nil, "", fmt.Errorf("typecheck: %w", err)
 	}
-	fmt.Print(out.String())
-	return nil
+	return prog, out.String(), nil
 }
 
 // cmdPack emits the dense base64 "packed" form of a .mfl: one base64 line per
