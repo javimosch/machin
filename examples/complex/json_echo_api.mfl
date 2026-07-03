@@ -1,5 +1,49 @@
-type Todo struct{id    int title string done  bool}
+type Todo struct{id int title string done bool}
 
-func handle(conn){req:=read(conn)t:=parse(http_body(req),Todo{})out:=json(t)resp:="HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "+str(len(out))+"\r\nConnection: close\r\n\r\n"+out write(conn,resp)close(conn)}
+//content_length parses the Content-Length header value from a request's headers.
+func content_length(head)(n){
+n=0
+i:=index(to_lower(head),"content-length:")
+if i>=0{
+rest:=substr(head,i+15,len(head))
+nl:=index(rest,"\r\n")
+if nl>=0{rest=substr(rest,0,nl)}
+n=parse_int(trim(rest))
+}
+}
 
-func main(){server:=listen(48080)println("JSON echo API on http://localhost:48080  (POST a Todo)")for{conn:=accept(server)go handle(conn)}}
+//read_request reads a whole request not just the first packet. a single
+//read syscall returns at most 65535 bytes and a POST body often arrives in
+//its own TCP segment so this loops on read_bytes until Content-Length bytes
+//of body are in hand. mirrors framework/machweb.src's read_request_bytes. see issue #91
+func read_request(conn)(raw){
+raw=read_bytes(conn)
+sep:=bytes_index(raw,bytes("\r\n\r\n"),0)
+if sep>=0{
+clen:=content_length(bytes_str(bytes_sub(raw,0,sep)))
+body_start:=sep+4
+for len(raw)-body_start<clen{
+chunk:=read_bytes(conn)
+if len(chunk)==0{break}
+raw=bytes_concat(raw,chunk)
+}
+}
+}
+
+func handle(conn){
+req:=bytes_str(read_request(conn))
+t:=parse(http_body(req),Todo{})
+out:=json(t)
+resp:="HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "+str(len(out))+"\r\nConnection: close\r\n\r\n"+out
+write(conn,resp)
+close(conn)
+}
+
+func main(){
+server:=listen(48080)
+println("JSON echo API on http://localhost:48080  (POST a Todo)")
+for{
+conn:=accept(server)
+go handle(conn)
+}
+}

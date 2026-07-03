@@ -59,3 +59,55 @@ func main() {
 		t.Fatalf("read_bytes should return all 4 bytes incl. the leading NUL; got:\n%s", out)
 	}
 }
+
+// #91: `read`/`read_bytes` are each one read(2) of at most 65535 bytes, not a
+// whole message — a payload bigger than that (a large HTTP body, or one that
+// simply arrives in more than one TCP segment) needs the CALLER to loop.
+// examples/complex/json_echo_api.mfl's read_request does exactly this (loop
+// read_bytes until Content-Length bytes are in hand, mirroring
+// framework/machweb.src's read_request_bytes) — this test proves the
+// underlying mechanism a single read_bytes call cannot: a server writes a
+// payload well over the 65535-byte single-read cap, and the client must call
+// read_bytes more than once to reassemble it all.
+func TestReadBytesLoopReassemblesLargePayload(t *testing.T) {
+	prog := progFromSrc(t, `
+func serve_big(srv, n) {
+    conn := accept(srv)
+    payload := bytes("")
+    i := 0
+    chunk := from_hex("41")   // one byte, 'A'
+    while i < n {
+        payload = bytes_concat(payload, chunk)
+        i = i + 1
+    }
+    write_bytes(conn, payload)
+    close(conn)
+}
+func main() {
+    n := 100000   // well over the 65535-byte single-read(2) cap
+    srv := listen(48235)
+    go serve_big(srv, n)
+    sleep(100)
+    c := dial("127.0.0.1", 48235)
+    total := bytes("")
+    reads := 0
+    for {
+        chunk := read_bytes(c)
+        if len(chunk) == 0 { break }
+        total = bytes_concat(total, chunk)
+        reads = reads + 1
+    }
+    close(c)
+    println("len=" + str(len(total)) + " reads=" + str(reads))
+}`)
+	out, err := RunCaptured(prog)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !strings.Contains(out, "len=100000") {
+		t.Fatalf("expected the full 100000-byte payload reassembled, got:\n%s", out)
+	}
+	if strings.Contains(out, "reads=1") {
+		t.Fatalf("expected more than one read_bytes call to reassemble 100000 bytes (proves a single read cannot), got:\n%s", out)
+	}
+}
