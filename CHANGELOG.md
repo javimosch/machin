@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## v0.103.0
+
+- **Docs: added a "C FFI (extern)" section to `docs/LANGUAGE.md`.** The language
+  reference had no coverage of `extern` blocks at all — basic syntax (`header`/
+  `link`/`cflags`/`fn`), the FFI scalar type table (`i8`..`u64`/`f32`/`f64`/`ptr`),
+  `cstruct` for by-value C structs (with nested aggregates), opaque handles
+  (`ptr` and empty-body `cstruct`), and multi-`link`/`cflags`. All four embedded
+  code examples verified to actually compile and run correctly. See issue #147.
+
 ## v0.102.0
 
 - **CI: added a workflow that actually runs the test suite.** `release.yml` (build +
