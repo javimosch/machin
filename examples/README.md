@@ -57,6 +57,7 @@ machin build examples/complex/primes.mfl --emit-c   # see the generated C
 | `json_echo_api`   | POST JSON → parse into a struct → echo it back as JSON |
 | `strings`         | string ops (`split`/`join`/`substr`/`index`/`replace`/…) + request-line parsing |
 | `bytes`           | `bytes` type: construct, `to_hex`/`from_hex`, `byte_at`, `bytes_sub`, `bytes_concat`, `bytes_str`; NUL-safe vs string |
+| `crypto`          | OpenSSL crypto suite: SHA-256, HMAC, AES-GCM round-trip (`ct\|\|tag` layout), Ed25519 sign/verify |
 | `router_api`      | HTTP router — dispatch by method+path, extract path params |
 
 `http_server` loops forever, so it's skipped by `run.sh`. Run it directly:

@@ -1,0 +1,47 @@
+//crypto:hash→hmac→aes-gcm round-trip→ed25519 sign/verify(requires OpenSSL libcrypto).
+
+func main(){
+//---SHA-256 hash---
+msg:=bytes("hello crypto")
+digest:=sha256_bytes(msg)
+println("sha256:",to_hex(digest))//32-byte digest
+
+//---HMAC-SHA256---
+key:=rand_bytes(32)
+mac:=hmac_sha256_bytes(key,msg)
+println("hmac len:",len(mac))//32
+
+//---AES-GCM round-trip---
+//key must be 16 or 32 bytes;iv must be 12 bytes;NEVER reuse iv with same key
+aes_key:=rand_bytes(32)
+iv:=rand_bytes(12)
+pt:=bytes("secret payload")
+aad:=bytes("authenticated header")
+ct_tag:=aes_gcm_encrypt(aes_key,iv,pt,aad)//returns ciphertext||16-byte auth tag
+println("ct+tag len:",len(ct_tag))//len(pt)+16
+
+//aes_gcm_decrypt returns empty bytes on auth failure — always check len
+plaintext:=aes_gcm_decrypt(aes_key,iv,ct_tag,aad)
+if len(plaintext)==0{
+println("aes-gcm: auth failure")
+}else{
+println("aes-gcm plaintext:",bytes_str(plaintext))//secret payload
+}
+
+//tamper test:wrong aad must fail authentication
+bad:=aes_gcm_decrypt(aes_key,iv,ct_tag,bytes("wrong header"))
+println("tamper detected:",len(bad)==0)//true
+
+//---Ed25519 sign/verify---
+//seed must be exactly 32 bytes
+seed:=rand_bytes(32)
+pub:=ed25519_pub(seed)
+sig:=ed25519_sign(seed,msg)
+println("sig len:",len(sig))//64
+ok:=ed25519_verify(pub,msg,sig)
+println("ed25519 ok:",ok)//true
+
+//wrong message must fail
+ok2:=ed25519_verify(pub,bytes("wrong"),sig)
+println("bad verify:",ok2)//false
+}
