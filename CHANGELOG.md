@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **Fixed: `examples/complex/json_echo_api.mfl` silently truncated large/split POST
+  bodies.** `read(fd)` is one `read(2)` syscall, returning at most 65535 bytes — not a
+  whole HTTP request. `framework/machweb.src`'s own server (`read_request_bytes`) has
+  looped correctly on this for a while; this specific example still used a single
+  `read(conn)` and had no test proving otherwise. Fixed by inlining the same
+  loop-until-`Content-Length` pattern (`read_bytes` + `bytes_index` + a small
+  `content_length` helper), kept self-contained (no framework composition needed).
+  Verified against a real 100 KB body: the old code silently truncated to 65,353
+  bytes; the fix round-trips all 100,000. `docs/LANGUAGE.md` and `SPEC.md` now
+  document the single-read limitation next to `read`/`write`, pointing at the correct
+  pattern. New `TestReadBytesLoopReassemblesLargePayload`. See issue #91.
+
 ## v0.99.0
 
 - **Fixed: duplicate function definitions were silently accepted (last wins).** Two

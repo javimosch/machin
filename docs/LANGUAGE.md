@@ -343,7 +343,7 @@ first := users[0]                                // value copy
 | `sleep(ms)`                 | suspend the current goroutine (milliseconds) |
 | `listen(port)`              | open a TCP listening socket                  |
 | `accept(fd)`                | accept a connection, return its socket fd    |
-| `read(fd)` / `write(fd, s)` | read from / write to a socket                |
+| `read(fd)` / `write(fd, s)` | read from / write to a socket — **one `read(2)` of up to 65535 bytes, not a whole message** (see note below) |
 | `close(fd)`                 | close a socket                               |
 | `https_get(url)`            | GET over TLS (or plain http://) → body string (`""` on error) |
 | `https_post(url, body)`     | POST with string body over TLS (or plain http://) → body string |
@@ -356,6 +356,23 @@ first := users[0]                                // value copy
 | `byte_at(b, i)`             | byte value 0–255 at index `i` (−1 if out of range) |
 | `bytes_sub(b, start, end)`  | sub-range `[start, end)` of a `bytes` value  |
 | `bytes_concat(a, b)`        | concatenate two `bytes` values               |
+
+### Raw sockets (`listen` / `accept` / `read` / `write`)
+
+**`read(fd)` is one `read(2)` syscall, returning whatever is currently in the
+socket's buffer (up to 65535 bytes) — not a whole message.** TCP is a byte
+stream: a request larger than ~64KB, or one whose bytes simply haven't all
+arrived yet (common under load, or for any non-trivial POST body), is
+silently truncated. A single `read(conn)` is only safe when you know the
+peer sends one small, complete message per read (e.g. a line-based
+protocol) — never assume it returns a full HTTP request.
+
+To read a complete HTTP request, loop `read_bytes(fd)` (the NUL-safe,
+`bytes`-returning sibling of `read`) until you've seen the `\r\n\r\n`
+header/body separator, then keep looping until you have `Content-Length`
+bytes of body — this is exactly what `framework/machweb.src`'s
+`read_request_bytes` does; read that function before writing your own raw
+socket server. See also [issue #91](https://github.com/javimosch/machin/issues/91).
 
 ### SQLite
 

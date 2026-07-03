@@ -325,7 +325,7 @@ startup (before `main`; at `_initialize` for a wasm reactor).
 | `sleep` | `(int) -> ` | pause (milliseconds) |
 | `dial` | `(string, int) -> int` | connect to host:port; an fd, or -1 on failure |
 | `listen`, `accept` | `(int) -> int` | open / accept on a TCP socket |
-| `read`, `write` | `(int[, string]) -> string\|int` | socket/fd I/O |
+| `read`, `write` | `(int[, string]) -> string\|int` | socket/fd I/O — `read` is one `read(2)` of up to 65535 bytes, not a whole message; loop `read_bytes` (NUL-safe) to reassemble a complete request (see `framework/machweb.src`'s `read_request_bytes`, and issue #91) |
 | `close` | `(int\|chan) -> ` | close a socket/fd, or a channel (dispatched by argument) |
 | `https_get` | `(string) -> string` | HTTPS GET over TLS; response body ("" on error) |
 | `https_post` | `(string, string) -> string` | HTTPS POST (JSON body) over TLS; response body |
