@@ -334,6 +334,10 @@ first := users[0]                                // value copy
 | `int(n)`                    | convert a numeric value to `int` (truncates) |
 | `url_encode(s)`             | percent-encode a string for URLs (RFC 3986: keeps `A-Za-z0-9-._~`, encodes everything else, space → `%20`) |
 | `url_decode(s)`             | percent-decode a URL component (lenient: `+` → space, malformed `%XX` passes through unchanged) |
+| `base64_encode(s)`          | base64-encode a string → standard padded output (`A-Za-z0-9+/=`) |
+| `base64_decode(s)`          | base64-decode a string → string; **lenient**: accepts standard *and* URL-safe alphabets, ignores missing padding |
+| `base64_encode_bytes(b)`    | base64-encode raw `bytes` → string (binary-safe; use instead of `base64_encode` for non-text payloads) |
+| `base64_decode_bytes(s)`    | base64-decode → raw `bytes` (lenient; binary-safe; e.g. SCRAM salt or binary token) |
 | `sleep(ms)`                 | suspend the current goroutine (milliseconds) |
 | `listen(port)`              | open a TCP listening socket                  |
 | `accept(fd)`                | accept a connection, return its socket fd    |
