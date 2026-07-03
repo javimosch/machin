@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Test: covered the `machin encode` command path.** `splitFunctions`, `stripLineComment`,
+  and `cmdEncode`'s core (`composeSources`) had no direct tests despite being the
+  project's primary authoring entry point (`framework/run.sh` depends on it to build
+  every framework app). Added: nested-brace splitting and the "unbalanced braces"
+  error path for `splitFunctions` (previously only its duplicated copy in
+  `splitFunctionsLoc` had a test); a table-driven `stripLineComment` test (trailing
+  comment removed, `//` inside a string literal preserved); multi-file concatenation
+  order, a `loadMFL` round-trip, and type-error surfacing for `composeSources`. See
+  issue #82.
+
 ## v0.100.0
 
 - **Fixed: `examples/complex/json_echo_api.mfl` silently truncated large/split POST

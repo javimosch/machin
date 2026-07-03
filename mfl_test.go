@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/base64"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -1380,5 +1382,121 @@ func TestSplitFunctionsBracesInStrings(t *testing.T) {
 	}
 	if len(fns) != 2 {
 		t.Fatalf("expected 2 funcs, got %d: %v", len(fns), fns)
+	}
+}
+
+// #82: splitFunctions had no direct test for multi-level nesting or its own
+// "unbalanced braces" error path (only splitFunctionsLoc — check.go's
+// separate, duplicated copy of the same brace-counting loop — had one, via
+// TestCheckUnbalancedBraces). A regression in either copy's depth tracking
+// would ship undetected.
+func TestSplitFunctionsNestedBraces(t *testing.T) {
+	src := `func f(xs) (n) {
+    n = 0
+    for i, v := range xs {
+        if v > 0 {
+            while n < v {
+                n = n + 1
+            }
+        }
+    }
+}
+
+func main() { println(f([]int{1, 2})) }
+`
+	fns, err := splitFunctions(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fns) != 2 {
+		t.Fatalf("expected 2 funcs (one with 4 levels of nested braces), got %d: %v", len(fns), fns)
+	}
+}
+
+func TestSplitFunctionsUnbalancedBraces(t *testing.T) {
+	_, err := splitFunctions("func broken() {\n    if x {\n")
+	if err == nil {
+		t.Fatal("expected an unbalanced-braces error, got nil")
+	}
+	if !strings.Contains(err.Error(), "unbalanced braces") {
+		t.Fatalf("expected an 'unbalanced braces' error, got: %v", err)
+	}
+}
+
+// #82: stripLineComment had zero direct test coverage.
+func TestStripLineComment(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{`x := 1 // trailing comment`, `x := 1 `},
+		{`s := "http://example.com"`, `s := "http://example.com"`}, // // inside a string is not a comment
+		{`s := "a // b" // real comment`, `s := "a // b" `},
+		{`no comment here`, `no comment here`},
+		{`// whole line is a comment`, ``},
+	}
+	for _, c := range cases {
+		if got := stripLineComment(c.in); got != c.want {
+			t.Errorf("stripLineComment(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// #82: cmdEncode's core (composeSources, extracted for `machin test` too) had
+// no test proving multi-file concatenation preserves declaration order, that
+// the result round-trips through loadMFL, or that a type error surfaces
+// rather than silently emitting bad output.
+func TestComposeSourcesMultiFileOrder(t *testing.T) {
+	dir := t.TempDir()
+	first := filepath.Join(dir, "first.src")
+	second := filepath.Join(dir, "second.src")
+	if err := os.WriteFile(first, []byte(`func a() (s) { s = "A" }`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(second, []byte(`func main() { println(a()) }`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, out, err := composeSources([]string{first, second})
+	if err != nil {
+		t.Fatalf("compose: %v", err)
+	}
+	ia, im := strings.Index(out, "func a("), strings.Index(out, "func main(")
+	if ia < 0 || im < 0 || ia > im {
+		t.Fatalf("expected first.src's decl before second.src's in the composed output, got:\n%s", out)
+	}
+}
+
+func TestComposeSourcesRoundTripsThroughLoadMFL(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "app.src")
+	if err := os.WriteFile(src, []byte(`func main() { println("hi from round-trip") }`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, out, err := composeSources([]string{src})
+	if err != nil {
+		t.Fatalf("compose: %v", err)
+	}
+	mflPath := filepath.Join(dir, "app.mfl")
+	if err := os.WriteFile(mflPath, []byte(out), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prog, err := loadMFL(mflPath)
+	if err != nil {
+		t.Fatalf("loadMFL on composeSources' own output: %v", err)
+	}
+	out2, err := RunCaptured(prog)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if out2 != "hi from round-trip\n" {
+		t.Fatalf("got %q", out2)
+	}
+}
+
+func TestComposeSourcesSurfacesTypeError(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "bad.src")
+	if err := os.WriteFile(src, []byte(`func main() { undefined_function_xyz() }`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := composeSources([]string{src}); err == nil {
+		t.Fatal("expected a typecheck error for a call to an undefined function, got nil")
 	}
 }
