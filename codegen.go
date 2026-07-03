@@ -257,22 +257,27 @@ static mfl_chan* mfl_make_chan(int64_t es, char* (*ser)(const void*), void (*des
     }
     return c;
 }
-/* freeze: replace each string field with a stable malloc'd copy (the value is
-   being handed off to the channel, away from the sender's arena). */
-static void mfl_chan_freeze(mfl_chan* c, void* elem) {
-    for (int i = 0; i < c->nstr; i++) {
-        char** p = (char**)((char*)elem + c->stroff[i]);
+/* freeze: replace each string field (found at the given byte offsets within
+   elem) with a stable malloc'd copy -- the value is being handed off away
+   from the current arena (to a channel, or across a go-statement's arena
+   boundary; #310). Shared by mfl_chan_freeze and mfl_go's argument passing. */
+static void mfl_freeze_strs(int nstr, int* stroff, void* elem) {
+    for (int i = 0; i < nstr; i++) {
+        char** p = (char**)((char*)elem + stroff[i]);
         if (*p) { size_t n = strlen(*p); char* d = (char*)malloc(n + 1); memcpy(d, *p, n + 1); *p = d; }
     }
 }
-/* thaw: move each frozen string into the receiver's arena, freeing the malloc'd
-   copy. After this the value's strings live exactly as long as the receiver. */
-static void mfl_chan_thaw(mfl_chan* c, void* elem) {
-    for (int i = 0; i < c->nstr; i++) {
-        char** p = (char**)((char*)elem + c->stroff[i]);
+/* thaw: move each frozen (malloc'd) string into the CURRENT arena, freeing the
+   malloc'd copy. After this the value's strings live exactly as long as
+   whichever goroutine's arena is current when this runs. */
+static void mfl_thaw_strs(int nstr, int* stroff, void* elem) {
+    for (int i = 0; i < nstr; i++) {
+        char** p = (char**)((char*)elem + stroff[i]);
         if (*p) { char* a = mfl_dup_arena(*p, strlen(*p)); free(*p); *p = a; }
     }
 }
+static void mfl_chan_freeze(mfl_chan* c, void* elem) { mfl_freeze_strs(c->nstr, c->stroff, elem); }
+static void mfl_chan_thaw(mfl_chan* c, void* elem) { mfl_thaw_strs(c->nstr, c->stroff, elem); }
 /* close a channel: receivers drain the buffer then get "not ok". Wakes every
    blocked receiver so range/recv stop instead of hanging forever. */
 static void mfl_chan_close(mfl_chan* c) {
@@ -3489,6 +3494,18 @@ func (g *cgen) rangeStmt(st *RangeStmt, depth int) error {
 
 // goStmt spawns a pthread. For each go-call site it emits a per-site arg struct
 // and trampoline, then a detached pthread_create at the call site.
+//
+// #310: the spawned goroutine gets its own fresh arena (mfl_arena_cur = &_a
+// below), reclaimed independently of the spawning goroutine's. An argument
+// holding a pointer into the SPAWNING goroutine's arena -- a string, or a
+// struct containing one -- dangles once that arena is freed, which can
+// happen before or during the new goroutine's run (e.g. a machweb handler
+// that does `go background_work(ag, conv)` then returns: the response is
+// sent and the request arena reclaimed while background_work may still be
+// starting up). This is exactly what channel sends already protect against
+// (mfl_chan_freeze/thaw for strings, a JSON round-trip for slices/maps) --
+// reused here for `go` call arguments. Scalars need neither: they are not
+// heap-allocated (SPEC.md 12).
 func (g *cgen) goStmt(st *GoStmt) error {
 	id := g.goID
 	g.goID++
@@ -3496,14 +3513,53 @@ func (g *cgen) goStmt(st *GoStmt) error {
 	cname := g.c.CName(inst)
 	n := len(st.Call.Args)
 
-	// arg struct + trampoline (a leading dummy field avoids an empty struct)
+	// Classify each argument up front: JSON round-trip (contains a slice/map),
+	// string-offset freeze/thaw (a string, or a struct of strings only), or
+	// neither (a scalar, passed through unchanged). Iterate by index (not a
+	// map) so the emitted C is deterministic across compiler runs.
+	type jsonArg struct{ ser, des string }
+	jsonArgs := make(map[int]jsonArg)
+	var strOffs []string
+	for i, a := range st.Call.Args {
+		argType := g.c.TypeString(g.curFn, a)
+		if g.chanNeedsJSON(argType) {
+			ser, err := g.jsonSerializer(argType)
+			if err != nil {
+				return err
+			}
+			des, err := g.jsonParser(argType)
+			if err != nil {
+				return err
+			}
+			jsonArgs[i] = jsonArg{ser, des}
+			continue
+		}
+		strOffs = append(strOffs, g.chanStrOffsets(argType, fmt.Sprintf("offsetof(struct mfl_go_%d, a%d) + ", id, i))...)
+	}
+
+	// arg struct + trampoline (a leading dummy field avoids an empty struct).
+	// A JSON-mode argument gets an extra _jN field carrying the malloc'd JSON
+	// blob across the arena boundary; its real aN field is populated inside
+	// the trampoline, once mfl_arena_cur is the NEW goroutine's arena.
 	fmt.Fprintf(&g.tramp, "struct mfl_go_%d { char _;", id)
 	for i := 0; i < n; i++ {
 		fmt.Fprintf(&g.tramp, " %s a%d;", g.c.ParamCType(inst, i), i)
+		if _, ok := jsonArgs[i]; ok {
+			fmt.Fprintf(&g.tramp, " char* _j%d;", i)
+		}
 	}
 	g.tramp.WriteString(" };\n")
-	fmt.Fprintf(&g.tramp, "static void* mfl_go_run_%d(void* p) { mfl_arena _a = {0}; mfl_arena_cur = &_a; struct mfl_go_%d* s = (struct mfl_go_%d*)p; %s(",
-		id, id, id, cname)
+	fmt.Fprintf(&g.tramp, "static void* mfl_go_run_%d(void* p) { mfl_arena _a = {0}; mfl_arena_cur = &_a; struct mfl_go_%d* s = (struct mfl_go_%d*)p;\n",
+		id, id, id)
+	for i := 0; i < n; i++ {
+		if j, ok := jsonArgs[i]; ok {
+			fmt.Fprintf(&g.tramp, "    { const char* _p = s->_j%d; s->a%d = %s(&_p); } free(s->_j%d);\n", i, i, j.des, i)
+		}
+	}
+	if len(strOffs) > 0 {
+		fmt.Fprintf(&g.tramp, "    mfl_thaw_strs(%d, (int[]){%s}, s);\n", len(strOffs), strings.Join(strOffs, ", "))
+	}
+	g.tramp.WriteString("    " + cname + "(")
 	for i := 0; i < n; i++ {
 		if i > 0 {
 			g.tramp.WriteString(", ")
@@ -3512,7 +3568,9 @@ func (g *cgen) goStmt(st *GoStmt) error {
 	}
 	g.tramp.WriteString("); free(s); mfl_arena_free(&_a); return NULL; }\n")
 
-	// call site
+	// call site: populate every field from the SPAWNING goroutine's (current)
+	// arena, then freeze it against that arena being freed before the new
+	// goroutine gets a chance to thaw it back out.
 	g.buf.WriteString("{\n")
 	fmt.Fprintf(&g.buf, "        struct mfl_go_%d* s = malloc(sizeof(*s));\n", id)
 	for i, a := range st.Call.Args {
@@ -3520,7 +3578,14 @@ func (g *cgen) goStmt(st *GoStmt) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(&g.buf, "        s->a%d = (%s);\n", i, e)
+		if j, ok := jsonArgs[i]; ok {
+			fmt.Fprintf(&g.buf, "        { char* _j = %s(%s); size_t _n = strlen(_j); s->_j%d = malloc(_n + 1); memcpy(s->_j%d, _j, _n + 1); }\n", j.ser, e, i, i)
+		} else {
+			fmt.Fprintf(&g.buf, "        s->a%d = (%s);\n", i, e)
+		}
+	}
+	if len(strOffs) > 0 {
+		fmt.Fprintf(&g.buf, "        mfl_freeze_strs(%d, (int[]){%s}, s);\n", len(strOffs), strings.Join(strOffs, ", "))
 	}
 	fmt.Fprintf(&g.buf, "        pthread_t t; pthread_create(&t, NULL, mfl_go_run_%d, s); pthread_detach(t);\n", id)
 	g.buf.WriteString("    }\n")

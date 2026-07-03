@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **Fixed a high-severity use-after-free: `go f(args)` no longer dangles when
+  the spawning goroutine's arena is freed before the new goroutine reads its
+  arguments.** A detached goroutine gets its own fresh arena; any argument
+  holding a pointer into the SPAWNING goroutine's arena (a string, or a
+  struct/slice/map containing one) could dangle once that arena was reclaimed
+  — the exact pattern of a machweb request handler doing
+  `go background_work(ag, conv)` then returning, observed corrupting strings
+  in a production log. `go` call arguments are now deep-copied across the
+  arena boundary exactly like channel sends already were (string-offset
+  freeze/thaw for plain strings and structs of strings, a JSON round-trip for
+  anything containing a slice or map); scalars are unaffected, since they were
+  never heap-allocated. See issue #310.
+
 ## v0.103.0
 
 - **Docs: added a "C FFI (extern)" section to `docs/LANGUAGE.md`.** The language
