@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.101.0
+
 - **Test: covered the `machin encode` command path.** `splitFunctions`, `stripLineComment`,
   and `cmdEncode`'s core (`composeSources`) had no direct tests despite being the
   project's primary authoring entry point (`framework/run.sh` depends on it to build
