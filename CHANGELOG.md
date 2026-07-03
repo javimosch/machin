@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.100.0
+
 - **Fixed: `examples/complex/json_echo_api.mfl` silently truncated large/split POST
   bodies.** `read(fd)` is one `read(2)` syscall, returning at most 65535 bytes — not a
   whole HTTP request. `framework/machweb.src`'s own server (`read_request_bytes`) has
