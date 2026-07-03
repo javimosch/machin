@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.99.0
+
 - **Fixed: duplicate function definitions were silently accepted (last wins).** Two
   functions with the same name compiled with no error — the checker's registration
   loop just overwrote the earlier entry in its lookup map. A real footgun for the
