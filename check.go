@@ -349,6 +349,8 @@ func classifyCheck(msg string) string {
 		return "no-main"
 	case strings.Contains(msg, "duplicate type"):
 		return "duplicate-type"
+	case strings.Contains(msg, "duplicate function"):
+		return "duplicate-function"
 	case strings.Contains(msg, "field"):
 		return "undefined-field"
 	case strings.Contains(msg, "undefined") || strings.Contains(msg, "unknown") || strings.Contains(msg, "not defined"):

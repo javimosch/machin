@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- **Fixed: duplicate function definitions were silently accepted (last wins).** Two
+  functions with the same name compiled with no error — the checker's registration
+  loop just overwrote the earlier entry in its lookup map. A real footgun for the
+  framework composition model (`machin encode framework/machweb.src app.src`), which
+  puts the framework and the app in one shared global namespace: an app name
+  colliding with a framework name (`route`, `param`, `serve`, …) silently won or lost
+  depending on declaration order, with zero diagnostic. `Check` already rejected
+  duplicate *types* this way; functions had no equivalent guard. Now a clear
+  `duplicate function "name"` error (`machin check --json` code `duplicate-function`).
+  Fixing this surfaced a real latent collision already shipping in the repo:
+  `framework/example.src`'s `route(req)` collided with `machweb.src`'s
+  `route(router, method, path, handler)` — renamed to `handle_request`, and
+  `framework/README.md` now documents the shared-namespace rule explicitly. See
+  issue #88.
+
 - **Added: `machin test [--json] <src...>` — a native MFL test runner (#236 Stage A).**
   `framework/test.src` provides `assert(cond, msg)`, `assert_eq_int(got, want, name)`,
   `assert_eq_str(got, want, name)`, and `test_summary()` (call last in `main()` — prints the

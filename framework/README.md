@@ -28,7 +28,12 @@ machin run app.mfl
 ```
 
 `machin encode` accepts multiple source files and concatenates them, so the
-framework's functions and yours end up in one program.
+framework's functions and yours end up in **one shared global namespace** — not
+two separate modules. If your app defines a function or type with the same name
+as one machweb already defines (`route`, `param`, `serve`, `dispatch`,
+`Request`, `Response`, …), that's a name collision, not a shadow: `machin
+check`/`build`/`run` reject it with a `duplicate function`/`duplicate type`
+error (#88). Pick a different name for your app-level declaration.
 
 ## API
 
