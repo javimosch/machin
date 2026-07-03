@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.102.0
+
 - **CI: added a workflow that actually runs the test suite.** `release.yml` (build +
   cross-compile + publish) never ran `go test` — a broken compiler could ship to
   users. Added `ci.yml` (push to `main` + every PR): build, `go test ./...`, and
