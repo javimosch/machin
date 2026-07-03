@@ -1,0 +1,26 @@
+//sha256/hmac_sha256:hash a string and verify a webhook signature.
+//sha256(s)->lowercase hex string;hmac_sha256(key,msg)->lowercase hex string.
+
+func verify_webhook(secret,payload,sig){
+expected:=hmac_sha256(secret,payload)
+return expected==sig
+}
+
+func main(){
+//---sha256:hash a string to lowercase hex---
+msg:="hello, machin"
+digest:=sha256(msg)
+println("sha256: ",digest)
+
+//---hmac_sha256:webhook signature verification---
+secret:="my-webhook-secret"
+payload:="{\"event\":\"push\",\"repo\":\"machin\"}"
+sig:=hmac_sha256(secret,payload)
+println("hmac_sha256: ",sig)
+
+ok:=verify_webhook(secret,payload,sig)
+println("signature valid: ",ok)
+
+bad:=verify_webhook(secret,payload,"deadbeef")
+println("tampered sig valid: ",bad)
+}
