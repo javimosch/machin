@@ -364,8 +364,10 @@ when any crypto builtin is used.
 |------------------------------------------------|-----------------------------------------------------------------|
 | `rand_bytes(n)`                                | `n` cryptographically-random bytes (CSPRNG)                     |
 | `sha256_bytes(b)`                              | SHA-256 of `b` → 32-byte digest (binary-safe)                   |
+| `sha1_bytes(b)`                                | SHA-1 of `b` → 20-byte digest (legacy auth only)                |
 | `hmac_sha256_bytes(key, msg)`                  | HMAC-SHA256(key, msg) → 32 bytes                                |
 | `hkdf_sha256(ikm, salt, info, length)`         | HKDF-SHA256 key derivation → `length` bytes                     |
+| `pbkdf2_sha256(pass, salt, iters, dklen)`      | PBKDF2-HMAC-SHA256 → derived key of `dklen` bytes (password hashing) |
 | `x25519_pub(priv32)`                           | X25519 public key from a 32-byte private key                    |
 | `x25519_shared(priv32, pub32)`                 | X25519 ECDH shared secret → 32 bytes                            |
 | `ed25519_pub(seed32)`                          | Ed25519 public key from a 32-byte seed                          |
