@@ -59,6 +59,7 @@ machin build examples/complex/primes.mfl --emit-c   # see the generated C
 | `bytes`           | `bytes` type: construct, `to_hex`/`from_hex`, `byte_at`, `bytes_sub`, `bytes_concat`, `bytes_str`; NUL-safe vs string |
 | `crypto`          | OpenSSL crypto suite: SHA-256, HMAC, AES-GCM round-trip (`ct\|\|tag` layout), Ed25519 sign/verify |
 | `url_encode`      | `url_encode`/`url_decode`: RFC 3986 percent-encoding round-trip, `+`→space, malformed `%XX` passthrough |
+| `http_client_api` | HTTP client: `http_get` multi-assign + error branch, `http_request` with auth/Accept headers (real network calls) |
 | `router_api`      | HTTP router — dispatch by method+path, extract path params |
 
 `http_server` loops forever, so it's skipped by `run.sh`. Run it directly:
