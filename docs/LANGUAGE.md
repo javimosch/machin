@@ -357,6 +357,22 @@ first := users[0]                                // value copy
 | `bytes_sub(b, start, end)`  | sub-range `[start, end)` of a `bytes` value  |
 | `bytes_concat(a, b)`        | concatenate two `bytes` values               |
 
+### SQLite
+
+These builtins require `libsqlite3`; the linker flag (`-lsqlite3`) is added
+automatically when any `sqlite_*` builtin is used (the library must be installed
+on the build/runtime host, e.g. `apt install libsqlite3-dev` on Debian/Ubuntu).
+
+| Builtin                          | Purpose                                                                 |
+|----------------------------------|-------------------------------------------------------------------------|
+| `sqlite_open(path) -> int`       | open or create a SQLite database file → handle (`0` on failure); `":memory:"` opens a transient in-memory db |
+| `sqlite_exec(h, sql[, []string]) -> int` | run result-less SQL (CREATE/INSERT/UPDATE/DELETE); optional `[]string` binds `?` params (injection-safe); returns `0` on success |
+| `sqlite_query(h, sql[, []string]) -> string` | run a SELECT → **JSON array-of-row-objects** string; optional `[]string` binds `?` params; decode with `parse(rows, []T{})` for a typed slice, or `json_get` for a single field |
+| `sqlite_close(h) -> int`         | close the database handle                                               |
+
+See `examples/complex/sqlite_crud.mfl` for a working CRUD example using an
+in-memory database.
+
 ### Crypto (over `bytes`)
 
 These builtins require OpenSSL libcrypto; the linker flag is added automatically

@@ -63,6 +63,7 @@ machin build examples/complex/primes.mfl --emit-c   # see the generated C
 | `url_encode`      | `url_encode`/`url_decode`: RFC 3986 percent-encoding round-trip, `+`→space, malformed `%XX` passthrough |
 | `http_client_api` | HTTP client: `http_get` multi-assign + error branch, `http_request` with auth/Accept headers (real network calls) |
 | `router_api`      | HTTP router — dispatch by method+path, extract path params |
+| `sqlite_crud`     | SQLite: `sqlite_open`/`sqlite_exec`/`sqlite_query`/`sqlite_close` — in-memory CRUD with parameterized queries, `parse()` row decode, and `json_get` single-field access |
 
 `http_server` loops forever, so it's skipped by `run.sh`. Run it directly:
 
