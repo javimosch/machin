@@ -429,15 +429,20 @@ id(42); id("hi"); id(3.14)   // → three native functions
   goroutine's arena lives for the whole program. This bounds the memory of a
   long-running concurrent server — each request handler runs in its own
   goroutine and frees everything it allocated on return.
-  - **Channels deep-copy heap data across this boundary:** a value sent over a
-    channel — a `string`, a slice, a map, or a struct containing any of these,
-    nested arbitrarily — is copied out of the sender's arena on send and rebuilt
-    in the receiver's arena on receive, so it stays valid even after the sender
-    goroutine finishes. (Strings take a fast offset-copy path; elements containing
-    a slice or map go through a JSON round-trip.)
+  - **Channels and `go` call arguments deep-copy heap data across this
+    boundary:** a value sent over a channel, or passed as an argument to a `go`
+    call — a `string`, a slice, a map, or a struct containing any of these,
+    nested arbitrarily — is copied out of the source arena and rebuilt in the
+    destination goroutine's arena, so it stays valid even after the source
+    goroutine finishes. (Strings take a fast offset-copy path; values containing
+    a slice or map go through a JSON round-trip.) Fixed in v0.104.0 for `go`
+    arguments — see #310; the argument, not just a later channel send of it, is
+    now safe.
   - *Caveat:* a value allocated in one goroutine and shared with another by other
-    means (stored in a map outliving the sender, captured by a closure) may be
-    reclaimed while still referenced. Keep such values in the receiver's scope.
+    means (stored in a map outliving the sender, or captured by a closure that is
+    itself stored somewhere long-lived rather than passed directly to `go`) may
+    be reclaimed while still referenced. Keep such values in the receiver's
+    scope.
 - A **scoped arena** block, `arena { ... }`, installs a fresh arena for the
   duration of the block and frees everything allocated inside it when the block
   ends. This bounds the memory of a *single* long-lived goroutine that allocates

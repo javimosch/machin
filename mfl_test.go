@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/base64"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -661,6 +662,132 @@ func TestChannelSliceMap(t *testing.T) {
 	out, _ := buildRun(t, main, prodS, prodM)
 	if out != "a0b0 a1b1 a2b2 \n0 7 \n" {
 		t.Fatalf("channel slice/map: got %q", out)
+	}
+}
+
+// A string (or a struct's string fields) built in a short-lived goroutine and
+// passed as a `go` call ARGUMENT (not sent over a channel) must survive that
+// goroutine's arena being reclaimed -- the exact machweb pattern from #310:
+// `go background_work(ag, conv)` then the handler returns. Stress it with
+// concurrent spawns + allocation churn (the freed arena's memory must be
+// likely to get reused before the corruption would show up on the old,
+// unprotected codegen -- validated manually: ~25/30 corrupted on the old
+// codegen, 0/30 on the fixed one, across repeated runs). Results are
+// collected over a channel and printed once from main, single-threaded --
+// concurrent println from 30 goroutines is its own (unrelated) source of
+// interleaved stdout, which would make this test flaky for a reason that has
+// nothing to do with #310.
+func TestGoArgStringSurvivesSpawnerArena(t *testing.T) {
+	typ := `type Agent struct { name string  greeting string }`
+	work := `func background_work(ag, conv, results) {
+	sleep(15)
+	results <- "conv=" + conv + " name=" + ag.name + " greet=" + ag.greeting
+}`
+	spawn := `func spawn_one(n, results) {
+	conv := "conv-id-0123456789-" + str(n)
+	ag := Agent{name: "assistant-name-padding-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", greeting: "hello-greeting-padding-yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"}
+	go background_work(ag, conv, results)
+}`
+	churn := `func churn(n) {
+	i := 0
+	for i < 400 {
+		s := "garbage-churn-padding-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz-" + str(n) + "-" + str(i)
+		if len(s) < 0 { println(s) }
+		i = i + 1
+	}
+}`
+	main := `func main() {
+	results := make(chan string)
+	i := 0
+	for i < 30 {
+		go spawn_one(i, results)
+		go churn(i)
+		i = i + 1
+	}
+	acc := ""
+	j := 0
+	for j < 30 { acc = acc + <-results + "\n" j = j + 1 }
+	println(acc)
+}`
+	out := runProg(t, typ, work, spawn, churn, main)
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 30 {
+		t.Fatalf("expected 30 lines, got %d:\n%s", len(lines), out)
+	}
+	seen := map[string]bool{}
+	for _, l := range lines {
+		if !strings.Contains(l, "name=assistant-name-padding-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx") ||
+			!strings.Contains(l, "greet=hello-greeting-padding-yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy") ||
+			!strings.Contains(l, "conv=conv-id-0123456789-") {
+			t.Fatalf("corrupted go-call argument (use-after-free, #310): %q", l)
+		}
+		seen[l] = true
+	}
+	if len(seen) != 30 {
+		t.Fatalf("expected 30 distinct conv ids, got %d (duplicate = aliased/corrupted memory):\n%s", len(seen), out)
+	}
+}
+
+// A struct field that is a slice, passed as a `go` call argument, must survive
+// the spawning goroutine's arena via the JSON round-trip path (the same one
+// channels use for slice/map elements) -- #310's other codegen branch.
+// Results are collected over a channel and printed once, for the same
+// stdout-interleaving reason as TestGoArgStringSurvivesSpawnerArena.
+func TestGoArgSliceSurvivesSpawnerArena(t *testing.T) {
+	typ := `type Bag struct { tags []string  id int }`
+	consume := `func consume(b, results) {
+	sleep(12)
+	s := ""
+	i := 0
+	for i < len(b.tags) { s = s + b.tags[i] + "," i = i + 1 }
+	results <- "id=" + str(b.id) + " tags=" + s
+}`
+	spawn := `func spawn_one(n, results) {
+	b := Bag{tags: []string{"alpha-" + str(n), "beta-" + str(n), "gamma-" + str(n)}, id: n}
+	go consume(b, results)
+}`
+	churn := `func churn(n) {
+	i := 0
+	for i < 300 {
+		s := "garbage-" + str(n) + "-" + str(i) + "-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+		if len(s) < 0 { println(s) }
+		i = i + 1
+	}
+}`
+	main := `func main() {
+	results := make(chan string)
+	i := 0
+	for i < 20 {
+		go spawn_one(i, results)
+		go churn(i)
+		i = i + 1
+	}
+	acc := ""
+	j := 0
+	for j < 20 { acc = acc + <-results + "\n" j = j + 1 }
+	println(acc)
+}`
+	out := runProg(t, typ, consume, spawn, churn, main)
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 20 {
+		t.Fatalf("expected 20 lines (old codegen segfaults on this pattern), got %d:\n%s", len(lines), out)
+	}
+	seen := map[string]bool{}
+	for i := 0; i < 20; i++ {
+		want := fmt.Sprintf("id=%d tags=alpha-%d,beta-%d,gamma-%d,", i, i, i, i)
+		found := false
+		for _, l := range lines {
+			if l == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("missing or corrupted %q in:\n%s", want, out)
+		}
+		seen[want] = true
+	}
+	if len(seen) != 20 {
+		t.Fatalf("expected 20 distinct ids, got %d", len(seen))
 	}
 }
 
