@@ -339,6 +339,10 @@ first := users[0]                                // value copy
 | `accept(fd)`                | accept a connection, return its socket fd    |
 | `read(fd)` / `write(fd, s)` | read from / write to a socket                |
 | `close(fd)`                 | close a socket                               |
+| `https_get(url)`            | GET over TLS (or plain http://) → body string (`""` on error) |
+| `https_post(url, body)`     | POST with string body over TLS (or plain http://) → body string |
+| `http_get(url)`             | GET → `(status int, body string, err string)` — **multi-assign only** |
+| `http_request(method, url, headers, body)` | authenticated HTTP(S): headers are `[]string` of `"Key: Value"` lines; caller owns `Content-Type` → `(status int, body string, err string)` — **multi-assign only** |
 | `bytes(s)`                  | make a `bytes` value from a string's raw bytes |
 | `bytes_str(b)`              | `bytes` → `string` (NUL-terminated; truncates at embedded `0`) |
 | `to_hex(b)`                 | lowercase hex of a `bytes` value             |
@@ -449,6 +453,30 @@ func produce(c) {
   later `c <- "x"` would be a compile error.
 
 See `examples/complex/channels.mfl` for a fan-in worker pool.
+
+### HTTP client
+
+`https_get` and `https_post` return the response body as a string (empty on
+error) and are suitable for quick one-liners.  `http_get` and `http_request`
+return `(status, body, err)` — they are **multi-assign only** (using them as a
+single value is a compile error) and expose the status code and a descriptive
+error string:
+
+```go
+// Simple GET — branches on err
+status, body, err := http_get("https://example.com/")
+if len(err) > 0 { println("error: " + err)  exit(1) }
+println(str(status) + " " + str(len(body)) + " bytes")
+
+// Authenticated request — headers are "Key: Value" strings; caller owns Content-Type
+status2, body2, err2 := http_request(
+    "GET",
+    "https://api.example.com/data",
+    ["Authorization: Bearer my-token", "Accept: application/json"],
+    "")
+```
+
+See `examples/complex/http_client_api.mfl` for the full runnable example.
 
 ---
 
