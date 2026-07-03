@@ -1,0 +1,60 @@
+// test — assert helpers + a pass/fail counter for MFL test programs.
+//
+// Compose it ahead of a test file and run it directly (or via `machin test`,
+// which does this composition for you):
+//   machin encode framework/test.src mytest.src > mytest.mfl && machin run mytest.mfl
+//
+//   func main() {
+//       assert(1 + 1 == 2, "basic addition")
+//       assert_eq_int(len([]int{1, 2, 3}), 3, "slice length")
+//       assert_eq_str(to_hex(bytes("hi")), "6869", "hex encoding")
+//       test_summary()   // prints the tally; exits 1 if anything failed
+//   }
+//
+// No suites, no setup/teardown, no discovery — a test program is just a
+// `main()` that calls assert*, then test_summary() as its last line. Keep
+// each test.src-composed file small and focused; run several files through
+// `machin test` for an aggregate report across a package's tests.
+
+var test_pass = 0
+var test_fail = 0
+
+// assert records a pass or a failure. On failure, prints "FAIL: <msg>".
+func assert(cond, msg) {
+    if cond {
+        test_pass = test_pass + 1
+    } else {
+        test_fail = test_fail + 1
+        println("FAIL: " + msg)
+    }
+}
+
+// assert_eq_int compares two ints, printing both values on mismatch.
+func assert_eq_int(got, want, name) {
+    if got == want {
+        test_pass = test_pass + 1
+    } else {
+        test_fail = test_fail + 1
+        println("FAIL: " + name + " -- got " + str(got) + ", want " + str(want))
+    }
+}
+
+// assert_eq_str compares two strings, printing both values on mismatch.
+func assert_eq_str(got, want, name) {
+    if got == want {
+        test_pass = test_pass + 1
+    } else {
+        test_fail = test_fail + 1
+        println("FAIL: " + name + " -- got " + got + ", want " + want)
+    }
+}
+
+// test_summary prints the machine-parseable tally line `machin test` reads
+// ("TEST_SUMMARY passed=N failed=M") and exits 1 if anything failed. Call it
+// as the LAST line of main() -- nothing after it runs on failure.
+func test_summary() {
+    println("TEST_SUMMARY passed=" + str(test_pass) + " failed=" + str(test_fail))
+    if test_fail > 0 {
+        exit(1)
+    }
+}

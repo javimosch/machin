@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **Added: `machin test [--json] <src...>` — a native MFL test runner (#236 Stage A).**
+  `framework/test.src` provides `assert(cond, msg)`, `assert_eq_int(got, want, name)`,
+  `assert_eq_str(got, want, name)`, and `test_summary()` (call last in `main()` — prints the
+  `TEST_SUMMARY passed=N failed=M` tally, exits 1 on any failure). `machin test` composes
+  `framework/test.src` ahead of the given sources — the same multi-file compose `machin
+  encode` already does, so testing a framework module means passing it alongside its test
+  file (`machin test framework/flags.src framework/tests/flags_test.src`) — builds the
+  result as one program, runs it, and reports the tally (`--json`: `{ok, passed, failed,
+  files}`). Lets framework/app tests be written and run in MFL directly, without the Go
+  harness (`RunCaptured`); the Go test suite (`go test`) remains the compiler's own layer.
+  Stage B (real per-line `.src` coverage) is deferred, per the issue's own staged plan.
+
 ## v0.98.0
 
 - **Fixed: `read_file`/`read_file_bytes` segfaulted on a directory path.** `fopen(dir,
