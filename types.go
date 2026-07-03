@@ -660,6 +660,9 @@ func Check(p *Program) (*Checker, error) {
 		if isBuiltinName(fn.Name) {
 			return nil, fmt.Errorf("function %q shadows the builtin %q — it would be silently ignored at call sites; rename it", fn.Name, fn.Name)
 		}
+		if _, dup := c.funcs[fn.Name]; dup {
+			return nil, fmt.Errorf("duplicate function %q", fn.Name)
+		}
 		c.funcs[fn.Name] = fn
 		if fn.Exported {
 			exported = append(exported, fn.Name)

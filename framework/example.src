@@ -20,7 +20,7 @@ func todos() (list) {
     list = append(list, Todo{id: 2, title: "build a backend on machweb", done: false})
 }
 
-func route(req) (res) {
+func handle_request(req) (res) {
     if req.path == "/" {
         res = ok_html("<h1>machweb</h1><p>Endpoints: <code>/api/todos</code>, <code>/hello/&lt;name&gt;</code>, POST <code>/api/echo</code></p>")
     } else if req.path == "/api/todos" {
@@ -36,5 +36,5 @@ func route(req) (res) {
 }
 
 func main() {
-    serve(48080, func(req) { return route(req) })
+    serve(48080, func(req) { return handle_request(req) })
 }
