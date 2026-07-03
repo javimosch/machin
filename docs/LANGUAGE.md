@@ -519,6 +519,114 @@ See `examples/complex/http_client_api.mfl` for the full runnable example.
 
 ---
 
+## C FFI (extern)
+
+MFL can call C functions directly. An `extern` block declares the library, its
+header, link flags, and the functions (or C structs) to expose:
+
+```go
+extern "m" { header "math.h" link "m" fn sqrt(float) float fn pow(float, float) float }
+
+func main() {
+    println("sqrt(2) =", sqrt(2.0))
+    println("2^10  =", pow(2.0, 10.0))
+}
+```
+
+- `"m"` — an informational name for the library.
+- `header "h.h"` — emits `#include <h.h>` so the real C prototype is in scope.
+  Omit it and machin synthesizes a prototype from the declared signature.
+- `link "l"` — passes `-l<l>` to the compiler. Repeat for multiple libraries
+  (`link "raylib" link "GL" link "m"`); they are emitted in order.
+- `cflags "..."` — passes extra flags (`-I`/`-L` paths, etc.) to the C compiler.
+- `fn Name(t, …) ret` — a foreign function. A missing return type means `void`.
+
+See `examples/complex/ffi_math.mfl` for the runnable version.
+
+### FFI scalar types
+
+| MFL type | C type        | Notes                                       |
+|----------|---------------|---------------------------------------------|
+| `int`    | `int64_t`     |                                             |
+| `i32`    | `int32_t`     | use for 32-bit C params (e.g. raylib)       |
+| `i16`    | `int16_t`     |                                             |
+| `i8`     | `int8_t`      |                                             |
+| `u64`…`u8` | `uint64_t`…`uint8_t` |                                  |
+| `float` / `f64` | `double` |                                        |
+| `f32`    | `float`       |                                             |
+| `bool`   | `int`         |                                             |
+| `string` | `const char*` |                                             |
+| `ptr`    | `void*`       | opaque handle, held as `int` in MFL (see below) |
+
+### `cstruct` — by-value C structs
+
+`cstruct Name { field ctype … }` declares a C struct. machin synthesizes a
+matching MFL struct and marshals it at the boundary:
+
+```go
+extern "c" {
+    header "stdlib.h"
+    cstruct div_t { quot i32  rem i32 }
+    fn div(i32, i32) div_t
+}
+
+func main() {
+    r := div(17, 5)
+    println("17 / 5 =", r.quot, "remainder", r.rem)
+}
+```
+
+A field may be another `cstruct` (declare the inner one first), enabling nested
+by-value aggregates like raylib's `Camera3D`.
+
+See `examples/complex/ffi_struct.mfl`.
+
+### Opaque handles (`ptr` and opaque `cstruct`)
+
+Use **`ptr`** for a single opaque C pointer (held as an `int`):
+
+```go
+extern "c" {
+    header "stdio.h"
+    fn fopen(string, string) ptr
+    fn fputs(string, ptr) i32
+    fn fclose(ptr) i32
+}
+
+func main() {
+    f := fopen("/tmp/out.txt", "w")
+    if f == 0 { println("error") } else {
+        fputs("hello from MFL\n", f)
+        fclose(f)
+    }
+}
+```
+
+Use **`cstruct Name {}`** (empty body) for a by-value C type whose fields you
+don't need in MFL (e.g. raylib's `Sound`/`Music`/`Font`). machin holds the full
+C struct and passes it back to functions — you can store it in a variable or
+slice, but cannot construct or field-access it.
+
+See `examples/complex/ffi_ptr.mfl`.
+
+### Multi-`link` and `cflags`
+
+```go
+extern "raylib" {
+    cflags "-I/usr/local/include"
+    link "raylib"  link "GL"  link "m"
+    header "raylib.h"
+    fn InitWindow(i32, i32, string)
+    fn WindowShouldClose() bool
+    fn CloseWindow()
+}
+```
+
+Libraries are linked in declaration order; `cflags` entries are passed directly
+to the C compiler. See `examples/gui/` for a working raylib desktop application.
+
+---
+
 ## See also
 
 - [`../README.md`](../README.md) — project overview and the toolchain
