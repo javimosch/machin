@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.104.0
+
 - **Fixed a high-severity use-after-free: `go f(args)` no longer dangles when
   the spawning goroutine's arena is freed before the new goroutine reads its
   arguments.** A detached goroutine gets its own fresh arena; any argument
