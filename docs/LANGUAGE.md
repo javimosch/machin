@@ -345,6 +345,37 @@ first := users[0]                                // value copy
 | `bytes_sub(b, start, end)`  | sub-range `[start, end)` of a `bytes` value  |
 | `bytes_concat(a, b)`        | concatenate two `bytes` values               |
 
+### Crypto (over `bytes`)
+
+These builtins require OpenSSL libcrypto; the linker flag is added automatically
+when any crypto builtin is used.
+
+> **Safety rules:**
+> - `aes_gcm_encrypt` returns `ct||tag` (ciphertext concatenated with a 16-byte
+>   auth tag); `aes_gcm_decrypt` expects that exact layout.
+> - `aes_gcm_decrypt` and `aes_cbc_decrypt` return **empty `bytes` on
+>   authentication / padding failure** — not an error.  Always check
+>   `len(result) > 0` before using the plaintext.
+> - AES-GCM IVs must be **12 bytes** and must **never be reused** with the same
+>   key (use `rand_bytes(12)` per encryption).
+> - X25519 private keys and Ed25519 seeds are **32 bytes**.
+
+| Builtin                                        | Purpose                                                         |
+|------------------------------------------------|-----------------------------------------------------------------|
+| `rand_bytes(n)`                                | `n` cryptographically-random bytes (CSPRNG)                     |
+| `sha256_bytes(b)`                              | SHA-256 of `b` → 32-byte digest (binary-safe)                   |
+| `hmac_sha256_bytes(key, msg)`                  | HMAC-SHA256(key, msg) → 32 bytes                                |
+| `hkdf_sha256(ikm, salt, info, length)`         | HKDF-SHA256 key derivation → `length` bytes                     |
+| `x25519_pub(priv32)`                           | X25519 public key from a 32-byte private key                    |
+| `x25519_shared(priv32, pub32)`                 | X25519 ECDH shared secret → 32 bytes                            |
+| `ed25519_pub(seed32)`                          | Ed25519 public key from a 32-byte seed                          |
+| `ed25519_sign(seed32, msg)`                    | Ed25519 sign → 64-byte signature                                |
+| `ed25519_verify(pub32, msg, sig64)`            | Ed25519 verify → `bool`                                         |
+| `aes_gcm_encrypt(key, iv12, pt, aad)`          | AES-GCM encrypt → `ct\|\|tag` (key 16 or 32 bytes; iv 12 bytes; **never reuse iv+key pair**) |
+| `aes_gcm_decrypt(key, iv12, ct_tag, aad)`      | AES-GCM decrypt → plaintext (**empty `bytes` on auth failure**) |
+| `aes_cbc_encrypt(key, iv, pt)`                 | AES-CBC encrypt, PKCS#7 padded (key 16 or 32 bytes)             |
+| `aes_cbc_decrypt(key, iv, ct)`                 | AES-CBC decrypt → plaintext (**empty `bytes` on bad padding**)  |
+
 ---
 
 ## Concurrency
