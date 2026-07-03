@@ -16,7 +16,8 @@ b3:=bytes_sub(b2,1,3)//[0xad,0xbe]
 b4:=bytes_concat(b2,b3)
 println("concat len:",len(b4))//6
 
-//bytes_str:truncates at embedded NUL
-nul:=bytes("hi\x00there")
+//bytes_str:truncates at embedded NUL — string literals have no \xNN escape so build it via from_hex("hi"+NUL+"there")
+nul:=from_hex("6869007468657265")
+println("len:",len(nul))//8 not 2 — bytes keeps the NUL
 println("bytes_str:",bytes_str(nul))//hi
 }
