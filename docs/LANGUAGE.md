@@ -472,7 +472,7 @@ println(str(status) + " " + str(len(body)) + " bytes")
 status2, body2, err2 := http_request(
     "GET",
     "https://api.example.com/data",
-    ["Authorization: Bearer my-token", "Accept: application/json"],
+    []string{"Authorization: Bearer my-token", "Accept: application/json"},
     "")
 ```
 
