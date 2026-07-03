@@ -332,6 +332,8 @@ first := users[0]                                // value copy
 | `join(xs, sep)`             | join a `[]string` with `sep`                 |
 | `str(n)`                    | convert an `int` or `float` to its `string`  |
 | `int(n)`                    | convert a numeric value to `int` (truncates) |
+| `url_encode(s)`             | percent-encode a string for URLs (RFC 3986: keeps `A-Za-z0-9-._~`, encodes everything else, space → `%20`) |
+| `url_decode(s)`             | percent-decode a URL component (lenient: `+` → space, malformed `%XX` passes through unchanged) |
 | `sleep(ms)`                 | suspend the current goroutine (milliseconds) |
 | `listen(port)`              | open a TCP listening socket                  |
 | `accept(fd)`                | accept a connection, return its socket fd    |
