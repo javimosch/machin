@@ -1,0 +1,23 @@
+//bytes:NUL-safe binary buffer — strings truncate at NUL,bytes do not.
+
+func main(){
+//construct from a string and inspect
+b:=bytes("hello")
+println("len:",len(b))//5
+println("hex:",to_hex(b))//68656c6c6f
+
+//round-trip through hex
+b2:=from_hex("deadbeef")
+println("from_hex len:",len(b2))//4
+println("byte_at 0:",byte_at(b2,0))//222
+
+//sub-range and concat
+b3:=bytes_sub(b2,1,3)//[0xad,0xbe]
+b4:=bytes_concat(b2,b3)
+println("concat len:",len(b4))//6
+
+//bytes_str:truncates at embedded NUL — string literals have no \xNN escape so build it via from_hex("hi"+NUL+"there")
+nul:=from_hex("6869007468657265")
+println("len:",len(nul))//8 not 2 — bytes keeps the NUL
+println("bytes_str:",bytes_str(nul))//hi
+}

@@ -42,6 +42,7 @@ Types are inferred by unification — there are **no type annotations**.
 | `string`  | `"hello"`                      | concatenate with `+`                   |
 | `bool`    | `true`, `false`                | produced by comparisons                |
 | `[]int`   | `[]int{}`, `[]int{1, 2, 3}`    | grow with `append`, index with `xs[i]` |
+| `bytes`   | `bytes("hi")`, `from_hex("ff00")` | NUL-safe binary buffer; `len(b)` counts raw bytes; `println(b)` prints hex; strings truncate at NUL, bytes do not |
 
 Each value's type is determined by how it is used; mixing incompatible types is
 a **compile-time error**, not a runtime surprise.
@@ -336,6 +337,13 @@ first := users[0]                                // value copy
 | `accept(fd)`                | accept a connection, return its socket fd    |
 | `read(fd)` / `write(fd, s)` | read from / write to a socket                |
 | `close(fd)`                 | close a socket                               |
+| `bytes(s)`                  | make a `bytes` value from a string's raw bytes |
+| `bytes_str(b)`              | `bytes` → `string` (NUL-terminated; truncates at embedded `0`) |
+| `to_hex(b)`                 | lowercase hex of a `bytes` value             |
+| `from_hex(s)`               | parse hex string → `bytes` (skips non-hex chars) |
+| `byte_at(b, i)`             | byte value 0–255 at index `i` (−1 if out of range) |
+| `bytes_sub(b, start, end)`  | sub-range `[start, end)` of a `bytes` value  |
+| `bytes_concat(a, b)`        | concatenate two `bytes` values               |
 
 ---
 
