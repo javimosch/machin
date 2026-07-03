@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **CI: added a workflow that actually runs the test suite.** `release.yml` (build +
+  cross-compile + publish) never ran `go test` — a broken compiler could ship to
+  users. Added `ci.yml` (push to `main` + every PR): build, `go test ./...`, and
+  `./examples/run.sh` as an integration smoke test. `release.yml` now runs `go test
+  ./...` before cross-compiling, so a tag with failing tests does not publish a
+  release. See issue #85.
+
 ## v0.101.0
 
 - **Test: covered the `machin encode` command path.** `splitFunctions`, `stripLineComment`,
