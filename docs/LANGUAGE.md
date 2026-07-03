@@ -338,6 +338,8 @@ first := users[0]                                // value copy
 | `base64_decode(s)`          | base64-decode a string → string; **lenient**: accepts standard *and* URL-safe alphabets, ignores missing padding |
 | `base64_encode_bytes(b)`    | base64-encode raw `bytes` → string (binary-safe; use instead of `base64_encode` for non-text payloads) |
 | `base64_decode_bytes(s)`    | base64-decode → raw `bytes` (lenient; binary-safe; e.g. SCRAM salt or binary token) |
+| `sha256(s)`                 | SHA-256 of string `s` → lowercase hex string (byte-exact against `sha256sum`) |
+| `hmac_sha256(key, msg)`     | HMAC-SHA256(key, msg) → lowercase hex string (RFC 2104; use for webhook signature verification) |
 | `sleep(ms)`                 | suspend the current goroutine (milliseconds) |
 | `listen(port)`              | open a TCP listening socket                  |
 | `accept(fd)`                | accept a connection, return its socket fd    |
