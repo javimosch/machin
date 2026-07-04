@@ -121,6 +121,31 @@ func TestGuideIdiomsCompile(t *testing.T) {
 	}
 }
 
+// No phantoms, no silent omissions: every real lexer keyword and every
+// extern-block directive (fn/cstruct/header/link/cflags — see
+// isExternDirective in parser.go) must appear in the catalog's Keywords list,
+// the same way TestGuideBuiltinsRecognized keeps Builtins honest. This is the
+// guard that would have caught `fn`/`cstruct` missing from the FFI surface.
+func TestGuideKeywordsRecognized(t *testing.T) {
+	catalog := map[string]bool{}
+	for _, k := range machinGuide().Keywords {
+		catalog[k] = true
+	}
+	for k := range keywords {
+		if !catalog[k] {
+			t.Errorf("lexer keyword %q missing from guide Keywords catalog", k)
+		}
+	}
+	for _, d := range []string{"header", "link", "cflags", "fn", "cstruct"} {
+		if !isExternDirective(d) {
+			t.Fatalf("test bug: %q is no longer an extern directive", d)
+		}
+		if !catalog[d] {
+			t.Errorf("extern directive %q missing from guide Keywords catalog", d)
+		}
+	}
+}
+
 // argCount derives the arity from a signature like "(string, int) -> int".
 func argCount(sig string) int {
 	open := strings.Index(sig, "(")
