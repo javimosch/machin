@@ -136,7 +136,8 @@ When adding a language feature, thread it through **every** pass that switches o
 node type: `transform.go` (lifter, `collectDeclared`, `freeIdents`), `types.go`
 (`genStmt`, and arity/return walkers), and `codegen.go`. Add a test in
 `*_test.go` and, when it is user-facing, an example under `examples/complex/`
-and a note in `SPEC.md` + `README.md`.
+and a note in `SPEC.md`, `README.md`, and `docs/LANGUAGE.md`, plus the relevant
+idiom/gotcha in the `machin guide` catalog (`guide.go`).
 
 ### Branch → PR → merge
 
