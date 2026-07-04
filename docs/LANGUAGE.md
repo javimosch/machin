@@ -548,6 +548,58 @@ See `examples/complex/http_client_api.mfl` for the full runnable example.
 
 ---
 
+## Memory / arenas
+
+Each goroutine allocates from its own per-goroutine arena, which is garbage
+collected automatically — there is no manual `free`. Within a goroutine, a
+scoped `arena { }` block bump-allocates everything created inside it and
+reclaims that memory as soon as the block exits, which avoids GC pressure in
+hot loops:
+
+```go
+func render(i) {
+    row := "row-" + str(i)
+    return len(row)
+}
+
+func main() {
+    checksum := 0
+    n := 0
+    while n < 100000 {
+        arena {
+            checksum = checksum + render(n)
+        }
+        n = n + 1
+    }
+    println("checksum:", checksum)
+}
+```
+
+Values that need to outlive the block (like `checksum` above) must be
+assigned to a variable declared outside it. See
+`examples/complex/arena.mfl` for the full runnable example.
+
+---
+
+## Safety checks (`--safe`)
+
+Passing `--safe` to `machin build` or `machin run` inserts runtime checks for:
+
+- **bounds** — slice/array/string indexing out of range
+- **div-zero** — integer division or modulo by zero
+- **overflow** — integer arithmetic overflow
+
+```
+machin build app.mfl --safe
+machin run   app.mfl --safe
+```
+
+These checks add overhead, so they are opt-in rather than always on; a
+separate `--race-safe` flag (not related to `--safe`) refuses to build if a
+data race is inferred in `go`/channel usage.
+
+---
+
 ## C FFI (extern)
 
 MFL can call C functions directly. An `extern` block declares the library, its
