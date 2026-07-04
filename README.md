@@ -63,6 +63,10 @@ millisecond on ~0.1 MB of RAM.
 
 Every mainstream language was designed for **human** ergonomics — readable syntax, explicit types, multi-line formatting. For an AI agent, every output token costs, and that human-friendly ceremony taxes the writer without adding meaning. machin measured this: [`tools/tokcost.py`](tools/tokcost.py) showed base64 source costs ~2.5× the tokens to output; whitespace alone costs ~13%. The canonical one-line-per-declaration form, with every type inferred, is the end of that measurement — the smallest token surface that still produces C/Rust-class native code with zero runtime overhead.
 
+### Measurement
+
+The form should be *measured, not asserted*. [`tools/README.md`](tools/README.md) is the entry point to the instruments behind that: [`tools/tokcost.py`](tools/tokcost.py) (write/edit token cost of a source form), [`tools/tokmin.py`](tools/tokmin.py) (where MFL spends tokens and what a minimization would save), and [`tools/reliability/`](tools/reliability) — the other half of the metric, since real cost is *tokens × tries*: it measures whether a syntax change makes a model write the code wrong more often, not just whether it's shorter.
+
 > **Agents: run `machin guide`** for the complete, version-exact feature surface — every keyword, every builtin with its signature, the core idioms, and the gotchas, as JSON (`--text` for prose). Emitted from the compiler's own catalog; can't drift from the implementation. Depth lives in [`SPEC.md`](SPEC.md) and [`AGENTS.md`](AGENTS.md).
 
 ## The form
