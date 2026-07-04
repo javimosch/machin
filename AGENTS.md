@@ -107,7 +107,10 @@ The full language reference is [`SPEC.md`](SPEC.md).
 - **Machine-first / minimalism.** Prefer the smallest change that holds the
   surface minimal. The north star is *low agent write/edit cost* (output tokens)
   — measure form/syntax changes with `tools/tokcost.py` and `tools/tokmin.py`,
-  don't guess. (Lesson already paid for: tokens are saved by removing what the
+  don't guess. Before claiming a syntax change is reliability-neutral, run it
+  through `tools/reliability/` too — tokens saved mean nothing if the change
+  makes a model write the code wrong more often; real cost is tokens × tries.
+  (Lesson already paid for: tokens are saved by removing what the
   tokenizer *charges* for — whitespace, ~13% — not by shortening keywords it
   already packs into one token; `func`→`fn` saves 0, `println`→`pln` is worse.)
   The canonical `.mfl` form is whitespace-tightened; keep emitted/committed code
