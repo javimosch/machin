@@ -67,6 +67,16 @@ The toolchain commands:
 | `machin pack <file.mfl>` | emit the dense base64 form (distribution) |
 | `machin guide [--text]` | print the full feature catalog (JSON by default) — keywords, builtins, idioms, gotchas — for agents to load in one call |
 
+`machin encode <src...>` is the authoring path: it accepts one or more `.src`
+files of loose, Go-like declaration text (any whitespace, comments allowed),
+concatenates them in the order given, splits the combined text into
+per-function blocks, strips comments, and normalizes each block to one
+canonical line. The result is parsed and type-checked before being printed, so
+`encode` fails on a type error instead of emitting a broken `.mfl`. Passing
+multiple files lets a shared module (e.g. a framework) precede an
+app-specific file — see [`docs/LANGUAGE.md`](docs/LANGUAGE.md#authoring-machin-encode)
+and [`framework/`](framework/) for a worked example.
+
 ---
 
 ## 3. Lexical elements
