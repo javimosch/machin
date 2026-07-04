@@ -25,6 +25,7 @@ machin build examples/complex/primes.mfl --emit-c   # see the generated C
 | `loops`        | `while`, running sum, countdown |
 | `functions`    | parameters, return values, composition |
 | `temperature`  | float formulas, authored directly as MFL |
+| `stdin_upper`  | `read_stdin()` reads all of stdin verbatim, unlike line-oriented `input()` |
 
 ## complex/
 
@@ -58,6 +59,8 @@ machin build examples/complex/primes.mfl --emit-c   # see the generated C
 | `json_get`        | `json_get(json, path)` — jq-style path lookup, `(value, err)` multi-assign, all `err` cases |
 | `json_echo_api`   | POST JSON → parse into a struct → echo it back as JSON |
 | `strings`         | string ops (`split`/`join`/`substr`/`index`/`replace`/…) + request-line parsing |
+| `grep`            | `regex_match`/`regex_find`/`regex_groups`/`regex_replace` |
+| `time`            | `time_make`/`time_format`/`time_fields` — build, format, and round-trip a timestamp |
 | `bytes`           | `bytes` type: construct, `to_hex`/`from_hex`, `byte_at`, `bytes_sub`, `bytes_concat`, `bytes_str`; NUL-safe vs string |
 | `sha256`          | `sha256(s)` → lowercase hex; `hmac_sha256(key, msg)` → lowercase hex; webhook signature verification |
 | `crypto`          | OpenSSL crypto suite: SHA-256, HMAC, AES-GCM round-trip (`ct\|\|tag` layout), Ed25519 sign/verify |
