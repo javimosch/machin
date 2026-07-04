@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **Fixed a high-severity data-corruption bug: `parse()` silently mangled
+  `\uXXXX` JSON escapes instead of decoding them.** `{"s":"em—dash"}`
+  parsed to the literal text `emu2014dash` instead of `em—dash` — the
+  backslash was dropped and the four hex digits leaked through as ordinary
+  characters. Common in practice: many JSON producers (including LLM APIs)
+  escape non-ASCII characters this way. Now correctly UTF-8 encodes the code
+  point, including surrogate-pair decoding for astral characters (emoji,
+  etc); a malformed `\u` escape degrades safely to literal text rather than
+  crashing. See issue #311.
+- Documented that MFL string literals have no `\uXXXX` escape form (SPEC.md)
+  — embed non-ASCII as raw UTF-8 in source files instead.
+
 ## v0.105.0
 
 - **Self-hosted compiler: ported the #310 `go`-argument use-after-free fix to

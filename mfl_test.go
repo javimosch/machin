@@ -222,6 +222,45 @@ func TestJSONParseSliceAndMap(t *testing.T) {
 	}
 }
 
+// parse() must decode \uXXXX JSON escapes (UTF-8 encoding the code point) --
+// #311: the old parser dropped the backslash and leaked the literal "uXXXX"
+// text through, silently corrupting any JSON with an escaped non-ASCII char
+// (common: LLM API responses escaping an em-dash, curly quote, etc).
+func TestJSONParseUnicodeEscape(t *testing.T) {
+	got := runProg(t,
+		`type T struct { s string }`,
+		`func main() { t := parse("{\"s\":\"a\\u000bb\\u2014d\"}", T{}) println(t.s) }`)
+	want := "ab—d\n"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// A surrogate pair (😀, an astral character outside the BMP) must
+// combine into a single code point, not two separate replacement-ish values.
+func TestJSONParseSurrogatePair(t *testing.T) {
+	got := runProg(t,
+		`type T struct { s string }`,
+		`func main() { t := parse("{\"s\":\"emoji=\\uD83D\\uDE00 end\"}", T{}) println(t.s) }`)
+	want := "emoji=\U0001F600 end\n"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// A malformed \u escape (non-hex digits, or truncated at end of string) must
+// degrade safely -- the literal "u" plus whatever follows, not a crash or an
+// out-of-bounds read.
+func TestJSONParseMalformedUnicodeEscape(t *testing.T) {
+	got := runProg(t,
+		`type T struct { s string  t string }`,
+		`func main() { v := parse("{\"s\":\"bad=\\uZZZZend\",\"t\":\"short=\\u12\"}", T{}) println(v.s) println(v.t) }`)
+	want := "bad=uZZZZend\nshort=u12\n"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
 func TestHTTPBody(t *testing.T) {
 	got := runProg(t,
 		`func main() { println(http_body("POST / HTTP/1.1\r\nHost: x\r\n\r\nthe-body")) }`)
