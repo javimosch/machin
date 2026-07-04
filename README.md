@@ -94,6 +94,19 @@ by default — set `CC` to override it, e.g. `CC=clang machin build app.mfl -o a
 `--target wasm` web target additionally needs [`zig`](https://ziglang.org). Building
 web apps? See the [`machin-web` skill](skills/machin-web/SKILL.md).
 
+Prefer to fetch the binary yourself? Every [release](https://github.com/javimosch/machin/releases)
+ships static `linux`/`darwin` × `amd64`/`arm64` binaries plus a `SHA256SUMS.txt`:
+
+```bash
+curl -fsSLO https://github.com/javimosch/machin/releases/latest/download/machin-<tag>-<os>-<arch>
+curl -fsSLO https://github.com/javimosch/machin/releases/latest/download/SHA256SUMS.txt
+sha256sum -c SHA256SUMS.txt --ignore-missing        # verify before running
+chmod +x machin-<tag>-<os>-<arch>
+```
+
+The C compiler requirement above still applies to a downloaded binary — it's needed
+at `run`/`build` time regardless of how `machin` itself got installed.
+
 ## Use it from Claude Code
 
 Install machin's agent skills as a [Claude Code plugin](https://code.claude.com/docs/en/plugins),
