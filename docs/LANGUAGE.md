@@ -34,6 +34,28 @@ grep -l fizzbuzz examples/*.mfl
 A dense base64 "packed" form is available for distribution via `machin pack`;
 `machin run` reads either form.
 
+### Authoring: `machin encode`
+
+You don't hand-write canonical `.mfl` — you author readable, Go-like text in a
+`.src` file (loose whitespace, comments, multiple declarations however you
+like to lay them out) and run:
+
+```bash
+machin encode file1.src file2.src ... > program.mfl
+```
+
+`encode` concatenates the given `.src` files in order (so a shared module can
+precede an app-specific file), splits the combined text into per-function
+blocks, strips comments, and normalizes each block to the single-line
+canonical form described above. The result is parsed and type-checked before
+it is printed — `encode` fails loudly on a type error rather than emitting a
+broken `.mfl`.
+
+`framework/` is a worked example of this workflow: `framework/run.sh` builds
+an app's `.mfl` with exactly this pattern —
+`./machin encode framework/machweb.src "$app" > framework/app.mfl` — layering
+an app's `.src` on top of the shared `machweb.src` framework module.
+
 ---
 
 ## Types
@@ -767,3 +789,6 @@ to the C compiler. See `examples/gui/` for a working raylib desktop application.
 - [`../README.md`](../README.md) — project overview and the toolchain
 - [`../examples/`](../examples/) — runnable programs (`machin run <file>.mfl`)
 - `machin build <file>.mfl --emit-c` — inspect the C the compiler emits
+- `machin encode file.src... > file.mfl` — author readable `.src` text and
+  compile it to canonical `.mfl` (see [Authoring](#authoring-machin-encode)
+  above); [`../framework/`](../framework/) is a worked example
