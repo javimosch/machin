@@ -85,7 +85,8 @@ machin guide                             # learn the language (version-exact cat
 ```
 
 Installs the latest release binary to `~/.local/bin` (override with `MACHIN_INSTALL`).
-machin compiles MFL through C, so building programs needs a **C compiler** (`cc`); the
+machin compiles MFL through C, so building programs needs a **C compiler** (`cc`
+by default — set `CC` to override it, e.g. `CC=clang machin build app.mfl -o app`); the
 `--target wasm` web target additionally needs [`zig`](https://ziglang.org). Building
 web apps? See the [`machin-web` skill](skills/machin-web/SKILL.md).
 

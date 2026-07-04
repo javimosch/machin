@@ -189,6 +189,7 @@ Notes:
 - machin is **pure Go** (no cgo), so binaries are static (~2 MB) and
   cross-compile cleanly. The shipped binary is a **compiler frontend** — it
   emits C and invokes `cc`/`gcc`/`clang` at build time, so end users still need
-  a C compiler on PATH. Say so in release notes.
+  a C compiler on PATH. The compiler frontend defaults to `cc`; set `CC` to
+  override it, e.g. `CC=clang machin build app.mfl -o app`. Say so in release notes.
 - Versioning: minor bump (`v0.X.0`) for new language/library features, patch
   (`v0.X.Y`) for fixes and tooling/CI.

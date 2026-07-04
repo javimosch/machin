@@ -484,7 +484,9 @@ id(42); id("hi"); id(3.14)   // → three native functions
   additionally emit a TLS runtime (HTTPS and/or RFC 6455 WebSocket framing over a
   shared TLS core) and link OpenSSL (`-lssl -lcrypto`) — but only when used, so
   programs that touch neither stay libc-only.
-- **Targets.** The default target is a native binary via `cc -O2`. `machin build
+- **Targets.** The default target is a native binary via `cc -O2` (the C compiler
+  defaults to `cc`; set `CC` to override it, e.g. `CC=clang machin build app.mfl
+  -o app`). `machin build
   --target wasm` instead emits a WebAssembly module (`wasm32-wasi`, reactor model)
   via `zig cc` — zig bundles clang + a wasi-libc, so it is a single-binary C→wasm
   toolchain (override with `ZIG=`). For the wasm target: each `export func`
