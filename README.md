@@ -67,7 +67,7 @@ Every mainstream language was designed for **human** ergonomics — readable syn
 
 ## The form
 
-`.mfl` is plain canonical text: one normalized declaration per line, whitespace tightened. Greppable, diffable, no type annotations.
+`.mfl` is plain canonical text: one normalized declaration per line, whitespace tightened. Greppable, diffable, no type annotations. A minimal illustration (not a transcript of any specific file — see [`examples/demo.mfl`](examples/demo.mfl) for a fuller runnable program):
 
 ```
 func fib(n){if n<2{return n}return fib(n-1)+fib(n-2)}
