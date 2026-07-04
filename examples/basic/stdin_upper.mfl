@@ -1,0 +1,3 @@
+//read_stdin()reads all of stdin verbatim until EOF(exact bytes,no line
+//splitting)— unlike the line-oriented input(),which reads one line at a time.
+func main(){s:=read_stdin()println(to_upper(s))}
