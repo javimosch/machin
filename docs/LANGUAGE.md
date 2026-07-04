@@ -213,9 +213,11 @@ for i, c := range s  { ... }                     // string index + character
 |-------------|------------------------------------|
 | Arithmetic  | `+`  `-`  `*`  `/`  `%`             |
 | Comparison  | `==`  `!=`  `<`  `<=`  `>`  `>=`    |
+| Logical     | `&&`  `\|\|`  `!` (short-circuit; `!` is unary) |
 | String      | `+` (concatenation)                |
 
-`%` is integer-only. `/` on `int` is integer division.
+`%` is integer-only. `/` on `int` is integer division. Comparisons and logical
+operators yield `bool`.
 
 ---
 
