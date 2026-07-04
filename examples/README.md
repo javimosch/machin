@@ -1,10 +1,11 @@
 # MFL examples
 
-Every program here is a **`.mfl`** file: the actual MFL language — **base64, one
-function per line, blank line between functions**. There is no human-readable
-source file; the `.mfl` *is* the source. That's the machine-first point: the
-human states intent, the machine reads and writes the code. Each program is
-compiled to native code (through C) and executed.
+Every program here is a **`.mfl`** file — canonical plain text, one normalized
+function per line. The `.mfl` *is* the source: greppable, diffable,
+machine-authored. That's the machine-first point: the human states intent, the
+machine reads and writes the code. A dense base64 form is available for
+distribution via `machin pack`. Each program is compiled to native code
+(through C) and executed.
 
 ```sh
 machin run examples/complex/primes.mfl          # compile to native + run
