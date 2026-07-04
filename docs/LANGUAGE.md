@@ -529,6 +529,36 @@ func produce(c) {
 
 See `examples/complex/channels.mfl` for a fan-in worker pool.
 
+`close(ch)` closes a channel — no more sends are allowed, but receives keep
+draining any values already buffered before reporting closed. `v, ok := <-ch`
+is the comma-ok receive: `ok` is `false` once the channel is closed and
+drained (and `v` is the zero value in that case), so it's how a reader
+detects the end of a stream:
+
+```go
+close(ch)
+v, ok := <-ch   // ok == false once ch is closed and drained
+```
+
+`for v := range ch { ... }` ranges over a channel, receiving values until it
+is closed and drained — a shorthand for looping on the comma-ok receive.
+
+`select { ... }` waits on multiple channel operations at once and runs the
+first case that's ready (a `default` case runs immediately if none are):
+
+```go
+select {
+case v := <-ch1:
+    println("from ch1:", v)
+case v, ok := <-ch2:       // comma-ok also works in a select case
+    if !ok { println("ch2 closed") }
+case ch3 <- 1:             // send case
+    println("sent to ch3")
+default:
+    println("nothing ready")
+}
+```
+
 ### HTTP client
 
 `https_get` and `https_post` return the response body as a string (empty on
