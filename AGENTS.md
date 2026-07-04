@@ -161,7 +161,12 @@ GitHub release. **To cut a release:**
 1. Update the version: bump the badge in `README.md`, the `Version` line in
    `SPEC.md`, **`machinVersion` in `guide.go`** (a test enforces it matches the
    README badge), and add a section to the top of `CHANGELOG.md` (newest first).
-   Commit to `main`.
+   Also bump the other version-stamped, user-facing surfaces, which have **no
+   automated guard** (the `guide.go` test only checks the README↔guide pair) and
+   must be updated by hand: the landing-page badge in `docs/index.html`, the
+   `version:` field in `selfhost/server.mfl`, and the monthly changelog pages
+   (`docs/changelog-YYYY-MM.html` / `docs/changelog-YYYY-MM-product.md` — add
+   the new release to the latest month's page). Commit to `main`.
    ```
    release: vX.Y.Z (one-line summary)
    ```
