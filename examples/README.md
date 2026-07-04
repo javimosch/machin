@@ -84,3 +84,13 @@ curl -i http://localhost:48080/
 | program | shows |
 |---------|-------|
 | `fib`   | `fib(40)` — native MFL runs neck-and-neck with hand-written C |
+
+## gui/
+
+| program | shows |
+|---------|-------|
+| `game_menu` | native raylib desktop GUI (clickable Start/Settings/Exit menu) driven through machin's C FFI |
+
+Unlike the rest of the catalog, this is **not** a no-dependency binary — it links
+raylib + `libGL`/`libX11` and needs a display. See
+[`examples/gui/README.md`](gui/README.md) for build/run instructions.
