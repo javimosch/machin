@@ -197,15 +197,22 @@ for i, v := range xs { total = total + v }       // index + value
 for _, v := range xs { total = total + v }       // value only
 for k, v := range m  { ... }                     // map key + value
 for i, c := range s  { ... }                     // string index + character
+
+for { if done { break }  step() }                // bare infinite loop
+for i < n { if skip(i) { continue }  use(i)  i = i + 1 }
 ```
 
 - `if` / `else if` / `else` — conditions are `bool` expressions.
 - `while cond { ... }` — loops while `cond` holds.
 - `for cond { ... }` — equivalent condition-only loop (Go-style `for`).
+- `for { ... }` — bare `for` with no condition loops forever; exit with
+  `break`.
 - `for k, v := range x { ... }` — iterate a slice (index, element), map (key,
   value), or string (index, 1-char). The first variable is the index/key; the
   second (optional) is the value. Use `_` to ignore either. Map iteration order
   is unspecified.
+- `break` — exits the innermost `while`/`for` loop immediately.
+- `continue` — skips to the next iteration of the innermost `while`/`for` loop.
 
 ---
 
@@ -521,6 +528,36 @@ func produce(c) {
   later `c <- "x"` would be a compile error.
 
 See `examples/complex/channels.mfl` for a fan-in worker pool.
+
+`close(ch)` closes a channel — no more sends are allowed, but receives keep
+draining any values already buffered before reporting closed. `v, ok := <-ch`
+is the comma-ok receive: `ok` is `false` once the channel is closed and
+drained (and `v` is the zero value in that case), so it's how a reader
+detects the end of a stream:
+
+```go
+close(ch)
+v, ok := <-ch   // ok == false once ch is closed and drained
+```
+
+`for v := range ch { ... }` ranges over a channel, receiving values until it
+is closed and drained — a shorthand for looping on the comma-ok receive.
+
+`select { ... }` waits on multiple channel operations at once and runs the
+first case that's ready (a `default` case runs immediately if none are):
+
+```go
+select {
+case v := <-ch1:
+    println("from ch1:", v)
+case v, ok := <-ch2:       // comma-ok also works in a select case
+    if !ok { println("ch2 closed") }
+case ch3 <- 1:             // send case
+    println("sent to ch3")
+default:
+    println("nothing ready")
+}
+```
 
 ### HTTP client
 
