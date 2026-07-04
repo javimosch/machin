@@ -367,6 +367,26 @@ first := users[0]                                // value copy
 | `print(...)`                | print arguments without a trailing newline   |
 | `println(...)`              | print arguments followed by a newline        |
 | `input()`                   | read one line from stdin; newline stripped, `""` at EOF |
+| `read_stdin()`              | read all of stdin verbatim until EOF (exact bytes, no line splitting) |
+| `flush()`                   | flush buffered stdout (prompt output through a pipe) |
+| `read_file(path)`           | read a whole file → `string` (`""` on error)  |
+| `read_file_bytes(path)`     | read a whole file's raw bytes, NUL-safe (empty on error) — for binary assets |
+| `write_file(path, s)`       | write a text file → `int` (`-1` on error)    |
+| `write_file_bytes(path, b)` | write raw `bytes` to a file, NUL-safe (`-1` on error) — for binary uploads/assets |
+| `remove(path)`              | delete a file (`0` ok; `-1` error)           |
+| `list_dir(path)`            | directory entries → `[]string` (excludes `.` / `..`) |
+| `mkdir(path)`               | create a directory (`0` ok; `-1` error)      |
+| `args()`                    | command-line args → `[]string` (`args()[0]` is the program path) |
+| `env(name)`                 | environment variable value (`""` if unset)   |
+| `exit(code)`                | terminate the process with a status code     |
+| `system(cmd)`               | run a shell command, return its exit code (`-1` if unlaunchable) |
+| `exec(cmd)`                 | run a shell command and capture output → `(exit_code int, stdout string, stderr string)` — **multi-assign only** |
+| `now()`                     | wall-clock Unix seconds                      |
+| `now_ms()`                  | wall-clock milliseconds                      |
+| `time_fields(ts)`           | decompose a unix timestamp (local) → `[year,month,day,hour,min,sec,weekday(0=Sun),yearday]` |
+| `time_format(ts, fmt)`      | format a unix timestamp (local) with a strftime pattern |
+| `time_format_utc(ts, fmt)`  | like `time_format` but in UTC (gmtime)       |
+| `time_make(y, mo, d, h, mi, s)` | build a unix timestamp from local calendar fields; inverse of `time_fields` |
 | `len(x)`                    | length of a slice or string                  |
 | `append(xs, v)`             | return `xs` with `v` appended                |
 | `has(m, k)`                 | whether map `m` contains key `k`             |
@@ -404,6 +424,16 @@ first := users[0]                                // value copy
 | `https_post(url, body)`     | POST with string body over TLS (or plain http://) → body string |
 | `http_get(url)`             | GET → `(status int, body string, err string)` — **multi-assign only** |
 | `http_request(method, url, headers, body)` | authenticated HTTP(S): headers are `[]string` of `"Key: Value"` lines; caller owns `Content-Type` → `(status int, body string, err string)` — **multi-assign only** |
+| `wss_open(url)`             | open a `wss://` WebSocket → handle (`0` on fail) |
+| `wss_send(h, msg)` / `wss_recv(h)` | send/receive a text message (`wss_recv` blocks; `""` on close; auto ping/pong) |
+| `wss_send_bin(h, b)` / `wss_recv_bin(h)` | send/receive a binary message, NUL-safe |
+| `wss_close(h)`              | send close and tear down a WebSocket handle  |
+| `tls_server_ctx(cert, key)` | load a cert+key (PEM files) → a server TLS context handle (`0` on fail) — for terminating HTTPS/TLS yourself |
+| `tls_accept(ctx, fd)`       | complete a server-side TLS handshake on an accepted `fd` → a tls handle (`0` on fail) |
+| `tls_client_fd(fd, hostname)` | upgrade an already-connected, plaintext fd to a verified TLS handle in place (STARTTLS) |
+| `tls_read(h)` / `tls_write(h, s)` | read from / write to a tls handle — mirror `read`/`write` |
+| `tls_read_bytes(h)` / `tls_write_bytes(h, b)` | NUL-safe binary read/write on a tls handle |
+| `tls_close(h)`              | shut down a tls handle and close its underlying fd |
 | `bytes(s)`                  | make a `bytes` value from a string's raw bytes |
 | `bytes_str(b)`              | `bytes` → `string` (NUL-terminated; truncates at embedded `0`) |
 | `to_hex(b)`                 | lowercase hex of a `bytes` value             |
