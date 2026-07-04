@@ -325,7 +325,9 @@ startup (before `main`; at `_initialize` for a wasm reactor).
 | `regex_match` | `(string, string) -> bool` | does a POSIX ERE pattern match anywhere in s |
 | `regex_find` | `(string, string) -> string` | first ERE match in s (`""` if none) |
 | `regex_groups` | `(string, string) -> []string` | first match's groups: `[0]` whole, `[1..]` captures (`[]` if none) |
-| `regex_replace` | `(string, string, string) -> string` | replace all ERE matches in s with repl |
+| `regex_replace` | `(string, string, string) -> string` | replace all ERE matches in s with repl; `repl` is inserted literally — no `\1`/`$1` backreferences |
+
+An invalid ERE pattern (a `regcomp` failure) is not an error — there's no error channel, so each `regex_*` builtin silently falls back to its benign default: `regex_match`→`false`, `regex_find`→`""`, `regex_groups`→`[]`, `regex_replace`→`s` unchanged. See `examples/complex/grep.mfl`.
 | `sleep` | `(int) -> ` | pause (milliseconds) |
 | `dial` | `(string, int) -> int` | connect to host:port; an fd, or -1 on failure |
 | `listen`, `accept` | `(int) -> int` | open / accept on a TCP socket |
