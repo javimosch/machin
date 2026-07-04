@@ -113,7 +113,7 @@ instantiation).
 
 Functions are values. A `func(params) { ... }` literal is an expression you can
 store, pass, return, and call. A literal **captures** variables from the
-enclosing scope (by value, at the moment it is created):
+enclosing scope (by reference — mutable captured state, Go semantics):
 
 ```go
 func adder(n) {
@@ -138,8 +138,10 @@ func main() {
 
 - Function values are compiled by closure conversion (lambda-lifting): each
   literal becomes a top-level function plus a captured environment.
-- Capture is **by value** — a closure snapshots the captured variables when it
-  is created; later changes to them are not seen by the closure.
+- Capture is **by reference** — a closure shares the captured variables with
+  the enclosing scope; later changes to them (by either side) are visible to
+  the closure. See `examples/complex/counter.mfl` for a closure that mutates
+  a captured counter across calls.
 - A function value holds a single return value (or none).
 
 ---
