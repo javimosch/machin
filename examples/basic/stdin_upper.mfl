@@ -1,0 +1,1 @@
+func main(){s:=read_stdin() println(to_upper(s))}

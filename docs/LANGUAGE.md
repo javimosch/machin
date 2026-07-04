@@ -318,6 +318,7 @@ first := users[0]                                // value copy
 |-----------------------------|----------------------------------------------|
 | `print(...)`                | print arguments without a trailing newline   |
 | `println(...)`              | print arguments followed by a newline        |
+| `read_stdin()`               | read all of stdin verbatim until EOF (exact bytes, no line splitting) — contrast with the line-oriented `input()` builtin |
 | `len(x)`                    | length of a slice or string                  |
 | `append(xs, v)`             | return `xs` with `v` appended                |
 | `has(m, k)`                 | whether map `m` contains key `k`             |
