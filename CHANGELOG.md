@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.106.0
+
 - **Fixed a high-severity data-corruption bug: `parse()` silently mangled
   `\uXXXX` JSON escapes instead of decoding them.** `{"s":"em—dash"}`
   parsed to the literal text `emu2014dash` instead of `em—dash` — the
