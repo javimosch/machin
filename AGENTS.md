@@ -64,7 +64,12 @@ direction and capability/gap matrix live in
 [`docs/NORTH-STAR-BACKEND.md`](docs/NORTH-STAR-BACKEND.md). machin already has embedded
 SQLite and a pure-MFL **PostgreSQL** client ([`framework/postgres.src`](framework/postgres.src)
 — wire protocol + SCRAM-SHA-256, no libpq); both return rows as JSON that
-`parse(rows, []T{})` decodes.
+`parse(rows, []T{})` decodes. Writing a CLI tool? [`framework/flags.src`](framework/flags.src)
+is a reusable flag parser (short/long flags, `=`/space values, bool flags,
+defaults, positionals, auto `--help`) composed the same way as `machweb`
+(`machin encode framework/flags.src yourtool.src`) — see
+[`framework/README.md`](framework/README.md#also-here-flagssrc--a-cli-flag-parser)
+for the full API.
 
 Building a **game** (terminal TUI or raylib GUI/audio)? Read
 [`skills/machin-gamedev/SKILL.md`](skills/machin-gamedev/SKILL.md) first — the
