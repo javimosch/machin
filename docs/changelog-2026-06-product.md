@@ -73,12 +73,24 @@
 
         <div class="feature-card rounded-xl p-6">
           <div class="flex items-start gap-4">
+            <div class="w-12 h-12 rounded-lg bg-red-500/10 flex items-center justify-center flex-shrink-0">
+              <span class="text-2xl">🛡️</span>
+            </div>
+            <div>
+              <h3 class="text-xl font-semibold text-white mb-2">--safe mode, real closures, and scoped arenas</h3>
+              <p class="text-slate-400 leading-relaxed">`machin run|build --safe` catches out-of-range indexing, divide-by-zero, and integer overflow at runtime. Closures now capture by reference (Go semantics), so the counter/accumulator idiom just works. And `arena { }` blocks reclaim everything allocated inside them when the block ends, keeping long-lived loops memory-flat.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="feature-card rounded-xl p-6">
+          <div class="flex items-start gap-4">
             <div class="w-12 h-12 rounded-lg bg-purple-500/10 flex items-center justify-center flex-shrink-0">
               <span class="text-2xl">📦</span>
             </div>
             <div>
-              <h3 class="text-xl font-semibold text-white mb-2">Released v0.1.0 → v0.3.0</h3>
-              <p class="text-slate-400 leading-relaxed">Three tagged releases this month, a formal language specification (SPEC.md), 35+ runnable examples, and a self-hosted server that serves the project's own catalog — the language is now capable enough to host part of its own tooling.</p>
+              <h3 class="text-xl font-semibold text-white mb-2">Released v0.1.0 → v0.4.1</h3>
+              <p class="text-slate-400 leading-relaxed">Five tagged releases this month, a formal language specification (SPEC.md), 35+ runnable examples, a self-hosted server that serves the project's own catalog, and release automation — pushing a `v*` tag now cross-compiles machin for linux/macOS × amd64/arm64 and attaches the binaries to the GitHub release.</p>
             </div>
           </div>
         </div>
