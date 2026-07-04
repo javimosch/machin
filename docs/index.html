@@ -57,12 +57,12 @@
 </head>
 <body>
 <header><div class="wrap">
-  <div class="badge">v0.84.0 · the compiler now compiles itself</div>
+  <div class="badge">v0.106.0 · the compiler now compiles itself</div>
   <h1>machin ⎯ MFL</h1>
   <p class="tag">A language <b>optimized for the AI agent writing it</b>, not the human reading it.<br>
     As terse as Python to write, compiled through C to a tiny native binary. <i>Write it like a script, ship it like C.</i></p>
   <div class="announce">
-    🧬 <b>New in v0.84.0 — machin now compiles itself.</b> The machin compiler
+    🧬 <b>machin compiles itself.</b> The machin compiler
     (<span class="k">lexer → parser → type-checker → C codegen</span>) is now written
     <i>in machin</i>, and it emits the same machine code as the original compiler
     <b>byte-for-byte</b>. It even compiles its own source into a native binary that
@@ -134,7 +134,9 @@ machin build --static app.mfl -o app                    <span class="cm"># stati
   <div class="grid">
     <div class="card"><h3>HTTP + router</h3><p>machweb: a native server, JSON, cookies, signed sessions, SSO, SSE, WebSockets.</p></div>
     <div class="card"><h3>Databases</h3><p>SQLite built in (bundled with <code>--static</code>); pure-MFL Postgres / MySQL / Redis / Mongo drivers, pooled.</p></div>
-    <div class="card"><h3>Concurrency</h3><p>goroutines, channels, <code>select</code>; a per-goroutine arena that keeps servers memory-bounded.</p></div>
+    <div class="card"><h3>Concurrency</h3><p>goroutines, channels, <code>select</code>; a per-goroutine arena plus scoped <code>arena{ }</code> blocks that bound a long-lived loop's memory.</p></div>
+    <div class="card"><h3>Closures</h3><p>func literals capture by reference — mutable state across calls, the counter idiom, no boilerplate.</p></div>
+    <div class="card"><h3><code>--safe</code> mode</h3><p>opt-in bounds, div-zero, and overflow checks for when you want guardrails over raw speed.</p></div>
     <div class="card"><h3>Crypto</h3><p>SHA-256, HMAC, HKDF, Ed25519, X25519, AES-GCM — binary and text paths.</p></div>
     <div class="card"><h3>Frontend &amp; games</h3><p>a reactive WebAssembly UI target; raylib GUI/audio/3D via C FFI.</p></div>
     <div class="card"><h3>One artifact</h3><p>compiles to a single native binary — no Node, no interpreter, no runtime.</p></div>
