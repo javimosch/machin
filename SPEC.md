@@ -184,7 +184,10 @@ startup (before `main`; at `_initialize` for a wasm reactor).
 
 ## 6. Expressions
 
-- **Literals:** integer, float, string, `true`, `false`.
+- **Literals:** integer, float, string, `true`, `false`. `nil` is a reserved
+  keyword and parses as a literal expression, but it is **not yet implemented**:
+  it types as `void` and does not unify with slice/map/chan/func values. Do not
+  use it — see §16.
 - **Composite literals:** `[]T{...}`, `T{f: v, ...}` / `T{v, ...}`.
 - **Construction:** `make(map[K]V)`, `make(chan T)`, `func(params){...}`.
 - **Operators**, by increasing precedence:
@@ -616,4 +619,6 @@ scoped `arena { }` blocks (§12), named return values (§9), variadic parameters
 (§5.2), by-reference closure capture (§11.1), opt-in bounds/overflow checks
 (`--safe`), and C FFI scalars + by-value structs + opaque handles (§15). Not yet
 implemented: polymorphic recursion, an automatic tracing GC, and FFI callbacks
-(MFL closures as C function pointers). These are refinements, not core gaps.
+(MFL closures as C function pointers). `nil` is reserved and parses as a
+literal (§6) but is **not implemented**: it types as `void` and cannot be used
+as a slice/map/chan/func value. These are refinements, not core gaps.
