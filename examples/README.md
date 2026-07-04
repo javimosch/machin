@@ -11,7 +11,7 @@ distribution via `machin pack`. Each program is compiled to native code
 machin run examples/complex/primes.mfl          # compile to native + run
 machin build examples/complex/primes.mfl -o p   # produce a native binary
 machin build examples/complex/primes.mfl --emit-c   # see the generated C
-./examples/run.sh                                # run all programs
+./examples/run.sh                                # run every non-server example
 ```
 
 ## basic/
@@ -76,7 +76,10 @@ machin build examples/complex/primes.mfl --emit-c   # see the generated C
 | `ffi_struct`      | C FFI — by-value `cstruct` |
 | `game_menu`       | `input()` + interactive menu |
 
-`http_server` loops forever, so it's skipped by `run.sh`. Run it directly:
+`run.sh` skips any file matching `*server*` or `*_api*`: `http_server`,
+`json_api`, `json_echo_api`, and `router_api` are servers that run forever (or
+hold a listening socket open), and `http_client_api` also matches the
+`*_api*` glob even though it's a client, not a server. Run them directly:
 
 ```sh
 machin run examples/complex/http_server.mfl
