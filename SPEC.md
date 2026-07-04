@@ -218,7 +218,8 @@ startup (before `main`; at `_initialize` for a wasm reactor).
 - `if cond { ... } else if cond { ... } else { ... }` — conditions are `bool`.
 - Loops:
   - `while cond { ... }`
-  - `for cond { ... }` and `for { ... }` (infinite)
+  - `for cond { ... }` and `for { ... }` (infinite) — exit an infinite loop
+    with `break` or `return`; there is no other way out
   - `for k, v := range x { ... }` over a slice (index, element), map (key,
     value), or string (index, 1-char). Either variable may be `_`.
   - `for v := range ch { ... }` over a channel: receives each value until the
