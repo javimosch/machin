@@ -511,7 +511,7 @@ FuncDecl    = "func" ident "(" [ identList [ "..." ] ] ")" [ "(" identList ")" ]
 TypeName    = "int" | "float" | "bool" | "string" | ident
             | "[]" TypeName | "map" "[" TypeName "]" TypeName | "chan" TypeName .
 Block       = "{" { Stmt } "}" .
-Stmt        = Decl? | Assign | If | Loop | Return | Send | Go | Select | ExprStmt
+Stmt        = Decl? | Assign | If | Loop | Return | Send | Go | Select | Arena | ExprStmt
             | "break" | "continue" .
 Assign      = identList ( ":=" | "=" ) exprList .
 If          = "if" Expr Block [ "else" ( If | Block ) ] .
@@ -520,6 +520,7 @@ Loop        = ( "while" | "for" ) [ Expr ] Block
 Return      = "return" [ exprList ] .
 Send        = Expr "<-" Expr .
 Go          = "go" Call .
+Arena       = "arena" Block .
 Select      = "select" "{" { "case" Comm ":" { Stmt } } [ "default" ":" { Stmt } ] "}" .
 Comm        = ident [ "," ident ] ":=" "<-" Expr | "<-" Expr | Expr "<-" Expr .
 Expr        = ... operators, calls, indexing, field access, literals,
