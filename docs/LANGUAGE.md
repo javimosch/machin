@@ -197,15 +197,22 @@ for i, v := range xs { total = total + v }       // index + value
 for _, v := range xs { total = total + v }       // value only
 for k, v := range m  { ... }                     // map key + value
 for i, c := range s  { ... }                     // string index + character
+
+for { if done { break }  step() }                // bare infinite loop
+for i < n { if skip(i) { continue }  use(i)  i = i + 1 }
 ```
 
 - `if` / `else if` / `else` — conditions are `bool` expressions.
 - `while cond { ... }` — loops while `cond` holds.
 - `for cond { ... }` — equivalent condition-only loop (Go-style `for`).
+- `for { ... }` — bare `for` with no condition loops forever; exit with
+  `break`.
 - `for k, v := range x { ... }` — iterate a slice (index, element), map (key,
   value), or string (index, 1-char). The first variable is the index/key; the
   second (optional) is the value. Use `_` to ignore either. Map iteration order
   is unspecified.
+- `break` — exits the innermost `while`/`for` loop immediately.
+- `continue` — skips to the next iteration of the innermost `while`/`for` loop.
 
 ---
 
