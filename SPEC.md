@@ -78,7 +78,10 @@ The decoded text of a declaration is tokenized as follows.
 - **Integer literals.** decimal (`42`), hex (`0xff`), binary (`0b1010`), or octal
   (`0o17`); underscores allowed as separators (`0xff_00`).
 - **Float literals.** digits with a `.`, e.g. `3.14`, `0.5`.
-- **String literals.** `"..."` with escapes `\n \t \r \" \\`.
+- **String literals.** `"..."` with escapes `\n \t \r \" \\`. No `\uXXXX`
+  escape form — embed non-ASCII as raw UTF-8 bytes in the source file instead
+  (a tool generating `.src`/`.mfl` text should emit real UTF-8, not escape it —
+  e.g. Python's `json.dumps(..., ensure_ascii=False)`).
 - **Keywords.** `func return if else while for range true false nil var go type
   struct chan make map arena extern export break continue select`.
 - **Operators and punctuation.** `+ - * / % & | ^ << >> == != < <= > >= && || ! = := <- .

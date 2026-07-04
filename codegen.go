@@ -723,6 +723,28 @@ static void mfl_js_ws(const char** p) { while (**p==' '||**p=='\t'||**p=='\n'||*
 static int64_t mfl_js_int(const char** p) { mfl_js_ws(p); char* e; long long v = strtoll(*p, &e, 10); *p = e; return v; }
 static double mfl_js_float(const char** p) { mfl_js_ws(p); char* e; double v = strtod(*p, &e); *p = e; return v; }
 static int mfl_js_bool(const char** p) { mfl_js_ws(p); if (**p=='t') { *p += 4; return 1; } if (**p=='f') { *p += 5; return 0; } return 0; }
+/* mfl_hex4: the 4 hex digits at p as an int, or -1 if any of them aren't hex
+   (a malformed \u escape -- the caller falls back to treating it literally). */
+static int mfl_hex4(const char* p) {
+    int v = 0;
+    for (int i = 0; i < 4; i++) {
+        char c = p[i]; int d;
+        if (c >= '0' && c <= '9') d = c - '0';
+        else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;
+        else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;
+        else return -1;
+        v = v * 16 + d;
+    }
+    return v;
+}
+/* mfl_utf8_encode: UTF-8 encode one Unicode code point into out, returning the
+   byte count written (1-4). */
+static size_t mfl_utf8_encode(char* out, int cp) {
+    if (cp < 0x80) { out[0] = (char)cp; return 1; }
+    if (cp < 0x800) { out[0] = (char)(0xC0 | (cp >> 6)); out[1] = (char)(0x80 | (cp & 0x3F)); return 2; }
+    if (cp < 0x10000) { out[0] = (char)(0xE0 | (cp >> 12)); out[1] = (char)(0x80 | ((cp >> 6) & 0x3F)); out[2] = (char)(0x80 | (cp & 0x3F)); return 3; }
+    out[0] = (char)(0xF0 | (cp >> 18)); out[1] = (char)(0x80 | ((cp >> 12) & 0x3F)); out[2] = (char)(0x80 | ((cp >> 6) & 0x3F)); out[3] = (char)(0x80 | (cp & 0x3F)); return 4;
+}
 static char* mfl_js_str(const char** p) {
     mfl_js_ws(p);
     if (**p != '"') return mfl_dup("");
@@ -732,10 +754,26 @@ static char* mfl_js_str(const char** p) {
         char c = **p;
         if (c == '\\') {
             (*p)++; char e = **p;
-            if (e=='n') out[j++]='\n'; else if (e=='t') out[j++]='\t'; else if (e=='r') out[j++]='\r';
-            else out[j++] = e;
-        } else out[j++] = c;
-        (*p)++;
+            if (e == 'u') {
+                int cp = mfl_hex4(*p + 1);
+                if (cp < 0) { out[j++] = 'u'; (*p)++; }
+                else {
+                    *p += 5; /* past "u" + 4 hex digits */
+                    if (cp >= 0xD800 && cp <= 0xDBFF && (*p)[0] == '\\' && (*p)[1] == 'u') {
+                        int lo = mfl_hex4(*p + 2);
+                        if (lo >= 0xDC00 && lo <= 0xDFFF) {
+                            cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                            *p += 6;
+                        }
+                    }
+                    j += mfl_utf8_encode(out + j, cp);
+                }
+            }
+            else if (e=='n') { out[j++]='\n'; (*p)++; }
+            else if (e=='t') { out[j++]='\t'; (*p)++; }
+            else if (e=='r') { out[j++]='\r'; (*p)++; }
+            else { out[j++] = e; (*p)++; }
+        } else { out[j++] = c; (*p)++; }
     }
     if (**p == '"') (*p)++;
     out[j] = 0; return out;
