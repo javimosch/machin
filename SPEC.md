@@ -64,6 +64,7 @@ The toolchain commands:
 | `machin build <file.mfl> [-o out]` | compile to a native binary |
 | `machin build <file.mfl> --emit-c` | print the generated C |
 | `machin encode <src>` | encode loose declaration text into canonical `.mfl` |
+| `machin pack <file.mfl>` | emit the dense base64 form (distribution) |
 | `machin guide [--text]` | print the full feature catalog (JSON by default) — keywords, builtins, idioms, gotchas — for agents to load in one call |
 
 ---

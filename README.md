@@ -114,6 +114,7 @@ bin/machin build  app.mfl --emit-c       # print the generated C
 bin/machin build  app.mfl --safe         # + bounds / div-zero / overflow checks
 bin/machin encode a.src b.src > app.mfl  # mint canonical .mfl from loose Go-like text
 bin/machin pack   app.mfl                # dense base64 form (distribution)
+bin/machin guide  --text                 # print the full feature catalog for agents
 ```
 
 ## Capabilities
