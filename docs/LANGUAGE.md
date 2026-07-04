@@ -53,10 +53,11 @@ Each value's type is determined by how it is used; mixing incompatible types is
 a **compile-time error**, not a runtime surprise.
 
 > **`nil` is reserved but not usable.** It is a keyword and parses as a literal
-> expression, but it types as `void` and does not unify with any slice, map,
-> `chan`, or `func` value. Don't reach for it as an empty/optional value — use
-> a type's zero value instead (see the zero-value column of each section
+> expression, but it is rejected with a type-check error wherever it appears —
+> no value type accepts it yet. Don't reach for it as an empty/optional value —
+> use a type's zero value instead (see the zero-value column of each section
 > below, e.g. `[]int{}` for an empty slice, `make(map[K]V)` for an empty map).
+> See `SPEC.md` §16.
 
 ---
 

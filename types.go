@@ -1344,7 +1344,7 @@ func (c *Checker) genExprInner(fn *FuncDecl, e Expr) (int, error) {
 	case *BoolLit:
 		return c.cBool, nil
 	case *NilLit:
-		return c.cVoid, nil
+		return 0, fmt.Errorf("%s: nil is reserved but not implemented (no value type accepts nil yet)", fn.Name)
 	case *Ident:
 		if s, ok := c.vars[fn.Name][ex.Name]; ok {
 			return s, nil

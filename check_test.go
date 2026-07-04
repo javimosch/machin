@@ -23,6 +23,17 @@ func TestCheckTypeMismatch(t *testing.T) {
 	}
 }
 
+func TestCheckNilRejectedAtTypecheck(t *testing.T) {
+	r := analyzeSource(`func main(){ x := nil  println(x) }`+"\n", []string{"<t>"})
+	if r.OK || r.ErrorCount != 1 {
+		t.Fatalf("expected one error for nil, got %+v", r)
+	}
+	d := r.Diagnostics[0]
+	if d.Phase != "typecheck" {
+		t.Fatalf("expected a typecheck error, got phase=%q", d.Phase)
+	}
+}
+
 func TestCheckParseErrorDeclAndLine(t *testing.T) {
 	src := "func good(a)(b){b=a+1}\n\nfunc broken(x)(y){\n    y = compute(x x)\n}\n"
 	r := analyzeSource(src, []string{"<t>"})
