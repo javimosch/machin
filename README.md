@@ -10,7 +10,7 @@
 
 A language **shaped for AI agents to write and edit cheaply**: zero type annotations, one canonical declaration per line, every design choice measured for token cost. Compiles through C to a single native binary — C/Rust-class speed, unboxed values, no runtime.
 
-[Spec](SPEC.md) · [Language tour](docs/LANGUAGE.md) · [Agent guide](AGENTS.md) · [Ecosystem → **awesome-machin**](https://github.com/javimosch/awesome-machin) · [Landing](https://javimosch.github.io/machin/) · [Releases](https://github.com/javimosch/machin/releases)
+[Spec](SPEC.md) · [Language tour](docs/LANGUAGE.md) · [Agent guide](AGENTS.md) · [Contributing](CONTRIBUTING.md) · [Ecosystem → **awesome-machin**](https://github.com/javimosch/awesome-machin) · [Landing](https://javimosch.github.io/machin/) · [Releases](https://github.com/javimosch/machin/releases)
 
 > ### ▶ [Try machin in your browser → **play.intrane.fr**](https://play.intrane.fr)
 > Write MFL, hit Run — it compiles to WebAssembly and runs client-side. No install.
