@@ -76,9 +76,10 @@ machin build examples/complex/primes.mfl --emit-c   # see the generated C
 | `ffi_struct`      | C FFI — by-value `cstruct` |
 | `game_menu`       | `input()` + interactive menu |
 
-`http_server`, `json_api`, `json_echo_api`, and `router_api` are servers — they
-run forever (or hold a listening socket open), so `run.sh` skips any file
-matching `*server*` or `*_api*`. Run them directly:
+`run.sh` skips any file matching `*server*` or `*_api*`: `http_server`,
+`json_api`, `json_echo_api`, and `router_api` are servers that run forever (or
+hold a listening socket open), and `http_client_api` also matches the
+`*_api*` glob even though it's a client, not a server. Run them directly:
 
 ```sh
 machin run examples/complex/http_server.mfl
