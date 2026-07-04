@@ -54,6 +54,7 @@ machin build examples/complex/primes.mfl --emit-c   # see the generated C
 | `json`            | `json()` serialization of scalars, slices, structs, maps |
 | `json_api`        | JSON-over-HTTP API — each request returns JSON-serialized structs |
 | `json_parse`      | `parse(s, T{})` — JSON into struct/slice/map/scalar, with round-trips |
+| `json_get`        | `json_get(json, path)` — jq-style path lookup, `(value, err)` multi-assign, all `err` cases |
 | `json_echo_api`   | POST JSON → parse into a struct → echo it back as JSON |
 | `strings`         | string ops (`split`/`join`/`substr`/`index`/`replace`/…) + request-line parsing |
 | `bytes`           | `bytes` type: construct, `to_hex`/`from_hex`, `byte_at`, `bytes_sub`, `bytes_concat`, `bytes_str`; NUL-safe vs string |
