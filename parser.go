@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strconv"
+	"strings"
 )
 
 type Parser struct {
@@ -259,6 +260,38 @@ func (p *Parser) parseExternDecl() (*ExternDecl, error) {
 			}
 			var params []string
 			for p.peek().Val != ")" && p.peek().Kind != TEOF {
+				// cb(t1, t2)ret is a C callback parameter: a plain function pointer
+				// (no closure environment), taking the given FFI scalar types and
+				// returning ret ("" means void). Phase 4a (issue #305): only
+				// captureless MFL functions may be passed here — the checker enforces
+				// that, since a raw C fn pointer has no slot for a captured env.
+				if p.peek().Kind == TIdent && p.peek().Val == "cb" && p.pos+1 < len(p.toks) && p.toks[p.pos+1].Val == "(" {
+					p.next() // "cb"
+					p.next() // "("
+					var cbParams []string
+					for p.peek().Val != ")" && p.peek().Kind != TEOF {
+						pt := p.next()
+						if pt.Kind != TIdent {
+							return nil, fmt.Errorf("extern fn %s: expected a callback parameter type, got %q", name.Val, pt.Val)
+						}
+						cbParams = append(cbParams, pt.Val)
+						for p.peek().Val == "," {
+							p.next()
+						}
+					}
+					if _, err := p.expect(TPunct, ")"); err != nil {
+						return nil, err
+					}
+					cbRet := ""
+					if p.peek().Kind == TIdent && !isExternDirective(p.peek().Val) {
+						cbRet = p.next().Val
+					}
+					params = append(params, "cb("+strings.Join(cbParams, ",")+")"+cbRet)
+					for p.peek().Val == "," {
+						p.next()
+					}
+					continue
+				}
 				// a leading * means "deref this pointer (an MFL int) and pass the
 				// pointed-to C struct by value" — e.g. fn LoadModelFromMesh(*Mesh).
 				prefix := ""

@@ -677,9 +677,22 @@ func Check(p *Program) (*Checker, error) {
 		return nil, fmt.Errorf("no main function defined (and no exported functions)")
 	}
 	// register foreign (extern) functions; their signatures are fixed, not inferred
-	ffiTypeOK := func(t string) bool {
+	var ffiTypeOK func(t string) bool
+	ffiTypeOK = func(t string) bool {
 		if t == "" || isFFIScalar(t) {
 			return true
+		}
+		if isCallbackType(t) {
+			// cb(t1,t2)ret (Phase 4a of #305): every param and the return must
+			// themselves be plain FFI scalars — a callback can't take a cstruct
+			// or another callback, since it degenerates to a raw C fn pointer.
+			params, ret := parseCallbackType(t)
+			for _, p := range params {
+				if !isFFIScalar(p) {
+					return false
+				}
+			}
+			return ret == "" || isFFIScalar(ret)
 		}
 		if strings.HasPrefix(t, "*") {
 			return true // *Name: deref an MFL int (ptr) to a header C type, by value
@@ -1678,6 +1691,18 @@ func (c *Checker) genStructLit(fn *FuncDecl, ex *StructLit) (int, error) {
 // ffiSlot maps an FFI type name to its checker slot: a scalar's shared slot, a
 // fresh struct slot for a cstruct name, or void for "".
 func (c *Checker) ffiSlot(t string) int {
+	if isCallbackType(t) {
+		params, ret := parseCallbackType(t)
+		psl := make([]int, len(params))
+		for i, p := range params {
+			psl[i] = c.ffiSlot(p)
+		}
+		retSlot := -1
+		if ret != "" {
+			retSlot = c.ffiSlot(ret)
+		}
+		return newFuncSlot(c, &funcSig{params: psl, ret: retSlot})
+	}
 	if strings.HasPrefix(t, "*") {
 		return c.cInt // *Name: the MFL arg is a pointer held as an int
 	}
@@ -1720,6 +1745,17 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 			return 0, fmt.Errorf("%s: expected %d args, got %d", ef.Name, len(ef.Params), len(argSlots))
 		}
 		for i, pt := range ef.Params {
+			if isCallbackType(pt) {
+				// Phase 4a (#305): a raw C fn pointer has no slot for a captured
+				// env, so only a genuinely captureless MFL function may be passed.
+				mc, ok := ex.Args[i].(*MakeClosure)
+				if !ok {
+					return 0, fmt.Errorf("%s: callback argument %d must be a function literal", ef.Name, i+1)
+				}
+				if len(mc.Captures) != 0 {
+					return 0, fmt.Errorf("%s: callback argument %d captures %v; only captureless functions can be passed as a C callback", ef.Name, i+1, mc.Captures)
+				}
+			}
 			c.addPair(argSlots[i], c.ffiSlot(pt))
 		}
 		return c.ffiSlot(ef.Ret), nil

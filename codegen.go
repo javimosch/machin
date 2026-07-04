@@ -2639,16 +2639,51 @@ func ffiCType(t string) string {
 	return "void"
 }
 
-// externCType is the C type used in a foreign prototype: a scalar's C type, the
-// cstruct's own C name, or void.
+// externCType is the C type used in a foreign prototype: a scalar's C type, a
+// callback's function-pointer type, the cstruct's own C name, or void.
 func externCType(t string) string {
 	if t == "" {
 		return "void"
+	}
+	if isCallbackType(t) {
+		return callbackCType(t)
 	}
 	if isFFIScalar(t) {
 		return ffiCType(t)
 	}
 	return t // a cstruct: its C struct name
+}
+
+// isCallbackType reports whether t is a "cb(t1,t2)ret" callback parameter type
+// (Phase 4a of #305: a captureless MFL function passed as a raw C fn pointer).
+func isCallbackType(t string) bool { return strings.HasPrefix(t, "cb(") }
+
+// parseCallbackType splits a "cb(t1,t2)ret" encoding into its parameter types
+// and return type (ret == "" means void).
+func parseCallbackType(t string) (params []string, ret string) {
+	body := strings.TrimPrefix(t, "cb(")
+	close := strings.Index(body, ")")
+	inner := body[:close]
+	ret = body[close+1:]
+	if inner != "" {
+		params = strings.Split(inner, ",")
+	}
+	return params, ret
+}
+
+// callbackCType renders a callback type as a C function-pointer type, e.g.
+// "cb(int)" -> "void (*)(int64_t)".
+func callbackCType(t string) string {
+	params, ret := parseCallbackType(t)
+	ps := make([]string, len(params))
+	for i, p := range params {
+		ps[i] = ffiCType(p)
+	}
+	plist := strings.Join(ps, ", ")
+	if plist == "" {
+		plist = "void"
+	}
+	return fmt.Sprintf("%s (*)(%s)", ffiCType(ret), plist)
 }
 
 // ffiMFLType maps an FFI scalar type to the MFL type name used for the synthesized
@@ -4316,6 +4351,54 @@ func (g *cgen) call(ex *Call) (string, error) {
 	})
 }
 
+// callbackTrampoline emits a tiny static C wrapper matching a "cb(...)ret"
+// extern parameter's raw function-pointer signature and returns its name.
+//
+// A closure literal's generated C function always takes a leading `void*
+// _env` (codegen's signature(), for uniform dispatch through mfl_closure),
+// even when it captures nothing and that parameter goes unused. A raw C
+// callback type has no such slot, so the two signatures never match — the
+// checker already rejected anything but a captureless *MakeClosure (#305
+// Phase 4a), so we know statically which lifted function to call and can
+// wrap it in a same-shaped function that just drops in NULL for the env.
+func (g *cgen) callbackTrampoline(arg Expr, cbType string) (string, error) {
+	mc, ok := arg.(*MakeClosure)
+	if !ok {
+		return "", fmt.Errorf("callback argument must be a captureless function literal")
+	}
+	name := g.c.ClosureCName(g.curFn, mc)
+	params, ret := parseCallbackType(cbType)
+	id := g.tmpID
+	g.tmpID++
+	var plist, callArgs []string
+	for i, p := range params {
+		plist = append(plist, fmt.Sprintf("%s _p%d", ffiCType(p), i))
+		callArgs = append(callArgs, fmt.Sprintf("_p%d", i))
+	}
+	sig := strings.Join(plist, ", ")
+	if sig == "" {
+		sig = "void"
+	}
+	call := fmt.Sprintf("%s(NULL%s)", name, prependEach(", ", callArgs))
+	retC := ffiCType(ret)
+	body := call + ";"
+	if retC != "void" {
+		body = "return " + call + ";"
+	}
+	fn := fmt.Sprintf("_mfl_cb%d", id)
+	fmt.Fprintf(&g.tramp, "static %s %s(%s) { %s }\n", retC, fn, sig, body)
+	return fn, nil
+}
+
+// prependEach joins parts with sep and, if non-empty, prefixes the joined
+// result with sep too (so a variadic call can splice it after a fixed arg).
+func prependEach(sep string, parts []string) string {
+	if len(parts) == 0 {
+		return ""
+	}
+	return sep + strings.Join(parts, sep)
+}
+
 func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 	// An explicit extern declaration shadows a builtin of the same name (matches
 	// the type-checker), so a declared `fn sqrt(float) float` is called, not the
@@ -4327,6 +4410,12 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 			switch pt := ef.Params[i]; {
 			case pt == "ptr": // MFL int -> opaque void*
 				parts[i] = fmt.Sprintf("(void*)(intptr_t)(%s)", a)
+			case isCallbackType(pt): // a captureless MFL closure -> its raw C fn pointer
+				w, err := g.callbackTrampoline(ex.Args[i], pt)
+				if err != nil {
+					return "", err
+				}
+				parts[i] = w
 			case strings.HasPrefix(pt, "*"): // *Name: deref an MFL int (ptr) to a C struct, by value
 				parts[i] = fmt.Sprintf("(*(%s*)(intptr_t)(%s))", pt[1:], a)
 			case strings.HasSuffix(pt, "*"): // Name*: pass an MFL cstruct by pointer, writing back (inout)

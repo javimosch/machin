@@ -121,3 +121,48 @@ func TestFFIMultipleLink(t *testing.T) {
 		t.Fatalf("links: got %q, want \"raylib,GL,m\"", got)
 	}
 }
+
+// TestFFICallback exercises Phase 4a of #305: a captureless MFL function
+// literal passed as a `cb(...)` extern parameter degenerates to a raw C fn
+// pointer (no trampoline, no environment) and fires when the C helper calls it.
+func TestFFICallback(t *testing.T) {
+	dir := t.TempDir()
+	hdr := "static void invoke_cb(void (*cb)(int64_t), int64_t n){ cb(n); }\n"
+	if err := os.WriteFile(filepath.Join(dir, "cb.h"), []byte(hdr), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prog, err := ParseProgram([]string{
+		`extern "cb" { cflags "-I` + dir + `" header "cb.h" fn invoke_cb(cb(int), int) }`,
+		`func main(){ invoke_cb(func(n){ println("called with", n) }, 42) }`,
+	})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	out, err := RunCaptured(prog)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if out != "called with 42\n" {
+		t.Fatalf("callback: got %q, want \"called with 42\\n\"", out)
+	}
+}
+
+// A callback argument that captures a variable is a compile error, not a
+// runtime crash: a raw C fn pointer has no slot for a captured environment.
+func TestFFICallbackRejectsCaptures(t *testing.T) {
+	dir := t.TempDir()
+	hdr := "static void invoke_cb(void (*cb)(int64_t), int64_t n){ cb(n); }\n"
+	if err := os.WriteFile(filepath.Join(dir, "cb.h"), []byte(hdr), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prog, err := ParseProgram([]string{
+		`extern "cb" { cflags "-I` + dir + `" header "cb.h" fn invoke_cb(cb(int), int) }`,
+		`func main(){ x := 1  invoke_cb(func(n){ println(x, n) }, 42) }`,
+	})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if _, err := Check(prog); err == nil || !strings.Contains(err.Error(), "captureless") {
+		t.Fatalf("expected a captureless-callback error, got %v", err)
+	}
+}
