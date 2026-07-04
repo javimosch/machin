@@ -501,7 +501,7 @@ id(42); id("hi"); id(3.14)   // → three native functions
 
 ---
 
-## 14. Grammar (decoded form, informal)
+## 14. Grammar (informal)
 
 ```
 Program     = { Decl } .
