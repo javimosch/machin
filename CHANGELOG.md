@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.105.0
+
 - **Self-hosted compiler: ported the #310 `go`-argument use-after-free fix to
   `selfhost/cgen.src`.** The self-hosted compiler's `go`-statement codegen now
   emits the same `mfl_freeze_strs`/`mfl_thaw_strs` arena-boundary protection
