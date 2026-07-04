@@ -325,6 +325,7 @@ first := users[0]                                // value copy
 | `keys(m)`                   | a slice of map `m`'s keys                    |
 | `json(x)`                   | serialize any value to a JSON string         |
 | `parse(s, T{})`             | parse a JSON string into a value of `T`'s type |
+| `json_get(json, path)`      | value at a jq-style path → `(value, err)`; `err` is `""`/`"notfound"`/`"path"`/`"parse"` — **multi-assign only** |
 | `http_body(req)`            | the body of an HTTP message (after the blank line) |
 | `substr(s, i, j)`           | the substring `s[i:j]` (bounds-clamped)      |
 | `index(s, sub)`             | first index of `sub` in `s`, or `-1`         |
@@ -476,6 +477,24 @@ zero-fills missing ones. `http_body(req)` returns the body of an HTTP message
 (the bytes after the blank line) — so a server can `parse(http_body(req), T{})`.
 See `examples/complex/json_parse.mfl` and the echo server
 `examples/complex/json_echo_api.mfl`.
+
+`json_get(json, path)` digs a single value out of a JSON string by a
+jq-style path (`.field`, `[index]`, chained) without parsing the whole
+document into a struct — handy when you only need one field, or the shape
+isn't known ahead of time. It's **multi-assign only**, returning
+`(value, err)`: `value` is the raw JSON text at that path, and `err` is
+`""` on success, `"notfound"` if the path doesn't resolve, `"path"` if the
+path string itself is malformed, or `"parse"` if the JSON at that location
+can't be read:
+
+```go
+s := json(Todo{id: 1, title: "ship it", done: false})
+title, err := json_get(s, ".title")   // title == `"ship it"`, err == ""
+_, err = json_get(s, ".nope")         // err == "notfound"
+```
+
+See `examples/complex/json_get.mfl`, and `sqlite_query`'s use of it for
+single-field access on query rows.
 
 ### Channels
 

@@ -1,0 +1,18 @@
+type Todo struct{id int title string done bool}
+
+func main(){
+    s := json(Todo{id:1,title:"ship it",done:false})
+    println("source:", s)
+
+    title, err := json_get(s, ".title")
+    println("title:", title, "err:", err)
+
+    missing, err2 := json_get(s, ".nope")
+    println("missing:", missing, "err:", err2)
+
+    bad, err3 := json_get(s, "not a path")
+    println("bad path:", bad, "err:", err3)
+
+    broken, err4 := json_get("{\"a\":}", ".a")
+    println("broken value:", broken, "err:", err4)
+}
