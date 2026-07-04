@@ -88,10 +88,14 @@ func main() { println(add(2, 3)) }
 
 ```go
 x := 10      // declare + infer type
+var y = 5    // same: declare + infer type
 x = x + 1    // reassign (type must match)
 ```
 
 - `:=` declares a new variable and infers its type from the initializer.
+- `var name = expr` is equivalent to `:=` — it also declares a new variable
+  and infers its type from the initializer. See `SPEC.md` §5.3 and
+  `examples/basic/variables.mfl`.
 - `=` reassigns an existing variable.
 
 ---
