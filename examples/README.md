@@ -64,6 +64,12 @@ machin build examples/complex/primes.mfl --emit-c   # see the generated C
 | `http_client_api` | HTTP client: `http_get` multi-assign + error branch, `http_request` with auth/Accept headers (real network calls) |
 | `router_api`      | HTTP router — dispatch by method+path, extract path params |
 | `sqlite_crud`     | SQLite: `sqlite_open`/`sqlite_exec`/`sqlite_query`/`sqlite_close` — in-memory CRUD with parameterized queries, `parse()` row decode, and `json_get` single-field access |
+| `arena`           | scoped `arena{}` allocation |
+| `counter`         | closure/state counter |
+| `ffi_math`        | C FFI — calling external C functions (scalars) |
+| `ffi_ptr`         | C FFI — opaque `ptr` handles |
+| `ffi_struct`      | C FFI — by-value `cstruct` |
+| `game_menu`       | `input()` + interactive menu |
 
 `http_server` loops forever, so it's skipped by `run.sh`. Run it directly:
 
