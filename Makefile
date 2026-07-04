@@ -28,7 +28,7 @@ cover:
 	@go tool cover -html=coverage.out -o coverage.html
 	@echo "wrote coverage.html"
 
-# Compile and run every example program.
+# Compile and run every non-server example program (see examples/run.sh).
 examples: build
 	./examples/run.sh
 

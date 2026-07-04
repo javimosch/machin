@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Run every MFL program. The .mfl files are the source of truth — canonical
-# plain text, one normalized function per line.
+# Run every non-server MFL program. The .mfl files are the source of truth —
+# canonical plain text, one normalized function per line. Servers/APIs
+# (matching *server* or *_api*) are long-running and skipped below.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 go build -o machin .
