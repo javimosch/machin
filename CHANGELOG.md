@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **Self-hosted compiler: ported the #310 `go`-argument use-after-free fix to
+  `selfhost/cgen.src`.** The self-hosted compiler's `go`-statement codegen now
+  emits the same `mfl_freeze_strs`/`mfl_thaw_strs` arena-boundary protection
+  as the reference compiler, reusing the existing channel-send machinery
+  (`chan_str_offsets`/`chan_needs_json`). A `go` call argument needing the
+  JSON round-trip (a slice/map) is marked unsupported, consistent with
+  JSON-mode channels (#293) — the self-hosted compiler doesn't have JSON
+  codegen yet. Verified byte-identical against the reference compiler's C
+  output on a targeted struct-of-strings case, corpus parity restored
+  (`verify-cgen.sh`: 411/0, was 408/3 after #310 shipped), and the
+  self-hosting fixpoint still holds (`verify-fixpoint.sh`: PASS). See #313.
+
 ## v0.104.0
 
 - **Fixed a high-severity use-after-free: `go f(args)` no longer dangles when

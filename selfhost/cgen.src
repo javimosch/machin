@@ -494,8 +494,33 @@ func cg_select(iid, idx, depth) {
     indent(depth)  cemit("}\n")
 }
 
+// join_offs: comma-join a list of offsetof(...) C expressions, for the
+// (int[]){...} compound literal cg_go passes to mfl_freeze_strs/mfl_thaw_strs.
+func join_offs(offs) (s) {
+    s = ""
+    i := 0
+    for i < len(offs) {
+        if i > 0 { s = s + ", " }
+        s = s + offs[i]
+        i = i + 1
+    }
+}
+
 // cg_go: `go f(args)` -> an arg struct + trampoline function into g_tramp, and a
 // detached pthread_create at the call site (the leading indent is already emitted).
+//
+// #313 (porting #310): a detached goroutine gets its own fresh arena
+// (mfl_arena_cur = &_a below), reclaimed independently of the spawning
+// goroutine's. An argument holding a pointer into the SPAWNING goroutine's
+// arena -- a string, or a struct containing one -- would dangle once that
+// arena is freed, which can happen before the new goroutine finishes starting
+// up. Freeze it (a stable malloc'd copy) at the call site, thaw it (moved into
+// the new arena) in the trampoline -- the same mfl_freeze_strs/mfl_thaw_strs
+// the reference compiler's `go` codegen uses, ported from the channel-send
+// machinery already in this file (chan_str_offsets/chan_needs_json). An
+// argument needing the JSON round-trip (a slice/map, reachable by value) is
+// marked unsupported: this compiler doesn't have JSON serialize/parse codegen
+// yet, the same limitation JSON-mode channels already hit above (#293).
 func cg_go(iid, idx) {
     n := nodes[idx]
     callnode := n.a
@@ -505,16 +530,38 @@ func cg_go(iid, idx) {
     id := g_goid
     g_goid = g_goid + 1
     ids := str(id)
+
+    // classify each argument up front: string-bearing (freeze/thaw) or
+    // needs-JSON (unsupported). A scalar matches neither and needs nothing.
+    stroffs := []string{}
+    i := 0
+    for i < len(cargs) {
+        tn := type_string_slot(g_insts[cinst].pslots[i])
+        if chan_needs_json(tn) == 1 {
+            g_cg_unsup = 1
+        } else {
+            sub := chan_str_offsets(tn, "offsetof(struct mfl_go_" + ids + ", a" + str(i) + ") + ")
+            j := 0
+            for j < len(sub) { stroffs = append(stroffs, sub[j])  j = j + 1 }
+        }
+        i = i + 1
+    }
+
     // arg struct (a leading dummy field avoids an empty struct)
     sline := "struct mfl_go_" + ids + " { char _;"
-    i := 0
+    i = 0
     for i < len(cargs) {
         sline = sline + " " + ctype_slot(g_insts[cinst].pslots[i]) + " a" + str(i) + ";"
         i = i + 1
     }
     tramp_emit(sline + " };\n")
-    // trampoline function
-    rline := "static void* mfl_go_run_" + ids + "(void* p) { mfl_arena _a = {0}; mfl_arena_cur = &_a; struct mfl_go_" + ids + "* s = (struct mfl_go_" + ids + "*)p; " + cn + "("
+    // trampoline function: thaw any frozen strings into the NEW arena before
+    // calling through, so the arena boundary is safe on the receiving side.
+    tramp_emit("static void* mfl_go_run_" + ids + "(void* p) { mfl_arena _a = {0}; mfl_arena_cur = &_a; struct mfl_go_" + ids + "* s = (struct mfl_go_" + ids + "*)p;\n")
+    if len(stroffs) > 0 {
+        tramp_emit("    mfl_thaw_strs(" + str(len(stroffs)) + ", (int[]){" + join_offs(stroffs) + "}, s);\n")
+    }
+    rline := "    " + cn + "("
     i = 0
     for i < len(cargs) {
         if i > 0 { rline = rline + ", " }
@@ -522,13 +569,18 @@ func cg_go(iid, idx) {
         i = i + 1
     }
     tramp_emit(rline + "); free(s); mfl_arena_free(&_a); return NULL; }\n")
-    // call site
+    // call site: populate every field from the SPAWNING goroutine's (current)
+    // arena, then freeze it against that arena being freed before the new
+    // goroutine gets a chance to thaw it back out.
     cemit("{\n")
     cemit("        struct mfl_go_" + ids + "* s = malloc(sizeof(*s));\n")
     i = 0
     for i < len(cargs) {
         cemit("        s->a" + str(i) + " = (" + cg_expr(iid, cargs[i]) + ");\n")
         i = i + 1
+    }
+    if len(stroffs) > 0 {
+        cemit("        mfl_freeze_strs(" + str(len(stroffs)) + ", (int[]){" + join_offs(stroffs) + "}, s);\n")
     }
     cemit("        pthread_t t; pthread_create(&t, NULL, mfl_go_run_" + ids + ", s); pthread_detach(t);\n")
     cemit("    }\n")
