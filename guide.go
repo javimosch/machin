@@ -136,6 +136,9 @@ func machinGuide() guideCatalog {
 			"func", "return", "if", "else", "while", "for", "range", "break", "continue",
 			"select", "go", "chan", "make", "map", "struct", "type", "var", "arena",
 			"extern", "export", "true", "false", "nil",
+			// extern-block-only: `fn` declares a foreign function (distinct from `func`),
+			// `cstruct` declares a C struct layout, and header/link/cflags are directives.
+			"fn", "cstruct", "header", "link", "cflags",
 		},
 		Commands: []guideCommand{
 			{"run", "machin run <file.mfl> [--safe]", "compile to native and execute in one step"},
