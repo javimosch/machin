@@ -40,14 +40,18 @@ A dense base64 "packed" form is available for distribution via `machin pack`;
 
 Types are inferred by unification — there are **no type annotations**.
 
-| Type      | Literals / construction        | Notes                                  |
-|-----------|--------------------------------|----------------------------------------|
-| `int`     | `0`, `42`, `-7`                | 64-bit signed integer                  |
-| `float`   | `3.14`, `0.5`                  | double-precision                       |
-| `string`  | `"hello"`                      | concatenate with `+`                   |
-| `bool`    | `true`, `false`                | produced by comparisons                |
-| `[]int`   | `[]int{}`, `[]int{1, 2, 3}`    | grow with `append`, index with `xs[i]` |
-| `bytes`   | `bytes("hi")`, `from_hex("ff00")` | NUL-safe binary buffer; `len(b)` counts raw bytes; `println(b)` prints hex; strings truncate at NUL, bytes do not |
+| Type       | Literals / construction           | Notes                                  |
+|------------|------------------------------------|-----------------------------------------|
+| `int`      | `0`, `42`, `-7`                | 64-bit signed integer                  |
+| `float`    | `3.14`, `0.5`                  | double-precision                       |
+| `string`   | `"hello"`                      | concatenate with `+`                   |
+| `bool`     | `true`, `false`                | produced by comparisons                |
+| `[]T`      | `[]int{}`, `[]int{1, 2, 3}`    | grow with `append`, index with `xs[i]`; see [Slices](#slices) |
+| `map[K]V`  | `map[string]int{}`            | keyed lookup with `m[k]`; see [Maps](#maps) |
+| `chan T`   | `make(chan int)`               | typed channel for goroutine communication; see [Concurrency](#concurrency) |
+| `func`     | `func(x) { return x + 1 }`     | function values / closures; see [Functions as values](#functions-as-values-closures) |
+| `struct`   | `type Point struct { x int; y int }` | named record type; see [Structs](#structs) |
+| `bytes`    | `bytes("hi")`, `from_hex("ff00")` | NUL-safe binary buffer; `len(b)` counts raw bytes; `println(b)` prints hex; strings truncate at NUL, bytes do not |
 
 Each value's type is determined by how it is used; mixing incompatible types is
 a **compile-time error**, not a runtime surprise.
