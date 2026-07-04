@@ -8,6 +8,11 @@ native code through C (`cc -O2`).
 This document describes the surface syntax — which is exactly what a `.mfl` file
 contains, one normalized declaration per line.
 
+> For the complete, version-exact surface (every keyword and builtin with
+> signatures, idioms, gotchas), run `machin guide` (`--text` for prose) — it is
+> generated from the compiler's own catalog and cannot drift. This tour is a
+> readable companion.
+
 ---
 
 ## Source form
@@ -629,6 +634,8 @@ to the C compiler. See `examples/gui/` for a working raylib desktop application.
 
 ## See also
 
+- `machin guide` (`--text` for prose) — the complete, version-exact catalog of
+  every keyword and builtin, generated from the compiler's own source of truth
 - [`../README.md`](../README.md) — project overview and the toolchain
 - [`../examples/`](../examples/) — runnable programs (`machin run <file>.mfl`)
 - `machin build <file>.mfl --emit-c` — inspect the C the compiler emits
