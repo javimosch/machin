@@ -5,6 +5,52 @@ import (
 	"testing"
 )
 
+func TestKindString(t *testing.T) {
+	cases := []struct {
+		k    Kind
+		want string
+	}{
+		{KVar, "var"},
+		{KNum, "num"},
+		{KInt, "int"},
+		{KFloat, "float"},
+		{KBool, "bool"},
+		{KString, "string"},
+		{KVoid, "void"},
+		{KSlice, "slice"},
+		{KStruct, "struct"},
+		{KChan, "chan"},
+		{KMap, "map"},
+		{KFunc, "func"},
+		{KBytes, "bytes"},
+		{Kind(999), "?"},
+	}
+	for _, c := range cases {
+		if got := c.k.String(); got != c.want {
+			t.Errorf("Kind(%d).String() = %q, want %q", c.k, got, c.want)
+		}
+	}
+}
+
+func TestIsNumeric(t *testing.T) {
+	cases := []struct {
+		k    Kind
+		want bool
+	}{
+		{KInt, true},
+		{KFloat, true},
+		{KNum, true},
+		{KBool, false},
+		{KString, false},
+		{KVar, false},
+	}
+	for _, c := range cases {
+		if got := isNumeric(c.k); got != c.want {
+			t.Errorf("isNumeric(%v) = %v, want %v", c.k, got, c.want)
+		}
+	}
+}
+
 func TestSplitMapType(t *testing.T) {
 	cases := []struct {
 		in      string
