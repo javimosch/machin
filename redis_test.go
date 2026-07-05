@@ -61,10 +61,10 @@ func main() {
 		t.Fatalf("run: %v", err)
 	}
 	for _, want := range []string{
-		"set=1",          // simple-string reply -> ok
-		"get=hello:1",    // bulk string
-		"miss=0",         // $-1 nil -> ok 0
-		"incr=7",         // integer reply
+		"set=1",           // simple-string reply -> ok
+		"get=hello:1",     // bulk string
+		"miss=0",          // $-1 nil -> ok 0
+		"incr=7",          // integer reply
 		`arr=["a","bbb"]`, // array -> JSON, composes with parse
 		"n=2 e1=bbb",
 	} {
@@ -75,8 +75,9 @@ func main() {
 }
 
 // Integration test against a LIVE Redis (gated, like the Postgres one). Run with:
-//   docker run -d --name machin-redis -p 6379:6379 redis:7
-//   MACHIN_REDIS_TEST=1 go test -run TestRedisLive -v
+//
+//	docker run -d --name machin-redis -p 6379:6379 redis:7
+//	MACHIN_REDIS_TEST=1 go test -run TestRedisLive -v
 func TestRedisLive(t *testing.T) {
 	if os.Getenv("MACHIN_REDIS_TEST") == "" {
 		t.Skip("set MACHIN_REDIS_TEST=1 (and run a Redis) to exercise the live client")

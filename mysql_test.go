@@ -7,9 +7,9 @@ import (
 )
 
 // The MySQL/MariaDB client (framework/mysql.src): mysql_native_password auth (SHA-1)
-// + text-protocol queries returning typed JSON rows. Gated — needs a live server:
-//   docker run -d --name m -e MARIADB_ROOT_PASSWORD=secret -e MARIADB_DATABASE=cms -p 3307:3306 mariadb:11
-//   MACHIN_MYSQL_TEST=1 go test -run TestMySQL -v
+//   - text-protocol queries returning typed JSON rows. Gated — needs a live server:
+//     docker run -d --name m -e MARIADB_ROOT_PASSWORD=secret -e MARIADB_DATABASE=cms -p 3307:3306 mariadb:11
+//     MACHIN_MYSQL_TEST=1 go test -run TestMySQL -v
 func TestMySQLClient(t *testing.T) {
 	if os.Getenv("MACHIN_MYSQL_TEST") == "" {
 		t.Skip("set MACHIN_MYSQL_TEST=1 (and run a MariaDB/MySQL) to exercise the wire client")
@@ -39,7 +39,7 @@ func main() {
 		t.Fatalf("run: %v", err)
 	}
 	for _, want := range []string{
-		"connect=1",            // mysql_native_password auth succeeded
+		"connect=1", // mysql_native_password auth succeeded
 		"inserted=2",
 		"n=2 s0=3.5 name1=O'Brien", // typed (double) decode + an escaped quote round-trip
 	} {
