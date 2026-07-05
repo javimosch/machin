@@ -293,6 +293,44 @@ func TestTypeShared(t *testing.T) {
 	}
 }
 
+// TestTypeSharesHeap covers typeSharesHeap (distinct from typeShared above): it
+// decides whether SENDING a value of this type on a channel aliases shared heap,
+// by name prefix or by recursing into struct fields, with a depth cutoff against
+// runaway/cyclic struct definitions.
+func TestTypeSharesHeap(t *testing.T) {
+	c := &Checker{
+		structs: map[string]*TypeDecl{
+			"Box":       {Name: "Box", Fields: []Field{{Name: "n", Type: "int"}, {Name: "items", Type: "[]int"}}},
+			"Plain":     {Name: "Plain", Fields: []Field{{Name: "n", Type: "int"}, {Name: "s", Type: "string"}}},
+			"Wraps":     {Name: "Wraps", Fields: []Field{{Name: "b", Type: "Box"}}},
+			"Recursive": {Name: "Recursive", Fields: []Field{{Name: "next", Type: "Recursive"}}},
+		},
+	}
+
+	if !typeSharesHeap(c, "[]int", 0) {
+		t.Fatalf("typeSharesHeap([]int) = false, want true")
+	}
+	if !typeSharesHeap(c, "map[string]int", 0) {
+		t.Fatalf("typeSharesHeap(map[string]int) = false, want true")
+	}
+	if !typeSharesHeap(c, "Box", 0) {
+		t.Fatalf("typeSharesHeap(Box) = false, want true (has a []int field)")
+	}
+	if typeSharesHeap(c, "Plain", 0) {
+		t.Fatalf("typeSharesHeap(Plain) = true, want false (no shared-heap fields)")
+	}
+	if !typeSharesHeap(c, "Wraps", 0) {
+		t.Fatalf("typeSharesHeap(Wraps) = false, want true (transitively wraps Box)")
+	}
+	if typeSharesHeap(c, "unknown", 0) {
+		t.Fatalf("typeSharesHeap(unknown type) = true, want false")
+	}
+	// Depth cutoff: guards against runaway recursion on a self-referential struct.
+	if typeSharesHeap(c, "Recursive", 9) {
+		t.Fatalf("typeSharesHeap(depth>8) = true, want false (cutoff hit)")
+	}
+}
+
 func TestGoAccessorsOf(t *testing.T) {
 	sum := map[string][]paramAcc{
 		"worker": {
