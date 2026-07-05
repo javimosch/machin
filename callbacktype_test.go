@@ -22,6 +22,30 @@ func TestIsCallbackType(t *testing.T) {
 	}
 }
 
+// TestIsCallbackTypeEdgeCases covers edge cases: strings that start with "cb("
+// pass validation even if malformed (no closing paren), while those that don't
+// start with "cb(" are rejected, and wrong prefix strings are rejected.
+func TestIsCallbackTypeEdgeCases(t *testing.T) {
+	cases := []struct {
+		input string
+		want  bool
+	}{
+		{"cb", false},           // missing opening paren
+		{"cb(", true},           // just the prefix (no closing paren needed)
+		{"cb(int", true},        // unclosed, but starts with "cb("
+		{"cb)", false},          // closing paren without opening
+		{"ycb(int)", false},     // wrong prefix
+		{"xcb(int)", false},     // wrong prefix
+		{"cb(int)string", true}, // valid with return type
+		{"cb(map,chan)", true},  // valid with multiple types
+	}
+	for _, c := range cases {
+		if got := isCallbackType(c.input); got != c.want {
+			t.Errorf("isCallbackType(%q) = %v, want %v", c.input, got, c.want)
+		}
+	}
+}
+
 func TestParseCallbackType(t *testing.T) {
 	cases := []struct {
 		enc        string
