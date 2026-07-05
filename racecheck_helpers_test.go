@@ -156,3 +156,59 @@ func TestBlockOf(t *testing.T) {
 		t.Fatalf("blockOf(ReturnStmt) should return ok=false: not a block-bearing stmt")
 	}
 }
+
+func TestPlaceOf(t *testing.T) {
+	root, path, ok := placeOf(&Ident{Name: "x"})
+	if !ok || root != "x" || path != nil {
+		t.Fatalf("placeOf(Ident) = (%q, %v, %v), want (\"x\", nil, true)", root, path, ok)
+	}
+
+	root, path, ok = placeOf(&Index{X: &Ident{Name: "arr"}, Idx: &Ident{Name: "i"}})
+	if !ok || root != "arr" || !pathEq(path, accPath{{field: ""}}) {
+		t.Fatalf("placeOf(Index) = (%q, %v, %v), want (\"arr\", [index], true)", root, path, ok)
+	}
+
+	root, path, ok = placeOf(&FieldAccess{X: &Ident{Name: "p"}, Name: "y"})
+	if !ok || root != "p" || !pathEq(path, accPath{{field: "y"}}) {
+		t.Fatalf("placeOf(FieldAccess) = (%q, %v, %v), want (\"p\", [.y], true)", root, path, ok)
+	}
+
+	root, path, ok = placeOf(&FieldAccess{X: &Index{X: &Ident{Name: "s"}, Idx: &Ident{Name: "0"}}, Name: "z"})
+	if !ok || root != "s" || !pathEq(path, accPath{{field: ""}, {field: "z"}}) {
+		t.Fatalf("placeOf(nested Index.Field) = (%q, %v, %v), want (\"s\", [index,.z], true)", root, path, ok)
+	}
+
+	if _, _, ok := placeOf(&Call{Callee: "f"}); ok {
+		t.Fatalf("placeOf(Call) should return ok=false: not a place expression")
+	}
+
+	if _, _, ok := placeOf(&FieldAccess{X: &Call{Callee: "f"}, Name: "y"}); ok {
+		t.Fatalf("placeOf(FieldAccess on non-place) should return ok=false")
+	}
+}
+
+func TestMergeGAcc(t *testing.T) {
+	m := map[string]*gAccess{}
+
+	if changed := mergeGAcc(m, "g", &gAccess{read: true, write: false}); !changed {
+		t.Fatalf("mergeGAcc(new entry) should report changed=true")
+	}
+	if got := m["g"]; !got.read || got.write {
+		t.Fatalf("m[g] = %+v, want {read:true write:false}", got)
+	}
+
+	if changed := mergeGAcc(m, "g", &gAccess{read: true, write: false}); changed {
+		t.Fatalf("mergeGAcc(no new bits) should report changed=false")
+	}
+
+	if changed := mergeGAcc(m, "g", &gAccess{read: false, write: true}); !changed {
+		t.Fatalf("mergeGAcc(adding write) should report changed=true")
+	}
+	if got := m["g"]; !got.read || !got.write {
+		t.Fatalf("m[g] = %+v, want {read:true write:true}", got)
+	}
+
+	if changed := mergeGAcc(m, "g", &gAccess{read: true, write: true}); changed {
+		t.Fatalf("mergeGAcc(already set bits) should report changed=false")
+	}
+}
