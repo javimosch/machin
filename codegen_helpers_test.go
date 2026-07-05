@@ -36,6 +36,11 @@ func TestCZero(t *testing.T) {
 		{KStruct, "{0}"},
 		{KFunc, "{0}"},
 		{KBytes, "{0}"},
+		{KChan, "0"},
+		{KMap, "0"},
+		{KVar, "0"},
+		{KNum, "0"},
+		{KVoid, "0"},
 	}
 	for _, tt := range tests {
 		if got := cZero(tt.k); got != tt.want {
