@@ -35,9 +35,9 @@ func main() {
 		t.Fatal("sqlite_open(\":memory:\") returned 0")
 	}
 	for _, want := range []string{
-		`name0="Ada"`,  // json_get returns the raw JSON token (a quoted string)
+		`name0="Ada"`, // json_get returns the raw JSON token (a quoted string)
 		`active1=0`,
-		`count=2`,      // count(*) aliased to n -> both rows
+		`count=2`, // count(*) aliased to n -> both rows
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q in:\n%s", want, out)

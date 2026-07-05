@@ -45,8 +45,9 @@ func main() {
 }
 
 // Live MongoDB client (gated). Run with:
-//   docker run -d --name machin-mongo -p 27017:27017 mongo:7
-//   MACHIN_MONGO_TEST=1 go test -run TestMongo -v
+//
+//	docker run -d --name machin-mongo -p 27017:27017 mongo:7
+//	MACHIN_MONGO_TEST=1 go test -run TestMongo -v
 func TestMongoClient(t *testing.T) {
 	if os.Getenv("MACHIN_MONGO_TEST") == "" {
 		t.Skip("set MACHIN_MONGO_TEST=1 (and run a MongoDB) to exercise the wire client")
@@ -97,8 +98,9 @@ func main() {
 
 // Mongo v2 against an AUTHENTICATED Mongo: SCRAM-SHA-256 login, a double field, and
 // cursor pagination (250 docs > one batch). Gated. Run with:
-//   docker run -d --name m -e MONGO_INITDB_ROOT_USERNAME=admin -e MONGO_INITDB_ROOT_PASSWORD=secret -p 27018:27017 mongo:7
-//   MACHIN_MONGO_AUTH_TEST=1 go test -run TestMongoV2 -v
+//
+//	docker run -d --name m -e MONGO_INITDB_ROOT_USERNAME=admin -e MONGO_INITDB_ROOT_PASSWORD=secret -p 27018:27017 mongo:7
+//	MACHIN_MONGO_AUTH_TEST=1 go test -run TestMongoV2 -v
 func TestMongoV2(t *testing.T) {
 	if os.Getenv("MACHIN_MONGO_AUTH_TEST") == "" {
 		t.Skip("set MACHIN_MONGO_AUTH_TEST=1 (auth Mongo on :27018) to exercise SCRAM + pagination")
@@ -129,9 +131,9 @@ func main() {
 		t.Fatalf("run: %v", err)
 	}
 	for _, want := range []string{
-		"auth=1",       // SCRAM-SHA-256 succeeded
-		"found=250",    // pagination returned all 250 docs (> one batch)
-		"v0=2.5",       // the double round-tripped
+		"auth=1",    // SCRAM-SHA-256 succeeded
+		"found=250", // pagination returned all 250 docs (> one batch)
+		"v0=2.5",    // the double round-tripped
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q in:\n%s", want, out)
