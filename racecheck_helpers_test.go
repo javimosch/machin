@@ -190,6 +190,65 @@ func TestPlaceOf(t *testing.T) {
 	}
 }
 
+func TestSlotTypeName(t *testing.T) {
+	c := &Checker{}
+
+	scalars := []struct {
+		kind Kind
+		want string
+	}{
+		{KInt, "int"}, {KNum, "int"}, {KFloat, "float"}, {KBool, "bool"},
+		{KString, "string"}, {KBytes, "bytes"}, {KVoid, "?"},
+	}
+	for _, tt := range scalars {
+		s := newSlot(c, tt.kind)
+		if got := slotTypeName(c, s); got != tt.want {
+			t.Fatalf("slotTypeName(%v) = %q, want %q", tt.kind, got, tt.want)
+		}
+	}
+
+	elemSlot := newSlot(c, KInt)
+	sliceSlot := newSlot(c, KSlice)
+	c.elem[sliceSlot] = elemSlot
+	if got := slotTypeName(c, sliceSlot); got != "[]int" {
+		t.Fatalf("slotTypeName(slice of int) = %q, want []int", got)
+	}
+	emptySlice := newSlot(c, KSlice)
+	if got := slotTypeName(c, emptySlice); got != "[]?" {
+		t.Fatalf("slotTypeName(slice, no elem) = %q, want []?", got)
+	}
+
+	keySlot := newSlot(c, KString)
+	valSlot := newSlot(c, KInt)
+	mapSlot := newSlot(c, KMap)
+	c.mkey[mapSlot] = keySlot
+	c.mval[mapSlot] = valSlot
+	if got := slotTypeName(c, mapSlot); got != "map[string]int" {
+		t.Fatalf("slotTypeName(map) = %q, want map[string]int", got)
+	}
+	emptyMap := newSlot(c, KMap)
+	if got := slotTypeName(c, emptyMap); got != "map[?]?" {
+		t.Fatalf("slotTypeName(map, no key/val) = %q, want map[?]?", got)
+	}
+
+	chanElem := newSlot(c, KBool)
+	chanSlot := newSlot(c, KChan)
+	c.elem[chanSlot] = chanElem
+	if got := slotTypeName(c, chanSlot); got != "chan bool" {
+		t.Fatalf("slotTypeName(chan) = %q, want chan bool", got)
+	}
+	emptyChan := newSlot(c, KChan)
+	if got := slotTypeName(c, emptyChan); got != "chan ?" {
+		t.Fatalf("slotTypeName(chan, no elem) = %q, want chan ?", got)
+	}
+
+	structSlot := newSlot(c, KStruct)
+	c.sname[structSlot] = "Box"
+	if got := slotTypeName(c, structSlot); got != "Box" {
+		t.Fatalf("slotTypeName(struct) = %q, want Box", got)
+	}
+}
+
 func TestTypeShared(t *testing.T) {
 	c := &Checker{
 		structs: map[string]*TypeDecl{
