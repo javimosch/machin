@@ -507,6 +507,15 @@ when any crypto builtin is used.
 | `aes_gcm_decrypt(key, iv12, ct_tag, aad)`      | AES-GCM decrypt → plaintext (**empty `bytes` on auth failure**) |
 | `aes_cbc_encrypt(key, iv, pt)`                 | AES-CBC encrypt, PKCS#7 padded (key 16 or 32 bytes)             |
 | `aes_cbc_decrypt(key, iv, ct)`                 | AES-CBC decrypt → plaintext (**empty `bytes` on bad padding**)  |
+| `keccak256(b)`                                 | Keccak-256 (pre-SHA3, the Ethereum variant) of `b` → 32-byte digest |
+| `secp256k1_pubkey(priv32)`                     | secp256k1 public key from a 32-byte private key → 65-byte uncompressed point (empty on invalid input) |
+| `secp256k1_sign_recoverable(priv32, hash32)`   | secp256k1 ECDSA sign (low-S) → 65 bytes: `r\|\|s\|\|v` (`v` is 27 or 28) |
+| `secp256k1_recover(hash32, sig65)`             | recover the 65-byte uncompressed public key from a `secp256k1_sign_recoverable` signature (empty on invalid input) |
+| `xeddsa_sign(priv32, msg, random64)`           | XEdDSA sign over a Curve25519 key (the Signal Protocol scheme) → 64-byte signature |
+| `xeddsa_verify(pub32, msg, sig64)`             | XEdDSA verify → `bool`                                          |
+
+XEdDSA additionally requires libsodium (`-lsodium`, alongside libcrypto); the
+linker flag is added automatically when `xeddsa_sign`/`xeddsa_verify` is used.
 
 ---
 
