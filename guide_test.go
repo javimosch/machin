@@ -201,3 +201,33 @@ func TestCmdGuideTextAndJSON(t *testing.T) {
 		t.Fatalf("cmdGuide (json default): %v", err)
 	}
 }
+
+// isBuiltinName must recognize every catalog builtin, reject arbitrary user
+// identifiers, and memoize builtinNames on first use rather than rebuilding it.
+func TestIsBuiltinName(t *testing.T) {
+	builtinNames = nil
+	g := machinGuide()
+	if len(g.Builtins) == 0 {
+		t.Fatal("catalog has no builtins to check against")
+	}
+	for _, b := range g.Builtins {
+		if !isBuiltinName(b.Name) {
+			t.Errorf("isBuiltinName(%q) = false, want true", b.Name)
+		}
+	}
+	for _, n := range []string{"", "notARealBuiltin", "my_custom_fn"} {
+		if isBuiltinName(n) {
+			t.Errorf("isBuiltinName(%q) = true, want false", n)
+		}
+	}
+	if builtinNames == nil || len(builtinNames) != len(g.Builtins) {
+		t.Fatalf("isBuiltinName did not memoize builtinNames correctly: got %d entries, want %d", len(builtinNames), len(g.Builtins))
+	}
+	// A stale/forged entry must survive a second call, proving the map is
+	// reused rather than rebuilt from the catalog every time.
+	builtinNames["__forged__"] = true
+	if !isBuiltinName("__forged__") {
+		t.Fatal("isBuiltinName rebuilt builtinNames instead of reusing the memoized map")
+	}
+	delete(builtinNames, "__forged__")
+}
