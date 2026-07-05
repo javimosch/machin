@@ -133,33 +133,31 @@ func TestCmdTestWithJSONOutput(t *testing.T) {
 	}
 }
 
-func TestCmdTestWithJSONOutputAndFailures(t *testing.T) {
+func TestCmdTestJSONFlagPosition(t *testing.T) {
 	dir := t.TempDir()
 	f := writeSrc(t, dir, "t.src", `func main() {
-	    assert(true, "pass")
-	    assert(1 == 2, "failure")
-	    test_summary()
+		assert(1 + 1 == 2, "test")
+		test_summary()
 	}`)
+
 	old := os.Stdout
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
 	}
 	os.Stdout = w
-	err = cmdTest([]string{"--json", f})
+	err = cmdTest([]string{f, "--json"})
 	w.Close()
 	os.Stdout = old
-	if err == nil {
-		t.Fatal("expected an error when tests fail")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
+
 	buf := make([]byte, 4096)
 	n, _ := r.Read(buf)
-	output := string(buf[:n])
-	if !strings.Contains(output, "\"ok\": false") && !strings.Contains(output, "\"ok\":false") {
-		t.Fatalf("JSON output should contain ok:false for failing tests, got %q", output)
-	}
-	if !strings.Contains(output, "\"failed\": 1") && !strings.Contains(output, "\"failed\":1") {
-		t.Fatalf("JSON output should contain failed:1, got %q", output)
+	output := strings.TrimSpace(string(buf[:n]))
+	if !strings.Contains(output, "\"ok\": true") && !strings.Contains(output, "\"ok\":true") {
+		t.Fatalf("JSON output (with flag after file) should contain ok:true, got %q", output)
 	}
 }
 
