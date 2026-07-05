@@ -87,6 +87,22 @@ func TestReadFileOnDirectory(t *testing.T) {
 	}
 }
 
+// TestRemove covers remove(path): 0 on success (file actually gone), -1 on a
+// missing path. Had no test coverage anywhere in the suite.
+func TestRemove(t *testing.T) {
+	dir := t.TempDir()
+	src := `func main(){
+	write_file("` + dir + `/a.txt", "bye")
+	println(str(remove("` + dir + `/a.txt")))
+	println(read_file("` + dir + `/a.txt"))
+	println(str(remove("` + dir + `/missing.txt")))
+}`
+	got := runNative(t, src)
+	if want := "0\n\n-1\n"; got != want {
+		t.Fatalf("remove: got %q, want %q", got, want)
+	}
+}
+
 // loadMFL (used by `machin run`/`build` on a .mfl FILE) used to only accept
 // canonical one-declaration-per-line text or the packed base64 form, so a
 // hand-written .mfl with ordinary Go-like multi-line formatting failed with a
