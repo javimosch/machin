@@ -11,8 +11,8 @@ import (
 // MACHIN_PG_TEST so the normal suite (and CI, which has no database) skips it and
 // never blocks on dial. Run locally with a server up:
 //
-//	docker run -d --name machin-pg -e POSTGRES_PASSWORD=machin -e POSTGRES_DB=machindb -p 5432:5432 postgres:16
-//	MACHIN_PG_TEST=1 go test -run TestPostgres -v
+//   docker run -d --name machin-pg -e POSTGRES_PASSWORD=machin -e POSTGRES_DB=machindb -p 5432:5432 postgres:16
+//   MACHIN_PG_TEST=1 go test -run TestPostgres -v
 //
 // Override creds via MACHIN_PG_{HOST,PORT,USER,PASS,DB} (defaults match the line above).
 func TestPostgresScramQuery(t *testing.T) {
@@ -70,10 +70,10 @@ func main() {
 		`"id":1,"name":"Ada","active":true`, // numeric/bool unquoted, string quoted
 		`"name":"O'Brien"`,                  // a quote round-trips through the wire + JSON
 		"n=2",
-		"r0=1:Ada",       // parse([]Row{}) decoded the typed fields
-		"r1active=false", // bool column decoded
+		"r0=1:Ada",        // parse([]Row{}) decoded the typed fields
+		"r1active=false",  // bool column decoded
 		`hit=[{"id":1,"name":"Ada","active":true}]`, // pg_exec bound $1
-		"inj=[]",             // injection param matched nothing...
+		"inj=[]",          // injection param matched nothing...
 		`survived=[{"n":2}]`, // ...and the table is intact (DROP did not run)
 	} {
 		if !strings.Contains(out, want) {

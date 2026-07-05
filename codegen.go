@@ -64,33 +64,33 @@ func cTypeName(t string) string {
 }
 
 type cgen struct {
-	c            *Checker
-	buf          strings.Builder // function bodies
-	tramp        strings.Builder // goroutine trampolines
-	goID         int
-	jsonFns      strings.Builder      // generated per-type JSON serializers + parsers
-	jsonMemo     map[string]string    // type string -> serializer function name
-	parseMemo    map[string]string    // type string -> parser function name
+	c        *Checker
+	buf      strings.Builder // function bodies
+	tramp    strings.Builder // goroutine trampolines
+	goID     int
+	jsonFns   strings.Builder   // generated per-type JSON serializers + parsers
+	jsonMemo  map[string]string // type string -> serializer function name
+	parseMemo map[string]string // type string -> parser function name
 	chanJSONMemo map[string][2]string // type string -> {serWrapper, desWrapper}
-	jsonID       int
-	rangeID      int             // unique temp names for for-range loops
-	tmpID        int             // unique temp names for multi-assignment
-	arenaID      int             // unique temp names for scoped-arena blocks
-	curFn        string          // name of the function currently being emitted
-	safe         bool            // emit runtime bounds / div-by-zero / overflow checks
-	usesTLS      bool            // program calls https_get/https_post -> emit + link OpenSSL
-	usesWSS      bool            // program calls wss_* -> emit WebSocket runtime + link OpenSSL
-	usesRegex    bool            // program calls regex_* -> emit POSIX regex runtime
-	usesSQLite   bool            // program calls sqlite_* -> emit SQLite runtime + link -lsqlite3
-	usesCrypto   bool            // program calls crypto builtins -> emit crypto runtime + link -lcrypto
-	usesXEdDSA   bool            // program calls xeddsa_* -> emit XEdDSA runtime + link -lsodium -lcrypto
-	usesMath     bool            // program calls math builtins (sin/cos/sqrt/...) -> emit math runtime + link -lm
-	usesNoise    bool            // program calls noise2/noise3 -> emit Perlin noise runtime + link -lm
-	usesNet      bool            // program calls dial/listen/accept/read/write/close(fd) -> emit POSIX socket runtime
-	usesTTY      bool            // program calls raw_mode/read_key -> emit termios/select runtime
-	target       string          // "" or "native" (default) -> cc; "wasm" -> zig cc, lean runtime, FFI as imports, exports
-	globals      map[string]bool // package-global names (emitted as C statics, mfl_g_<name>)
-	bodyOnly     bool            // oracle mode: emit only the program-specific C (skip the static runtime blocks)
+	jsonID    int
+	rangeID   int    // unique temp names for for-range loops
+	tmpID     int    // unique temp names for multi-assignment
+	arenaID   int    // unique temp names for scoped-arena blocks
+	curFn     string // name of the function currently being emitted
+	safe      bool   // emit runtime bounds / div-by-zero / overflow checks
+	usesTLS   bool   // program calls https_get/https_post -> emit + link OpenSSL
+	usesWSS   bool   // program calls wss_* -> emit WebSocket runtime + link OpenSSL
+	usesRegex bool   // program calls regex_* -> emit POSIX regex runtime
+	usesSQLite bool  // program calls sqlite_* -> emit SQLite runtime + link -lsqlite3
+	usesCrypto bool  // program calls crypto builtins -> emit crypto runtime + link -lcrypto
+	usesXEdDSA bool  // program calls xeddsa_* -> emit XEdDSA runtime + link -lsodium -lcrypto
+	usesMath  bool   // program calls math builtins (sin/cos/sqrt/...) -> emit math runtime + link -lm
+	usesNoise bool   // program calls noise2/noise3 -> emit Perlin noise runtime + link -lm
+	usesNet   bool   // program calls dial/listen/accept/read/write/close(fd) -> emit POSIX socket runtime
+	usesTTY   bool   // program calls raw_mode/read_key -> emit termios/select runtime
+	target    string // "" or "native" (default) -> cc; "wasm" -> zig cc, lean runtime, FFI as imports, exports
+	globals   map[string]bool // package-global names (emitted as C statics, mfl_g_<name>)
+	bodyOnly  bool   // oracle mode: emit only the program-specific C (skip the static runtime blocks)
 }
 
 // build targets.

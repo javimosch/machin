@@ -50,9 +50,9 @@ func main() {
 		"ctype=application/json", // header name is case-insensitive
 		"clen=7",
 		"host=ex",
-		"missing=[]",  // absent header -> ""
-		"param=42",    // segment after the prefix
-		"noprefix=[]", // prefix that doesn't match -> ""
+		"missing=[]",   // absent header -> ""
+		"param=42",     // segment after the prefix
+		"noprefix=[]",  // prefix that doesn't match -> ""
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q in:\n%s", want, out)
@@ -139,9 +139,9 @@ func main() {
 	}
 	for _, want := range []string{
 		"sid=abc", "theme=dark", "missing=[]",
-		"verify=user:42:1",                   // intact cookie verifies, value recovered
-		"tampered=0",                         // a flipped tag byte fails
-		"wrongsecret=0",                      // a different secret fails
+		"verify=user:42:1", // intact cookie verifies, value recovered
+		"tampered=0",       // a flipped tag byte fails
+		"wrongsecret=0",    // a different secret fails
 		"setcookie=Set-Cookie: sid=user:42.", // signed value embeds the cleartext
 		"HttpOnly; SameSite=Lax",             // safe defaults
 	} {

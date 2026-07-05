@@ -14,10 +14,10 @@ func TestTighten(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"func fib(n) { return fib(n - 1) + fib(n - 2) }", "func fib(n){return fib(n-1)+fib(n-2)}"},
 		{"acc := acc * i", "acc:=acc*i"},
-		{"return n", "return n"},                     // word-word space is significant — kept
-		{"else if i % 3 == 0", "else if i%3==0"},     // keyword spaces kept; operator spaces dropped
+		{"return n", "return n"},                 // word-word space is significant — kept
+		{"else if i % 3 == 0", "else if i%3==0"}, // keyword spaces kept; operator spaces dropped
 		{`println("a, b  c")`, `println("a, b  c")`}, // spaces inside a string are preserved
-		{`x := "hi" + "  y"`, `x:="hi"+"  y"`},       // tighten around +, keep string interiors
+		{`x := "hi" + "  y"`, `x:="hi"+"  y"`},        // tighten around +, keep string interiors
 	}
 	for _, c := range cases {
 		if got := tighten(c.in); got != c.want {

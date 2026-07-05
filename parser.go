@@ -185,8 +185,7 @@ func isExternDirective(s string) bool {
 }
 
 // parseExternDecl parses:
-//
-//	extern "lib" { header "h.h" link "l" cflags "..." fn Name(t, t) ret ... }
+//   extern "lib" { header "h.h" link "l" cflags "..." fn Name(t, t) ret ... }
 func (p *Parser) parseExternDecl() (*ExternDecl, error) {
 	if _, err := p.expect(TKeyword, "extern"); err != nil {
 		return nil, err
@@ -875,9 +874,8 @@ func (p *Parser) parseRange() (Stmt, error) {
 }
 
 // parseFor handles Go's looping forms, desugared onto WhileStmt:
-//
-//	for { ... }        infinite loop
-//	for cond { ... }   loop while cond
+//   for { ... }        infinite loop
+//   for cond { ... }   loop while cond
 func (p *Parser) parseFor() (Stmt, error) {
 	p.next() // for
 	if p.peek().Val == "{" {
