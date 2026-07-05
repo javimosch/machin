@@ -160,3 +160,35 @@ func TestFreeIdentsNestedFuncLitRecursion(t *testing.T) {
 		t.Errorf("expected nested lambda's free identifier to propagate up: %v", free)
 	}
 }
+
+func TestLiftClosuresMultipleCapturesAndNesting(t *testing.T) {
+	// func main() { x := 1; y := 2; f := func() int { if x > 0 { return y } else { return 0 } } }
+	main := &FuncDecl{
+		Name: "main",
+		Body: []Stmt{
+			&AssignStmt{Name: "x", Op: ":=", Val: &IntLit{Val: 1}},
+			&AssignStmt{Name: "y", Op: ":=", Val: &IntLit{Val: 2}},
+			&AssignStmt{Name: "f", Op: ":=", Val: &FuncLit{
+				Body: []Stmt{&IfStmt{
+					Cond: &Binary{Op: ">", L: &Ident{Name: "x"}, R: &IntLit{Val: 0}},
+					Then: []Stmt{&ReturnStmt{Vals: []Expr{&Ident{Name: "y"}}}},
+					Else: []Stmt{&ReturnStmt{Vals: []Expr{&IntLit{Val: 0}}}},
+				}},
+			}},
+		},
+	}
+	prog := &Program{Funcs: []*FuncDecl{main}}
+
+	liftClosures(prog)
+
+	if len(prog.Funcs) != 2 {
+		t.Fatalf("want main + 1 lifted func, got %d funcs", len(prog.Funcs))
+	}
+	lifted := prog.Funcs[1]
+	if lifted.NumCaptures != 2 {
+		t.Fatalf("lifted func NumCaptures = %d, want 2 (x, y)", lifted.NumCaptures)
+	}
+	if len(lifted.Params) < 2 || lifted.Params[0] != "x" || lifted.Params[1] != "y" {
+		t.Fatalf("lifted func params = %v, want [x, y, ...] (captures sorted first)", lifted.Params)
+	}
+}
