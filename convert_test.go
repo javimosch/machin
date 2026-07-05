@@ -48,3 +48,26 @@ func main() {
 		}
 	}
 }
+
+// TestParseFloatEdgeCases covers empty string (parses to 0.0) and the literal
+// "0" (must parse to 0.0, not garbage).
+func TestParseFloatEdgeCases(t *testing.T) {
+	prog := progFromSrc(t, `
+func main() {
+    empty := parse_float("")
+    println("empty=" + str(empty == 0.0))
+    zero := parse_float("0")
+    println("zero=" + str(zero == 0.0))
+    zero_dot := parse_float("0.0")
+    println("zero_dot=" + str(zero_dot == 0.0))
+}`)
+	out, err := RunCaptured(prog)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	for _, want := range []string{"empty=true", "zero=true", "zero_dot=true"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in:\n%s", want, out)
+		}
+	}
+}
