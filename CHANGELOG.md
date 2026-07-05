@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **Fixed a use-after-free/segfault: a `func` literal passed directly as a
+  `go` call argument (e.g. `go f(func(){ return v })`) could dangle once the
+  spawning goroutine's arena was reclaimed.** The closure's captured-env
+  struct, and any boxed param/local shared with a nested closure, were
+  allocated with the arena-scoped `mfl_alloc`/`mfl_calloc` instead of plain
+  `malloc`/`calloc` — so the closure's captured state could be corrupted or
+  crash the process once read from the spawned goroutine, after the spawner
+  returned and freed its arena. Scalar (int/bool/float) captures are now
+  arena-independent, matching how channels and maps already manage their own
+  memory; string/slice/map captures reassigned through the box remain a
+  separate, still-open gap. See #314.
+
 ## v0.106.0
 
 - **Fixed a high-severity data-corruption bug: `parse()` silently mangled
