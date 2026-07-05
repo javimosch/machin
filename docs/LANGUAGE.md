@@ -460,6 +460,9 @@ first := users[0]                                // value copy
 | `raw_mode(on)`              | toggle terminal raw mode (`1` enable, `0` restore) for uncooked keyboard input |
 | `read_key()`                | read one keypress from stdin (requires `raw_mode(1)`) |
 | `noise2(x, y)` / `noise3(x, y, z)` | 2D/3D Perlin noise, returns `float` in `[-1, 1]` |
+| `sin(x)` / `cos(x)` / `tan(x)` / `asin(x)` / `acos(x)` / `atan(x)` / `exp(x)` / `log(x)` / `log2(x)` / `log10(x)` / `sqrt(x)` / `cbrt(x)` / `floor(x)` / `ceil(x)` / `round(x)` / `trunc(x)` / `abs(x)` | native single-argument math builtins — numeric in, `float` out (backed by libm; `-lm` linked only when one is used) |
+| `pow(x, y)` / `atan2(y, x)` / `fmod(x, y)` / `hypot(x, y)` | native two-argument math builtins — numeric in, `float` out |
+| `pi()`                      | the constant π as a `float`                  |
 
 ### Raw sockets (`listen` / `accept` / `read` / `write`)
 
