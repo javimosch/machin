@@ -746,8 +746,10 @@ func (p *Parser) parseSelect() (Stmt, error) {
 			sc.Name = name
 			sc.OkName = okName
 		} else {
-			// case ch <- v:  (send)
-			ch, err := p.parseExpr()
+			// case ch <- v:  (send) — use parseExprForStmt, not parseExpr: the
+			// latter reinterprets a trailing `<-` as `<` + unary `-` (issue #208),
+			// which would swallow the very `<-` this branch needs to see next.
+			ch, err := p.parseExprForStmt()
 			if err != nil {
 				return nil, err
 			}
