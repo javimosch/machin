@@ -107,3 +107,45 @@ func TestLocateCheckError(t *testing.T) {
 		t.Errorf("locateCheckError with no matching decl: got (%q, %d), want (\"\", 0)", name, line)
 	}
 }
+
+// TestSplitFunctionsLoc covers splitting multiple decls with leading blank/comment
+// lines (skipped from the start-line count), a brace inside a string literal (must
+// not affect depth tracking), and the unbalanced-braces error path.
+func TestSplitFunctionsLoc(t *testing.T) {
+	src := "\n// leading comment\nfunc add(a int, b int) int {\n    return a + b\n}\nfunc greet() string {\n    return \"a { b\"\n}\n"
+	funcs, lines, err := splitFunctionsLoc(src)
+	if err != nil {
+		t.Fatalf("splitFunctionsLoc: unexpected error: %v", err)
+	}
+	if len(funcs) != 2 || len(lines) != 2 {
+		t.Fatalf("splitFunctionsLoc: got %d funcs / %d lines, want 2/2: %+v %+v", len(funcs), len(lines), funcs, lines)
+	}
+	if lines[0] != 3 {
+		t.Errorf("splitFunctionsLoc: first func start line = %d, want 3 (blank/comment lines skipped)", lines[0])
+	}
+	if lines[1] != 6 {
+		t.Errorf("splitFunctionsLoc: second func start line = %d, want 6", lines[1])
+	}
+
+	if _, _, err := splitFunctionsLoc("func add(a int, b int) int {\n    return a + b\n"); err == nil {
+		t.Error("splitFunctionsLoc on unbalanced braces: expected an error, got nil")
+	}
+}
+
+// TestParseOneDecl covers routing by leading keyword (type/extern/var/func) and
+// that a parse error on any branch is propagated.
+func TestParseOneDecl(t *testing.T) {
+	structs := map[string]bool{}
+	if err := parseOneDecl(`type Point struct { x int y int }`, structs); err != nil {
+		t.Errorf("parseOneDecl(type): unexpected error: %v", err)
+	}
+	if err := parseOneDecl(`var count = 0`, structs); err != nil {
+		t.Errorf("parseOneDecl(var): unexpected error: %v", err)
+	}
+	if err := parseOneDecl(`func add(a, b) { return a + b }`, structs); err != nil {
+		t.Errorf("parseOneDecl(func): unexpected error: %v", err)
+	}
+	if err := parseOneDecl(`func add(a, b) { return a + `, structs); err == nil {
+		t.Error("parseOneDecl on malformed func: expected an error, got nil")
+	}
+}
