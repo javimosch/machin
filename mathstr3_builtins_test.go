@@ -32,3 +32,31 @@ func main() {
 		}
 	}
 }
+
+// Test to_upper edge cases: empty string, numbers, symbols, and all-uppercase input.
+// These edge cases ensure the function doesn't regress on non-alphabetic content.
+func TestToUpperEdgeCases(t *testing.T) {
+	prog := progFromSrc(t, `
+func main() {
+    println("empty=[" + to_upper("") + "]")
+    println("numbers=[" + to_upper("abc123") + "]")
+    println("symbols=[" + to_upper("abc!@#") + "]")
+    println("already_upper=[" + to_upper("HELLO") + "]")
+    println("mixed=[" + to_upper("teSt_123!") + "]")
+}`)
+	out, err := RunCaptured(prog)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	for _, want := range []string{
+		"empty=[]",
+		"numbers=[ABC123]",
+		"symbols=[ABC!@#]",
+		"already_upper=[HELLO]",
+		"mixed=[TEST_123!]",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in:\n%s", want, out)
+		}
+	}
+}

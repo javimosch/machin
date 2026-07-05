@@ -30,3 +30,31 @@ func main() {
 		}
 	}
 }
+
+// Test to_lower edge cases: empty string, numbers, symbols, and all-lowercase input.
+// These edge cases ensure the function doesn't regress on non-alphabetic content.
+func TestToLowerEdgeCases(t *testing.T) {
+	prog := progFromSrc(t, `
+func main() {
+    println("empty=[" + to_lower("") + "]")
+    println("numbers=[" + to_lower("ABC123") + "]")
+    println("symbols=[" + to_lower("ABC!@#") + "]")
+    println("already_lower=[" + to_lower("hello") + "]")
+    println("mixed=[" + to_lower("TeSt_123!") + "]")
+}`)
+	out, err := RunCaptured(prog)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	for _, want := range []string{
+		"empty=[]",
+		"numbers=[abc123]",
+		"symbols=[abc!@#]",
+		"already_lower=[hello]",
+		"mixed=[test_123!]",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in:\n%s", want, out)
+		}
+	}
+}
