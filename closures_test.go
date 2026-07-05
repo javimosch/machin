@@ -64,3 +64,17 @@ func main() { f := makeAdder(5)  println(f(3))  println(f(10)) }`)
 		t.Fatalf("simple closure capture = %q, want %q", got, "8 15")
 	}
 }
+
+// A closure can capture multiple variables and use them together.
+func TestClosureMultipleCaptures(t *testing.T) {
+	prog := progFromSrc(t, `
+func makeMult(a, b) (mul) { mul = func() { return a * b } }
+func main() { f := makeMult(3, 4)  println(f())  g := makeMult(5, 6)  println(g()) }`)
+	out, err := RunCaptured(prog)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := strings.Join(strings.Fields(out), " "); got != "12 30" {
+		t.Fatalf("closure multiple captures = %q, want %q", got, "12 30")
+	}
+}
