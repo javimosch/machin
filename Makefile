@@ -4,9 +4,21 @@ BIN     := bin/machin
 PREFIX  ?= /usr/local
 GOFLAGS ?= -trimpath
 
-.PHONY: all build test cover examples bench install uninstall clean
+.PHONY: all build test cover examples bench install uninstall clean fmt vet
 
 all: build
+
+# Fail if any tracked .go file isn't gofmt-clean (excludes vendor/selfhost, which
+# aren't Go source).
+fmt:
+	@unformatted="$$(gofmt -l . | grep -v '^vendor/' | grep -v '^selfhost/')"; \
+	if [ -n "$$unformatted" ]; then \
+		echo "gofmt needed on:"; echo "$$unformatted"; exit 1; \
+	fi
+
+# Run go vet across the toolchain.
+vet:
+	go vet ./...
 
 # Compile the machin toolchain into a single native binary.
 build:
