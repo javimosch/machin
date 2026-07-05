@@ -250,7 +250,12 @@ func seedStructNames(decl string, structs map[string]bool) {
 		return
 	}
 	for i := 0; i+1 < len(toks); i++ {
-		if toks[i].Kind == TKeyword && (toks[i].Val == "type" || toks[i].Val == "cstruct") && toks[i+1].Kind == TIdent {
+		// "type" is a lexer keyword, but "cstruct" is only a soft keyword (parsed
+		// contextually inside `extern` blocks — see isExternKeyword) and so is
+		// always lexed as a plain identifier, never TKeyword.
+		isType := toks[i].Kind == TKeyword && toks[i].Val == "type"
+		isCstruct := toks[i].Kind == TIdent && toks[i].Val == "cstruct"
+		if (isType || isCstruct) && toks[i+1].Kind == TIdent {
 			structs[toks[i+1].Val] = true
 		}
 	}
