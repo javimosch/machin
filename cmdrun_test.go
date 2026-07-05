@@ -85,3 +85,46 @@ func TestCmdBuildMissingSource(t *testing.T) {
 		t.Fatalf("cmdBuild with missing source should error, got nil")
 	}
 }
+
+func TestCmdRunWithRaceSafeFlag(t *testing.T) {
+	dir := t.TempDir()
+	srcPath := filepath.Join(dir, "prog.src")
+	// Simple sequential code that passes race checking
+	if err := os.WriteFile(srcPath, []byte("func main() { x := 1; println(x) }"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// cmdRun --race-safe should pass through raceGate and execute
+	if err := cmdRun([]string{"--race-safe", srcPath}); err != nil {
+		t.Fatalf("cmdRun --race-safe: %v", err)
+	}
+}
+
+func TestCmdBuildWithRaceSafeFlag(t *testing.T) {
+	dir := t.TempDir()
+	srcPath := filepath.Join(dir, "prog.src")
+	outPath := filepath.Join(dir, "out")
+	// Simple sequential code that passes race checking
+	if err := os.WriteFile(srcPath, []byte("func main() { x := 1; println(x) }"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// cmdBuild --race-safe should pass through raceGate and build successfully
+	if err := cmdBuild([]string{"--race-safe", "-o", outPath, srcPath}); err != nil {
+		t.Fatalf("cmdBuild --race-safe: %v", err)
+	}
+}
+
+func TestCmdBuildMissingFlagArg(t *testing.T) {
+	dir := t.TempDir()
+	srcPath := filepath.Join(dir, "prog.src")
+	if err := os.WriteFile(srcPath, []byte("func main() { }"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// cmdBuild -o with no path should error
+	if err := cmdBuild([]string{"-o", srcPath}); err == nil {
+		t.Fatal("cmdBuild -o with no path should error, got nil")
+	}
+	// cmdBuild --target with no value should error
+	if err := cmdBuild([]string{"--target", srcPath}); err == nil {
+		t.Fatal("cmdBuild --target with no value should error, got nil")
+	}
+}
