@@ -269,6 +269,9 @@ startup (before `main`; at `_initialize` for a wasm reactor).
 | `time_format_utc` | `(int, string) -> string` | like `time_format` but in UTC (`gmtime`) — the form iCalendar / RFC-3339 timestamps want |
 | `time_make` | `(int, int, int, int, int, int) -> int` | build a Unix timestamp from local calendar fields `(year, month, day, hour, minute, second)` — inverse of `time_fields`; `mktime(3)` normalizes out-of-range fields |
 | `parse_int` | `(string) -> int` | parse an integer (0 if not numeric) |
+| `parse_float` | `(string) -> float` | parse a float (0 if not numeric) |
+| `f64_bits` | `(float) -> int` | reinterpret a `float`'s IEEE-754 bits as an `int` (for byte serialization) |
+| `f64_from_bits` | `(int) -> float` | the inverse: an `int` bit pattern → `float` |
 | `exit` | `(int) -> ` | terminate the process with a status code |
 | `flush` | `() -> ` | flush buffered stdout (for prompt output through a pipe) |
 | `raw_mode` | `(int) -> int` | put the terminal in cbreak/no-echo mode (`1`) or restore it (`0`); pair them and restore before exit (TUIs/games) |
@@ -343,6 +346,8 @@ startup (before `main`; at `_initialize` for a wasm reactor).
 An invalid ERE pattern (a `regcomp` failure) is not an error — there's no error channel, so each `regex_*` builtin silently falls back to its benign default: `regex_match`→`false`, `regex_find`→`""`, `regex_groups`→`[]`, `regex_replace`→`s` unchanged. See `examples/complex/grep.mfl`.
 | `sleep` | `(int) -> ` | pause (milliseconds) |
 | `dial` | `(string, int) -> int` | connect to host:port; an fd, or -1 on failure |
+| `peer_addr` | `(int) -> string` | the remote address of a connected socket fd |
+| `socket_timeout` | `(int, int) -> int` | set a read/write timeout (milliseconds) on a socket fd |
 | `listen`, `accept` | `(int) -> int` | open / accept on a TCP socket |
 | `read`, `write` | `(int[, string]) -> string\|int` | socket/fd I/O — `read` is one `read(2)` of up to 65535 bytes, not a whole message; loop `read_bytes` (NUL-safe) to reassemble a complete request (see `framework/machweb.src`'s `read_request_bytes`, and issue #91) |
 | `close` | `(int\|chan) -> ` | close a socket/fd, or a channel (dispatched by argument) |
@@ -593,7 +598,8 @@ extern "m" { header "math.h" link "m" fn sqrt(float) float fn pow(float, float) 
 **Raw memory** (pointers are `int`s, like `ptr`) lets MFL build C buffers and
 structs to hand to a foreign function: `alloc(n) -> int` (n **zeroed** bytes),
 `free(p)`, `poke_f32`/`poke_i32`/`poke_u8`/`poke_u16`/`poke_ptr(p, byteOffset, v)`,
-and `peek_f32`/`peek_i32(p, byteOffset)`. The pattern for a GPU mesh: `poke` the
+`peek_f32`/`peek_i32(p, byteOffset)`, and `ptr_str(p) -> string` (read a
+NUL-terminated C string at `p`). The pattern for a GPU mesh: `poke` the
 vertex/colour arrays and a `Mesh` struct into `alloc`'d memory, `UploadMesh(p, ...)`
 (a `ptr` param — `void*` converts to `Mesh*`, and the call writes the VAO/VBO ids
 back), then `LoadModelFromMesh(p)` (a `*Mesh` param). Struct offsets are
