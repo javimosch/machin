@@ -415,6 +415,10 @@ first := users[0]                                // value copy
 | `base64_decode_bytes(s)`    | base64-decode → raw `bytes` (lenient; binary-safe; e.g. SCRAM salt or binary token) |
 | `sha256(s)`                 | SHA-256 of string `s` → lowercase hex string (byte-exact against `sha256sum`) |
 | `hmac_sha256(key, msg)`     | HMAC-SHA256(key, msg) → lowercase hex string (RFC 2104; use for webhook signature verification) |
+| `regex_match(s, pattern)`   | whether POSIX extended regex `pattern` matches anywhere in `s` → `bool` (a bad pattern fails safe: `false`) |
+| `regex_find(s, pattern)`    | the first match of `pattern` in `s`, or `""` if none / on a bad pattern |
+| `regex_groups(s, pattern)`  | the first match's capture groups → `[]string` (index `0` is the whole match, `1..n` the subgroups; `""` for an unmatched optional group; empty slice if no match) |
+| `regex_replace(s, pattern, repl)` | replace all matches of `pattern` in `s` with `repl` (a bad pattern returns `s` unchanged) |
 | `sleep(ms)`                 | suspend the current goroutine (milliseconds) |
 | `listen(port)`              | open a TCP listening socket                  |
 | `accept(fd)`                | accept a connection, return its socket fd    |
