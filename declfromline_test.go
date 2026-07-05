@@ -38,3 +38,10 @@ func TestDeclFromLineInvalid(t *testing.T) {
 		t.Fatalf("declFromLine(invalid) error = %v, want mention of plain/base64", err)
 	}
 }
+
+func TestDeclFromLineEmptyString(t *testing.T) {
+	_, err := declFromLine("")
+	if err == nil {
+		t.Fatalf("declFromLine(empty) expected an error, got nil")
+	}
+}
