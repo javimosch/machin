@@ -71,3 +71,23 @@ func main() {
 		}
 	}
 }
+
+// TestParseFloatNegative covers parsing of negative float values.
+func TestParseFloatNegative(t *testing.T) {
+	prog := progFromSrc(t, `
+func main() {
+    neg := parse_float("-3.14")
+    println("neg=" + str(neg == -3.14))
+    neg_zero := parse_float("-0.0")
+    println("neg_zero=" + str(neg_zero == 0.0))
+}`)
+	out, err := RunCaptured(prog)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	for _, want := range []string{"neg=true", "neg_zero=true"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in:\n%s", want, out)
+		}
+	}
+}
