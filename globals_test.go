@@ -103,3 +103,21 @@ export func bump(d) (n) { count = count + d  n = count }
 		t.Fatal("wasm target did not emit the global + its constructor")
 	}
 }
+
+// Multiple globals maintain independent state across calls; each can be
+// modified separately and both persist between function calls.
+func TestMultipleGlobalsIndependent(t *testing.T) {
+	prog := progFromSrc(t, `
+var x = 1
+var y = 2
+func incBoth() { x = x + 1  y = y + 10 }
+func main() { incBoth()  println(x)  println(y)  incBoth()  println(x)  println(y) }
+`)
+	out, err := RunCaptured(prog)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := strings.Fields(out); len(got) != 4 || got[0] != "2" || got[1] != "12" || got[2] != "3" || got[3] != "22" {
+		t.Fatalf("multiple globals failed: %q (want 2 12 3 22)", out)
+	}
+}
