@@ -87,3 +87,72 @@ func TestCopyIntMap(t *testing.T) {
 		t.Fatalf("copyIntMap(nil) = %v, want empty map", empty)
 	}
 }
+
+func TestSigCompleteParams(t *testing.T) {
+	if got := sigCompleteParams(nil); len(got) != 0 {
+		t.Fatalf("sigCompleteParams(nil) = %v, want empty", got)
+	}
+	if got := sigCompleteParams(&FuncDecl{}); len(got) != 0 {
+		t.Fatalf("sigCompleteParams(empty body) = %v, want empty", got)
+	}
+
+	// Last statement isn't a send: no param is signal-complete.
+	notSend := &FuncDecl{Params: []string{"ch"}, Body: []Stmt{&ExprStmt{X: &Ident{Name: "ch"}}}}
+	if got := sigCompleteParams(notSend); len(got) != 0 {
+		t.Fatalf("sigCompleteParams(no trailing send) = %v, want empty", got)
+	}
+
+	// Last statement sends on a param: that param's index is marked complete.
+	fn := &FuncDecl{
+		Params: []string{"a", "ch", "b"},
+		Body: []Stmt{
+			&AssignStmt{Name: "x", Op: ":=", Val: &Ident{Name: "a"}},
+			&SendStmt{Ch: &Ident{Name: "ch"}, Val: &Ident{Name: "x"}},
+		},
+	}
+	got := sigCompleteParams(fn)
+	if !got[1] || len(got) != 1 {
+		t.Fatalf("sigCompleteParams(%v) = %v, want {1: true}", fn, got)
+	}
+
+	// Sending on a non-param channel expression yields no matches.
+	notParam := &FuncDecl{
+		Params: []string{"a"},
+		Body:   []Stmt{&SendStmt{Ch: &Ident{Name: "other"}, Val: &Ident{Name: "a"}}},
+	}
+	if got := sigCompleteParams(notParam); len(got) != 0 {
+		t.Fatalf("sigCompleteParams(send on non-param) = %v, want empty", got)
+	}
+}
+
+func TestRecvChanName(t *testing.T) {
+	name, ok := recvChanName(&Recv{Ch: &Ident{Name: "ch"}})
+	if !ok || name != "ch" {
+		t.Fatalf("recvChanName(<-ch) = (%q, %v), want (\"ch\", true)", name, ok)
+	}
+
+	if _, ok := recvChanName(&Ident{Name: "notarecv"}); ok {
+		t.Fatalf("recvChanName(non-Recv expr) should return ok=false")
+	}
+
+	if _, ok := recvChanName(&Recv{Ch: &Call{Callee: "getch"}}); ok {
+		t.Fatalf("recvChanName(<-getch()) should return ok=false: channel isn't a bare ident")
+	}
+}
+
+func TestBlockOf(t *testing.T) {
+	then := []Stmt{&AssignStmt{Name: "a", Op: ":=", Val: &Ident{Name: "1"}}}
+	els := []Stmt{&AssignStmt{Name: "b", Op: ":=", Val: &Ident{Name: "2"}}}
+	if body, ok := blockOf(&IfStmt{Then: then, Else: els}); !ok || len(body) != 2 {
+		t.Fatalf("blockOf(IfStmt) = (%v, %v), want 2 combined stmts", body, ok)
+	}
+
+	whileBody := []Stmt{&AssignStmt{Name: "c", Op: ":=", Val: &Ident{Name: "3"}}}
+	if body, ok := blockOf(&WhileStmt{Body: whileBody}); !ok || len(body) != 1 {
+		t.Fatalf("blockOf(WhileStmt) = (%v, %v), want its body", body, ok)
+	}
+
+	if _, ok := blockOf(&ReturnStmt{}); ok {
+		t.Fatalf("blockOf(ReturnStmt) should return ok=false: not a block-bearing stmt")
+	}
+}
