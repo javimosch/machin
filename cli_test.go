@@ -42,6 +42,14 @@ func TestParseIntAndNowMs(t *testing.T) {
 	}
 }
 
+// TestParseIntEmptyString covers parse_int("") edge case — empty input should return 0.
+func TestParseIntEmptyString(t *testing.T) {
+	got := runNative(t, `func main(){ println(parse_int("")) }`)
+	if want := "0\n"; got != want {
+		t.Fatalf("parse_int empty string: got %q, want %q", got, want)
+	}
+}
+
 // TestStringLiteralPunct guards against a parser bug surfaced building the SSG:
 // a string literal whose value is a structural token (")", "}", ",") was
 // mistaken for that token, terminating an argument/element list early.

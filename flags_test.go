@@ -128,6 +128,29 @@ func TestReadStdin(t *testing.T) {
 	}
 }
 
+// TestReadStdinEmpty tests read_stdin with empty input — must return an empty string.
+func TestReadStdinEmpty(t *testing.T) {
+	fn := parseFuncs(t, `func main() { s := read_stdin()  println("[" + s + "]") }`)
+	bin, err := os.CreateTemp("", "mfl-stdin-empty-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin.Close()
+	defer os.Remove(bin.Name())
+	if err := BuildBinary(&Program{Funcs: fn}, bin.Name(), false); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	cmd := exec.Command(bin.Name())
+	cmd.Stdin = strings.NewReader("") // empty input
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if strings.TrimSpace(string(out)) != "[]" {
+		t.Fatalf("read_stdin empty: got %q, want []", strings.TrimSpace(string(out)))
+	}
+}
+
 // framework/flags.src composed with an app must parse short/long flags, the
 // `=` and space value forms, bool flags, defaults, and positionals — exercised
 // by building the real binary and passing it argv (parse_flags reads args()).
