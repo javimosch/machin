@@ -180,3 +180,11 @@ func TestLoadMFLStillAcceptsCanonicalAndPacked(t *testing.T) {
 		t.Fatalf("packed .mfl: prog=%+v err=%v", prog, err)
 	}
 }
+
+// TestEnvMissingVariable covers env() with a nonexistent environment variable — should return empty string.
+func TestEnvMissingVariable(t *testing.T) {
+	got := runNative(t, `func main(){ println("[" + env("THIS_VAR_DOES_NOT_EXIST_XYZ") + "]") }`)
+	if want := "[]\n"; got != want {
+		t.Fatalf("env missing variable: got %q, want %q", got, want)
+	}
+}
