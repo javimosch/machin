@@ -39,6 +39,19 @@ func TestCmdRunWithSafeFlag(t *testing.T) {
 	}
 }
 
+func TestCmdBuildEmitC(t *testing.T) {
+	dir := t.TempDir()
+	srcPath := filepath.Join(dir, "prog.src")
+	if err := os.WriteFile(srcPath, []byte("func main() { }"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outPath := filepath.Join(dir, "out.c")
+	// cmdBuild --emit-c should output C code without error
+	if err := cmdBuild([]string{"--emit-c", "-o", outPath, srcPath}); err != nil {
+		t.Fatalf("cmdBuild --emit-c: %v", err)
+	}
+}
+
 // cmdBuild: missing source file, write permission error, successful build
 func TestCmdBuildMissingSource(t *testing.T) {
 	dir := t.TempDir()
