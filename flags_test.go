@@ -80,6 +80,28 @@ func TestTimeMake(t *testing.T) {
 	}
 }
 
+// time_format with an empty pattern returns an empty string.
+func TestTimeFormatEmpty(t *testing.T) {
+	fn := parseFuncs(t, `func main() { println("[" + time_format(1782172800, "") + "]") }`)
+	bin, err := os.CreateTemp("", "mfl-tfmt-empty-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin.Close()
+	defer os.Remove(bin.Name())
+	if err := BuildBinary(&Program{Funcs: fn}, bin.Name(), false); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	cmd := exec.Command(bin.Name())
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if strings.TrimSpace(string(out)) != "[]" {
+		t.Fatalf("time_format with empty pattern: got %q, want []", strings.TrimSpace(string(out)))
+	}
+}
+
 // time_format_utc renders in UTC regardless of $TZ: with TZ pinned to a +0530
 // zone, the iCalendar stamp for 1782172800 must still be the UTC wall clock.
 func TestTimeFormatUTC(t *testing.T) {
