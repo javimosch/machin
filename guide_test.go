@@ -162,3 +162,42 @@ func argCount(sig string) int {
 	}
 	return strings.Count(inner, ",") + 1
 }
+
+// renderGuideText must weave every top-level catalog section into the dense
+// prose form, since --text is the human-facing (non-JSON) rendering.
+func TestRenderGuideText(t *testing.T) {
+	g := machinGuide()
+	out := renderGuideText(g)
+	for _, want := range []string{g.Version, g.Tagline, "COMMANDS", "DOMAINS", "PROOF", "TYPES"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("renderGuideText output missing %q", want)
+		}
+	}
+	for _, c := range g.Commands {
+		if !strings.Contains(out, c.Usage) {
+			t.Errorf("renderGuideText missing command usage %q", c.Usage)
+		}
+	}
+}
+
+// cmdGuide --skill dispatches to a canned skill doc for known names and
+// errors for unknown ones; --text/--json select the two guide renderings.
+func TestCmdGuideSkillDispatch(t *testing.T) {
+	for _, name := range []string{"start", "machin", "web", "gamedev", "game", "backend", "deploy"} {
+		if err := cmdGuide([]string{"--skill", name}); err != nil {
+			t.Errorf("cmdGuide --skill %q: unexpected error: %v", name, err)
+		}
+	}
+	if err := cmdGuide([]string{"--skill", "bogus"}); err == nil {
+		t.Fatal("cmdGuide --skill bogus: expected error, got nil")
+	}
+}
+
+func TestCmdGuideTextAndJSON(t *testing.T) {
+	if err := cmdGuide([]string{"--text"}); err != nil {
+		t.Fatalf("cmdGuide --text: %v", err)
+	}
+	if err := cmdGuide(nil); err != nil {
+		t.Fatalf("cmdGuide (json default): %v", err)
+	}
+}
