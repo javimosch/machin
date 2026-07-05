@@ -187,6 +187,50 @@ func TestPlaceOf(t *testing.T) {
 	}
 }
 
+func TestTypeShared(t *testing.T) {
+	c := &Checker{
+		structs: map[string]*TypeDecl{
+			"Box":   {Name: "Box", Fields: []Field{{Name: "n", Type: "int"}, {Name: "items", Type: "[]int"}}},
+			"Outer": {Name: "Outer", Fields: []Field{{Name: "b", Type: "Box"}}},
+		},
+	}
+
+	// Empty path: never crosses an indirection.
+	if got := typeShared(c, "Box", accPath{}); got {
+		t.Fatalf("typeShared(Box, empty path) = %v, want false", got)
+	}
+
+	// Field navigation on a by-value struct stays private.
+	if got := typeShared(c, "Outer", accPath{{field: "b"}}); got {
+		t.Fatalf("typeShared(Outer.b) = %v, want false", got)
+	}
+
+	// Indexing a slice crosses into shared heap.
+	if got := typeShared(c, "[]int", accPath{{field: ""}}); !got {
+		t.Fatalf("typeShared([]int, index) = %v, want true", got)
+	}
+
+	// Indexing a map value crosses into shared heap.
+	if got := typeShared(c, "map[string]int", accPath{{field: ""}}); !got {
+		t.Fatalf("typeShared(map[string]int, index) = %v, want true", got)
+	}
+
+	// Field access after crossing a slice index stays "shared" (sticky).
+	if got := typeShared(c, "[]Box", accPath{{field: ""}, {field: "n"}}); !got {
+		t.Fatalf("typeShared([]Box, index then field) = %v, want true", got)
+	}
+
+	// Unknown field on a struct: stops early, reports whatever was accumulated.
+	if got := typeShared(c, "Box", accPath{{field: "missing"}}); got {
+		t.Fatalf("typeShared(Box.missing) = %v, want false", got)
+	}
+
+	// Indexing a string/bytes (no "[]" or "map[" prefix): no sharing, stops early.
+	if got := typeShared(c, "string", accPath{{field: ""}}); got {
+		t.Fatalf("typeShared(string, index) = %v, want false", got)
+	}
+}
+
 func TestMergeGAcc(t *testing.T) {
 	m := map[string]*gAccess{}
 
