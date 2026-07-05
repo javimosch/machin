@@ -125,3 +125,31 @@ func TestCTypeAndCZeroByKind(t *testing.T) {
 		}
 	}
 }
+
+func TestParseCallbackType(t *testing.T) {
+	cases := []struct {
+		enc        string
+		wantParams []string
+		wantRet    string
+	}{
+		{"cb()", []string{}, ""},
+		{"cb()int", []string{}, "int"},
+		{"cb(int)", []string{"int"}, ""},
+		{"cb(int,f32)i8", []string{"int", "f32"}, "i8"},
+		{"cb(ptr,string)float", []string{"ptr", "string"}, "float"},
+	}
+	for _, c := range cases {
+		params, ret := parseCallbackType(c.enc)
+		if len(params) != len(c.wantParams) {
+			t.Errorf("parseCallbackType(%q) params len = %d, want %d", c.enc, len(params), len(c.wantParams))
+		}
+		for i, p := range params {
+			if i < len(c.wantParams) && p != c.wantParams[i] {
+				t.Errorf("parseCallbackType(%q) params[%d] = %q, want %q", c.enc, i, p, c.wantParams[i])
+			}
+		}
+		if ret != c.wantRet {
+			t.Errorf("parseCallbackType(%q) ret = %q, want %q", c.enc, ret, c.wantRet)
+		}
+	}
+}
