@@ -117,6 +117,36 @@ func TestCmdCGenTestCodegenError(t *testing.T) {
 	t.Fatalf("expected output from valid program")
 }
 
+func TestCmdCGenTestEmptyFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "empty.mfl")
+	if err := os.WriteFile(path, []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var callErr error
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	callErr = cmdCGenTest([]string{"--program", path})
+	w.Close()
+	os.Stdout = old
+
+	buf := make([]byte, 4096)
+	n, _ := r.Read(buf)
+	out := string(buf[:n])
+
+	if callErr != nil {
+		t.Fatalf("cmdCGenTest with empty file: %v", callErr)
+	}
+	if strings.TrimSpace(out) != "(check-error)" {
+		t.Fatalf("empty file should produce check-error, got %q", strings.TrimSpace(out))
+	}
+}
+
 func TestCmdCGenTestProgram(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "prog.mfl")
