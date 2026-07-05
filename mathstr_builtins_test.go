@@ -33,3 +33,28 @@ func main() {
 		}
 	}
 }
+
+// TestCharatEdgeCases covers charat boundary conditions: empty string, negative index, and out-of-bounds access.
+func TestCharatEdgeCases(t *testing.T) {
+	prog := progFromSrc(t, `
+func main() {
+    println("empty=[" + charat("", 0) + "]")
+    println("negative=[" + charat("hello", -1) + "]")
+    println("outofbounds=[" + charat("hello", 10) + "]")
+    println("single=[" + charat("x", 0) + "]")
+}`)
+	out, err := RunCaptured(prog)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	for _, want := range []string{
+		"empty=[]",
+		"negative=[]",
+		"outofbounds=[]",
+		"single=[x]",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in:\n%s", want, out)
+		}
+	}
+}
