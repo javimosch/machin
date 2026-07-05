@@ -26,6 +26,23 @@ func TestTighten(t *testing.T) {
 	}
 }
 
+// normalize joins a multi-line function into one canonical line: blank lines
+// and line comments drop, real lines join with a single space, and the result
+// is tightened. It must not treat `//` inside a string literal as a comment.
+func TestNormalize(t *testing.T) {
+	src := "func add(a, b) {\n" +
+		"    // adds two numbers\n" +
+		"    sum := a + b\n" +
+		"\n" +
+		`    println("a//b")` + "\n" +
+		"    return sum\n" +
+		"}"
+	want := `func add(a,b){sum:=a+b println("a//b")return sum}`
+	if got := normalize(src); got != want {
+		t.Errorf("normalize(%q) = %q, want %q", src, got, want)
+	}
+}
+
 // Every committed example is already in canonical (tight) form: tighten is a
 // no-op on it. This guards the repo's source of truth against drift.
 func TestExamplesAreCanonical(t *testing.T) {
