@@ -366,6 +366,48 @@ func TestMergeGAcc(t *testing.T) {
 // TestRaceFindingToDiagnostic covers all three raceFinding.Kind branches:
 // write/write and use-after-move each pick a distinct code/message shape,
 // and anything else (e.g. read/write) falls through to the default RACE002.
+// TestCollectLocals covers every Stmt case collectLocals recurses through: a
+// top-level `:=`, a `:=` MultiAssign, a range's key/val vars (recursing into its
+// body), and nested If/While/Arena bodies. Plain `=` (not `:=`) must NOT bind a
+// local, since it targets an existing name rather than shadowing a global.
+func TestCollectLocals(t *testing.T) {
+	body := []Stmt{
+		&AssignStmt{Name: "a", Op: ":=", Val: &IntLit{}},
+		&AssignStmt{Name: "existing", Op: "=", Val: &IntLit{}},
+		&MultiAssign{Names: []string{"b", "c"}, Op: ":="},
+		&RangeStmt{
+			Key: "i", Val: "v",
+			Body: []Stmt{&AssignStmt{Name: "inner", Op: ":=", Val: &IntLit{}}},
+		},
+		&IfStmt{
+			Then: []Stmt{&AssignStmt{Name: "then_local", Op: ":=", Val: &IntLit{}}},
+			Else: []Stmt{&AssignStmt{Name: "else_local", Op: ":=", Val: &IntLit{}}},
+		},
+		&WhileStmt{
+			Body: []Stmt{&AssignStmt{Name: "while_local", Op: ":=", Val: &IntLit{}}},
+		},
+		&ArenaStmt{
+			Body: []Stmt{&AssignStmt{Name: "arena_local", Op: ":=", Val: &IntLit{}}},
+		},
+	}
+
+	into := map[string]bool{}
+	collectLocals(body, into)
+
+	want := []string{"a", "b", "c", "i", "v", "inner", "then_local", "else_local", "while_local", "arena_local"}
+	for _, name := range want {
+		if !into[name] {
+			t.Errorf("collectLocals: missing %q in %v", name, into)
+		}
+	}
+	if into["existing"] {
+		t.Errorf("collectLocals: plain `=` must not bind a local, got %v", into)
+	}
+	if len(into) != len(want) {
+		t.Errorf("collectLocals: got %d locals %v, want exactly %v", len(into), into, want)
+	}
+}
+
 func TestRaceFindingToDiagnostic(t *testing.T) {
 	cases := []struct {
 		kind     string
