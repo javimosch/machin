@@ -14,6 +14,7 @@ func TestClassifyParseBranches(t *testing.T) {
 		{"unterminated string literal", "parse-unterminated-string"},
 		{"unbalanced braces near: func f(", "parse-unbalanced-braces"},
 		{"something else entirely", "parse-error"},
+		{"", "parse-error"},
 	}
 	for _, c := range cases {
 		if got := classifyParse(c.msg); got != c.want {
@@ -41,6 +42,7 @@ func TestClassifyCheckBranches(t *testing.T) {
 		{`arity mismatch for "f"`, "arity-mismatch"},
 		{"unsupported construct in this context", "unsupported-construct"},
 		{"totally unrecognized checker message", "type-error"},
+		{"", "type-error"},
 	}
 	for _, c := range cases {
 		if got := classifyCheck(c.msg); got != c.want {
