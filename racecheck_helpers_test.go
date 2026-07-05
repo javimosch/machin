@@ -362,3 +362,31 @@ func TestMergeGAcc(t *testing.T) {
 		t.Fatalf("mergeGAcc(already set bits) should report changed=false")
 	}
 }
+
+// TestRaceFindingToDiagnostic covers all three raceFinding.Kind branches:
+// write/write and use-after-move each pick a distinct code/message shape,
+// and anything else (e.g. read/write) falls through to the default RACE002.
+func TestRaceFindingToDiagnostic(t *testing.T) {
+	cases := []struct {
+		kind     string
+		wantCode string
+		wantMsg  string
+	}{
+		{"write/write", "RACE001", "data race on `x` (write/write): a; b"},
+		{"use-after-move", "RACE004", "use after move: a; b"},
+		{"read/write", "RACE002", "data race on `x` (read/write): a; b"},
+	}
+	for _, c := range cases {
+		rf := raceFinding{Root: "x", Decl: "f", Kind: c.kind, Writers: []string{"a", "b"}}
+		d := rf.toDiagnostic()
+		if d.Code != c.wantCode {
+			t.Errorf("Kind %q: Code = %q, want %q", c.kind, d.Code, c.wantCode)
+		}
+		if d.Message != c.wantMsg {
+			t.Errorf("Kind %q: Message = %q, want %q", c.kind, d.Message, c.wantMsg)
+		}
+		if d.Severity != "error" || d.Phase != "race" || d.Decl != "f" {
+			t.Errorf("Kind %q: unexpected Diagnostic shape: %+v", c.kind, d)
+		}
+	}
+}
