@@ -40,3 +40,17 @@ func TestBytesIndexEmptyNeedleAndAbsent(t *testing.T) {
 		t.Fatalf("bytes_index edge cases: got %q, want %q", got, want)
 	}
 }
+
+// TestFromHexSkipsNonHexAndDropsTrailingNibble covers mfl_bytes_unhex
+// (codegen.go): separators like spaces/colons are skipped rather than
+// erroring, and a dangling odd hex digit at the end is silently dropped.
+func TestFromHexSkipsNonHexAndDropsTrailingNibble(t *testing.T) {
+	got := runNative(t, `func main(){
+		println(to_hex(from_hex("aa:bb cc")))
+		println(to_hex(from_hex("aabbc")))
+		println(len(from_hex("")))
+	}`)
+	if want := "aabbcc\naabb\n0\n"; got != want {
+		t.Fatalf("from_hex edge cases: got %q, want %q", got, want)
+	}
+}
