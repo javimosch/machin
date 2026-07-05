@@ -36,6 +36,14 @@ func TestReturnArity(t *testing.T) {
 			[]Stmt{&ArenaStmt{Body: []Stmt{&ReturnStmt{Vals: []Expr{nil}}}}},
 			1,
 		},
+		{
+			"returns in both then and else with different arities",
+			[]Stmt{&IfStmt{
+				Then: []Stmt{&ReturnStmt{Vals: []Expr{nil}}},
+				Else: []Stmt{&ReturnStmt{Vals: []Expr{nil, nil}}},
+			}},
+			1, // returns arity of then (first non-zero found)
+		},
 	}
 	for _, c := range cases {
 		if got := returnArity(c.body); got != c.want {
