@@ -100,3 +100,23 @@ func TestCmdUFTestMissingFile(t *testing.T) {
 		t.Fatal("expected error for missing file, got nil")
 	}
 }
+
+func TestCmdUFTestStdin(t *testing.T) {
+	script := "int\nfloat\ndump\n"
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write([]byte(script)); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+
+	oldStdin := os.Stdin
+	os.Stdin = r
+	defer func() { os.Stdin = oldStdin }()
+
+	if err := cmdUFTest([]string{}); err != nil {
+		t.Fatalf("cmdUFTest(stdin) error = %v", err)
+	}
+}

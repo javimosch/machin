@@ -133,6 +133,34 @@ func TestCmdTestWithJSONOutput(t *testing.T) {
 	}
 }
 
+func TestCmdTestJSONFlagPosition(t *testing.T) {
+	dir := t.TempDir()
+	f := writeSrc(t, dir, "t.src", `func main() {
+		assert(1 + 1 == 2, "test")
+		test_summary()
+	}`)
+
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	err = cmdTest([]string{f, "--json"})
+	w.Close()
+	os.Stdout = old
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	buf := make([]byte, 4096)
+	n, _ := r.Read(buf)
+	output := strings.TrimSpace(string(buf[:n]))
+	if !strings.Contains(output, "\"ok\": true") && !strings.Contains(output, "\"ok\":true") {
+		t.Fatalf("JSON output (with flag after file) should contain ok:true, got %q", output)
+	}
+}
+
 func TestParseTestSummary(t *testing.T) {
 	cases := []struct {
 		name     string
