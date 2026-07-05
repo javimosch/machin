@@ -61,6 +61,27 @@ func TestReadModulePrefersLocal(t *testing.T) {
 	}
 }
 
+// A path that isn't a real file and doesn't match the embedded tree by full
+// path (e.g. a nested alias) still resolves via the module's base name.
+func TestReadModuleBaseNameFallback(t *testing.T) {
+	got, err := readModule(filepath.Join("some", "other", "dir", "machweb.src"))
+	if err != nil {
+		t.Fatalf("expected base-name fallback to resolve, got: %v", err)
+	}
+	if len(got) == 0 {
+		t.Fatal("expected non-empty embedded module contents")
+	}
+}
+
+// A path with no matching real file, embedded full path, or embedded base
+// name surfaces the original os.ReadFile not-exist error.
+func TestReadModuleNotFound(t *testing.T) {
+	_, err := readModule(filepath.Join("some", "other", "dir", "does-not-exist.src"))
+	if err == nil || !os.IsNotExist(err) {
+		t.Fatalf("expected a not-exist error, got: %v", err)
+	}
+}
+
 // The embedded set covers the real modules an app composes against.
 func TestFrameworkModulesEmbedded(t *testing.T) {
 	mods := frameworkModules()
