@@ -54,3 +54,17 @@ func TestFromHexSkipsNonHexAndDropsTrailingNibble(t *testing.T) {
 		t.Fatalf("from_hex edge cases: got %q, want %q", got, want)
 	}
 }
+
+// TestBytesConcatAndHexEmptyBuffers covers mfl_bytes_concat/mfl_bytes_hex
+// (codegen.go) with zero-length operands: their `mfl_alloc(n ? n : 1)` guard
+// against a zero-size allocation must still produce a correct, empty result.
+func TestBytesConcatAndHexEmptyBuffers(t *testing.T) {
+	got := runNative(t, `func main(){
+		println(to_hex(bytes_concat(bytes(""), bytes(""))))
+		println(to_hex(bytes_concat(from_hex("aa"), bytes(""))))
+		println(bytes_str(bytes_concat(bytes(""), bytes("hi"))))
+	}`)
+	if want := "\naa\nhi\n"; got != want {
+		t.Fatalf("bytes_concat/to_hex empty buffers: got %q, want %q", got, want)
+	}
+}
