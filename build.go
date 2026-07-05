@@ -105,7 +105,10 @@ func BuildBinaryStatic(prog *Program, outPath string, safe, static bool) error {
 	bundleSqlite := static && usesSqlite
 
 	// foreign linkage: extern cflags go before the source; -l libs after it
-	args := []string{"-O2", "-std=c11", "-pthread"}
+	// -fno-strict-aliasing: the raw-memory peek_*/poke_* builtins (and other
+	// runtime helpers) type-pun through pointer casts, which -O2's strict
+	// aliasing otherwise treats as UB and can silently miscompile.
+	args := []string{"-O2", "-fno-strict-aliasing", "-std=c11", "-pthread"}
 	var srcs []string // extra C source files compiled alongside the generated one
 	if static {
 		args = append(args, "-static")
@@ -253,7 +256,7 @@ func BuildWasm(prog *Program, outPath string, safe bool) error {
 	// Each exported function carries an export_name attribute (emitted by codegen),
 	// which forces its export under the clean source name — so no --export flags.
 	_ = exports
-	args := []string{"cc", "-target", "wasm32-wasi", "-mexec-model=reactor", "-O2", "-std=c11", "-o", outPath, tmp.Name()}
+	args := []string{"cc", "-target", "wasm32-wasi", "-mexec-model=reactor", "-O2", "-fno-strict-aliasing", "-std=c11", "-o", outPath, tmp.Name()}
 
 	cmd := exec.Command(zigPath(), args...)
 	if out, err := cmd.CombinedOutput(); err != nil {

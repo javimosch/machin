@@ -1210,6 +1210,26 @@ func TestRawMemory(t *testing.T) {
 	}
 }
 
+// poke_u16 and poke_ptr had no test coverage. There's no matching peek_u16 /
+// peek_ptr builtin, so verify each write via peek_i32 against a zeroed
+// region: on a little-endian host the untouched high bytes stay 0, so the
+// wrong width or a swapped store would show up as a mismatched readback.
+func TestRawMemoryU16AndPtr(t *testing.T) {
+	main := `func main() {
+	p := alloc(16)
+	poke_i32(p, 0, 0)
+	poke_i32(p, 8, 0)
+	poke_u16(p, 0, 4660)
+	poke_ptr(p, 8, 305419896)
+	println(str(peek_i32(p, 0)) + " " + str(peek_i32(p, 8)))
+	free(p)
+}`
+	out, _ := buildRun(t, main)
+	if out != "4660 305419896\n" {
+		t.Fatalf("raw memory u16/ptr: got %q, want %q", out, "4660 305419896\n")
+	}
+}
+
 // The `*Name` FFI param convention: deref an MFL int (pointer) and pass the
 // pointed-to C struct by value (e.g. LoadModelFromMesh(*Mesh)). Codegen-level.
 func TestFFIDerefParam(t *testing.T) {
