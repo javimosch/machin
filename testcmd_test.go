@@ -133,6 +133,36 @@ func TestCmdTestWithJSONOutput(t *testing.T) {
 	}
 }
 
+func TestCmdTestWithJSONOutputAndFailures(t *testing.T) {
+	dir := t.TempDir()
+	f := writeSrc(t, dir, "t.src", `func main() {
+	    assert(true, "pass")
+	    assert(1 == 2, "failure")
+	    test_summary()
+	}`)
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	err = cmdTest([]string{"--json", f})
+	w.Close()
+	os.Stdout = old
+	if err == nil {
+		t.Fatal("expected an error when tests fail")
+	}
+	buf := make([]byte, 4096)
+	n, _ := r.Read(buf)
+	output := string(buf[:n])
+	if !strings.Contains(output, "\"ok\": false") && !strings.Contains(output, "\"ok\":false") {
+		t.Fatalf("JSON output should contain ok:false for failing tests, got %q", output)
+	}
+	if !strings.Contains(output, "\"failed\": 1") && !strings.Contains(output, "\"failed\":1") {
+		t.Fatalf("JSON output should contain failed:1, got %q", output)
+	}
+}
+
 func TestParseTestSummary(t *testing.T) {
 	cases := []struct {
 		name     string
