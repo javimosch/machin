@@ -26,6 +26,55 @@ func TestLocalNames(t *testing.T) {
 	}
 }
 
+func TestLiftClosuresCapturesEnclosingLocal(t *testing.T) {
+	// func main() { x := 1; f := func() int { return x }; return f }
+	main := &FuncDecl{
+		Name: "main",
+		Body: []Stmt{
+			&AssignStmt{Name: "x", Op: ":=", Val: &IntLit{Val: 1}},
+			&AssignStmt{Name: "f", Op: ":=", Val: &FuncLit{
+				Body: []Stmt{&ReturnStmt{Vals: []Expr{&Ident{Name: "x"}}}},
+			}},
+			&ReturnStmt{Vals: []Expr{&Ident{Name: "f"}}},
+		},
+	}
+	prog := &Program{Funcs: []*FuncDecl{main}}
+
+	liftClosures(prog)
+
+	if len(prog.Funcs) != 2 {
+		t.Fatalf("want main + 1 lifted func, got %d funcs", len(prog.Funcs))
+	}
+	lifted := prog.Funcs[1]
+	if !lifted.IsLambda || lifted.NumCaptures != 1 {
+		t.Fatalf("lifted func: IsLambda=%v NumCaptures=%d, want true/1", lifted.IsLambda, lifted.NumCaptures)
+	}
+	if len(lifted.Params) != 1 || lifted.Params[0] != "x" {
+		t.Fatalf("lifted func params = %v, want [x] (capture as leading param)", lifted.Params)
+	}
+	if !lifted.Boxed["x"] {
+		t.Errorf("lifted func must mark captured param %q boxed", "x")
+	}
+	if !main.Boxed["x"] {
+		t.Errorf("enclosing func must box captured local %q so it's shared by reference", "x")
+	}
+
+	assign, ok := main.Body[1].(*AssignStmt)
+	if !ok {
+		t.Fatalf("main.Body[1] = %T, want *AssignStmt", main.Body[1])
+	}
+	mc, ok := assign.Val.(*MakeClosure)
+	if !ok {
+		t.Fatalf("f's initializer = %T, want *MakeClosure (FuncLit must be replaced in place)", assign.Val)
+	}
+	if mc.FuncName != lifted.Name {
+		t.Errorf("MakeClosure.FuncName = %q, want %q", mc.FuncName, lifted.Name)
+	}
+	if len(mc.Captures) != 1 || mc.Captures[0] != "x" {
+		t.Errorf("MakeClosure.Captures = %v, want [x]", mc.Captures)
+	}
+}
+
 func TestCollectDeclaredNestedFuncLitNotRecursed(t *testing.T) {
 	// collectDeclared must not descend into a nested FuncLit's own body — it has
 	// no case for *FuncLit, so a := inside it must not leak into the outer set.
