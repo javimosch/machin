@@ -97,3 +97,105 @@ func TestFrameworkModulesEmbedded(t *testing.T) {
 		}
 	}
 }
+
+// cmdFramework list prints embedded module names.
+func TestCmdFrameworkList(t *testing.T) {
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	if err := cmdFramework([]string{"list"}); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+	os.Stdout = old
+
+	buf := make([]byte, 4096)
+	n, _ := r.Read(buf)
+	out := string(buf[:n])
+	if !bytes.Contains([]byte(out), []byte("machweb.src")) {
+		t.Fatalf("list output missing machweb.src, got: %s", out)
+	}
+}
+
+// cmdFramework <module> prints an embedded module.
+func TestCmdFrameworkPrint(t *testing.T) {
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	if err := cmdFramework([]string{"machweb"}); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+	os.Stdout = old
+
+	buf := make([]byte, 8192)
+	n, _ := r.Read(buf)
+	if n == 0 {
+		t.Fatal("expected module output")
+	}
+}
+
+// cmdFramework machweb.src also works (with explicit .src suffix).
+func TestCmdFrameworkPrintWithSuffix(t *testing.T) {
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	if err := cmdFramework([]string{"machweb.src"}); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+	os.Stdout = old
+
+	buf := make([]byte, 8192)
+	n, _ := r.Read(buf)
+	if n == 0 {
+		t.Fatal("expected module output")
+	}
+}
+
+// cmdFramework <unknown> returns an error.
+func TestCmdFrameworkNotFound(t *testing.T) {
+	if err := cmdFramework([]string{"nonexistent"}); err == nil {
+		t.Fatal("expected error for unknown module")
+	}
+}
+
+// cmdFramework --vendor writes embedded modules to a directory.
+func TestCmdFrameworkVendor(t *testing.T) {
+	dir := t.TempDir()
+	old := os.Stderr
+	devnull, _ := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	os.Stderr = devnull
+
+	if err := cmdFramework([]string{"--vendor", dir}); err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = old
+	devnull.Close()
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("--vendor should create framework files")
+	}
+	found := false
+	for _, e := range entries {
+		if e.Name() == "machweb.src" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("--vendor should write machweb.src")
+	}
+}
