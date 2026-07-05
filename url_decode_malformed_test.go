@@ -57,3 +57,30 @@ func main() {
 		}
 	}
 }
+
+// TestURLDecodeReservedChars covers percent-encoding of reserved characters
+// (like &, =, ?) which commonly appear in query strings and must be properly
+// decoded when percent-encoded.
+func TestURLDecodeReservedChars(t *testing.T) {
+	prog := progFromSrc(t, `
+func main() {
+    println("amp=[" + url_decode("a%26b") + "]")
+    println("eq=[" + url_decode("x%3Dy") + "]")
+    println("qmark=[" + url_decode("who%3F") + "]")
+    println("multi=[" + url_decode("a%26b%3Dc%3Fd") + "]")
+}`)
+	out, err := RunCaptured(prog)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	for _, want := range []string{
+		"amp=[a&b]",
+		"eq=[x=y]",
+		"qmark=[who?]",
+		"multi=[a&b=c?d]",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in:\n%s", want, out)
+		}
+	}
+}
