@@ -36,8 +36,8 @@ func TestCLIBuiltins(t *testing.T) {
 // TestParseIntAndNowMs covers parse_int (string -> int, 0 on garbage) and now_ms
 // (monotone-ish wall-clock ms) — surfaced while building a real CLI tool.
 func TestParseIntAndNowMs(t *testing.T) {
-	got := runNative(t, `func main(){ println(parse_int("8080")) println(parse_int("x")) a := now_ms() sleep(20) println((now_ms() - a) >= 15) }`)
-	if want := "8080\n0\ntrue\n"; got != want {
+	got := runNative(t, `func main(){ println(parse_int("8080")) println(parse_int("x")) println(parse_int("-42")) a := now_ms() sleep(20) println((now_ms() - a) >= 15) }`)
+	if want := "8080\n0\n-42\ntrue\n"; got != want {
 		t.Fatalf("parse_int/now_ms: got %q, want %q", got, want)
 	}
 }
