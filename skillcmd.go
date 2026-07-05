@@ -15,14 +15,19 @@ import (
 // skillOrder is the install/list order; machin-start (the decision skill) is first.
 var skillOrder = []string{"machin-start", "machin-web", "machin-gamedev", "machin-backend", "machin-deploy"}
 
+// embeddedSkillsMap is built once; embeddedSkills is a thin, allocation-free
+// accessor so callers (resolveSkill, cmdSkill, skillList, skillInstall) don't
+// each rebuild the map on every call.
+var embeddedSkillsMap = map[string]string{
+	"machin-start":   skillStart,
+	"machin-web":     skillWeb,
+	"machin-gamedev": skillGamedev,
+	"machin-backend": skillBackend,
+	"machin-deploy":  skillDeploy,
+}
+
 func embeddedSkills() map[string]string {
-	return map[string]string{
-		"machin-start":   skillStart,
-		"machin-web":     skillWeb,
-		"machin-gamedev": skillGamedev,
-		"machin-backend": skillBackend,
-		"machin-deploy":  skillDeploy,
-	}
+	return embeddedSkillsMap
 }
 
 // skillAliases maps the short `--skill` names (and "machin") to the full skill dir name.
@@ -33,7 +38,8 @@ var skillAliases = map[string]string{
 }
 
 func resolveSkill(name string) string {
-	if _, ok := embeddedSkills()[name]; ok {
+	skills := embeddedSkills()
+	if _, ok := skills[name]; ok {
 		return name
 	}
 	if full, ok := skillAliases[name]; ok {

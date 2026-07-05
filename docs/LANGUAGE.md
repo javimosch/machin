@@ -415,6 +415,10 @@ first := users[0]                                // value copy
 | `base64_decode_bytes(s)`    | base64-decode → raw `bytes` (lenient; binary-safe; e.g. SCRAM salt or binary token) |
 | `sha256(s)`                 | SHA-256 of string `s` → lowercase hex string (byte-exact against `sha256sum`) |
 | `hmac_sha256(key, msg)`     | HMAC-SHA256(key, msg) → lowercase hex string (RFC 2104; use for webhook signature verification) |
+| `regex_match(s, pattern)`   | whether POSIX extended regex `pattern` matches anywhere in `s` → `bool` (a bad pattern fails safe: `false`) |
+| `regex_find(s, pattern)`    | the first match of `pattern` in `s`, or `""` if none / on a bad pattern |
+| `regex_groups(s, pattern)`  | the first match's capture groups → `[]string` (index `0` is the whole match, `1..n` the subgroups; `""` for an unmatched optional group; empty slice if no match) |
+| `regex_replace(s, pattern, repl)` | replace all matches of `pattern` in `s` with `repl` (a bad pattern returns `s` unchanged) |
 | `sleep(ms)`                 | suspend the current goroutine (milliseconds) |
 | `listen(port)`              | open a TCP listening socket                  |
 | `accept(fd)`                | accept a connection, return its socket fd    |
@@ -507,6 +511,15 @@ when any crypto builtin is used.
 | `aes_gcm_decrypt(key, iv12, ct_tag, aad)`      | AES-GCM decrypt → plaintext (**empty `bytes` on auth failure**) |
 | `aes_cbc_encrypt(key, iv, pt)`                 | AES-CBC encrypt, PKCS#7 padded (key 16 or 32 bytes)             |
 | `aes_cbc_decrypt(key, iv, ct)`                 | AES-CBC decrypt → plaintext (**empty `bytes` on bad padding**)  |
+| `keccak256(b)`                                 | Keccak-256 (pre-SHA3, the Ethereum variant) of `b` → 32-byte digest |
+| `secp256k1_pubkey(priv32)`                     | secp256k1 public key from a 32-byte private key → 65-byte uncompressed point (empty on invalid input) |
+| `secp256k1_sign_recoverable(priv32, hash32)`   | secp256k1 ECDSA sign (low-S) → 65 bytes: `r\|\|s\|\|v` (`v` is 27 or 28) |
+| `secp256k1_recover(hash32, sig65)`             | recover the 65-byte uncompressed public key from a `secp256k1_sign_recoverable` signature (empty on invalid input) |
+| `xeddsa_sign(priv32, msg, random64)`           | XEdDSA sign over a Curve25519 key (the Signal Protocol scheme) → 64-byte signature |
+| `xeddsa_verify(pub32, msg, sig64)`             | XEdDSA verify → `bool`                                          |
+
+XEdDSA additionally requires libsodium (`-lsodium`, alongside libcrypto); the
+linker flag is added automatically when `xeddsa_sign`/`xeddsa_verify` is used.
 
 ---
 
