@@ -27,6 +27,18 @@ func TestCmdRunMissingBinary(t *testing.T) {
 	}
 }
 
+func TestCmdRunWithSafeFlag(t *testing.T) {
+	dir := t.TempDir()
+	srcPath := filepath.Join(dir, "prog.src")
+	if err := os.WriteFile(srcPath, []byte("func main() { println(\"safe\") }"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// cmdRun --safe should build a memory-safe binary without error
+	if err := cmdRun([]string{"--safe", srcPath}); err != nil {
+		t.Fatalf("cmdRun --safe: %v", err)
+	}
+}
+
 // cmdBuild: missing source file, write permission error, successful build
 func TestCmdBuildMissingSource(t *testing.T) {
 	dir := t.TempDir()
