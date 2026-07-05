@@ -1419,6 +1419,20 @@ func TestRegex(t *testing.T) {
 	}
 }
 
+// A malformed pattern must fail safe per docs/LANGUAGE.md rather than crash:
+// match->false, find->"", groups->empty slice, replace->input unchanged.
+func TestRegexBadPattern(t *testing.T) {
+	main := `func main() {
+	ok := "false"  if regex_match("abc", "[a-z") { ok = "true" }
+	g := regex_groups("abc", "[a-z")
+	println(ok + "|" + regex_find("abc", "[a-z") + "|" + str(len(g)) + "|" + regex_replace("abc", "[a-z", "x"))
+}`
+	out, _ := buildRun(t, main)
+	if out != "false||0|abc\n" {
+		t.Fatalf("regex bad pattern: got %q", out)
+	}
+}
+
 // Operands and arguments evaluate left-to-right (Go semantics), even when they
 // have side effects — `g() + g()` on a counter yields 1 then 2, not 2 then 1.
 func TestEvalOrderLeftToRight(t *testing.T) {
