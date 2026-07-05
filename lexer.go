@@ -13,8 +13,8 @@ const (
 	TInt
 	TFloat
 	TString
-	TPunct  // ( ) { } , ;
-	TOp     // + - * / % == != < <= > >= && || ! = :=
+	TPunct // ( ) { } , ;
+	TOp    // + - * / % == != < <= > >= && || ! = :=
 	TKeyword
 )
 
@@ -39,9 +39,9 @@ type Lexer struct {
 	toks []Token
 }
 
-func isDigit(c byte) bool  { return c >= '0' && c <= '9' }
-func isAlpha(c byte) bool  { return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') }
-func isAlnum(c byte) bool  { return isAlpha(c) || isDigit(c) }
+func isDigit(c byte) bool { return c >= '0' && c <= '9' }
+func isAlpha(c byte) bool { return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') }
+func isAlnum(c byte) bool { return isAlpha(c) || isDigit(c) }
 
 func Lex(src string) ([]Token, error) {
 	l := &Lexer{src: src}

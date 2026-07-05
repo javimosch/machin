@@ -29,8 +29,8 @@ func wsProg(t *testing.T, app string) *Program {
 // *unmasked* echo frame. Proves the handshake accept key, client-frame unmasking, and
 // server-frame building all in the real socket path.
 //
-//   masked "hi": 81 82 | 01020304 (mask) | 69 6b  ('h'^01, 'i'^02)
-//   key "dGhlIHNhbXBsZSBub25jZQ==" -> accept "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=" (the RFC example)
+//	masked "hi": 81 82 | 01020304 (mask) | 69 6b  ('h'^01, 'i'^02)
+//	key "dGhlIHNhbXBsZSBub25jZQ==" -> accept "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=" (the RFC example)
 func TestWebSocketEchoRoundTrip(t *testing.T) {
 	app := `
 func serve_one(srv, handler) { conn := accept(srv)  machweb_handle(conn, handler) }

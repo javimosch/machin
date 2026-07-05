@@ -284,9 +284,9 @@ func reactiveProg(t *testing.T, host, app string) *Program {
 }
 
 // The three load-bearing reactivity guarantees, in one run:
-//   1. change detection — set(id, sameValue) emits NO patch;
-//   2. dependency isolation — only reactions that READ a signal re-run;
-//   3. computed transitivity — set(base) updates a computed, which patches its slot.
+//  1. change detection — set(id, sameValue) emits NO patch;
+//  2. dependency isolation — only reactions that READ a signal re-run;
+//  3. computed transitivity — set(base) updates a computed, which patches its slot.
 func TestReactiveChangeAndIsolation(t *testing.T) {
 	host := `func dom_patch(slot, val) { println("patch " + slot + "=" + val) }`
 	app := `

@@ -16,8 +16,8 @@ import (
 type Kind int
 
 const (
-	KVar    Kind = iota // unbound
-	KNum                // numeric literal, int unless unified with float
+	KVar Kind = iota // unbound
+	KNum             // numeric literal, int unless unified with float
 	KInt
 	KFloat
 	KBool
@@ -68,11 +68,11 @@ func isNumeric(k Kind) bool { return k == KInt || k == KFloat || k == KNum }
 type Checker struct {
 	parent []int
 	kind   []Kind
-	elem   []int    // for KSlice/KChan slots: the element slot; -1 otherwise
-	sname  []string // for KStruct slots: the struct type name; "" otherwise
-	mkey   []int       // for KMap slots: the key slot; -1 otherwise
-	mval   []int       // for KMap slots: the value slot; -1 otherwise
-	fsig   []*funcSig  // for KFunc slots: the signature; nil otherwise
+	elem   []int      // for KSlice/KChan slots: the element slot; -1 otherwise
+	sname  []string   // for KStruct slots: the struct type name; "" otherwise
+	mkey   []int      // for KMap slots: the key slot; -1 otherwise
+	mval   []int      // for KMap slots: the value slot; -1 otherwise
+	fsig   []*funcSig // for KFunc slots: the signature; nil otherwise
 
 	structs map[string]*TypeDecl // declared struct types
 
@@ -82,7 +82,7 @@ type Checker struct {
 
 	vars       map[string]map[string]int // func -> var name -> slot
 	localOrder map[string][]string       // func -> locals in declaration order
-	nodeSlot   map[string]map[Node]int // instance -> expr node -> slot
+	nodeSlot   map[string]map[Node]int   // instance -> expr node -> slot
 
 	// shared concrete slots (no inner type vars, safe to share)
 	cBool, cString, cVoid, cInt, cFloat, cBytes int
@@ -100,18 +100,18 @@ type Checker struct {
 
 	// monomorphization: each call instantiates a fresh copy of the callee, so a
 	// function is specialized per concrete call-site type (deduped at codegen).
-	instFn      map[string]*FuncDecl              // instance name -> source function
-	instStack   map[string]string                // source name -> instance being generated (recursion)
-	instOrder   []string                         // instances in creation order
-	instCounter int                              // unique instance ids
-	callInst    map[string]map[*Call]string       // enclosing instance -> call node -> callee instance
+	instFn      map[string]*FuncDecl               // instance name -> source function
+	instStack   map[string]string                  // source name -> instance being generated (recursion)
+	instOrder   []string                           // instances in creation order
+	instCounter int                                // unique instance ids
+	callInst    map[string]map[*Call]string        // enclosing instance -> call node -> callee instance
 	closureInst map[string]map[*MakeClosure]string // enclosing instance -> closure node -> lambda instance
-	cnameOf     map[string]string                 // instance -> C function name (deduped)
-	reps        []string                          // representative instances (one C function each)
-	exportSrc   map[string]bool                   // source names declared `export func`
-	hasMainFn   bool                              // program defines a main function
-	globalSlot  map[string]int                    // package-global name -> type slot
-	globalOrder []string                          // package globals in declaration order
+	cnameOf     map[string]string                  // instance -> C function name (deduped)
+	reps        []string                           // representative instances (one C function each)
+	exportSrc   map[string]bool                    // source names declared `export func`
+	hasMainFn   bool                               // program defines a main function
+	globalSlot  map[string]int                     // package-global name -> type slot
+	globalOrder []string                           // package globals in declaration order
 }
 
 // IsLocal reports whether name is a parameter or local of the given instance (so
@@ -615,18 +615,18 @@ func (c *Checker) instantiate(name string) (string, error) {
 // Check infers types for the program, returning an error on a type clash.
 func Check(p *Program) (*Checker, error) {
 	c := &Checker{
-		funcs:      map[string]*FuncDecl{},
-		funcParam:  map[string][]int{},
-		funcRets:   map[string][]int{},
-		vars:       map[string]map[string]int{},
-		localOrder: map[string][]string{},
-		nodeSlot:   map[string]map[Node]int{},
-		structs:    map[string]*TypeDecl{},
-		instFn:     map[string]*FuncDecl{},
-		instStack:  map[string]string{},
-		callInst:   map[string]map[*Call]string{},
+		funcs:       map[string]*FuncDecl{},
+		funcParam:   map[string][]int{},
+		funcRets:    map[string][]int{},
+		vars:        map[string]map[string]int{},
+		localOrder:  map[string][]string{},
+		nodeSlot:    map[string]map[Node]int{},
+		structs:     map[string]*TypeDecl{},
+		instFn:      map[string]*FuncDecl{},
+		instStack:   map[string]string{},
+		callInst:    map[string]map[*Call]string{},
 		closureInst: map[string]map[*MakeClosure]string{},
-		externs:    map[string]*ExternFunc{},
+		externs:     map[string]*ExternFunc{},
 	}
 	c.cBool = newSlot(c, KBool)
 	c.cString = newSlot(c, KString)
@@ -1362,7 +1362,7 @@ func (c *Checker) genExprInner(fn *FuncDecl, e Expr) (int, error) {
 			c.addPair(xs, c.cBool)
 			return c.cBool, nil
 		}
-		if ex.Op == "^" {              // bitwise complement: int-only
+		if ex.Op == "^" { // bitwise complement: int-only
 			c.addPair(xs, c.cInt)
 			return xs, nil
 		}
@@ -2656,9 +2656,9 @@ func (c *Checker) ctypeSlot(slot int) string {
 	return "int64_t"
 }
 
-func (c *Checker) RetCTypeAt(fn string, i int) string { return c.ctypeSlot(c.funcRets[fn][i]) }
-func (c *Checker) ParamCType(fn string, i int) string { return c.ctypeSlot(c.funcParam[fn][i]) }
-func (c *Checker) VarCType(fn, name string) string  { return c.ctypeSlot(c.vars[fn][name]) }
+func (c *Checker) RetCTypeAt(fn string, i int) string   { return c.ctypeSlot(c.funcRets[fn][i]) }
+func (c *Checker) ParamCType(fn string, i int) string   { return c.ctypeSlot(c.funcParam[fn][i]) }
+func (c *Checker) VarCType(fn, name string) string      { return c.ctypeSlot(c.vars[fn][name]) }
 func (c *Checker) NodeCType(inst string, n Node) string { return c.ctypeSlot(c.slotOf(inst, n)) }
 
 // ElemCType renders the C type of a slice- or channel-node's element.
@@ -2731,8 +2731,12 @@ func (c *Checker) sigCTypes(slot int) ([]string, string) {
 	return nil, "int64_t"
 }
 
-func (c *Checker) NodeFuncSig(inst string, n Node) ([]string, string) { return c.sigCTypes(c.slotOf(inst, n)) }
-func (c *Checker) VarFuncSig(fn, name string) ([]string, string)      { return c.sigCTypes(c.vars[fn][name]) }
+func (c *Checker) NodeFuncSig(inst string, n Node) ([]string, string) {
+	return c.sigCTypes(c.slotOf(inst, n))
+}
+func (c *Checker) VarFuncSig(fn, name string) ([]string, string) {
+	return c.sigCTypes(c.vars[fn][name])
+}
 
 // TypeString renders a node's resolved type as a canonical string (int, float,
 // bool, string, a struct name, []T, map[K]V) — used to key JSON serializers.
@@ -2762,9 +2766,13 @@ func (c *Checker) typeStringSlot(slot int) string {
 }
 
 // map key/value accessors for a map-typed node (used by codegen).
-func (c *Checker) MapKeyKind(inst string, n Node) Kind    { return c.mapPart(inst, n, true, true).(Kind) }
-func (c *Checker) MapValCType(inst string, n Node) string { return c.mapPart(inst, n, false, false).(string) }
-func (c *Checker) MapKeyCType(inst string, n Node) string { return c.mapPart(inst, n, true, false).(string) }
+func (c *Checker) MapKeyKind(inst string, n Node) Kind { return c.mapPart(inst, n, true, true).(Kind) }
+func (c *Checker) MapValCType(inst string, n Node) string {
+	return c.mapPart(inst, n, false, false).(string)
+}
+func (c *Checker) MapKeyCType(inst string, n Node) string {
+	return c.mapPart(inst, n, true, false).(string)
+}
 
 func (c *Checker) mapPart(inst string, n Node, key bool, asKind bool) interface{} {
 	r := c.find(c.slotOf(inst, n))

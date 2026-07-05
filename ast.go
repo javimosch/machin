@@ -21,7 +21,9 @@ type GlobalVar struct {
 }
 
 // ExternDecl declares foreign C functions and how to compile/link against them:
-//   extern "m" { header "math.h" link "m" fn sqrt(float) float }
+//
+//	extern "m" { header "math.h" link "m" fn sqrt(float) float }
+//
 // Calls to the declared names compile to direct C calls; the header supplies the
 // real prototype and `link`/`cflags` are threaded into the cc invocation.
 type ExternDecl struct {
@@ -34,7 +36,9 @@ type ExternDecl struct {
 }
 
 // ExternStruct declares a C struct's layout for by-value marshaling:
-//   cstruct Color { r u8  g u8  b u8  a u8 }
+//
+//	cstruct Color { r u8  g u8  b u8  a u8 }
+//
 // machin synthesizes a matching MFL struct (int/float fields) and marshals
 // between the MFL value and the C struct at the FFI boundary.
 type ExternStruct struct {
@@ -94,8 +98,8 @@ type NilLit struct{}
 type Ident struct{ Name string }
 
 type Unary struct {
-	Op  string
-	X   Expr
+	Op string
+	X  Expr
 }
 
 type Binary struct {
@@ -166,15 +170,15 @@ type MakeMap struct{ Key, Val string }
 // Recv receives from a channel: <-ch.
 type Recv struct{ Ch Expr }
 
-func (IntLit) node()    {}
-func (FloatLit) node()  {}
-func (StringLit) node() {}
-func (BoolLit) node()   {}
-func (NilLit) node()    {}
-func (Ident) node()     {}
-func (Unary) node()     {}
-func (Binary) node()    {}
-func (Call) node()      {}
+func (IntLit) node()      {}
+func (FloatLit) node()    {}
+func (StringLit) node()   {}
+func (BoolLit) node()     {}
+func (NilLit) node()      {}
+func (Ident) node()       {}
+func (Unary) node()       {}
+func (Binary) node()      {}
+func (Call) node()        {}
 func (SliceLit) node()    {}
 func (Index) node()       {}
 func (StructLit) node()   {}
@@ -193,9 +197,9 @@ type Stmt interface{ Node }
 type ExprStmt struct{ X Expr }
 
 type AssignStmt struct {
-	Name    string
-	Op      string // ":=" or "="
-	Val     Expr
+	Name string
+	Op   string // ":=" or "="
+	Val  Expr
 }
 
 type ReturnStmt struct{ Vals []Expr } // empty for a bare return
@@ -242,7 +246,9 @@ type SendStmt struct {
 }
 
 // RangeStmt iterates a slice, map, or string:
-//   for i, v := range xs   for k, v := range m   for c := range s
+//
+//	for i, v := range xs   for k, v := range m   for c := range s
+//
 // Key is the index/key var; Val is the value var ("" if absent). Either may be
 // "_" to ignore.
 type RangeStmt struct {
@@ -256,12 +262,14 @@ type RangeStmt struct {
 type GoStmt struct{ Call *Call }
 
 // SelectStmt waits on multiple channel operations:
-//   select {
-//     case v := <-ch1: ...      // receive into a new var (Name); RecvCh = ch1
-//     case <-ch2: ...           // receive and discard (Name == "" / "_")
-//     case ch3 <- x: ...        // send (SendCh = ch3, SendVal = x)
-//     default: ...              // runs if no case is ready (HasDefault)
-//   }
+//
+//	select {
+//	  case v := <-ch1: ...      // receive into a new var (Name); RecvCh = ch1
+//	  case <-ch2: ...           // receive and discard (Name == "" / "_")
+//	  case ch3 <- x: ...        // send (SendCh = ch3, SendVal = x)
+//	  default: ...              // runs if no case is ready (HasDefault)
+//	}
+//
 // The first ready case runs; with no default and nothing ready, it blocks.
 type SelectCase struct {
 	// receive case: RecvCh set; Name is the binding ("" / "_" to discard);
@@ -287,21 +295,21 @@ type SelectStmt struct {
 // block (the machine author guarantees no escape, as with a stack frame).
 type ArenaStmt struct{ Body []Stmt }
 
-func (ExprStmt) node()    {}
-func (AssignStmt) node()  {}
-func (MultiAssign) node() {}
-func (ReturnStmt) node()  {}
-func (BreakStmt) node()   {}
+func (ExprStmt) node()     {}
+func (AssignStmt) node()   {}
+func (MultiAssign) node()  {}
+func (ReturnStmt) node()   {}
+func (BreakStmt) node()    {}
 func (ContinueStmt) node() {}
-func (IfStmt) node()      {}
-func (WhileStmt) node()   {}
-func (IndexAssign) node() {}
-func (FieldAssign) node() {}
-func (SendStmt) node()    {}
-func (RangeStmt) node()   {}
-func (GoStmt) node()      {}
-func (ArenaStmt) node()   {}
-func (SelectStmt) node()  {}
+func (IfStmt) node()       {}
+func (WhileStmt) node()    {}
+func (IndexAssign) node()  {}
+func (FieldAssign) node()  {}
+func (SendStmt) node()     {}
+func (RangeStmt) node()    {}
+func (GoStmt) node()       {}
+func (ArenaStmt) node()    {}
+func (SelectStmt) node()   {}
 
 // ---- Top level ----
 
