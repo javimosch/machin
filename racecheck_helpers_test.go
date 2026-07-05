@@ -337,6 +337,32 @@ func TestGoAccessorsOf(t *testing.T) {
 	}
 }
 
+// TestMarkLoopSpawns covers every Stmt case it recurses through (If/While/Range/
+// Arena) plus the GoStmt leaf that actually bumps `live`, mirroring the shape of
+// TestCollectLocals above.
+func TestMarkLoopSpawns(t *testing.T) {
+	sum := map[string][]paramAcc{
+		"worker": {{idx: 0, path: nil, write: true}},
+	}
+	goCall := func() Stmt {
+		return &GoStmt{Call: &Call{Callee: "worker", Args: []Expr{&Ident{Name: "box"}}}}
+	}
+
+	body := []Stmt{
+		&IfStmt{Then: []Stmt{goCall()}, Else: []Stmt{goCall()}},
+		&WhileStmt{Body: []Stmt{goCall()}},
+		&RangeStmt{Body: []Stmt{goCall()}},
+		&ArenaStmt{Body: []Stmt{goCall()}},
+	}
+
+	live := map[string]int{}
+	markLoopSpawns(body, live, sum)
+
+	if live["box"] != 5 {
+		t.Fatalf("markLoopSpawns: live[box] = %d, want 5 (if-then + if-else + while + range + arena)", live["box"])
+	}
+}
+
 func TestMergeGAcc(t *testing.T) {
 	m := map[string]*gAccess{}
 
