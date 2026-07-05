@@ -50,3 +50,17 @@ func main() { p := acc()  println(p(10))  println(p(20))  println(p(30)) }`)
 		t.Fatalf("captured slice mutation = %q, want %q", got, "1 2 3")
 	}
 }
+
+// A simple closure that captures a primitive value and returns it.
+func TestSimpleClosureCapture(t *testing.T) {
+	prog := progFromSrc(t, `
+func makeAdder(x) (add) { add = func(y) { return x + y } }
+func main() { f := makeAdder(5)  println(f(3))  println(f(10)) }`)
+	out, err := RunCaptured(prog)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := strings.Join(strings.Fields(out), " "); got != "8 15" {
+		t.Fatalf("simple closure capture = %q, want %q", got, "8 15")
+	}
+}
