@@ -112,3 +112,19 @@ func TestCmdBuildWithRaceSafeFlag(t *testing.T) {
 		t.Fatalf("cmdBuild --race-safe: %v", err)
 	}
 }
+
+func TestCmdBuildMissingFlagArg(t *testing.T) {
+	dir := t.TempDir()
+	srcPath := filepath.Join(dir, "prog.src")
+	if err := os.WriteFile(srcPath, []byte("func main() { }"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// cmdBuild -o with no path should error
+	if err := cmdBuild([]string{"-o", srcPath}); err == nil {
+		t.Fatal("cmdBuild -o with no path should error, got nil")
+	}
+	// cmdBuild --target with no value should error
+	if err := cmdBuild([]string{"--target", srcPath}); err == nil {
+		t.Fatal("cmdBuild --target with no value should error, got nil")
+	}
+}
