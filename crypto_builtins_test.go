@@ -39,3 +39,35 @@ func main() {
 		}
 	}
 }
+
+// pbkdf2_sha256 must produce deterministic output and derive keys of the requested length.
+// The builtin had no direct test coverage — only exercised indirectly through mfl_test.go.
+func TestPBKDF2SHA256(t *testing.T) {
+	prog := progFromSrc(t, `
+func main() {
+    pwd := bytes("password")
+    salt := bytes("salt")
+    iterations := 2
+    length := 32
+
+    k1 := pbkdf2_sha256(pwd, salt, iterations, length)
+    k2 := pbkdf2_sha256(pwd, salt, iterations, length)
+
+    println("len=" + str(len(k1)))
+    println("deterministic=" + str(to_hex(k1) == to_hex(k2)))
+
+    k3 := pbkdf2_sha256(pwd, bytes("other"), iterations, length)
+    println("salt_matters=" + str(to_hex(k1) != to_hex(k3)))
+}`)
+	out, err := RunCaptured(prog)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	for _, want := range []string{
+		"len=32", "deterministic=true", "salt_matters=true",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in:\n%s", want, out)
+		}
+	}
+}
