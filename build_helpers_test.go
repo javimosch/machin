@@ -78,3 +78,39 @@ func TestZigPath(t *testing.T) {
 		t.Fatalf("zigPath with ZIG=/opt/zig/zig: got %q, want %q", got, "/opt/zig/zig")
 	}
 }
+
+// TestCCPathEmpty covers the case where CC is set but empty, which should fall
+// back to the default "cc".
+func TestCCPathEmpty(t *testing.T) {
+	old, hadOld := os.LookupEnv("CC")
+	t.Cleanup(func() {
+		if hadOld {
+			os.Setenv("CC", old)
+		} else {
+			os.Unsetenv("CC")
+		}
+	})
+
+	os.Setenv("CC", "")
+	if got := ccPath(); got != "cc" {
+		t.Fatalf("ccPath with CC empty: got %q, want %q", got, "cc")
+	}
+}
+
+// TestZigPathEmpty covers the case where ZIG is set but empty, which should fall
+// back to the default "zig".
+func TestZigPathEmpty(t *testing.T) {
+	old, hadOld := os.LookupEnv("ZIG")
+	t.Cleanup(func() {
+		if hadOld {
+			os.Setenv("ZIG", old)
+		} else {
+			os.Unsetenv("ZIG")
+		}
+	})
+
+	os.Setenv("ZIG", "")
+	if got := zigPath(); got != "zig" {
+		t.Fatalf("zigPath with ZIG empty: got %q, want %q", got, "zig")
+	}
+}
