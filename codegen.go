@@ -150,7 +150,10 @@ static void* mfl_alloc(size_t sz) {
     b->size = sz; b->next = mfl_arena_cur->head; mfl_arena_cur->head = b;
     return (void*)(b + 1);
 }
-static void* mfl_calloc(size_t n, size_t sz) { void* p = mfl_alloc(n * sz); memset(p, 0, n * sz); return p; }
+/* mfl_calloc is only ever used to box a local captured by a nested closure
+   (see function() in codegen.go); that box must outlive the arena of whoever
+   declares it, so it's plain calloc, not mfl_alloc (#314). */
+static void* mfl_calloc(size_t n, size_t sz) { return calloc(n, sz); }
 static void* mfl_realloc(void* old, size_t sz) {
     void* p = mfl_alloc(sz);
     if (old) { size_t o = ((mfl_blk*)old - 1)->size; memcpy(p, old, o < sz ? o : sz); }
@@ -3050,7 +3053,10 @@ func (g *cgen) function(inst string) error {
 		name := fn.Params[i]
 		if fn.Boxed[name] {
 			ct := g.c.ParamCType(inst, i)
-			fmt.Fprintf(&g.buf, "    %s* v_%s = mfl_alloc(sizeof(%s)); *v_%s = _arg_%s;\n", ct, name, ct, name, name)
+			// malloc, not mfl_alloc: this box must outlive the arena of
+			// whichever call frame declares it, since a closure sharing it
+			// may escape that frame (e.g. via `go`) (#314).
+			fmt.Fprintf(&g.buf, "    %s* v_%s = malloc(sizeof(%s)); *v_%s = _arg_%s;\n", ct, name, ct, name, name)
 		}
 	}
 	for _, name := range g.c.Locals(inst) {
@@ -3781,7 +3787,11 @@ func (g *cgen) expr(e Expr) (string, error) {
 		id := g.tmpID
 		g.tmpID++
 		var b strings.Builder
-		fmt.Fprintf(&b, "({ %s_env* _e%d = mfl_alloc(sizeof(%s_env));", name, id, name)
+		// malloc, not mfl_alloc: the env must outlive the arena of whichever
+		// goroutine constructs this closure (e.g. a `go f(func(){...})` call
+		// captures/allocates in the spawner, which may return and free its
+		// arena before the spawned goroutine invokes the closure) (#314).
+		fmt.Fprintf(&b, "({ %s_env* _e%d = malloc(sizeof(%s_env));", name, id, name)
 		for i, cap := range ex.Captures {
 			fmt.Fprintf(&b, " _e%d->f%d = v_%s;", id, i, cap)
 		}
