@@ -428,6 +428,7 @@ first := users[0]                                // value copy
 | `peer_addr(fd)`             | the remote address of a connected socket `fd` |
 | `socket_timeout(fd, ms)`    | set a read/write timeout (milliseconds) on socket `fd` |
 | `read(fd)` / `write(fd, s)` | read from / write to a socket — **one `read(2)` of up to 65535 bytes, not a whole message** (see note below) |
+| `read_bytes(fd)` / `write_bytes(fd, b)` | NUL-safe binary read/write on a socket `fd` — for binary protocols / HTTP bodies |
 | `close(fd)`                 | close a socket                               |
 | `https_get(url)`            | GET over TLS (or plain http://) → body string (`""` on error) |
 | `https_post(url, body)`     | POST with string body over TLS (or plain http://) → body string |
@@ -450,6 +451,7 @@ first := users[0]                                // value copy
 | `byte_at(b, i)`             | byte value 0–255 at index `i` (−1 if out of range) |
 | `bytes_sub(b, start, end)`  | sub-range `[start, end)` of a `bytes` value  |
 | `bytes_concat(a, b)`        | concatenate two `bytes` values               |
+| `bytes_index(b, needle, from)` | find `needle` in `b` at/after index `from`, NUL-safe (`-1` if absent); for binary protocols / multipart boundaries |
 | `alloc(n)` / `free(p)`      | allocate/free `n` zeroed raw bytes on the heap → pointer (an `int`); for building C buffers/structs to pass over FFI |
 | `poke_f32(p, off, v)` / `peek_f32(p, off)` | write/read a 4-byte float at byte offset `off` from pointer `p` |
 | `poke_i32(p, off, v)` / `peek_i32(p, off)` | write/read a 4-byte int at byte offset `off` from pointer `p` |
