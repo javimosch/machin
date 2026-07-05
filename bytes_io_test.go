@@ -1,6 +1,9 @@
 package main
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -79,5 +82,39 @@ func TestBinaryIOTypeErrors(t *testing.T) {
 		if _, err := Check(&Program{Funcs: []*FuncDecl{fn}}); err == nil {
 			t.Fatalf("expected a type error for: %s", s)
 		}
+	}
+}
+
+// write_file_bytes must round-trip an embedded NUL byte unscathed — write_file
+// would truncate at the NUL since it writes a C string via strlen, which is
+// exactly the binary-asset gap write_file_bytes/read_file_bytes exist to close.
+func TestWriteFileBytesRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "roundtrip.bin")
+	src := fmt.Sprintf(`func main() {
+		b := from_hex("48650061ff")
+		n := write_file_bytes(%q, b)
+		println(str(n))
+		back := read_file_bytes(%q)
+		println(str(len(back)))
+		println(to_hex(back))
+	}`, path, path)
+	fn, err := ParseFunc(normalize(src))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	out, err := RunCaptured(&Program{Funcs: []*FuncDecl{fn}})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	want := "5\n5\n48650061ff\n"
+	if out != want {
+		t.Fatalf("write_file_bytes round-trip = %q, want %q", out, want)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading back written file: %v", err)
+	}
+	if len(raw) != 5 || raw[2] != 0 {
+		t.Fatalf("on-disk bytes = %x, want embedded NUL at index 2", raw)
 	}
 }

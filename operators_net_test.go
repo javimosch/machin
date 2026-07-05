@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/base64"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -330,6 +331,126 @@ func TestDialOutbound(t *testing.T) {
 	}
 	if got := string(out); got != "pong-from-server" {
 		t.Fatalf("dial round trip: got %q, want \"pong-from-server\"", got)
+	}
+}
+
+// TestPeerAddr exercises peer_addr(fd): once a connection is accepted, the
+// server must be able to read back the client's remote IP via getpeername,
+// which is what lets a handler log or rate-limit by caller address.
+func TestPeerAddr(t *testing.T) {
+	const port = 47657
+	fns := parseFuncs(t,
+		`func main() { s := listen(`+itoa(port)+`) conn := accept(s) print(peer_addr(conn)) close(conn) }`)
+	bin, err := os.CreateTemp("", "mfl-peeraddr-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin.Close()
+	defer os.Remove(bin.Name())
+	if err := BuildBinary(&Program{Funcs: fns}, bin.Name(), false); err != nil {
+		t.Fatalf("server failed to compile: %v", err)
+	}
+
+	cmd := exec.Command(bin.Name())
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}()
+
+	var conn net.Conn
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		conn, err = net.DialTimeout("tcp", "127.0.0.1:"+itoa(port), 200*time.Millisecond)
+		if err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if conn == nil {
+		t.Fatalf("could not connect to MFL server: %v", err)
+	}
+	defer conn.Close()
+
+	out, err := io.ReadAll(stdout)
+	if err != nil {
+		t.Fatalf("reading server output: %v", err)
+	}
+	if got := string(out); got != "127.0.0.1" {
+		t.Fatalf("peer_addr: got %q, want \"127.0.0.1\"", got)
+	}
+}
+
+// TestSocketTimeout exercises socket_timeout(fd, ms): a connected client that
+// never sends data must make the server's read(conn) give up after the
+// configured timeout instead of blocking forever, which is the whole point of
+// the builtin (bounding a slow/hostile client's hold on a connection).
+func TestSocketTimeout(t *testing.T) {
+	const port = 47658
+	fns := parseFuncs(t,
+		`func main() { s := listen(`+itoa(port)+`) conn := accept(s) socket_timeout(conn, 200) r := read(conn) print("["+r+"]") close(conn) }`)
+	bin, err := os.CreateTemp("", "mfl-socktimeout-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin.Close()
+	defer os.Remove(bin.Name())
+	if err := BuildBinary(&Program{Funcs: fns}, bin.Name(), false); err != nil {
+		t.Fatalf("server failed to compile: %v", err)
+	}
+
+	cmd := exec.Command(bin.Name())
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}()
+
+	var conn net.Conn
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		conn, err = net.DialTimeout("tcp", "127.0.0.1:"+itoa(port), 200*time.Millisecond)
+		if err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if conn == nil {
+		t.Fatalf("could not connect to MFL server: %v", err)
+	}
+	defer conn.Close()
+	connected := time.Now()
+
+	done := make(chan []byte, 1)
+	go func() {
+		out, _ := io.ReadAll(stdout)
+		done <- out
+	}()
+
+	var out []byte
+	select {
+	case out = <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("server did not exit — read(conn) ignored socket_timeout and blocked")
+	}
+	elapsed := time.Since(connected)
+	if elapsed < 150*time.Millisecond {
+		t.Fatalf("read returned after %v, before the 200ms socket_timeout could have fired", elapsed)
+	}
+	if got := string(out); got != "[]" {
+		t.Fatalf("socket_timeout read: got %q, want \"[]\" (empty read on timeout)", got)
 	}
 }
 
