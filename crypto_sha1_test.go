@@ -27,3 +27,24 @@ func main() {
 		}
 	}
 }
+
+// Test empty input (edge case) and verify SHA-1 digest length for consistency.
+func TestSha1BytesEmpty(t *testing.T) {
+	prog := progFromSrc(t, `
+func main() {
+    digest := sha1_bytes(bytes(""))
+    println("len=" + str(len(digest)))
+    println("hex=" + to_hex(digest))
+}`)
+	out, err := RunCaptured(prog)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	for _, want := range []string{
+		"len=20", "hex=da39a3ee5e6b4b0d3255bfef95601890afd80709",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in:\n%s", want, out)
+		}
+	}
+}
