@@ -109,3 +109,23 @@ func TestCmdCheckTestProgram(t *testing.T) {
 		t.Fatalf("rows not sorted by key, got:\n%s", out)
 	}
 }
+
+// cmdCheckTest with empty program (no functions) returns empty output.
+func TestCmdCheckTestEmptyProgram(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "empty.mfl")
+	if err := os.WriteFile(path, []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var callErr error
+	out := withCapturedStdout(t, func() {
+		callErr = cmdCheckTest([]string{"--program", path})
+	})
+	if callErr != nil {
+		t.Fatalf("cmdCheckTest: %v", callErr)
+	}
+	if strings.TrimSpace(out) != "" {
+		t.Fatalf("empty program should produce no output, got: %q", out)
+	}
+}
