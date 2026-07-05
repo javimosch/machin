@@ -27,3 +27,24 @@ func main() {
 		}
 	}
 }
+
+// The 2.5 round trip above never exercises the sign bit or the zero bit
+// pattern, both easy to get wrong in a hand-rolled IEEE-754 reinterpret.
+func TestF64BitsRoundTripNegativeAndZero(t *testing.T) {
+	prog := progFromSrc(t, `
+func main() {
+    neg := f64_bits(-2.5)
+    println("neg=" + str(f64_from_bits(neg) == -2.5))
+    zero := f64_bits(0.0)
+    println("zero=" + str(f64_from_bits(zero) == 0.0))
+}`)
+	out, err := RunCaptured(prog)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	for _, want := range []string{"neg=true", "zero=true"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in:\n%s", want, out)
+		}
+	}
+}
