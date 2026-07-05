@@ -52,6 +52,30 @@ func TestCmdBuildEmitC(t *testing.T) {
 	}
 }
 
+func TestCmdBuildInvalidTarget(t *testing.T) {
+	dir := t.TempDir()
+	srcPath := filepath.Join(dir, "prog.src")
+	if err := os.WriteFile(srcPath, []byte("func main() { }"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// cmdBuild with unknown --target should error
+	if err := cmdBuild([]string{"--target", "invalid", srcPath}); err == nil {
+		t.Fatal("cmdBuild with invalid --target should error, got nil")
+	}
+}
+
+func TestCmdBuildStaticWithWasm(t *testing.T) {
+	dir := t.TempDir()
+	srcPath := filepath.Join(dir, "prog.src")
+	if err := os.WriteFile(srcPath, []byte("func main() { }"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// cmdBuild --static with wasm target should error
+	if err := cmdBuild([]string{"--static", "--target", "wasm", srcPath}); err == nil {
+		t.Fatal("cmdBuild --static with wasm should error, got nil")
+	}
+}
+
 // cmdBuild: missing source file, write permission error, successful build
 func TestCmdBuildMissingSource(t *testing.T) {
 	dir := t.TempDir()
