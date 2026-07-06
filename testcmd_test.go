@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -158,6 +159,46 @@ func TestCmdTestJSONFlagPosition(t *testing.T) {
 	output := strings.TrimSpace(string(buf[:n]))
 	if !strings.Contains(output, "\"ok\": true") && !strings.Contains(output, "\"ok\":true") {
 		t.Fatalf("JSON output (with flag after file) should contain ok:true, got %q", output)
+	}
+}
+
+// cmdTest os.Exit(1)s when res.OK is false (so `machin test` reports failure
+// to the shell) — that path can't be driven through cmdTest itself in-process
+// without killing the whole `go test` binary (which is exactly what made this
+// test's earlier, cmdTest-calling form take down the package: the test
+// program's own "FAIL: deliberate failure" / TEST_SUMMARY output is real and
+// expected, but the os.Exit(1) right after it aborted the test process before
+// any assertion ran). Exercise the same res-to-JSON path cmdTest's --json
+// branch uses instead, via the pure/exit-free runMFLTests core.
+func TestCmdTestJSONWithFailures(t *testing.T) {
+	dir := t.TempDir()
+	f := writeSrc(t, dir, "t.src", `func main() {
+		assert(1 + 1 == 2, "pass")
+		assert(false, "deliberate failure")
+		test_summary()
+	}`)
+
+	res, _, err := runMFLTests([]string{f})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.OK || res.Passed != 1 || res.Failed != 1 {
+		t.Fatalf("expected 1 passed/1 failed/not-ok, got %+v", res)
+	}
+
+	var buf strings.Builder
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(res); err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	output := buf.String()
+	if !strings.Contains(output, "\"ok\": false") && !strings.Contains(output, "\"ok\":false") {
+		t.Fatalf("JSON output should contain ok:false for failing tests, got %q", output)
+	}
+	if !strings.Contains(output, "\"failed\": 1") && !strings.Contains(output, "\"failed\":1") {
+		t.Fatalf("JSON output should contain failed:1, got %q", output)
 	}
 }
 
