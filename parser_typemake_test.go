@@ -121,3 +121,66 @@ func TestParseMakeUnsupportedKind(t *testing.T) {
 		t.Fatal("ParseFunc: expected error for make(int), got nil")
 	}
 }
+
+// #? ParseType's trailing-tokens check and parseTypeName's error branches
+// (slice/map/chan with a malformed or missing element type) had zero test
+// coverage; each of these exercises one specific error path.
+func TestParseTypeTrailingTokens(t *testing.T) {
+	if _, err := ParseType(`type Box struct { n int } extra`); err == nil {
+		t.Fatal("ParseType: expected error for trailing tokens, got nil")
+	}
+}
+
+func TestParseTypeMissingFieldName(t *testing.T) {
+	if _, err := ParseType(`type Box struct { 123 int }`); err == nil {
+		t.Fatal("ParseType: expected error for a non-identifier field name, got nil")
+	}
+}
+
+func TestParseTypeMissingCloseBrace(t *testing.T) {
+	if _, err := ParseType(`type Box struct { n int`); err == nil {
+		t.Fatal("ParseType: expected error for missing closing '}', got nil")
+	}
+}
+
+func TestParseTypeSliceMissingCloseBracket(t *testing.T) {
+	if _, err := ParseType(`type Box struct { items [int }`); err == nil {
+		t.Fatal("ParseType: expected error for slice type missing ']', got nil")
+	}
+}
+
+func TestParseTypeSliceMissingElemType(t *testing.T) {
+	if _, err := ParseType(`type Box struct { items [] }`); err == nil {
+		t.Fatal("ParseType: expected error for slice type missing element type, got nil")
+	}
+}
+
+func TestParseTypeMapMissingOpenBracket(t *testing.T) {
+	if _, err := ParseType(`type Store struct { data map string]int }`); err == nil {
+		t.Fatal("ParseType: expected error for map type missing '[', got nil")
+	}
+}
+
+func TestParseTypeMapMissingKeyType(t *testing.T) {
+	if _, err := ParseType(`type Store struct { data map[]int }`); err == nil {
+		t.Fatal("ParseType: expected error for map type missing key type, got nil")
+	}
+}
+
+func TestParseTypeMapMissingCloseBracket(t *testing.T) {
+	if _, err := ParseType(`type Store struct { data map[string int }`); err == nil {
+		t.Fatal("ParseType: expected error for map type missing ']', got nil")
+	}
+}
+
+func TestParseTypeMapMissingValType(t *testing.T) {
+	if _, err := ParseType(`type Store struct { data map[string] }`); err == nil {
+		t.Fatal("ParseType: expected error for map type missing value type, got nil")
+	}
+}
+
+func TestParseTypeChanMissingElemType(t *testing.T) {
+	if _, err := ParseType(`type Pipe struct { c chan }`); err == nil {
+		t.Fatal("ParseType: expected error for chan type missing element type, got nil")
+	}
+}
