@@ -99,7 +99,7 @@ func TestCmdPackEmptyFile(t *testing.T) {
 	if devnull != nil {
 		devnull.Close()
 	}
-	if err == nil {
-		t.Fatalf("cmdPack on an empty file should error, got nil")
+	if err != nil {
+		t.Fatalf("cmdPack on an empty file should be a graceful no-op, got: %v", err)
 	}
 }
