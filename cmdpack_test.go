@@ -82,3 +82,24 @@ func TestCmdPackTolerantOfAlreadyPackedLine(t *testing.T) {
 		t.Fatalf("cmdPack should tolerate an already-packed line, got: %v", err)
 	}
 }
+
+// TestCmdPackEmptyFile verifies pack handles a file with no declarations gracefully.
+func TestCmdPackEmptyFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "empty.mfl")
+	if err := os.WriteFile(path, []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	old := os.Stdout
+	devnull, _ := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	os.Stdout = devnull
+	err := cmdPack([]string{path})
+	os.Stdout = old
+	if devnull != nil {
+		devnull.Close()
+	}
+	if err != nil {
+		t.Fatalf("cmdPack on an empty file should be a graceful no-op, got: %v", err)
+	}
+}

@@ -18,6 +18,13 @@ func TestCmdEncodeNoArgs(t *testing.T) {
 	}
 }
 
+func TestComposeSourcesEmpty(t *testing.T) {
+	_, _, err := composeSources([]string{})
+	if err == nil {
+		t.Fatal("expected error for empty sources list, got nil")
+	}
+}
+
 func TestComposeSourcesMissingFile(t *testing.T) {
 	_, _, err := composeSources([]string{"does-not-exist.mfl"})
 	if err == nil {
