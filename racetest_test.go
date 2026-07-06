@@ -27,22 +27,8 @@ func TestCmdRaceTestFileNotFound(t *testing.T) {
 	}
 }
 
-func withCapturedStdout(t *testing.T, f func()) string {
-	t.Helper()
-	old := os.Stdout
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	os.Stdout = w
-	f()
-	w.Close()
-	os.Stdout = old
-
-	buf := make([]byte, 8192)
-	n, _ := r.Read(buf)
-	return string(buf[:n])
-}
+// withCapturedStdout is already defined in checktest_test.go (same package);
+// reuse it here instead of redeclaring it.
 
 func TestCmdRaceTestParseError(t *testing.T) {
 	dir := t.TempDir()
