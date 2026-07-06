@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"os"
 	"os/exec"
+	"strings"
 	"testing"
 )
 
@@ -178,6 +179,38 @@ func TestLoadMFLStillAcceptsCanonicalAndPacked(t *testing.T) {
 	}
 	if prog, err := loadMFL(packed); err != nil || len(prog.Funcs) != 1 {
 		t.Fatalf("packed .mfl: prog=%+v err=%v", prog, err)
+	}
+}
+
+// loadMFL's three error-wrapping branches (bad packed data, a parse error,
+// and a file with no functions) were only ever exercised indirectly through
+// loadDecls/ParseProgram's own tests, never through loadMFL itself — so a
+// regression that dropped the `%s: %w` path prefix would have gone unnoticed.
+func TestLoadMFLErrorPaths(t *testing.T) {
+	dir := t.TempDir()
+
+	badPacked := dir + "/bad.mfl"
+	if err := os.WriteFile(badPacked, []byte("not-base64!!!\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadMFL(badPacked); err == nil || !strings.Contains(err.Error(), badPacked) {
+		t.Fatalf("loadMFL(bad packed) error = %v, want it to mention %q", err, badPacked)
+	}
+
+	badSyntax := dir + "/syntax.mfl"
+	if err := os.WriteFile(badSyntax, []byte("func main() { if }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadMFL(badSyntax); err == nil || !strings.Contains(err.Error(), badSyntax) {
+		t.Fatalf("loadMFL(bad syntax) error = %v, want it to mention %q", err, badSyntax)
+	}
+
+	empty := dir + "/empty.mfl"
+	if err := os.WriteFile(empty, []byte("   \n\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadMFL(empty); err == nil || !strings.Contains(err.Error(), "no functions") {
+		t.Fatalf("loadMFL(empty) error = %v, want \"no functions\"", err)
 	}
 }
 
