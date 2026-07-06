@@ -406,21 +406,6 @@ func reconcile(a, b Kind) (Kind, error) {
 	if b == KNum && isNumeric(a) {
 		return a, nil
 	}
-	if a == KSlice && b == KSlice {
-		return KSlice, nil // element slots reconciled by union
-	}
-	if a == KStruct && b == KStruct {
-		return KStruct, nil // names reconciled by union
-	}
-	if a == KChan && b == KChan {
-		return KChan, nil // element slots reconciled by union
-	}
-	if a == KMap && b == KMap {
-		return KMap, nil // key/value slots reconciled by union
-	}
-	if a == KFunc && b == KFunc {
-		return KFunc, nil // signatures reconciled by union
-	}
 	return KVar, fmt.Errorf("type mismatch: %s vs %s", a, b)
 }
 
