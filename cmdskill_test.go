@@ -72,6 +72,16 @@ func TestCmdSkillInstallDispatches(t *testing.T) {
 	}
 }
 
+func TestCmdSkillInstallUnknownErrors(t *testing.T) {
+	dir := t.TempDir()
+	err := withSilencedStdout(t, func() error {
+		return cmdSkill([]string{"install", "--dir", dir, "unknown-skill"})
+	})
+	if err == nil {
+		t.Fatal("expected error for install of unknown skill")
+	}
+}
+
 func TestCmdSkillUnknownSubcommandErrors(t *testing.T) {
 	err := withSilencedStdout(t, func() error { return cmdSkill([]string{"bogus"}) })
 	if err == nil {

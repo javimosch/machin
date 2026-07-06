@@ -109,3 +109,26 @@ func TestCmdCheckTestProgram(t *testing.T) {
 		t.Fatalf("rows not sorted by key, got:\n%s", out)
 	}
 }
+
+// cmdCheckTest with empty program (no functions) returns empty output.
+func TestCmdCheckTestEmptyProgram(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "empty.mfl")
+	if err := os.WriteFile(path, []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var callErr error
+	out := withCapturedStdout(t, func() {
+		callErr = cmdCheckTest([]string{"--program", path})
+	})
+	if callErr != nil {
+		t.Fatalf("cmdCheckTest: %v", callErr)
+	}
+	// An empty program has no `main` function and no `export func`, so it has
+	// no entry point — Check() rejects it (see types.go: "no main function
+	// defined"), and cmdCheckTest correctly reports that as a checker error.
+	if strings.TrimSpace(out) != "(check-error)" {
+		t.Fatalf("empty program should produce a check error, got: %q", out)
+	}
+}
