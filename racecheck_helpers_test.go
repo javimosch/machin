@@ -496,3 +496,32 @@ func TestRaceFindingToDiagnostic(t *testing.T) {
 		}
 	}
 }
+
+// accessSummary must record a function's direct param accesses plus, via its
+// call-graph fixed point, the accesses its callees perform transitively.
+func TestAccessSummary(t *testing.T) {
+	prog, err := ParseProgram([]string{
+		"func poke(ys, k){ys[k]=1}",
+		"func worker(xs, id){poke(xs, id)}",
+		"func reader(zs){v:=zs[0] print(v)}",
+	})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	sum := accessSummary(prog)
+
+	poke := sum["poke"]
+	if len(poke) != 1 || poke[0].idx != 0 || !poke[0].write || len(poke[0].path) != 1 {
+		t.Fatalf("poke: direct write access = %+v, want one write on param 0 with an index step", poke)
+	}
+
+	worker := sum["worker"]
+	if len(worker) != 1 || worker[0].idx != 0 || !worker[0].write {
+		t.Fatalf("worker: transitive access via poke = %+v, want one write on param 0", worker)
+	}
+
+	reader := sum["reader"]
+	if len(reader) != 1 || reader[0].idx != 0 || reader[0].write {
+		t.Fatalf("reader: direct read access = %+v, want one read on param 0", reader)
+	}
+}

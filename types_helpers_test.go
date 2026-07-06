@@ -118,3 +118,54 @@ func TestReconcile(t *testing.T) {
 		}
 	}
 }
+
+// The new*Slot constructors must set the Kind and cross-reference the fields
+// specific to their kind (fsig/mkey+mval/elem/sname) on the returned slot.
+func TestNewCompositeSlots(t *testing.T) {
+	c := &Checker{}
+
+	sig := &funcSig{params: []int{0, 1}, ret: 2}
+	fn := newFuncSlot(c, sig)
+	if c.kind[fn] != KFunc {
+		t.Errorf("newFuncSlot: kind = %v, want KFunc", c.kind[fn])
+	}
+	if c.fsig[fn] != sig {
+		t.Errorf("newFuncSlot: fsig = %v, want %v", c.fsig[fn], sig)
+	}
+
+	key := newSlot(c, KString)
+	val := newSlot(c, KInt)
+	m := newMapSlot(c, key, val)
+	if c.kind[m] != KMap {
+		t.Errorf("newMapSlot: kind = %v, want KMap", c.kind[m])
+	}
+	if c.mkey[m] != key || c.mval[m] != val {
+		t.Errorf("newMapSlot: mkey/mval = %d/%d, want %d/%d", c.mkey[m], c.mval[m], key, val)
+	}
+
+	elem := newSlot(c, KFloat)
+	sl := newSliceSlot(c, elem)
+	if c.kind[sl] != KSlice {
+		t.Errorf("newSliceSlot: kind = %v, want KSlice", c.kind[sl])
+	}
+	if c.elem[sl] != elem {
+		t.Errorf("newSliceSlot: elem = %d, want %d", c.elem[sl], elem)
+	}
+
+	st := newStructSlot(c, "Point")
+	if c.kind[st] != KStruct {
+		t.Errorf("newStructSlot: kind = %v, want KStruct", c.kind[st])
+	}
+	if c.sname[st] != "Point" {
+		t.Errorf("newStructSlot: sname = %q, want %q", c.sname[st], "Point")
+	}
+
+	chanElem := newSlot(c, KBool)
+	ch := newChanSlot(c, chanElem)
+	if c.kind[ch] != KChan {
+		t.Errorf("newChanSlot: kind = %v, want KChan", c.kind[ch])
+	}
+	if c.elem[ch] != chanElem {
+		t.Errorf("newChanSlot: elem = %d, want %d", c.elem[ch], chanElem)
+	}
+}
