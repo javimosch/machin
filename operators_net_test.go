@@ -96,6 +96,8 @@ func TestSafeChecks(t *testing.T) {
 		{"bounds", `func main() { xs := []int{1, 2, 3} println(xs[5]) }`, "index out of range"},
 		{"divzero", `func main() { a := 7 b := 0 println(a / b) }`, "divide by zero"},
 		{"overflow", `func main() { x := 9000000000000000000 println(x + x) }`, "overflow"},
+		{"mulOverflow", `func main() { x := 9000000000000000000 println(x * x) }`, "overflow"},
+		{"modzero", `func main() { a := 7 b := 0 println(a % b) }`, "modulo by zero"},
 	}
 	for _, c := range cases {
 		bin, err := os.CreateTemp("", "mfl-safe-*")
