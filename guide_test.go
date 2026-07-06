@@ -191,6 +191,9 @@ func TestCmdGuideSkillDispatch(t *testing.T) {
 	if err := cmdGuide([]string{"--skill", "bogus"}); err == nil {
 		t.Fatal("cmdGuide --skill bogus: expected error, got nil")
 	}
+	if err := cmdGuide([]string{"--skill"}); err == nil {
+		t.Fatal("cmdGuide --skill (no name): expected error, got nil")
+	}
 }
 
 func TestCmdGuideTextAndJSON(t *testing.T) {
