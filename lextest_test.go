@@ -48,3 +48,16 @@ func TestCmdLexBenchFileNotFound(t *testing.T) {
 		t.Fatal("expected error for file not found, got nil")
 	}
 }
+
+func TestCmdLexBenchSuccess(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.mfl")
+	src := "func main(){x:=1}"
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := cmdLexBench([]string{path, "3"}); err != nil {
+		t.Fatalf("cmdLexBench() error = %v", err)
+	}
+}
