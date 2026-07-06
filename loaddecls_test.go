@@ -39,3 +39,53 @@ func TestLoadDecls_BadPacked(t *testing.T) {
 		t.Fatalf("err = %v, want mention of invalid packed MFL", err)
 	}
 }
+
+func TestLoadDecls_Empty(t *testing.T) {
+	decls, err := loadDecls("")
+	if err != nil {
+		t.Fatalf("loadDecls empty: %v", err)
+	}
+	if len(decls) != 0 {
+		t.Fatalf("loadDecls empty: got %+v, want empty slice", decls)
+	}
+}
+
+func TestLoadDecls_WhitespaceOnly(t *testing.T) {
+	decls, err := loadDecls("  \n  \n\n")
+	if err != nil {
+		t.Fatalf("loadDecls whitespace only: %v", err)
+	}
+	if len(decls) != 0 {
+		t.Fatalf("loadDecls whitespace only: got %+v, want empty slice", decls)
+	}
+}
+
+func TestLoadDecls_MultiplePlain(t *testing.T) {
+	// Each declaration must start on its own line: splitFunctionsLoc (the
+	// machinery loadDecls delegates to for plain text) only checks for a
+	// completed top-level block at line boundaries, so two decls packed onto
+	// a single physical line are never split — see TestSplitFunctionsLoc in
+	// check_helpers_test.go for the same one-decl-starts-a-line contract.
+	decls, err := loadDecls("func f1() {}\nfunc f2() {}\n")
+	if err != nil {
+		t.Fatalf("loadDecls multiple: %v", err)
+	}
+	if len(decls) != 2 {
+		t.Fatalf("loadDecls multiple: got %d decls, want 2", len(decls))
+	}
+}
+
+func TestLoadDecls_MultiplePacked(t *testing.T) {
+	line1 := base64.StdEncoding.EncodeToString([]byte("func f1(){}"))
+	line2 := base64.StdEncoding.EncodeToString([]byte("func f2(){}"))
+	decls, err := loadDecls(line1 + "\n" + line2 + "\n")
+	if err != nil {
+		t.Fatalf("loadDecls multiple packed: %v", err)
+	}
+	if len(decls) != 2 {
+		t.Fatalf("loadDecls multiple packed: got %d decls, want 2", len(decls))
+	}
+	if decls[0] != "func f1(){}" || decls[1] != "func f2(){}" {
+		t.Fatalf("loadDecls multiple packed: got %+v, want decoded decls", decls)
+	}
+}
