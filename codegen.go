@@ -3616,6 +3616,60 @@ func (g *cgen) goStmt(st *GoStmt) error {
 		strOffs = append(strOffs, g.chanStrOffsets(argType, fmt.Sprintf("offsetof(struct mfl_go_%d, a%d) + ", id, i))...)
 	}
 
+	// #314: an argument that is a closure LITERAL (a *MakeClosure with
+	// captures) needs one more level of the same protection. Since #376 the
+	// env struct and each captured variable's box are plain malloc (stable
+	// across the arena boundary), but the DATA a box holds still lives in the
+	// spawning goroutine's arena: a captured string's bytes, a captured
+	// struct's string fields, a captured slice/map's backing. Freeze/thaw
+	// those through the env->box indirection, per capture. After the go
+	// statement the spawner must not keep mutating a captured variable (the
+	// same ownership-moves rule as a channel send); a closure passed as a
+	// plain VARIABLE has an unknowable env layout at this call site and keeps
+	// the documented shared-value caveat (SPEC.md 12).
+	type capStrOp struct {
+		ci   int
+		offs []string
+	}
+	type capJSONOp struct {
+		ci       int
+		ser, des string
+	}
+	type closureOps struct {
+		env  string
+		strs []capStrOp
+		js   []capJSONOp
+	}
+	closArgs := make(map[int]closureOps)
+	for i, a := range st.Call.Args {
+		mc, ok := a.(*MakeClosure)
+		if !ok || len(mc.Captures) == 0 {
+			continue
+		}
+		ops := closureOps{env: g.c.ClosureCName(g.curFn, mc) + "_env"}
+		for ci, cap := range mc.Captures {
+			capType := g.c.VarTypeString(g.curFn, cap)
+			if g.chanNeedsJSON(capType) {
+				ser, err := g.jsonSerializer(capType)
+				if err != nil {
+					return err
+				}
+				des, err := g.jsonParser(capType)
+				if err != nil {
+					return err
+				}
+				ops.js = append(ops.js, capJSONOp{ci, ser, des})
+				continue
+			}
+			if offs := g.chanStrOffsets(capType, ""); len(offs) > 0 {
+				ops.strs = append(ops.strs, capStrOp{ci, offs})
+			}
+		}
+		if len(ops.strs) > 0 || len(ops.js) > 0 {
+			closArgs[i] = ops
+		}
+	}
+
 	// arg struct + trampoline (a leading dummy field avoids an empty struct).
 	// A JSON-mode argument gets an extra _jN field carrying the malloc'd JSON
 	// blob across the arena boundary; its real aN field is populated inside
@@ -3625,6 +3679,11 @@ func (g *cgen) goStmt(st *GoStmt) error {
 		fmt.Fprintf(&g.tramp, " %s a%d;", g.c.ParamCType(inst, i), i)
 		if _, ok := jsonArgs[i]; ok {
 			fmt.Fprintf(&g.tramp, " char* _j%d;", i)
+		}
+		if ops, ok := closArgs[i]; ok {
+			for _, j := range ops.js {
+				fmt.Fprintf(&g.tramp, " char* _cb%d_%d;", i, j.ci)
+			}
 		}
 	}
 	g.tramp.WriteString(" };\n")
@@ -3637,6 +3696,20 @@ func (g *cgen) goStmt(st *GoStmt) error {
 	}
 	if len(strOffs) > 0 {
 		fmt.Fprintf(&g.tramp, "    mfl_thaw_strs(%d, (int[]){%s}, s);\n", len(strOffs), strings.Join(strOffs, ", "))
+	}
+	for i := 0; i < n; i++ {
+		ops, ok := closArgs[i]
+		if !ok {
+			continue
+		}
+		fmt.Fprintf(&g.tramp, "    { %s* _ce = (%s*)s->a%d.env;\n", ops.env, ops.env, i)
+		for _, so := range ops.strs {
+			fmt.Fprintf(&g.tramp, "      mfl_thaw_strs(%d, (int[]){%s}, _ce->f%d);\n", len(so.offs), strings.Join(so.offs, ", "), so.ci)
+		}
+		for _, j := range ops.js {
+			fmt.Fprintf(&g.tramp, "      { const char* _p = s->_cb%d_%d; *_ce->f%d = %s(&_p); } free(s->_cb%d_%d);\n", i, j.ci, j.ci, j.des, i, j.ci)
+		}
+		g.tramp.WriteString("    }\n")
 	}
 	g.tramp.WriteString("    " + cname + "(")
 	for i := 0; i < n; i++ {
@@ -3665,6 +3738,20 @@ func (g *cgen) goStmt(st *GoStmt) error {
 	}
 	if len(strOffs) > 0 {
 		fmt.Fprintf(&g.buf, "        mfl_freeze_strs(%d, (int[]){%s}, s);\n", len(strOffs), strings.Join(strOffs, ", "))
+	}
+	for i := 0; i < n; i++ {
+		ops, ok := closArgs[i]
+		if !ok {
+			continue
+		}
+		fmt.Fprintf(&g.buf, "        { %s* _ce = (%s*)s->a%d.env;\n", ops.env, ops.env, i)
+		for _, so := range ops.strs {
+			fmt.Fprintf(&g.buf, "          mfl_freeze_strs(%d, (int[]){%s}, _ce->f%d);\n", len(so.offs), strings.Join(so.offs, ", "), so.ci)
+		}
+		for _, j := range ops.js {
+			fmt.Fprintf(&g.buf, "          { char* _j = %s(*_ce->f%d); size_t _n = strlen(_j); s->_cb%d_%d = malloc(_n + 1); memcpy(s->_cb%d_%d, _j, _n + 1); }\n", j.ser, j.ci, i, j.ci, i, j.ci)
+		}
+		g.buf.WriteString("        }\n")
 	}
 	fmt.Fprintf(&g.buf, "        pthread_t t; pthread_create(&t, NULL, mfl_go_run_%d, s); pthread_detach(t);\n", id)
 	g.buf.WriteString("    }\n")

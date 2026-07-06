@@ -2659,6 +2659,11 @@ func (c *Checker) ctypeSlot(slot int) string {
 func (c *Checker) RetCTypeAt(fn string, i int) string   { return c.ctypeSlot(c.funcRets[fn][i]) }
 func (c *Checker) ParamCType(fn string, i int) string   { return c.ctypeSlot(c.funcParam[fn][i]) }
 func (c *Checker) VarCType(fn, name string) string      { return c.ctypeSlot(c.vars[fn][name]) }
+
+// VarTypeString is the MFL type string of a named variable in an instance —
+// used by goStmt to classify a closure's captured variables for the arena-
+// boundary deep copy (#314).
+func (c *Checker) VarTypeString(fn, name string) string { return c.typeStringSlot(c.vars[fn][name]) }
 func (c *Checker) NodeCType(inst string, n Node) string { return c.ctypeSlot(c.slotOf(inst, n)) }
 
 // ElemCType renders the C type of a slice- or channel-node's element.

@@ -13,6 +13,23 @@
   arena-independent, matching how channels and maps already manage their own
   memory; string/slice/map captures reassigned through the box remain a
   separate, still-open gap. See #314.
+- **Completed the #314 fix: the DATA a captured variable holds now also
+  survives the arena boundary, not just the pointer chain.** The previous
+  entry made the env struct and capture boxes malloc-stable, but a captured
+  string's bytes, a captured struct's string fields, and a captured
+  slice/map's backing still lived in the spawning goroutine's arena — so
+  `go f(func(){ ...label... })` from a short-lived goroutine still read
+  corrupted memory once the spawner's arena was reclaimed (the original
+  repro was never actually fixed; verified before and after). `goStmt` now
+  classifies each capture of a closure literal passed to `go` and
+  freeze/thaws its box contents across the boundary — the same machinery
+  channel sends and plain `go` arguments already use (#310): string-offset
+  copy for strings and structs of strings, a JSON round-trip for anything
+  holding a slice or map; scalars need nothing. As with a channel send,
+  ownership moves: the spawner must not keep mutating a captured variable
+  after the `go` statement. A closure passed as a plain *variable* (not a
+  literal at the call site) keeps the documented shared-value caveat. See
+  #314.
 
 ## v0.106.0
 
