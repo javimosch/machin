@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.107.0
+
 - **Fixed a use-after-free/segfault: a `func` literal passed directly as a
   `go` call argument (e.g. `go f(func(){ return v })`) could dangle once the
   spawning goroutine's arena was reclaimed.** The closure's captured-env
