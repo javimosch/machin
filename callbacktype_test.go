@@ -57,6 +57,7 @@ func TestParseCallbackType(t *testing.T) {
 		{"cb(int)", []string{"int"}, ""},
 		{"cb(int)i8", []string{"int"}, "i8"},
 		{"cb(int,f32)i8", []string{"int", "f32"}, "i8"},
+		{"cb(ptr,string)float", []string{"ptr", "string"}, "float"},
 	}
 	for _, c := range cases {
 		params, ret := parseCallbackType(c.enc)

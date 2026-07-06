@@ -125,3 +125,7 @@ func TestCTypeAndCZeroByKind(t *testing.T) {
 		}
 	}
 }
+
+// parseCallbackType is already covered by TestParseCallbackType in
+// callbacktype_test.go (which this branch's history shares with main) --
+// this file's own copy was a duplicate declaration from a stacked commit.
