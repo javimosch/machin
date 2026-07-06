@@ -127,3 +127,27 @@ func TestCmdParseTestProgramSuccess(t *testing.T) {
 		t.Fatalf("cmdParseTest --program: %v", err)
 	}
 }
+
+func TestCmdParseTestFuncsMissingArg(t *testing.T) {
+	if err := cmdParseTest([]string{"--funcs"}); err == nil {
+		t.Fatal("expected error for --funcs missing file arg, got nil")
+	}
+}
+
+func TestCmdParseTestFuncsFileNotFound(t *testing.T) {
+	if err := cmdParseTest([]string{"--funcs", "/nonexistent/path/file.mfl"}); err == nil {
+		t.Fatal("expected error for --funcs file not found, got nil")
+	}
+}
+
+func TestCmdParseTestFuncsSuccess(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "funcs.mfl")
+	src := "func main(){x:=1}\nexport func broken(\nfunc add(a int, b int) int { return a + b }\n"
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmdParseTest([]string{"--funcs", path}); err != nil {
+		t.Fatalf("cmdParseTest --funcs: %v", err)
+	}
+}
