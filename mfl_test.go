@@ -1629,6 +1629,7 @@ func TestStripLineComment(t *testing.T) {
 		{`x := 1 // trailing comment`, `x := 1 `},
 		{`s := "http://example.com"`, `s := "http://example.com"`}, // // inside a string is not a comment
 		{`s := "a // b" // real comment`, `s := "a // b" `},
+		{`s := "a\"//b" // real comment`, `s := "a\"//b" `}, // escaped quote keeps the string open past the //
 		{`no comment here`, `no comment here`},
 		{`// whole line is a comment`, ``},
 	}
