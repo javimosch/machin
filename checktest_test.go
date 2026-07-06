@@ -125,7 +125,10 @@ func TestCmdCheckTestEmptyProgram(t *testing.T) {
 	if callErr != nil {
 		t.Fatalf("cmdCheckTest: %v", callErr)
 	}
-	if strings.TrimSpace(out) != "" {
-		t.Fatalf("empty program should produce no output, got: %q", out)
+	// An empty program has no `main` function and no `export func`, so it has
+	// no entry point — Check() rejects it (see types.go: "no main function
+	// defined"), and cmdCheckTest correctly reports that as a checker error.
+	if strings.TrimSpace(out) != "(check-error)" {
+		t.Fatalf("empty program should produce a check error, got: %q", out)
 	}
 }
