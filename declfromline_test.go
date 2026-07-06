@@ -40,8 +40,17 @@ func TestDeclFromLineInvalid(t *testing.T) {
 }
 
 func TestDeclFromLineEmptyString(t *testing.T) {
-	_, err := declFromLine("")
-	if err == nil {
-		t.Fatalf("declFromLine(empty) expected an error, got nil")
+	// An empty line has no whitespace, so it takes the base64 branch; the
+	// empty string is trivially valid base64 (decodes to zero bytes), so
+	// declFromLine("") legitimately yields ("", nil), not an error. Callers
+	// (loadDecls, cmdPack) already skip blank lines before ever reaching
+	// declFromLine, so this path is never exercised in practice — this test
+	// just pins the degenerate-input behavior.
+	got, err := declFromLine("")
+	if err != nil {
+		t.Fatalf("declFromLine(empty) unexpected error: %v", err)
+	}
+	if got != "" {
+		t.Fatalf("declFromLine(empty) = %q, want empty string", got)
 	}
 }
