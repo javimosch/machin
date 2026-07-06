@@ -30,8 +30,22 @@ func TestCBytesLiteralContents(t *testing.T) {
 	}
 }
 
-// Every 20th byte (indices 19, 39, ...) ends a line, so 21 bytes must wrap
-// onto a second line inside the array body.
+// Every 20th byte (indices 19, 39, ...) ends a line, so exactly 20 bytes
+// should fit in one line, while 21 bytes must wrap onto a second line.
+func TestCBytesLiteralBoundary20Bytes(t *testing.T) {
+	data := make([]byte, 20)
+	got := cBytesLiteral("blob", data)
+
+	body := strings.TrimSuffix(strings.TrimPrefix(got, "const unsigned char blob[] = {\n"), "\n};\nconst unsigned long blob_len = 20UL;\n")
+	lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("cBytesLiteral(20 bytes) body has %d lines, want 1: %q", len(lines), body)
+	}
+	if got := strings.Count(lines[0], "0x"); got != 20 {
+		t.Fatalf("line has %d bytes, want 20: %q", got, lines[0])
+	}
+}
+
 func TestCBytesLiteralLineWrap(t *testing.T) {
 	data := make([]byte, 21)
 	got := cBytesLiteral("blob", data)
