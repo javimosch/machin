@@ -61,7 +61,12 @@ func TestLoadDecls_WhitespaceOnly(t *testing.T) {
 }
 
 func TestLoadDecls_MultiplePlain(t *testing.T) {
-	decls, err := loadDecls("func f1() {} func f2() {}")
+	// Each declaration must start on its own line: splitFunctionsLoc (the
+	// machinery loadDecls delegates to for plain text) only checks for a
+	// completed top-level block at line boundaries, so two decls packed onto
+	// a single physical line are never split — see TestSplitFunctionsLoc in
+	// check_helpers_test.go for the same one-decl-starts-a-line contract.
+	decls, err := loadDecls("func f1() {}\nfunc f2() {}\n")
 	if err != nil {
 		t.Fatalf("loadDecls multiple: %v", err)
 	}
