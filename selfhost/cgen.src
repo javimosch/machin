@@ -142,8 +142,9 @@ func elem_ctype(iid, idx) (s) {
 }
 
 // chan_elem_typename: the MFL type-NAME of a channel node's element ("string", a
-// struct name, or a []/map[ form for slice/map elements; any scalar -> "int", which
-// carries no strings/structs so the string-offset walk is a no-op).
+// struct name, a full recursive "[]T" / "map[K]V" form for slice/map elements — via
+// type_string_slot, #293 — or "int" for any scalar, which carries no strings/structs
+// so the string-offset walk is a no-op).
 func chan_elem_typename(iid, idx) (tn) {
     tn = "int"
     r := node_slot_of(iid, idx)
@@ -153,8 +154,7 @@ func chan_elem_typename(iid, idx) (tn) {
     ek := g_kind[er]
     if ek == 5 { tn = "string"  return tn }
     if ek == 8 { tn = g_sname[er]  return tn }
-    if ek == 7 { tn = "[]x"  return tn }      // slice element -> chan_needs_json (defer)
-    if ek == 10 { tn = "map[x]x"  return tn }  // map element -> chan_needs_json (defer)
+    if ek == 7 || ek == 10 { tn = type_string_slot(g_elem[r])  return tn }  // #293: JSON path
 }
 // map_key_args: (ik, sk) for a map op — string keys pass ("0", key), else (key, "NULL").
 func map_key_args(iid, map_idx, keyexpr) (ik, sk) {
@@ -234,10 +234,14 @@ func cg_expr(iid, idx) (out) {
     if k == K_MAKECHAN {
         // scalar: mfl_make_chan(sizeof(T), 0, 0, 0). string / struct-with-strings: the
         // fast string-offset copy path (offsetof of each string field). slice/map (or a
-        // struct reaching one): a JSON round-trip -> deferred to a later slice.
+        // struct reaching one): a JSON round-trip (#293).
         ect := elem_ctype(iid, idx)
         tn := chan_elem_typename(iid, idx)
-        if chan_needs_json(tn) == 1 { g_cg_unsup = 1  out = "0"  return out }
+        if chan_needs_json(tn) == 1 {
+            ser, des := chan_json_fns(tn)
+            out = "mfl_make_chan(sizeof(" + ect + "), " + ser + ", " + des + ", 0)"
+            return out
+        }
         offs := chan_str_offsets(tn, "")
         if len(offs) == 0 {
             out = "mfl_make_chan(sizeof(" + ect + "), 0, 0, 0)"
