@@ -175,6 +175,20 @@ func is_local(iid, name) (b) {
     for i < len(ins.lnames) { if ins.lnames[i] == name { b = 1  return b }  i = i + 1 }
 }
 
+// local_slot: the slot of `name` if it's a parameter or local of instance iid — same
+// scan as is_local, but returning the slot (#308: needed to detect a func-valued local
+// at a callvalue call site).
+func local_slot(iid, name) (slot, found) {
+    slot = -1
+    found = 0
+    if iid < 0 { return slot, found }
+    ins := g_insts[iid]
+    i := 0
+    for i < len(ins.pnames) { if ins.pnames[i] == name { slot = ins.pslots[i]  found = 1  return slot, found }  i = i + 1 }
+    i = 0
+    for i < len(ins.lnames) { if ins.lnames[i] == name { slot = ins.lslots[i]  found = 1  return slot, found }  i = i + 1 }
+}
+
 // var_ref: mfl_g_<name> for a package global (unless shadowed by a local), else v_<name>.
 func var_ref(iid, name) (s) {
     fnd := 0
@@ -239,7 +253,13 @@ func cg_expr(iid, idx) (out) {
         out = "({ " + node_ctype(iid, idx) + " _r; mfl_chan_recv(" + cg_expr(iid, n.a) + ", &_r); _r; })"
         return out
     }
-    g_cg_unsup = 1  out = "0"    // funclit / closure / callvalue: later parts
+    if k == K_FUNCLIT {
+        // #308 Phase 1: captureless only, so the fat pointer's env is always NULL —
+        // matches the reference compiler's exact codegen for a captureless MakeClosure.
+        out = "(mfl_closure){ (void*)" + funclit_cname(iid, idx) + ", NULL }"
+        return out
+    }
+    g_cg_unsup = 1  out = "0"    // callvalue-through-non-name / builtins: later parts
 }
 
 // ---- side-effect ordering (port of seqExprs) ----
@@ -321,6 +341,35 @@ func callee_cname(iid, idx) (cn) {
     cn = "/*?*/"
 }
 
+// funclit_cname: the C name of the lifted function for the K_FUNCLIT node `idx` in
+// iid (#308) — mirrors callee_cname exactly, over litnodes/litinsts instead of
+// cnodes/cinsts.
+func funclit_cname(iid, idx) (cn) {
+    ins := g_insts[iid]
+    j := 0
+    for j < len(ins.litnodes) {
+        if ins.litnodes[j] == idx { cn = g_insts[ins.litinsts[j]].cname  return cn }
+        j = j + 1
+    }
+    cn = "/*?*/"
+}
+
+// cg_callvalue: a call through a variable holding a closure (#308) — cast the fat
+// pointer's `.fn` to the recorded signature and call it with `.env` as the leading
+// (uniform, always-present) argument. Mirrors the reference compiler's captureless-
+// closure calling convention exactly (codegen.go's #305/#308-adjacent trampoline shape).
+func cg_callvalue(iid, idx, vslot, names) (out) {
+    sig := g_sigs[g_fsig[find(vslot)]]
+    ptypes := "void*"
+    i := 0
+    for i < len(sig.params) { ptypes = ptypes + ", " + ctype_slot(sig.params[i])  i = i + 1 }
+    vref := var_ref(iid, nodes[idx].s)
+    callargs := vref + ".env"
+    i = 0
+    for i < len(names) { callargs = callargs + ", " + names[i]  i = i + 1 }
+    out = "((" + ctype_slot(sig.ret) + "(*)(" + ptypes + "))" + vref + ".fn)(" + callargs + ")"
+}
+
 func cg_call(iid, idx) (out) {
     n := nodes[idx]
     names, decls, wrapped := seq_operands(iid, n.kids)
@@ -332,6 +381,18 @@ func cg_call(iid, idx) (out) {
         if func_root(n.s) >= 0 {
             body = callee_cname(iid, idx) + "(" + join(names, ", ") + ")"
         } else {
+            vslot, vfound := local_slot(iid, n.s)
+            // NOTE (#308): deliberately NOT `vfound == 1 && g_kind[find(vslot)] == 11` —
+            // this compiler's `&&` codegen hoists a side-effecting operand (find() is a
+            // call) UNCONDITIONALLY before combining, so the right side would evaluate
+            // find(-1) even when vfound==0. Nested ifs keep this a true short-circuit.
+            iscv := 0
+            if vfound == 1 { if g_kind[find(vslot)] == 11 { iscv = 1 } }
+            if iscv == 1 {
+                body = cg_callvalue(iid, idx, vslot, names)
+                if wrapped == 1 { out = "({ " + decls + body + "; })" } else { out = body }
+                return out
+            }
             body = cg_builtin(iid, idx, n.s, names)
         }
     }

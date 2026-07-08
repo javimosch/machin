@@ -64,7 +64,14 @@ func cg_signature(iid) (s) {
         params = params + ctype_slot(ins.pslots[i]) + " v_" + ins.pnames[i]
         i = i + 1
     }
-    if params == "" { params = "void" }
+    // #308: a lambda's C function always takes a leading `void* _env` — the uniform
+    // calling convention every callvalue call site casts through (unused in Phase 1's
+    // captureless closures, matching the reference compiler's exact shape).
+    if has_prefix(ins.src, "$lambda_") {
+        if params == "" { params = "void* _env" } else { params = "void* _env, " + params }
+    } else {
+        if params == "" { params = "void" }
+    }
     s = ret_type(iid) + " " + ins.cname + "(" + params + ")"
 }
 

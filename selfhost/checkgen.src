@@ -47,6 +47,8 @@ type Inst struct {
     ns []int          //   ... paired with their slot (for codegen's node kinds)
     cnodes []int      // call node indices ...
     cinsts []int      //   ... paired with the callee instance id (for codegen's cname)
+    litnodes []int    // #308: K_FUNCLIT node indices ...
+    litinsts []int    //   ... paired with their lambda instance id (for codegen's cname)
     cname string      // assigned C function name (mfl_main / mfl_<src>_<n>)
 }
 var g_insts = []Inst{}
@@ -59,6 +61,12 @@ var g_glob_nn = []int{}
 var g_glob_ns = []int{}
 var cur_cnodes = []int{}
 var cur_cinsts = []int{}
+var cur_litnodes = []int{}   // #308: K_FUNCLIT node indices ...
+var cur_litinsts = []int{}   //   ... paired with their lambda instance id
+func record_lit(lit_idx, inst_id) {
+    cur_litnodes = append(cur_litnodes, lit_idx)
+    cur_litinsts = append(cur_litinsts, inst_id)
+}
 func record_call(call_idx, callee_inst) {
     cur_cnodes = append(cur_cnodes, call_idx)
     cur_cinsts = append(cur_cinsts, callee_inst)
@@ -182,6 +190,8 @@ func instantiate(name) (id) {
     s_ns := cur_ns
     s_cnodes := cur_cnodes
     s_cinsts := cur_cinsts
+    s_litnodes := cur_litnodes
+    s_litinsts := cur_litinsts
 
     // fresh context
     cur_names = []string{}
@@ -192,6 +202,8 @@ func instantiate(name) (id) {
     cur_ns = []int{}
     cur_cnodes = []int{}
     cur_cinsts = []int{}
+    cur_litnodes = []int{}
+    cur_litinsts = []int{}
 
     pslots := []int{}
     i := 0
@@ -222,7 +234,7 @@ func instantiate(name) (id) {
     // the body to capture the locals discovered during generation.
     g_insts[id] = Inst{src: name, pnames: pnames, rnames: rnames, pslots: pslots, rslots: rslots, lnames: cur_lnames, lslots: cur_lslots}
     gen_block(body)
-    g_insts[id] = Inst{src: name, pnames: pnames, rnames: rnames, pslots: pslots, rslots: rslots, lnames: cur_lnames, lslots: cur_lslots, nn: cur_nn, ns: cur_ns, cnodes: cur_cnodes, cinsts: cur_cinsts}
+    g_insts[id] = Inst{src: name, pnames: pnames, rnames: rnames, pslots: pslots, rslots: rslots, lnames: cur_lnames, lslots: cur_lslots, nn: cur_nn, ns: cur_ns, cnodes: cur_cnodes, cinsts: cur_cinsts, litnodes: cur_litnodes, litinsts: cur_litinsts}
 
     // restore caller context and pop the recursion guard
     cur_names = s_names
@@ -234,6 +246,8 @@ func instantiate(name) (id) {
     cur_ns = s_ns
     cur_cnodes = s_cnodes
     cur_cinsts = s_cinsts
+    cur_litnodes = s_litnodes
+    cur_litinsts = s_litinsts
     istack_pop()
 }
 
@@ -333,6 +347,33 @@ func add_index_use(b, ix, r) { g_iu_base = append(g_iu_base, b)  g_iu_idx = appe
 func add_range_use(b, k, v, hv) { g_ru_base = append(g_ru_base, b)  g_ru_key = append(g_ru_key, k)  g_ru_val = append(g_ru_val, v)  g_ru_hasval = append(g_ru_hasval, hv) }
 func add_field_use(b, f, r) { g_fu_base = append(g_fu_base, b)  g_fu_field = append(g_fu_field, f)  g_fu_res = append(g_fu_res, r) }
 
+// #308: deferred callvalue uses — a call through a func-valued local, e.g.
+// `f := func(x){...}; f(5)`. The callee's shape (g_fsig/g_sigs) may not be known yet
+// at gen_call time (add_pair from the declaration is only a PENDING unification,
+// resolved by solve() later in the pipeline) — same reason index/range/field uses are
+// deferred. CVUse wraps the variable-length arg-slot list (mirrors Sig{params []int}
+// / g_sigs — MFL has no bare [][]int, but a []int field inside a []struct works fine).
+type CVUse struct { base int  args []int  res int }
+var g_cvuses = []CVUse{}
+func add_callvalue_use(base, args, res) { g_cvuses = append(g_cvuses, CVUse{base: base, args: args, res: res}) }
+
+// try_callvalue resolves one deferred callvalue use once its base is known to be a
+// func-typed slot with a recorded signature (see new_func_slot). ok=0 defers to a
+// later resolve_deferred() round (mirrors try_index/try_range exactly).
+func try_callvalue(u) (ok) {
+    ok = 0
+    r := find(u.base)
+    if kind_of(u.base) != 11 { return ok }
+    fsig := g_fsig[r]
+    if fsig < 0 { return ok }
+    sig := g_sigs[fsig]
+    if len(sig.params) != len(u.args) { g_check_err = 1  return ok }
+    i := 0
+    for i < len(sig.params) { union(sig.params[i], u.args[i])  i = i + 1 }
+    union(u.res, sig.ret)
+    ok = 1
+}
+
 func new_slice_slot(elem) (s) {
     s = new_slot(7)   // KSlice
     g_elem[s] = elem
@@ -411,6 +452,119 @@ func type_slot(t) (s) {
     if is_ffi_scalar(t) == 1 { s = c_int  return s }
     g_check_err = 1   // unknown type name
     s = new_slot(0)
+}
+
+// ---- #308: closure-literal free-variable safety scan (captureless-only, v1) -------
+//
+// Before treating a K_FUNCLIT as a closure, conservatively check whether its body
+// references anything from the ENCLOSING scope (a capture) — Phase 1 only supports
+// captureless closures (the actual, 100%-of-corpus usage: `func(req) { return
+// handle(req) }` passed straight to serve()/stored in a router map). A real capture
+// defers to today's existing g_unsupported path (never a silent miscompile), leaving
+// true variable capture (heap-boxing, mutation sharing) to a later phase.
+//
+// This scan runs BEFORE `instantiate()` touches the fresh (lambda-local) env — every
+// env_lookup call below resolves against `cur_names`/`cur_slots` AS THEY STAND in the
+// ENCLOSING function at this exact program point, which is exactly "is this name
+// already bound out there".
+//
+// Node-kind coverage mirrors the reference (Go) compiler's freeIdents (transform.go)
+// exactly, with one deliberate ADDITION: an assignment TARGET name (K_ASSIGN's `n.s`,
+// K_MULTI's `n.names`) is also checked. The reference doesn't need this (its checker
+// never silently redeclares), but this self-hosted checker's K_ASSIGN/K_MULTI auto-
+// declare an unresolved target as a brand-new local (env_declare) rather than erroring
+// — so a closure that only WRITES an outer name (never reads it) would otherwise slip
+// through undetected and silently shadow-declare instead of capturing. Flagging the
+// target closes that gap.
+var g_lit_has_capture = 0
+
+func capture_name(name) (b) {
+    b = 0
+    _, found := env_lookup(name)
+    if found == 1 { b = 1 }
+}
+
+func scan_expr_captures(idx) {
+    if g_lit_has_capture == 1 { return }
+    n := nodes[idx]
+    k := n.kind
+    if k == K_ID { if capture_name(n.s) == 1 { g_lit_has_capture = 1 }  return }
+    if k == K_UNARY { scan_expr_captures(n.a)  return }
+    if k == K_BIN { scan_expr_captures(n.a)  scan_expr_captures(n.b)  return }
+    if k == K_CALL {
+        if capture_name(n.s) == 1 { g_lit_has_capture = 1  return }
+        for _, a := range n.kids { scan_expr_captures(a) }
+        return
+    }
+    if k == K_CALLV {
+        scan_expr_captures(n.a)
+        for _, a := range n.kids { scan_expr_captures(a) }
+        return
+    }
+    if k == K_INDEX { scan_expr_captures(n.a)  scan_expr_captures(n.b)  return }
+    if k == K_FIELD { scan_expr_captures(n.a)  return }
+    if k == K_RECV { scan_expr_captures(n.a)  return }
+    if k == K_SLICE { for _, e := range n.kids { scan_expr_captures(e) }  return }
+    if k == K_STRUCT { for _, e := range n.kids { scan_expr_captures(e) }  return }
+    if k == K_FUNCLIT { g_lit_has_capture = 1  return }   // nested closures: Phase 2
+    // K_INT/K_FLOAT/K_STR/K_BOOL/K_NIL/K_MAKEMAP/K_MAKECHAN: no identifier refs
+}
+
+func scan_stmt_captures(idx) {
+    if g_lit_has_capture == 1 { return }
+    n := nodes[idx]
+    k := n.kind
+    if k == K_EXPRSTMT { scan_expr_captures(n.a)  return }
+    if k == K_ASSIGN {
+        scan_expr_captures(n.a)
+        if capture_name(n.s) == 1 { g_lit_has_capture = 1 }
+        return
+    }
+    if k == K_MULTI {
+        for _, e := range n.kids { scan_expr_captures(e) }
+        for _, nm := range n.names { if nm != "_" { if capture_name(nm) == 1 { g_lit_has_capture = 1 } } }
+        return
+    }
+    if k == K_RETURN { for _, e := range n.kids { scan_expr_captures(e) }  return }
+    if k == K_IF {
+        scan_expr_captures(n.a)
+        for _, s := range n.kids { scan_stmt_captures(s) }
+        for _, s := range n.kids2 { scan_stmt_captures(s) }
+        return
+    }
+    if k == K_WHILE {
+        scan_expr_captures(n.a)
+        for _, s := range n.kids { scan_stmt_captures(s) }
+        return
+    }
+    if k == K_BREAK || k == K_CONTINUE { return }
+    if k == K_ARENA { for _, s := range n.kids { scan_stmt_captures(s) }  return }
+    if k == K_RANGE {
+        // n.s/n.s2 are fresh key/val BIND names local to the loop, never a capture.
+        scan_expr_captures(n.a)
+        for _, s := range n.kids { scan_stmt_captures(s) }
+        return
+    }
+    if k == K_IDXASSIGN {
+        ixn := nodes[n.a]
+        scan_expr_captures(ixn.a)
+        scan_expr_captures(ixn.b)
+        scan_expr_captures(n.b)
+        return
+    }
+    if k == K_FLDASSIGN {
+        fdn := nodes[n.a]
+        scan_expr_captures(fdn.a)
+        scan_expr_captures(n.b)
+        return
+    }
+    if k == K_SEND { scan_expr_captures(n.a)  scan_expr_captures(n.b)  return }
+    if k == K_GO {
+        cn := nodes[n.a]
+        for _, a := range cn.kids { scan_expr_captures(a) }
+        return
+    }
+    if k == K_SELECT { g_lit_has_capture = 1  return }   // select in a closure: Phase 2
 }
 
 // gen_expr returns the slot for expression node `idx`, recording node->slot for the
@@ -492,7 +646,24 @@ func gen_expr_inner(idx) (slot) {
         return slot
     }
     if k == K_CALL { slot = gen_call(idx)  return slot }
-    g_unsupported = 1   // callvalue / funclit / closure / builtins (later slices)
+    if k == K_FUNCLIT {
+        // #308 Phase 1: captureless closures only (see the scan_*_captures block above).
+        g_lit_has_capture = 0
+        for _, s := range n.kids { scan_stmt_captures(s) }
+        if g_lit_has_capture == 1 { g_unsupported = 1  slot = c_void  return slot }
+        // v1: single-return only (matches 100% of real closure usage). A K_FUNCLIT node
+        // has no .names2 (no named returns), so func_arity_of falls straight through to
+        // return_arity — the same arity inference already used for ordinary functions.
+        if func_arity_of(idx) > 1 { g_unsupported = 1  slot = c_void  return slot }
+        id := instantiate("$lambda_" + str(idx))
+        if id < 0 { slot = c_void  return slot }
+        record_lit(idx, id)
+        rslot := c_void
+        if len(g_insts[id].rslots) == 1 { rslot = g_insts[id].rslots[0] }
+        slot = new_func_slot(g_insts[id].pslots, rslot)
+        return slot
+    }
+    g_unsupported = 1   // callvalue-through-non-name / builtins (later slices)
     slot = c_void
 }
 
@@ -534,8 +705,22 @@ func gen_call(idx) (slot) {
     }
     handled, bslot := gen_builtin(callee, argslots)
     if handled == 1 { slot = bslot  return slot }
-    _, isvar := env_lookup(callee)
-    if isvar == 1 { g_unsupported = 1  slot = c_void  return slot }   // func-valued local
+    vslot, isvar := env_lookup(callee)
+    if isvar == 1 {
+        // #308: a func-valued local — callvalue through a variable holding a closure
+        // (e.g. `h := router[key]; res = h(req)`). The closure's shape (g_fsig/g_sigs)
+        // isn't necessarily known YET at this point in the single linear constraint-
+        // gen pass — add_pair only records a pending unification, resolved later by
+        // solve(); the most common shape (`f := func(...){...}; ...; f(args)`) calls
+        // through `f` in the SAME pass its declaration's add_pair(slot, funcslot) is
+        // still only pending. So this defers exactly like index/range/field uses
+        // (add_index_use et al.) — a fresh result slot now, the real shape check once
+        // solve() has actually run (see try_callvalue / resolve_deferred).
+        res := new_slot(0)
+        add_callvalue_use(vslot, argslots, res)
+        slot = res
+        return slot
+    }
     g_check_err = 1   // undefined function
     slot = c_void
 }
@@ -1116,6 +1301,7 @@ func resolve_deferred() {
     idone := zeros(len(g_iu_base))
     rdone := zeros(len(g_ru_base))
     fdone := zeros(len(g_fu_base))
+    cdone := zeros(len(g_cvuses))
     for true {
         progressed := 0
         i := 0
@@ -1151,18 +1337,29 @@ func resolve_deferred() {
             }
             i = i + 1
         }
-        if progressed == 0 { return_after_check(idone, rdone, fdone)  return }
+        i = 0
+        for i < len(g_cvuses) {
+            if cdone[i] == 0 {
+                ok := try_callvalue(g_cvuses[i])
+                if g_terr == 1 || g_check_err == 1 { return }
+                if ok == 1 { cdone[i] = 1  progressed = 1 }
+            }
+            i = i + 1
+        }
+        if progressed == 0 { return_after_check(idone, rdone, fdone, cdone)  return }
         solve()
         if g_terr == 1 { return }
     }
 }
 
 // return_after_check flags any deferred use that never resolved as a check error.
-func return_after_check(idone, rdone, fdone) {
+func return_after_check(idone, rdone, fdone, cdone) {
     i := 0
     for i < len(idone) { if idone[i] == 0 { g_check_err = 1  return }  i = i + 1 }
     i = 0
     for i < len(rdone) { if rdone[i] == 0 { g_check_err = 1  return }  i = i + 1 }
+    i = 0
+    for i < len(cdone) { if cdone[i] == 0 { g_check_err = 1  return }  i = i + 1 }
     i = 0
     for i < len(fdone) { if fdone[i] == 0 { g_check_err = 1  return }  i = i + 1 }
 }

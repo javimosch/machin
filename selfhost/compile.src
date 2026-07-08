@@ -95,6 +95,21 @@ func compile_to_c(path, full) {
         }
     }
 
+    // pass 3 (#308): register every closure literal as a synthetic named "function".
+    // A K_FUNCLIT node already carries the same .names (params) / .kids (body) shape a
+    // K_FUNC root needs, so once registered, instantiate/cg_function/compute_reps all
+    // work on lambdas completely unmodified. "$"-prefixed so it can never collide with
+    // a real MFL identifier. Must run after pass 2 (all bodies parsed, so every
+    // K_FUNCLIT node exists) and before any instantiate() call.
+    li := 0
+    for li < len(nodes) {
+        if nodes[li].kind == K_FUNCLIT {
+            g_func_names = append(g_func_names, "$lambda_" + str(li))
+            g_func_roots = append(g_func_roots, li)
+        }
+        li = li + 1
+    }
+
     has_main := 0
     if func_root("main") >= 0 { has_main = 1 }
     exported := []string{}
