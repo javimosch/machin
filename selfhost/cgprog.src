@@ -102,6 +102,24 @@ var g_glob_inits = []int{}   // global-init expr node indices (parallel to g_glo
 func cg_program() {
     compute_reps()
     cg_nslot_init()   // O(1) node->slot direct index (sized to the node count)
+
+    // -1. function bodies are generated FIRST, into a temp buffer, so everything they
+    //     lazily trigger as a side effect — goroutine trampolines (g_tramp) AND, #293,
+    //     per-type JSON serializers/parsers for chan JSON-mode elements (g_jsonfns) —
+    //     is fully known before the surrounding program structure gets emitted below,
+    //     in its normal declaration order. Matches the reference compiler's own
+    //     generate-then-assemble structure (this just widens the existing tramp/body
+    //     split to also cover g_jsonfns, which needs an EARLIER splice point than
+    //     trampolines — see step 3b).
+    g_goid = 0
+    g_tramp = []string{}
+    g_jsonfns = []string{}
+    saved := g_out
+    g_out = []string{}
+    for _, rid := range g_reps { cg_function(rid) }
+    bodies := g_out
+    g_out = saved
+
     // 0. extern (FFI) declarations: #include headers or raw cstruct typedefs + prototypes
     cg_extern_decls()
     // 1. struct typedefs — declared `type` structs and cstructs (mfl_ form), in
@@ -129,6 +147,13 @@ func cg_program() {
     }
     // 4. blank after typedefs when the program has any struct/cstruct types
     if len(g_structdefs) > 0 { cemit("\n") }
+    // 3b. #293: generated per-type JSON serializers/parsers (chan JSON-mode elements),
+    //     spliced here — the reference's exact position, right after typedefs and
+    //     before globals — for byte-identical output.
+    if len(g_jsonfns) > 0 {
+        for _, s := range g_jsonfns { cemit(s) }
+        cemit("\n")
+    }
     // 3. package globals: zero-initialized C statics
     gi := 0
     for gi < len(g_global_names) {
@@ -139,16 +164,8 @@ func cg_program() {
     // 4. function prototypes
     for _, rid := range g_reps { cemit(cg_signature(rid) + ";\n") }
     cemit("\n")
-    // 5. function bodies — generated into a temp buffer so goroutine trampolines
-    //    (populated during body codegen via g_tramp) can be spliced BEFORE the
-    //    bodies, matching the reference compiler's tramp/buf split.
-    g_goid = 0
-    g_tramp = []string{}
-    saved := g_out
-    g_out = []string{}
-    for _, rid := range g_reps { cg_function(rid) }
-    bodies := g_out
-    g_out = saved
+    // 5. function bodies (already generated above) — trampolines splice immediately
+    //    before them, matching the reference compiler's tramp/buf split.
     for _, t := range g_tramp { cemit(t) }
     for _, b := range bodies { cemit(b) }
     // 6. package-global initializers run in a C constructor (declaration order)

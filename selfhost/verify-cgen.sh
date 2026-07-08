@@ -232,6 +232,52 @@ func main() {
 EOF
 run "$T/h10.src"
 
+# #293: slice/map (JSON) channels — the element can't be deep-copied by the flat
+# string-offset path, so it round-trips through a generated per-type JSON
+# serializer/parser instead.
+cat > "$T/h11.src" <<'EOF'
+func sender(ch) {
+    ch <- []int{1, 2, 3}
+}
+func main() {
+    ch := make(chan []int)
+    go sender(ch)
+    xs := <-ch
+    println(str(len(xs)))
+}
+EOF
+run "$T/h11.src"
+
+cat > "$T/h12.src" <<'EOF'
+func sender(ch) {
+    m := make(map[string]int)
+    m["a"] = 1
+    ch <- m
+}
+func main() {
+    ch := make(chan map[string]int)
+    go sender(ch)
+    m := <-ch
+    println(str(len(keys(m))))
+}
+EOF
+run "$T/h12.src"
+
+cat > "$T/h13.src" <<'EOF'
+type Payload struct { name string  items []int }
+func sender(ch) {
+    p := Payload{name: "x", items: []int{1, 2}}
+    ch <- p
+}
+func main() {
+    ch := make(chan Payload)
+    go sender(ch)
+    p := <-ch
+    println(p.name + " " + str(len(p.items)))
+}
+EOF
+run "$T/h13.src"
+
 # SELF-APPLICATION: the MFL codegen emits byte-identical C for the compiler's OWN
 # source (checker + full codegen) — the fixpoint-adjacent milestone.
 $N "$MACHIN" encode selfhost/lex.src selfhost/parse.src selfhost/check.src \

@@ -72,6 +72,161 @@ func chan_str_offsets(tn, base) (offs) {
     }
 }
 
+// ---- #293: per-type JSON serializer/parser generators (for chan JSON-mode elements) ----
+// Port of codegen.go's jsonSerializer/jsonParser/chanJSONFns: a memoized, recursive,
+// type-string-keyed C-function-TEXT generator. The runtime helpers these generated
+// functions call (mfl_js_int/float/bool/str, mfl_json_str, mfl_map_get/keys/set,
+// mfl_make_map, ...) already live in the shared prelude (CG_PRELUDE_CORE, byte-identical
+// between both compilers) -- this only ports the CODE GENERATOR, no new runtime C.
+var g_jsonid = 0
+var g_jsonfns = []string{}   // accumulated generated function text -- spliced early in
+                              // cg_program (with the struct typedefs), same two-pass
+                              // idea as goroutine trampolines but at the reference's
+                              // exact position, for byte-identical output.
+func jsonfn_emit(s) { g_jsonfns = append(g_jsonfns, s) }
+
+var g_jsonmemo_k = []string{}
+var g_jsonmemo_v = []string{}
+func jsonmemo_get(t) (name, found) {
+    i := 0
+    for i < len(g_jsonmemo_k) { if g_jsonmemo_k[i] == t { name = g_jsonmemo_v[i]  found = 1  return name, found }  i = i + 1 }
+}
+func jsonmemo_set(t, name) { g_jsonmemo_k = append(g_jsonmemo_k, t)  g_jsonmemo_v = append(g_jsonmemo_v, name) }
+
+var g_parsememo_k = []string{}
+var g_parsememo_v = []string{}
+func parsememo_get(t) (name, found) {
+    i := 0
+    for i < len(g_parsememo_k) { if g_parsememo_k[i] == t { name = g_parsememo_v[i]  found = 1  return name, found }  i = i + 1 }
+}
+func parsememo_set(t, name) { g_parsememo_k = append(g_parsememo_k, t)  g_parsememo_v = append(g_parsememo_v, name) }
+
+var g_chanjson_k = []string{}
+var g_chanjson_ser = []string{}
+var g_chanjson_des = []string{}
+func chanjsonmemo_get(t) (ser, des, found) {
+    i := 0
+    for i < len(g_chanjson_k) { if g_chanjson_k[i] == t { ser = g_chanjson_ser[i]  des = g_chanjson_des[i]  found = 1  return ser, des, found }  i = i + 1 }
+}
+func chanjsonmemo_set(t, ser, des) { g_chanjson_k = append(g_chanjson_k, t)  g_chanjson_ser = append(g_chanjson_ser, ser)  g_chanjson_des = append(g_chanjson_des, des) }
+
+// json_serializer ensures a C function exists that serializes a value of MFL type `t`
+// to a JSON string, returning its name. Recurses into element/field/value types,
+// emitting children before parents (memo reserved BEFORE recursing, so a
+// self-referential struct type -- e.g. one with a []Self field -- terminates).
+func json_serializer(t) (name) {
+    memo, found := jsonmemo_get(t)
+    if found == 1 { name = memo  return name }
+    name = "mfl_json_v" + str(g_jsonid)
+    g_jsonid = g_jsonid + 1
+    jsonmemo_set(t, name)
+    ct := ctype_name(t)
+    body := ""
+    if t == "int" { body = "return mfl_str_i(v);" }
+    if t == "float" { body = "return mfl_str_d(v);" }
+    if t == "bool" { body = "return mfl_dup(v ? \"true\" : \"false\");" }
+    if t == "string" { body = "return mfl_json_str(v);" }
+    if body == "" && has_prefix(t, "[]") {
+        elem := substr(t, 2, len(t))
+        es := json_serializer(elem)
+        ect := ctype_name(elem)
+        body = "char* out = mfl_dup(\"[\");\n    for (int64_t i = 0; i < v.len; i++) {\n        if (i) out = mfl_cat(out, \",\");\n        out = mfl_cat(out, " + es + "(((" + ect + "*)v.data)[i]));\n    }\n    return mfl_cat(out, \"]\");"
+    }
+    if body == "" && has_prefix(t, "map[") {
+        kt, vt := split_map_type(t)
+        vs := json_serializer(vt)
+        kct := ctype_name(kt)
+        vct := ctype_name(vt)
+        keyjson := "mfl_json_str(mfl_str_i(_k))"
+        getcall := "mfl_map_get(v, _k, NULL, &_val);"
+        if kt == "string" { keyjson = "mfl_json_str(_k)"  getcall = "mfl_map_get(v, 0, _k, &_val);" }
+        body = "mfl_slice _ks = mfl_map_keys(v);\n    char* out = mfl_dup(\"{\");\n    for (int64_t i = 0; i < _ks.len; i++) {\n        if (i) out = mfl_cat(out, \",\");\n        " + kct + " _k = ((" + kct + "*)_ks.data)[i];\n        " + vct + " _val; " + getcall + "\n        out = mfl_cat(out, " + keyjson + ");\n        out = mfl_cat(out, \":\");\n        out = mfl_cat(out, " + vs + "(_val));\n    }\n    return mfl_cat(out, \"}\");"
+    }
+    if body == "" {
+        di := struct_def_idx(t)
+        d := g_structdefs[di]
+        b := "char* out = mfl_dup(\"{\");\n"
+        j := 0
+        for j < len(d.fnames) {
+            fs := json_serializer(d.ftypes[j])
+            prefix := "\"\\\"" + d.fnames[j] + "\\\":\""
+            if j > 0 { prefix = "\",\\\"" + d.fnames[j] + "\\\":\"" }
+            b = b + "    out = mfl_cat(out, " + prefix + ");\n"
+            b = b + "    out = mfl_cat(out, " + fs + "(v.f_" + d.fnames[j] + "));\n"
+            j = j + 1
+        }
+        b = b + "    return mfl_cat(out, \"}\");"
+        body = b
+    }
+    jsonfn_emit("static char* " + name + "(" + ct + " v) {\n    " + body + "\n}\n")
+}
+
+// json_parser ensures a C function exists that parses JSON (via a `const char**`
+// cursor) into a value of MFL type `t`, returning its name. Mirrors json_serializer.
+func json_parser(t) (name) {
+    memo, found := parsememo_get(t)
+    if found == 1 { name = memo  return name }
+    name = "mfl_jp_v" + str(g_jsonid)
+    g_jsonid = g_jsonid + 1
+    parsememo_set(t, name)
+    ct := ctype_name(t)
+    body := ""
+    if t == "int" { body = "return mfl_js_int(p);" }
+    if t == "float" { body = "return mfl_js_float(p);" }
+    if t == "bool" { body = "return mfl_js_bool(p);" }
+    if t == "string" { body = "return mfl_js_str(p);" }
+    if body == "" && has_prefix(t, "[]") {
+        elem := substr(t, 2, len(t))
+        ep := json_parser(elem)
+        ect := ctype_name(elem)
+        body = "mfl_slice s = {0};\n    mfl_js_ws(p);\n    if (**p == '[') {\n        (*p)++; mfl_js_ws(p);\n        if (**p != ']') {\n            while (1) {\n                " + ect + " _e = " + ep + "(p);\n                s = mfl_append(s, &_e, sizeof(" + ect + "));\n                if (mfl_js_more(p)) continue;\n                break;\n            }\n        }\n        mfl_js_ws(p); if (**p == ']') (*p)++;\n    }\n    return s;"
+    }
+    if body == "" && has_prefix(t, "map[") {
+        kt, vt := split_map_type(t)
+        vp := json_parser(vt)
+        vct := ctype_name(vt)
+        keyisstr := 0
+        setcall := "mfl_map_set(m, strtoll(_k, 0, 10), 0, &_val);"
+        if kt == "string" { keyisstr = 1  setcall = "mfl_map_set(m, 0, _k, &_val);" }
+        body = "mfl_map* m = mfl_make_map(" + str(keyisstr) + ", sizeof(" + vct + "));\n    mfl_js_ws(p);\n    if (**p == '{') {\n        (*p)++; mfl_js_ws(p);\n        if (**p != '}') {\n            while (1) {\n                char* _k = mfl_js_str(p); mfl_js_ws(p); if (**p == ':') (*p)++;\n                " + vct + " _val = " + vp + "(p);\n                " + setcall + "\n                if (mfl_js_more(p)) continue;\n                break;\n            }\n        }\n        mfl_js_ws(p); if (**p == '}') (*p)++;\n    }\n    return m;"
+    }
+    if body == "" {
+        di := struct_def_idx(t)
+        d := g_structdefs[di]
+        b := ct + " out = {0};\n"
+        b = b + "    mfl_js_ws(p);\n    if (**p == '{') {\n        (*p)++; mfl_js_ws(p);\n        if (**p != '}') {\n            while (1) {\n                char* _k = mfl_js_str(p); mfl_js_ws(p); if (**p == ':') (*p)++;\n"
+        j := 0
+        for j < len(d.fnames) {
+            fp := json_parser(d.ftypes[j])
+            kw := "if"
+            if j > 0 { kw = "else if" }
+            b = b + "                " + kw + " (strcmp(_k, \"" + d.fnames[j] + "\") == 0) out.f_" + d.fnames[j] + " = " + fp + "(p);\n"
+            j = j + 1
+        }
+        b = b + "                else mfl_js_skip(p);\n                if (mfl_js_more(p)) continue;\n                break;\n            }\n        }\n        mfl_js_ws(p); if (**p == '}') (*p)++;\n    }\n    return out;"
+        body = b
+    }
+    jsonfn_emit("static " + ct + " " + name + "(const char** p) {\n    " + body + "\n}\n")
+}
+
+// chan_json_fns: (serName, desName) for a JSON-mode channel of element type-name `t` --
+// the wrapper functions mfl_make_chan's void*-based calling convention needs, adapting
+// the per-type serializer/parser above.
+func chan_json_fns(t) (ser, des) {
+    memoser, memodes, found := chanjsonmemo_get(t)
+    if found == 1 { ser = memoser  des = memodes  return ser, des }
+    sfn := json_serializer(t)
+    dfn := json_parser(t)
+    ct := ctype_name(t)
+    id := g_jsonid
+    g_jsonid = g_jsonid + 1
+    ser = "mfl_chanser_" + str(id)
+    des = "mfl_chandes_" + str(id)
+    jsonfn_emit("static char* " + ser + "(const void* _e) { return " + sfn + "(*(const " + ct + "*)_e); }\n")
+    jsonfn_emit("static void " + des + "(const char* _j, void* _o) { const char* _p = _j; *(" + ct + "*)_o = " + dfn + "(&_p); }\n")
+    chanjsonmemo_set(t, ser, des)
+}
+
 // element/map accessors from a node's slot
 func elem_kind_of(iid, idx) (k) {
     r := node_slot_of(iid, idx)
