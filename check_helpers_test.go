@@ -19,30 +19,10 @@ func TestDeclName(t *testing.T) {
 	}
 }
 
-// TestFirstMeaningfulLine covers blank/comment-line skipping and the
-// long-line truncation branch.
-func TestFirstMeaningfulLine(t *testing.T) {
-	got := firstMeaningfulLine("\n  \n// a comment\nfunc main() {}\n")
-	if want := "func main() {}"; got != want {
-		t.Errorf("firstMeaningfulLine: got %q, want %q", got, want)
-	}
-
-	if got := firstMeaningfulLine("\n  \n// only comments\n"); got != "" {
-		t.Errorf("firstMeaningfulLine on all-blank/comment input: got %q, want \"\"", got)
-	}
-
-	long := ""
-	for i := 0; i < 130; i++ {
-		long += "x"
-	}
-	got = firstMeaningfulLine(long)
-	if len(got) != 120 {
-		t.Errorf("firstMeaningfulLine truncation: got len %d, want 120", len(got))
-	}
-	if got[117:] != "..." {
-		t.Errorf("firstMeaningfulLine truncation: got suffix %q, want \"...\"", got[117:])
-	}
-}
+// firstMeaningfulLine's blank/comment-skipping and long-line-truncation branches
+// are covered by TestFirstMeaningfulLine in check_test.go (this file previously
+// had a second, functionally-identical copy of that test under the same name,
+// which broke the build — see the fix/duplicate-testfirstmeaningfulline branch).
 
 // TestSeedStructNames covers both type and cstruct declarations, and that
 // unrelated declarations don't seed anything.
