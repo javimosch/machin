@@ -33,14 +33,13 @@ examples: build
 	./examples/run.sh
 
 # Coverage floor — runs TestTypesCoverageFloor which fails if package total
-# drops below TYPES_COVERAGE_FLOOR (default 87.0%, post-Phase-1-6 floor with
-# ~0.8pp headroom). The guard test itself adds ~1.2pp to the package
-# denominator (subprocess-skip path), so the post-test floor sits below the
-# pre-test 89.1% reference. Bypasses `-short` via `-count=1 -run` so it
-# always runs.
+# drops below TYPES_COVERAGE_FLOOR (default 88.5%, post-Phase-1-6 floor with
+# ~0.5pp headroom — after the build-tag refactor that excludes the floor
+# test's own statements from the subprocess's coverage denominator).
+# Bypasses `-short` via `-count=1 -run` so it always runs.
 #   make cov-floor TYPES_COVERAGE_FLOOR=88.0   # ad-hoc check (lower bar)
 #   make cov-floor TYPES_COVERAGE_FLOOR=95.0   # stretch target
-TYPES_COVERAGE_FLOOR ?= 87.0
+TYPES_COVERAGE_FLOOR ?= 88.5
 cov-floor:
 	@TYPES_COVERAGE_FLOOR=$(TYPES_COVERAGE_FLOOR) \
 		go test -count=1 -run '^TestTypesCoverageFloor$$' -v .
