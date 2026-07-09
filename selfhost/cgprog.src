@@ -57,21 +57,25 @@ func ret_type(iid) (s) {
 
 func cg_signature(iid) (s) {
     ins := g_insts[iid]
+    islambda := has_prefix(ins.src, "$lambda_")
     params := ""
-    i := 0
+    // #308: a lambda's C function always takes a leading `void* _env` — the uniform
+    // calling convention every callvalue call site casts through. Its captured params
+    // (the first ins.ncap) are NOT C parameters; they arrive via _env, unpacked in the
+    // prologue. So the loop skips them (i starts at ncap; ncap == 0 for non-lambdas).
+    if islambda { params = "void* _env" }
+    i := ins.ncap
     for i < len(ins.pslots) {
-        if i > 0 { params = params + ", " }
-        params = params + ctype_slot(ins.pslots[i]) + " v_" + ins.pnames[i]
+        if params != "" { params = params + ", " }
+        // a parameter captured by a NESTED closure is received by value under a temp
+        // name (_arg_<n>) and boxed on entry (see cg_function). Nested closures are still
+        // deferred, so this can't fire for a lambda's own params today — kept uniform.
+        cn := "v_" + ins.pnames[i]
+        if is_boxed(iid, ins.pnames[i]) == 1 { cn = "_arg_" + ins.pnames[i] }
+        params = params + ctype_slot(ins.pslots[i]) + " " + cn
         i = i + 1
     }
-    // #308: a lambda's C function always takes a leading `void* _env` — the uniform
-    // calling convention every callvalue call site casts through (unused in Phase 1's
-    // captureless closures, matching the reference compiler's exact shape).
-    if has_prefix(ins.src, "$lambda_") {
-        if params == "" { params = "void* _env" } else { params = "void* _env, " + params }
-    } else {
-        if params == "" { params = "void" }
-    }
+    if params == "" { params = "void" }
     s = ret_type(iid) + " " + ins.cname + "(" + params + ")"
 }
 
@@ -79,9 +83,41 @@ func cg_function(iid) {
     ins := g_insts[iid]
     activate_inst(iid)   // make this instance's node->slot map the O(1) lookup table
     cemit(cg_signature(iid) + " {\n")
-    // local declarations (named returns + body locals), zero-initialized
-    i := 0
+    // #308 Phase 2: a lambda unpacks its captured variables from the closure environment.
+    // Each is a pointer to the shared heap box; the body reads/writes through it (var_ref
+    // deref'd), so mutations are shared with the enclosing scope.
+    if has_prefix(ins.src, "$lambda_") {
+        if ins.ncap > 0 {
+            env := ins.cname + "_env"
+            cemit("    " + env + "* _e = (" + env + "*)_env;\n")
+            i := 0
+            for i < ins.ncap {
+                cemit("    " + ctype_slot(ins.pslots[i]) + "* v_" + ins.pnames[i] + " = _e->f" + str(i) + ";\n")
+                i = i + 1
+            }
+        }
+    }
+    // box any parameter captured by a nested closure: copy the by-value arg into a fresh
+    // heap cell (malloc, not the arena — it may escape via `go`; #314). Skips the leading
+    // captured params (already box pointers). ncap == 0 for non-lambdas.
+    i := ins.ncap
+    for i < len(ins.pnames) {
+        if is_boxed(iid, ins.pnames[i]) == 1 {
+            ct := ctype_slot(ins.pslots[i])
+            cemit("    " + ct + "* v_" + ins.pnames[i] + " = malloc(sizeof(" + ct + ")); *v_" + ins.pnames[i] + " = _arg_" + ins.pnames[i] + ";\n")
+        }
+        i = i + 1
+    }
+    // local declarations (named returns + body locals): a boxed local is a zeroed heap
+    // cell (mfl_calloc — an aggregate can't be `*p = {0}`-assigned); else zero-init value.
+    i = 0
     for i < len(ins.lnames) {
+        if is_boxed(iid, ins.lnames[i]) == 1 {
+            ct := ctype_slot(ins.lslots[i])
+            cemit("    " + ct + "* v_" + ins.lnames[i] + " = mfl_calloc(1, sizeof(" + ct + "));\n")
+            i = i + 1
+            continue
+        }
         cemit("    " + ctype_slot(ins.lslots[i]) + " v_" + ins.lnames[i] + " = " + c_zero(kind_of(ins.lslots[i])) + ";\n")
         i = i + 1
     }
@@ -135,9 +171,19 @@ func cg_program() {
     cg_cstruct_typedefs()
     // 2. FFI marshaling (mfl_from_/mfl_to_ per cstruct)
     cg_ffi_marshaling()
-    // 3. multi-return result structs (one per instance with >=2 returns)
+    // 3. closure environment (#308 Phase 2) + multi-return result structs, per instance.
+    //    Env before ret, matching the reference's single combined loop over reps. Each
+    //    env field is a pointer to the captured variable's heap box.
     for _, rid := range g_reps {
         ins := g_insts[rid]
+        if has_prefix(ins.src, "$lambda_") {
+            if ins.ncap > 0 {
+                line := "typedef struct {"
+                j := 0
+                for j < ins.ncap { line = line + " " + ctype_slot(ins.pslots[j]) + "* f" + str(j) + ";"  j = j + 1 }
+                cemit(line + " } " + ins.cname + "_env;\n")
+            }
+        }
         if len(ins.rslots) >= 2 {
             line := "typedef struct {"
             i := 0

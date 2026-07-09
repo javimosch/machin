@@ -189,11 +189,23 @@ func local_slot(iid, name) (slot, found) {
     for i < len(ins.lnames) { if ins.lnames[i] == name { slot = ins.lslots[i]  found = 1  return slot, found }  i = i + 1 }
 }
 
-// var_ref: mfl_g_<name> for a package global (unless shadowed by a local), else v_<name>.
+// is_boxed: is `name` captured-by-reference (heap-boxed) in instance iid? (#308 Phase 2)
+func is_boxed(iid, name) (b) {
+    b = 0
+    if iid < 0 { return b }
+    ins := g_insts[iid]
+    i := 0
+    for i < len(ins.boxed) { if ins.boxed[i] == name { b = 1  return b }  i = i + 1 }
+}
+
+// var_ref: mfl_g_<name> for a package global (unless shadowed by a local); (*v_<name>)
+// for a captured/boxed local (the storage is a heap-box pointer, shared with a closure —
+// so both sides see mutations); else the plain v_<name>.
 func var_ref(iid, name) (s) {
     fnd := 0
     _, fnd = global_lookup(name)
     if fnd == 1 && is_local(iid, name) == 0 { s = "mfl_g_" + name  return s }
+    if is_boxed(iid, name) == 1 { s = "(*v_" + name + ")"  return s }
     s = "v_" + name
 }
 
@@ -258,9 +270,29 @@ func cg_expr(iid, idx) (out) {
         return out
     }
     if k == K_FUNCLIT {
-        // #308 Phase 1: captureless only, so the fat pointer's env is always NULL —
-        // matches the reference compiler's exact codegen for a captureless MakeClosure.
-        out = "(mfl_closure){ (void*)" + funclit_cname(iid, idx) + ", NULL }"
+        cn := funclit_cname(iid, idx)
+        lid := funclit_inst(iid, idx)
+        ncap := 0
+        if lid >= 0 { ncap = g_insts[lid].ncap }
+        if ncap == 0 {
+            // captureless: the fat pointer's env is NULL — the reference's exact codegen.
+            out = "(mfl_closure){ (void*)" + cn + ", NULL }"
+            return out
+        }
+        // #308 Phase 2: allocate + fill the capture environment, then build the fat
+        // pointer. malloc (not the arena) so the env outlives the frame that builds it
+        // when the closure escapes via `go` (#314). Each field is the enclosing box
+        // POINTER (v_<cap>, raw — NOT deref'd), so both sides share one heap cell.
+        lins := g_insts[lid]
+        tid := g_tmpid
+        g_tmpid = g_tmpid + 1
+        out = "({ " + cn + "_env* _e" + str(tid) + " = malloc(sizeof(" + cn + "_env));"
+        j := 0
+        for j < ncap {
+            out = out + " _e" + str(tid) + "->f" + str(j) + " = v_" + lins.pnames[j] + ";"
+            j = j + 1
+        }
+        out = out + " (mfl_closure){ (void*)" + cn + ", _e" + str(tid) + " }; })"
         return out
     }
     g_cg_unsup = 1  out = "0"    // callvalue-through-non-name / builtins: later parts
@@ -356,6 +388,18 @@ func funclit_cname(iid, idx) (cn) {
         j = j + 1
     }
     cn = "/*?*/"
+}
+
+// funclit_inst: the lambda instance id for the K_FUNCLIT node `idx` in iid (#308 Phase 2)
+// — mirrors funclit_cname, returning the instance id (for its capture count/names).
+func funclit_inst(iid, idx) (lid) {
+    lid = -1
+    ins := g_insts[iid]
+    j := 0
+    for j < len(ins.litnodes) {
+        if ins.litnodes[j] == idx { lid = ins.litinsts[j]  return lid }
+        j = j + 1
+    }
 }
 
 // cg_callvalue: a call through a variable holding a closure (#308) — cast the fat
