@@ -49,6 +49,8 @@ type Inst struct {
     cinsts []int      //   ... paired with the callee instance id (for codegen's cname)
     litnodes []int    // #308: K_FUNCLIT node indices ...
     litinsts []int    //   ... paired with their lambda instance id (for codegen's cname)
+    ncap int          // #308 Phase 2: leading captured params (lambda only; 0 otherwise)
+    boxed []string    // #308 Phase 2: names captured-by-reference (heap-boxed) in THIS instance
     cname string      // assigned C function name (mfl_main / mfl_<src>_<n>)
 }
 var g_insts = []Inst{}
@@ -63,6 +65,15 @@ var cur_cnodes = []int{}
 var cur_cinsts = []int{}
 var cur_litnodes = []int{}   // #308: K_FUNCLIT node indices ...
 var cur_litinsts = []int{}   //   ... paired with their lambda instance id
+// #308 Phase 2: names captured-by-reference in the ACTIVE instance (snapshotted into
+// Inst.boxed). A boxed variable is heap-allocated in the enclosing scope and shared with
+// the closure by pointer, so every read/write goes through a dereference (see codegen).
+var cur_boxed = []string{}
+func mark_boxed(name) {
+    i := 0
+    for i < len(cur_boxed) { if cur_boxed[i] == name { return }  i = i + 1 }   // dedup
+    cur_boxed = append(cur_boxed, name)
+}
 func record_lit(lit_idx, inst_id) {
     cur_litnodes = append(cur_litnodes, lit_idx)
     cur_litinsts = append(cur_litinsts, inst_id)
@@ -166,12 +177,24 @@ func func_arity_of(root) (n) {
 // reuses the in-progress instance. Runs the body's constraint generation, then
 // snapshots the instance and restores the caller's context.
 func instantiate(name) (id) {
+    // #308 Phase 2: consume any pending captures FIRST (before the recursion-guard
+    // early return) so they can never leak into an unrelated instantiation. For an
+    // ordinary function this is always empty; only a `$lambda_` with captures sets it.
+    caps := g_pending_caps
+    g_pending_caps = []string{}
+    ncap := len(caps)
+
     g := istack_lookup(name)
     if g >= 0 { id = g  return id }
     root := func_root(name)
     if root < 0 { g_check_err = 1  id = -1  return id }
 
-    pnames := nodes[root].names
+    // captured names become leading parameters (captured by reference — heap-boxed and
+    // shared with the enclosing scope), exactly like the reference's lifted function
+    // (Params = append(caps, lit.Params...)).
+    pnames := []string{}
+    for _, c := range caps { pnames = append(pnames, c) }
+    for _, p := range nodes[root].names { pnames = append(pnames, p) }
     rnames := nodes[root].names2
     body := nodes[root].kids
 
@@ -192,6 +215,7 @@ func instantiate(name) (id) {
     s_cinsts := cur_cinsts
     s_litnodes := cur_litnodes
     s_litinsts := cur_litinsts
+    s_boxed := cur_boxed
 
     // fresh context
     cur_names = []string{}
@@ -204,6 +228,7 @@ func instantiate(name) (id) {
     cur_cinsts = []int{}
     cur_litnodes = []int{}
     cur_litinsts = []int{}
+    cur_boxed = []string{}
 
     pslots := []int{}
     i := 0
@@ -211,6 +236,9 @@ func instantiate(name) (id) {
         ps := new_slot(0)
         pslots = append(pslots, ps)
         env_set(pnames[i], ps)
+        // a captured leading param is heap-boxed inside the lambda too (accessed through
+        // the env pointer), so it reads/writes via a dereference — mark it boxed.
+        if i < ncap { mark_boxed(pnames[i]) }
         i = i + 1
     }
     arity := len(rnames)
@@ -232,9 +260,9 @@ func instantiate(name) (id) {
     // publish params/returns BEFORE generating the body, so a recursive call sees a
     // populated instance (Go sets funcParam/funcRets before genStmt). Refreshed after
     // the body to capture the locals discovered during generation.
-    g_insts[id] = Inst{src: name, pnames: pnames, rnames: rnames, pslots: pslots, rslots: rslots, lnames: cur_lnames, lslots: cur_lslots}
+    g_insts[id] = Inst{src: name, pnames: pnames, rnames: rnames, pslots: pslots, rslots: rslots, lnames: cur_lnames, lslots: cur_lslots, ncap: ncap, boxed: cur_boxed}
     gen_block(body)
-    g_insts[id] = Inst{src: name, pnames: pnames, rnames: rnames, pslots: pslots, rslots: rslots, lnames: cur_lnames, lslots: cur_lslots, nn: cur_nn, ns: cur_ns, cnodes: cur_cnodes, cinsts: cur_cinsts, litnodes: cur_litnodes, litinsts: cur_litinsts}
+    g_insts[id] = Inst{src: name, pnames: pnames, rnames: rnames, pslots: pslots, rslots: rslots, lnames: cur_lnames, lslots: cur_lslots, nn: cur_nn, ns: cur_ns, cnodes: cur_cnodes, cinsts: cur_cinsts, litnodes: cur_litnodes, litinsts: cur_litinsts, ncap: ncap, boxed: cur_boxed}
 
     // restore caller context and pop the recursion guard
     cur_names = s_names
@@ -248,6 +276,7 @@ func instantiate(name) (id) {
     cur_cinsts = s_cinsts
     cur_litnodes = s_litnodes
     cur_litinsts = s_litinsts
+    cur_boxed = s_boxed
     istack_pop()
 }
 
@@ -454,14 +483,18 @@ func type_slot(t) (s) {
     s = new_slot(0)
 }
 
-// ---- #308: closure-literal free-variable safety scan (captureless-only, v1) -------
+// ---- #308: closure-literal free-variable scan (Phase 2: real variable capture) ----
 //
-// Before treating a K_FUNCLIT as a closure, conservatively check whether its body
-// references anything from the ENCLOSING scope (a capture) — Phase 1 only supports
-// captureless closures (the actual, 100%-of-corpus usage: `func(req) { return
-// handle(req) }` passed straight to serve()/stored in a router map). A real capture
-// defers to today's existing g_unsupported path (never a silent miscompile), leaving
-// true variable capture (heap-boxing, mutation sharing) to a later phase.
+// Before instantiating a K_FUNCLIT, walk its body and collect every identifier that
+// resolves to a name bound in the ENCLOSING scope — those are the closure's captures
+// (`g_cap_names`). Phase 1 supported only captureless closures; Phase 2 lifts them into
+// leading captured-by-reference params (heap-boxed, mutation-shared), matching the
+// reference compiler's liftClosures/freeIdents exactly.
+//
+// Two constructs still defer to the graceful g_unsupported path (`g_lit_bail`): a NESTED
+// closure (a K_FUNCLIT inside the body) and a `select` inside the body. Neither appears
+// in the corpus and both add real machinery; keeping them out of this slice preserves
+// "never a silent miscompile — bail cleanly instead".
 //
 // This scan runs BEFORE `instantiate()` touches the fresh (lambda-local) env — every
 // env_lookup call below resolves against `cur_names`/`cur_slots` AS THEY STAND in the
@@ -470,29 +503,110 @@ func type_slot(t) (s) {
 //
 // Node-kind coverage mirrors the reference (Go) compiler's freeIdents (transform.go)
 // exactly, with one deliberate ADDITION: an assignment TARGET name (K_ASSIGN's `n.s`,
-// K_MULTI's `n.names`) is also checked. The reference doesn't need this (its checker
+// K_MULTI's `n.names`) is also collected. The reference doesn't need this (its checker
 // never silently redeclares), but this self-hosted checker's K_ASSIGN/K_MULTI auto-
 // declare an unresolved target as a brand-new local (env_declare) rather than erroring
 // — so a closure that only WRITES an outer name (never reads it) would otherwise slip
-// through undetected and silently shadow-declare instead of capturing. Flagging the
-// target closes that gap.
-var g_lit_has_capture = 0
+// through undetected and shadow-declare instead of capturing. Collecting the target
+// closes that gap.
+var g_cap_names = []string{}   // captures collected for the closure currently being scanned
+var g_lit_bail = 0             // set on a construct this slice still defers (nested closure / select)
 
-func capture_name(name) (b) {
-    b = 0
-    _, found := env_lookup(name)
-    if found == 1 { b = 1 }
+func add_cap(name) {
+    i := 0
+    for i < len(g_cap_names) { if g_cap_names[i] == name { return }  i = i + 1 }   // dedup
+    g_cap_names = append(g_cap_names, name)
 }
 
+// g_cbound: names bound WITHIN the closure currently being scanned (its params + its own
+// local declarations) — a mirror of the reference compiler's localNames(). A closure that
+// declares/shadows a name locally does NOT capture the enclosing one of the same name.
+var g_cbound = []string{}
+func cbound_add(name) {
+    if name == "_" || name == "" { return }
+    i := 0
+    for i < len(g_cbound) { if g_cbound[i] == name { return }  i = i + 1 }
+    g_cbound = append(g_cbound, name)
+}
+func cbound_has(name) (b) {
+    b = 0
+    i := 0
+    for i < len(g_cbound) { if g_cbound[i] == name { b = 1  return b }  i = i + 1 }
+}
+// collect_declared: names introduced by :=, multi-:=, and range within the closure body,
+// recursing into nested blocks but NOT into nested lambdas (port of collectDeclared).
+func collect_declared(kids) {
+    for _, si := range kids {
+        st := nodes[si]
+        k := st.kind
+        if k == K_ASSIGN { if st.s2 == ":=" { cbound_add(st.s) }  continue }
+        if k == K_MULTI { if st.s2 == ":=" { for _, nm := range st.names { cbound_add(nm) } }  continue }
+        if k == K_RANGE {
+            cbound_add(st.s)
+            cbound_add(st.s2)
+            collect_declared(st.kids)
+            continue
+        }
+        if k == K_IF { collect_declared(st.kids)  collect_declared(st.kids2)  continue }
+        if k == K_WHILE { collect_declared(st.kids)  continue }
+        if k == K_ARENA { collect_declared(st.kids)  continue }
+    }
+}
+
+// capture_name: record `name` as a capture iff it is NOT bound within the closure (its
+// own param/local) but IS bound in the enclosing scope.
+func capture_name(name) {
+    if cbound_has(name) == 1 { return }
+    _, found := env_lookup(name)
+    if found == 1 { add_cap(name) }
+}
+
+// caps_lt: ascending byte order (matches Go sort.Strings), used to sort captures so the
+// generated env struct / field order is byte-identical to the reference compiler.
+func caps_lt(a, b) (r) {
+    r = 0
+    i := 0
+    na := len(a)
+    nb := len(b)
+    for i < na {
+        if i >= nb { return r }
+        ca := byte_at(bytes(a), i)
+        cb := byte_at(bytes(b), i)
+        if ca < cb { r = 1  return r }
+        if ca > cb { return r }
+        i = i + 1
+    }
+    if nb > na { r = 1 }
+}
+func caps_sort(xs) (out) {
+    out = xs
+    i := 1
+    for i < len(out) {
+        j := i
+        for j > 0 {
+            if caps_lt(out[j], out[j - 1]) == 1 {
+                tmp := out[j]  out[j] = out[j - 1]  out[j - 1] = tmp
+                j = j - 1
+            } else { j = 0 }
+        }
+        i = i + 1
+    }
+}
+
+// pending captures handed to instantiate() for the next `$lambda_` it builds: the
+// (sorted) names to prepend as leading captured params. Consumed once, at the top of
+// instantiate, so it never leaks into an unrelated (or nested) instantiation.
+var g_pending_caps = []string{}
+
 func scan_expr_captures(idx) {
-    if g_lit_has_capture == 1 { return }
+    if g_lit_bail == 1 { return }
     n := nodes[idx]
     k := n.kind
-    if k == K_ID { if capture_name(n.s) == 1 { g_lit_has_capture = 1 }  return }
+    if k == K_ID { capture_name(n.s)  return }
     if k == K_UNARY { scan_expr_captures(n.a)  return }
     if k == K_BIN { scan_expr_captures(n.a)  scan_expr_captures(n.b)  return }
     if k == K_CALL {
-        if capture_name(n.s) == 1 { g_lit_has_capture = 1  return }
+        capture_name(n.s)
         for _, a := range n.kids { scan_expr_captures(a) }
         return
     }
@@ -506,23 +620,23 @@ func scan_expr_captures(idx) {
     if k == K_RECV { scan_expr_captures(n.a)  return }
     if k == K_SLICE { for _, e := range n.kids { scan_expr_captures(e) }  return }
     if k == K_STRUCT { for _, e := range n.kids { scan_expr_captures(e) }  return }
-    if k == K_FUNCLIT { g_lit_has_capture = 1  return }   // nested closures: Phase 2
+    if k == K_FUNCLIT { g_lit_bail = 1  return }   // nested closures: still deferred
     // K_INT/K_FLOAT/K_STR/K_BOOL/K_NIL/K_MAKEMAP/K_MAKECHAN: no identifier refs
 }
 
 func scan_stmt_captures(idx) {
-    if g_lit_has_capture == 1 { return }
+    if g_lit_bail == 1 { return }
     n := nodes[idx]
     k := n.kind
     if k == K_EXPRSTMT { scan_expr_captures(n.a)  return }
     if k == K_ASSIGN {
         scan_expr_captures(n.a)
-        if capture_name(n.s) == 1 { g_lit_has_capture = 1 }
+        capture_name(n.s)
         return
     }
     if k == K_MULTI {
         for _, e := range n.kids { scan_expr_captures(e) }
-        for _, nm := range n.names { if nm != "_" { if capture_name(nm) == 1 { g_lit_has_capture = 1 } } }
+        for _, nm := range n.names { if nm != "_" { capture_name(nm) } }
         return
     }
     if k == K_RETURN { for _, e := range n.kids { scan_expr_captures(e) }  return }
@@ -564,7 +678,7 @@ func scan_stmt_captures(idx) {
         for _, a := range cn.kids { scan_expr_captures(a) }
         return
     }
-    if k == K_SELECT { g_lit_has_capture = 1  return }   // select in a closure: Phase 2
+    if k == K_SELECT { g_lit_bail = 1  return }   // select in a closure: still deferred
 }
 
 // gen_expr returns the slot for expression node `idx`, recording node->slot for the
@@ -647,20 +761,51 @@ func gen_expr_inner(idx) (slot) {
     }
     if k == K_CALL { slot = gen_call(idx)  return slot }
     if k == K_FUNCLIT {
-        // #308 Phase 1: captureless closures only (see the scan_*_captures block above).
-        g_lit_has_capture = 0
+        // #308 Phase 2: closures with captured variables (heap-boxed, mutation-shared).
+        // Scan the body, collecting captures (g_cap_names) and bailing gracefully on the
+        // two constructs still deferred (nested closure / select — see the scan block).
+        g_cap_names = []string{}
+        g_lit_bail = 0
+        g_cbound = []string{}
+        for _, p := range n.names { cbound_add(p) }   // the closure's own params
+        collect_declared(n.kids)                       // + its own local declarations
         for _, s := range n.kids { scan_stmt_captures(s) }
-        if g_lit_has_capture == 1 { g_unsupported = 1  slot = c_void  return slot }
+        if g_lit_bail == 1 { g_unsupported = 1  slot = c_void  return slot }
         // v1: single-return only (matches 100% of real closure usage). A K_FUNCLIT node
         // has no .names2 (no named returns), so func_arity_of falls straight through to
         // return_arity — the same arity inference already used for ordinary functions.
         if func_arity_of(idx) > 1 { g_unsupported = 1  slot = c_void  return slot }
+        // sorted captures (matches the reference's sort.Strings) -> leading params.
+        caps := caps_sort(g_cap_names)
+        // resolve each capture's slot in the ENCLOSING env, BEFORE instantiate swaps in
+        // the lambda's fresh context.
+        cap_slots := []int{}
+        for _, cn := range caps {
+            cs, _ := env_lookup(cn)
+            cap_slots = append(cap_slots, cs)
+        }
+        g_pending_caps = caps
         id := instantiate("$lambda_" + str(idx))
         if id < 0 { slot = c_void  return slot }
         record_lit(idx, id)
+        // unify each captured leading param with the enclosing variable it captures (by
+        // value at the MakeClosure site — the boxing/sharing is a codegen concern), and
+        // heap-box that variable in the enclosing scope. Mirrors types.go's MakeClosure.
+        lps := g_insts[id].pslots
+        ci := 0
+        for ci < len(caps) {
+            add_pair(lps[ci], cap_slots[ci])
+            mark_boxed(caps[ci])
+            ci = ci + 1
+        }
         rslot := c_void
         if len(g_insts[id].rslots) == 1 { rslot = g_insts[id].rslots[0] }
-        slot = new_func_slot(g_insts[id].pslots, rslot)
+        // the func slot's signature is the callable (non-capture) params only — captures
+        // are baked into the closure value, invisible at the call site (params[nc:]).
+        own := []int{}
+        pi := len(caps)
+        for pi < len(lps) { own = append(own, lps[pi])  pi = pi + 1 }
+        slot = new_func_slot(own, rslot)
         return slot
     }
     g_unsupported = 1   // callvalue-through-non-name / builtins (later slices)
