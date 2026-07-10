@@ -83,6 +83,16 @@ rendering one: deterministic fixed-step loops, spatial partitioning, and probabl
 a **physics library** via FFI (e.g. an ODE/Bullet-style C lib) rather than
 hand-rolled. Listed as a direction, not a plan.
 
+The physics-library-via-FFI step is **now underway**:
+[machin-physics](https://github.com/javimosch/machin-physics) binds **Box2D v3**
+(pure C since the 3.0 rewrite; value-handle IDs pass by value like raylib's
+`Texture2D`, so `b2World_Step` binds directly — only the cookie-guarded def
+structs need a thin C shim). It has a `Vec2` layer + a clean `phys_*` API,
+**revolute joints** (a wrecking-ball demo), and **ray-cast callbacks** (the LIDAR
+demo above) — real rigid-body dynamics (stacking, friction, joints) that the
+pure-MFL [verlet demo](https://github.com/javimosch/machin-game-demo-physics)
+can't cheaply reach.
+
 ## The feature roadmap (gaps, in rough dependency order)
 
 Each is a candidate to be *driven by a demo*, not built speculatively:
@@ -104,8 +114,16 @@ Each is a candidate to be *driven by a demo*, not built speculatively:
    those are demos to build, not language gaps.
 4. ~~**A noise builtin**~~ — **done (v0.49.0):** `noise2`/`noise3` (Perlin),
    deterministic, ~`[-1,1]`; fbm layered in MFL. The backbone of procedural worlds.
-5. **FFI callbacks (Phase 4)** — C calling back into MFL (custom render/audio
-   callbacks, `SetTraceLogCallback`, GLFW-style input hooks).
+5. ~~**FFI callbacks (Phase 4)**~~ — **done + validated against a real C library.**
+   C calls back into MFL via a `cb(t1,t2)ret` extern parameter type: a captureless
+   function literal is passed as a raw C function pointer (a codegen trampoline
+   drops the closure's unused env slot). Limits: params/return are **plain FFI
+   scalars** (no cstructs), the closure must be **captureless** (state via package
+   globals), no context slot. First exercised end-to-end by
+   [machin-physics](https://github.com/javimosch/machin-physics) — **Box2D ray casts
+   call back into an MFL closure per hit** (a LIDAR demo runs ~120 ray-cast
+   callbacks/frame). Box2D's `b2CastResultFcn` takes cstructs, so a thin C shim
+   adapter unpacks each hit to scalars before invoking the MFL callback.
 6. **Deterministic fixed-step sim** loop patterns + spatial structures (for Tier 4).
 
 ## Method
