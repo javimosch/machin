@@ -525,3 +525,66 @@ func TestAccessSummary(t *testing.T) {
 		t.Fatalf("reader: direct read access = %+v, want one read on param 0", reader)
 	}
 }
+
+// noteReads records every shared element/field READ inside an expression.
+func TestNoteReads(t *testing.T) {
+	var calls []struct {
+		root string
+		path accPath
+		write bool
+		byGo bool
+		desc string
+	}
+	note := func(root string, path accPath, write, byGo bool, desc string) {
+		calls = append(calls, struct {
+			root string
+			path accPath
+			write bool
+			byGo bool
+			desc string
+		}{root, path, write, byGo, desc})
+	}
+
+	// Index expression: arr[i] should note a read of arr at index path
+	noteReads(&Index{X: &Ident{Name: "arr"}, Idx: &Ident{Name: "i"}}, note)
+	if len(calls) != 1 || calls[0].root != "arr" || len(calls[0].path) != 1 || calls[0].write {
+		t.Fatalf("noteReads(Index) = %+v, want one read of arr with index step", calls)
+	}
+
+	calls = nil
+	// Field access: p.x should note a read of p at field path
+	noteReads(&FieldAccess{X: &Ident{Name: "p"}, Name: "x"}, note)
+	if len(calls) != 1 || calls[0].root != "p" || len(calls[0].path) != 1 || calls[0].write {
+		t.Fatalf("noteReads(FieldAccess) = %+v, want one read of p with field step", calls)
+	}
+
+	calls = nil
+	// Binary: x + y should note reads of both operands
+	noteReads(&Binary{Op: "+", L: &Ident{Name: "x"}, R: &Ident{Name: "y"}}, note)
+	// Neither x nor y are place expressions (just idents), so no calls expected
+	if len(calls) != 0 {
+		t.Fatalf("noteReads(Binary with plain idents) = %+v, want no calls (idents are not place expressions)", calls)
+	}
+
+	calls = nil
+	// Nested: arr[i].x should note reads of both the index and field access (two calls due to recursion)
+	noteReads(&FieldAccess{X: &Index{X: &Ident{Name: "arr"}, Idx: &Ident{Name: "i"}}, Name: "x"}, note)
+	if len(calls) != 2 {
+		t.Fatalf("noteReads(nested Index.Field) = %+v, want two calls (one for Index, one for FieldAccess)", calls)
+	}
+	// First call is for the FieldAccess on the Index result (path: index + field)
+	if calls[0].root != "arr" || len(calls[0].path) != 2 || calls[0].write {
+		t.Fatalf("noteReads(nested Index.Field) first call = %+v, want read of arr with index+field steps", calls[0])
+	}
+	// Second call is for the Index itself (path: index only)
+	if calls[1].root != "arr" || len(calls[1].path) != 1 || calls[1].write {
+		t.Fatalf("noteReads(nested Index.Field) second call = %+v, want read of arr with index step", calls[1])
+	}
+
+	calls = nil
+	// nil expression should not panic
+	noteReads(nil, note)
+	if len(calls) != 0 {
+		t.Fatalf("noteReads(nil) = %+v, want no calls", calls)
+	}
+}
