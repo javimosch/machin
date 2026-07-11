@@ -1044,7 +1044,8 @@ func bspec(name) (s) {
     if name == "poke_f32" { s = "iin>v"  return s }
     if name == "poke_i32" || name == "poke_u8" || name == "poke_u16" || name == "poke_ptr" { s = "iii>v"  return s }
     if name == "peek_f32" { s = "ii>f"  return s }
-    if name == "peek_i32" { s = "ii>i"  return s }
+    if name == "peek_i32" || name == "peek_i8" || name == "peek_u8" { s = "ii>i"  return s }
+    if name == "dot_i8" { s = "iii>i"  return s }
     if name == "ptr_str" { s = "i>s"  return s }
     // net / io
     if name == "listen" || name == "accept" || name == "raw_mode" { s = "i>i"  return s }

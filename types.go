@@ -2111,12 +2111,20 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		c.addPair(argSlots[0], c.cInt)
 		c.addPair(argSlots[1], c.cInt)
 		return c.cFloat, nil
-	case "peek_i32":
+	case "peek_i32", "peek_i8", "peek_u8":
 		if len(argSlots) != 2 {
-			return 0, fmt.Errorf("peek_i32: 2 args (ptr, byte offset)")
+			return 0, fmt.Errorf("%s: 2 args (ptr, byte offset)", ex.Callee)
 		}
 		c.addPair(argSlots[0], c.cInt)
 		c.addPair(argSlots[1], c.cInt)
+		return c.cInt, nil
+	case "dot_i8":
+		if len(argSlots) != 3 {
+			return 0, fmt.Errorf("dot_i8: 3 args (ptr a, ptr b, count)")
+		}
+		c.addPair(argSlots[0], c.cInt)
+		c.addPair(argSlots[1], c.cInt)
+		c.addPair(argSlots[2], c.cInt)
 		return c.cInt, nil
 	case "ptr_str":
 		if len(argSlots) != 1 {
