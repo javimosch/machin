@@ -118,6 +118,8 @@ const cRuntime = `#define _GNU_SOURCE
 #include <netdb.h>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <sys/mman.h>
+#include <fcntl.h>
 #include <errno.h>
 #include <termios.h>
 #include <sys/select.h>
@@ -364,6 +366,24 @@ static mfl_ment** mfl_map_at(mfl_map* m, int64_t ik, const char* sk) {
     while (*pp) { mfl_ment* e=*pp; if (m->sk ? strcmp(e->sk,sk)==0 : e->ik==ik) return pp; pp=&e->next; }
     return pp;
 }
+/* Double the bucket array and rehash when the load factor hits 1. Without this
+   the table stays at 16 buckets forever, so N inserts are O(N^2) (every insert
+   walks a chain of length N/16) — 25s for a 128k-entry map. Amortized O(1). */
+static void mfl_map_grow(mfl_map* m) {
+    int64_t nn = m->nb * 2;
+    mfl_ment** nb2 = calloc(nn, sizeof(mfl_ment*));
+    for (int64_t b = 0; b < m->nb; b++) {
+        mfl_ment* e = m->buckets[b];
+        while (e) {
+            mfl_ment* nx = e->next;
+            uint64_t h = m->sk ? mfl_hash_s(e->sk) : mfl_hash_i(e->ik);
+            int64_t idx = (int64_t)(h & (uint64_t)(nn - 1));
+            e->next = nb2[idx]; nb2[idx] = e;
+            e = nx;
+        }
+    }
+    free(m->buckets); m->buckets = nb2; m->nb = nn;
+}
 static void mfl_map_set(mfl_map* m, int64_t ik, const char* sk, const void* val) {
     mfl_ment** pp = mfl_map_at(m, ik, sk);
     if (*pp) { memcpy((*pp)->val, val, m->vs); return; }
@@ -371,6 +391,7 @@ static void mfl_map_set(mfl_map* m, int64_t ik, const char* sk, const void* val)
     if (m->sk) { e->sk = malloc(strlen(sk)+1); strcpy(e->sk, sk); }
     e->val = malloc(m->vs); memcpy(e->val, val, m->vs);
     *pp = e; m->count++;
+    if (m->count > m->nb) mfl_map_grow(m);
 }
 static void mfl_map_get(mfl_map* m, int64_t ik, const char* sk, void* out) {
     mfl_ment** pp = mfl_map_at(m, ik, sk);
@@ -419,6 +440,23 @@ static char* mfl_dup(const char* s) { size_t n = strlen(s); char* r = mfl_alloc(
    filling C buffers (vertex arrays) and structs to hand to a C API. */
 static int64_t mfl_raw_alloc(int64_t n) { return (int64_t)(intptr_t)calloc(1, (size_t)(n > 0 ? n : 0)); }
 static void mfl_raw_free(int64_t p) { free((void*)(intptr_t)p); }
+/* mmap a file read-only into memory -> (pointer-as-int, size-in-bytes), or (0,0)
+   on error. Zero-copy access to a large on-disk buffer (a model checkpoint, a
+   memory-mapped asset) via peek_*; pages fault in lazily. The mapping lives
+   until the process exits. Multi-assign only: p, n := mmap_file(path). */
+typedef struct { int64_t ptr; int64_t len; } mfl_mmap_result;
+static mfl_mmap_result mfl_mmap_file(const char* path) {
+    mfl_mmap_result R; R.ptr = 0; R.len = 0;
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return R;
+    struct stat st;
+    if (fstat(fd, &st) != 0 || st.st_size <= 0) { close(fd); return R; }
+    void* p = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    close(fd);
+    if (p == MAP_FAILED) return R;
+    R.ptr = (int64_t)(intptr_t)p; R.len = (int64_t)st.st_size;
+    return R;
+}
 /* read a NUL-terminated string from a raw pointer into an MFL (arena) string — the
    host->wasm direction: the JS host writes UTF-8 + a NUL into wasm memory at a
    pointer the program alloc'd, then passes it here. */
@@ -3282,6 +3320,8 @@ func multiRetBuiltinC(name string) (cfn, ctype string, fields []string, needsTLS
 		return "mfl_json_get", "mfl_json_result", []string{"value", "err"}, false, true
 	case "exec":
 		return "mfl_exec", "mfl_exec_result", []string{"code", "out", "err"}, false, true
+	case "mmap_file":
+		return "mfl_mmap_file", "mfl_mmap_result", []string{"ptr", "len"}, false, true
 	}
 	return "", "", nil, false, false
 }

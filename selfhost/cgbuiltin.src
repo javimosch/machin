@@ -267,6 +267,7 @@ func mrb_info(name) (cfn, ctype, fields) {
     if name == "http_request" { cfn = "mfl_http_request"  ctype = "mfl_http_result"  fields = "status,body,err"  return cfn, ctype, fields }
     if name == "json_get" { cfn = "mfl_json_get"  ctype = "mfl_json_result"  fields = "value,err"  return cfn, ctype, fields }
     if name == "exec" { cfn = "mfl_exec"  ctype = "mfl_exec_result"  fields = "code,out,err"  return cfn, ctype, fields }
+    if name == "mmap_file" { cfn = "mfl_mmap_file"  ctype = "mfl_mmap_result"  fields = "ptr,len"  return cfn, ctype, fields }
 }
 
 func callee_inst_of(iid, idx) (ci) {
