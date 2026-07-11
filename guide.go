@@ -205,6 +205,7 @@ func machinGuide() guideCatalog {
 			{"read_key", "() -> string", "non-blocking single-key read: a 1-char string, or \"\" if no key is waiting (needs raw_mode for live input)", "io"},
 			{"read_file", "(string) -> string", "read a whole file (\"\" on error)", "io"},
 			{"read_file_bytes", "(string) -> bytes", "read a whole file's raw bytes, NUL-safe (empty on error) — for binary assets", "io"},
+			{"mmap_file", "(string) -> (int, size)", "memory-map a file read-only -> (pointer-as-int, byte size), or (0,0) on error. MULTI-ASSIGN ONLY: p, n := mmap_file(path). Zero-copy: read the mapped bytes with peek_i8/peek_u8/peek_i32/peek_f32 (pages fault in lazily) instead of read_file_bytes + a copy — for large on-disk buffers like a model checkpoint. Read-only, native only; the mapping lives until the process exits", "io"},
 			{"write_file", "(string, string) -> int", "write a file (text; -1 on error)", "io"},
 			{"write_file_bytes", "(string, bytes) -> int", "write raw bytes to a file, NUL-safe (-1 on error) — for binary uploads/assets", "io"},
 			{"remove", "(string) -> int", "delete a file (0 ok; -1 error)", "io"},

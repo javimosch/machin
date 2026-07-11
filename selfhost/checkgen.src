@@ -950,7 +950,7 @@ func gen_builtin(callee, argslots) (handled, slot) {
         return handled, slot
     }
     // multi-return builtins are invalid in expression position
-    if callee == "http_get" || callee == "http_request" || callee == "json_get" || callee == "exec" {
+    if callee == "http_get" || callee == "http_request" || callee == "json_get" || callee == "exec" || callee == "mmap_file" {
         g_check_err = 1
         return handled, slot
     }
@@ -976,8 +976,9 @@ func gen_mrb(callee, argnodes, nameslots) (handled) {
     rc := ""
     if callee == "http_get" || callee == "exec" || callee == "http_request" { rc = "iss" }
     if callee == "json_get" { rc = "ss" }
+    if callee == "mmap_file" { rc = "ii" }
     if rc == "" { handled = 0  return handled }
-    if callee == "http_get" || callee == "exec" {
+    if callee == "http_get" || callee == "exec" || callee == "mmap_file" {
         if len(argnodes) != 1 { g_check_err = 1  return handled }
         add_pair(gen_expr(argnodes[0]), c_string)
     }

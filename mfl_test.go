@@ -156,6 +156,26 @@ func TestMapStringKeys(t *testing.T) {
 	}
 }
 
+// The map must stay correct across many bucket-array grows (rehash). 5000
+// string-keyed inserts trigger ~9 doublings from the initial 16 buckets; every
+// key must remain retrievable afterward, and a re-read of an early key proves
+// rehash preserved entries. (Also guards the O(N^2) insert perf regression: a
+// non-growing table makes this loop crawl.)
+func TestMapGrowRehash(t *testing.T) {
+	got := runProg(t, `func main() {
+	m := make(map[string]int)
+	i := 0
+	while i < 5000 { m["k" + str(i)] = i * 2  i = i + 1 }
+	ok := 0
+	i = 0
+	while i < 5000 { if has(m, "k" + str(i)) && m["k" + str(i)] == i * 2 { ok = ok + 1 }  i = i + 1 }
+	println(len(m), ok, m["k0"], m["k4999"], has(m, "nope"))
+}`)
+	if got != "5000 5000 0 9998 false\n" {
+		t.Fatalf("map grow/rehash: got %q", got)
+	}
+}
+
 func TestMapIntKeysAndDelete(t *testing.T) {
 	got := runProg(t,
 		`func main() { m := make(map[int]string) m[1] = "one" m[2] = "two" delete(m, 1) println(m[1], m[2], len(m), has(m, 1)) }`)
@@ -1246,6 +1266,27 @@ func TestRawMemoryDotI8(t *testing.T) {
 	out, _ := buildRun(t, main)
 	if out != "9732 49\n" {
 		t.Fatalf("dot_i8: got %q, want %q", out, "9732 49\n")
+	}
+}
+
+// mmap_file: write a known binary blob, memory-map it, read fields back through
+// peek_* (zero-copy path for large on-disk buffers, e.g. a model checkpoint).
+// Bytes: 0x12345678 LE | f32 2.5 (0x40200000 LE) | u8 200 | pad -> 16 bytes.
+// A missing path returns (0, 0), not a crash.
+func TestMmapFile(t *testing.T) {
+	main := `func main() {
+	write_file_bytes("/tmp/mfl-mmap-test.bin", from_hex("7856341200002040c800000000000000"))
+	ptr, n := mmap_file("/tmp/mfl-mmap-test.bin")
+	if ptr == 0 { println("mmap failed")  return }
+	println(str(n) + " " + str(peek_i32(ptr, 0)) + " " + str(peek_f32(ptr, 4)) + " " + str(peek_u8(ptr, 8)))
+	pp, pn := mmap_file("/no/such/file/here")
+	println(str(pp) + " " + str(pn))
+	remove("/tmp/mfl-mmap-test.bin")
+}`
+	out, _ := buildRun(t, main)
+	want := "16 305419896 2.5 200\n0 0\n"
+	if out != want {
+		t.Fatalf("mmap_file: got %q, want %q", out, want)
 	}
 }
 

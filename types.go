@@ -1511,6 +1511,8 @@ func (c *Checker) multiRetBuiltin(name string) (args []int, rets []int, ok bool)
 		return []int{c.cString, c.cString}, []int{c.cString, c.cString}, true
 	case "exec":
 		return []int{c.cString}, []int{c.cInt, c.cString, c.cString}, true
+	case "mmap_file":
+		return []int{c.cString}, []int{c.cInt, c.cInt}, true
 	}
 	return nil, nil, false
 }
@@ -2413,6 +2415,8 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		return 0, fmt.Errorf("json_get returns 2 values; use: value, err := json_get(json, path)")
 	case "exec":
 		return 0, fmt.Errorf("exec returns 3 values; use: code, out, err := exec(cmd)")
+	case "mmap_file":
+		return 0, fmt.Errorf("mmap_file returns 2 values; use: ptr, size := mmap_file(path)")
 	case "wss_open":
 		if len(argSlots) != 1 {
 			return 0, fmt.Errorf("wss_open: 1 arg (url string)")
