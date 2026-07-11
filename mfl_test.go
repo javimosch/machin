@@ -1210,6 +1210,45 @@ func TestRawMemory(t *testing.T) {
 	}
 }
 
+// peek_i8 sign-extends, peek_u8 zero-extends: the same 0xF6 byte reads back as
+// -10 and 246. Driven by int8 quantized-matmul kernels (machin-colibri), where
+// a signed byte load in the inner loop is the difference between a
+// vectorizable `acc += x[k]*w[k]` and a shift/mask chain.
+func TestRawMemoryPeekI8U8(t *testing.T) {
+	main := `func main() {
+	p := alloc(8)
+	poke_u8(p, 0, 246)
+	poke_u8(p, 1, 127)
+	println(str(peek_i8(p, 0)) + " " + str(peek_u8(p, 0)) + " " + str(peek_i8(p, 1)))
+	free(p)
+}`
+	out, _ := buildRun(t, main)
+	if out != "-10 246 127\n" {
+		t.Fatalf("raw memory peek_i8/u8: got %q, want %q", out, "-10 246 127\n")
+	}
+}
+
+// dot_i8: signed-byte dot product over raw buffers. 3*(-4) + 100*100 + (-128)*2
+// = 9732 exercises sign handling on both sides; a second call over the same
+// buffer at an offset checks pointer arithmetic composes.
+func TestRawMemoryDotI8(t *testing.T) {
+	main := `func main() {
+	a := alloc(4)
+	b := alloc(4)
+	poke_u8(a, 0, 3)   poke_u8(b, 0, 252)
+	poke_u8(a, 1, 100) poke_u8(b, 1, 100)
+	poke_u8(a, 2, 128) poke_u8(b, 2, 2)
+	poke_u8(a, 3, 7)   poke_u8(b, 3, 7)
+	println(str(dot_i8(a, b, 3)) + " " + str(dot_i8(a + 3, b + 3, 1)))
+	free(a)
+	free(b)
+}`
+	out, _ := buildRun(t, main)
+	if out != "9732 49\n" {
+		t.Fatalf("dot_i8: got %q, want %q", out, "9732 49\n")
+	}
+}
+
 // poke_u16 and poke_ptr had no test coverage. There's no matching peek_u16 /
 // peek_ptr builtin, so verify each write via peek_i32 against a zeroed
 // region: on a little-endian host the untouched high bytes stay 0, so the

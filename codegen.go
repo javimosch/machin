@@ -430,6 +430,19 @@ static void mfl_poke_u16(int64_t p, int64_t o, int64_t v) { *(uint16_t*)((char*)
 static void mfl_poke_ptr(int64_t p, int64_t o, int64_t v) { *(void**)((char*)(intptr_t)p + o) = (void*)(intptr_t)v; }
 static double mfl_peek_f32(int64_t p, int64_t o) { return (double)*(float*)((char*)(intptr_t)p + o); }
 static int64_t mfl_peek_i32(int64_t p, int64_t o) { return (int64_t)*(int32_t*)((char*)(intptr_t)p + o); }
+static int64_t mfl_peek_i8(int64_t p, int64_t o) { return (int64_t)*(int8_t*)((char*)(intptr_t)p + o); }
+static int64_t mfl_peek_u8(int64_t p, int64_t o) { return (int64_t)*(uint8_t*)((char*)(intptr_t)p + o); }
+/* signed-byte dot product with a 32-bit accumulator (the vector-friendly width:
+ * cc autovectorizes this where an int64 reduction stays half-speed). Exact while
+ * |sum| < 2^31 - always true for i8*i8 up to n ~ 133k - the quantized-matmul
+ * group kernel of the AI domain, as sha256 is to the crypto domain. */
+static int64_t mfl_dot_i8(int64_t a, int64_t b, int64_t n) {
+    const int8_t* x = (const int8_t*)(intptr_t)a;
+    const int8_t* w = (const int8_t*)(intptr_t)b;
+    int32_t acc = 0;
+    for (int64_t k = 0; k < n; k++) acc += (int32_t)x[k] * (int32_t)w[k];
+    return (int64_t)acc;
+}
 /* base64 (standard alphabet, padded) over text. */
 static char* mfl_base64_encode(const char* s) {
     static const char t[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -4783,8 +4796,10 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("mfl_raw_free(%s)", args[0]), nil
 	case "poke_f32", "poke_i32", "poke_u8", "poke_u16", "poke_ptr":
 		return fmt.Sprintf("mfl_%s(%s, %s, %s)", ex.Callee, args[0], args[1], args[2]), nil
-	case "peek_f32", "peek_i32":
+	case "peek_f32", "peek_i32", "peek_i8", "peek_u8":
 		return fmt.Sprintf("mfl_%s(%s, %s)", ex.Callee, args[0], args[1]), nil
+	case "dot_i8":
+		return fmt.Sprintf("mfl_dot_i8(%s, %s, %s)", args[0], args[1], args[2]), nil
 	case "ptr_str":
 		return fmt.Sprintf("mfl_ptr_str(%s)", args[0]), nil
 	case "dial":

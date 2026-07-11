@@ -256,6 +256,8 @@ func machinGuide() guideCatalog {
 			{"poke_ptr", "(int, int, int) ->", "write an 8-byte pointer value at ptr+byteoffset (e.g. a buffer into a struct field)", "memory"},
 			{"peek_f32", "(int, int) -> float", "read a 32-bit float at ptr+byteoffset", "memory"},
 			{"peek_i32", "(int, int) -> int", "read a 32-bit int at ptr+byteoffset", "memory"},
+			{"peek_i8", "(int, int) -> int", "read a signed byte at ptr+byteoffset, sign-extended (also peek_u8, zero-extended) — int8 kernels / binary formats", "memory"},
+			{"dot_i8", "(int, int, int) -> int", "signed-byte dot product of two raw buffers (ptr a, ptr b, count) with a 32-bit accumulator — the quantized-matmul group kernel; exact while |sum| < 2^31 (any count <= ~133k of i8*i8), vectorizes where an i64 reduction cannot", "memory"},
 			{"ptr_str", "(int) -> string", "read a NUL-terminated string from a raw pointer into an MFL string — the host->wasm string direction (host writes UTF-8+NUL into wasm memory at an alloc'd ptr, passes it to an export). Pairs with alloc/free.", "memory"},
 			// collections
 			{"len", "(string|slice|map) -> int", "length", "collection"},
