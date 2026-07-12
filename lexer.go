@@ -86,8 +86,12 @@ func (l *Lexer) lexNumber() {
 			return
 		}
 	}
+	// decimal integer or float; '_' is a digit-group separator (as in
+	// 1_000_000), matching the hex/bin/oct branch above and Go's own syntax.
+	// The exact placement rules (no leading/trailing/doubled underscore) are
+	// enforced by strconv.ParseInt/ParseFloat when the literal is parsed.
 	isFloat := false
-	for l.pos < len(l.src) && (isDigit(l.src[l.pos]) || l.src[l.pos] == '.') {
+	for l.pos < len(l.src) && (isDigit(l.src[l.pos]) || l.src[l.pos] == '.' || l.src[l.pos] == '_') {
 		if l.src[l.pos] == '.' {
 			isFloat = true
 		}
