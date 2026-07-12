@@ -1099,6 +1099,13 @@ func (c *Checker) genStmt(fn *FuncDecl, s Stmt) error {
 				c.addPair(gs, vs)
 				return nil
 			}
+			// `=` may only assign an already-visible variable; a new local is
+			// introduced solely by `:=`. Assigning an undeclared name with `=` is
+			// almost always a typo (`cofnig = …` for `config`), so reject it — the
+			// same rule already enforced for the multi-assign form `a, b = …`.
+			if st.Op == "=" {
+				return fmt.Errorf("assignment to undefined variable %q", st.Name)
+			}
 			slot = newSlot(c, KVar)
 			env[st.Name] = slot
 			c.localOrder[fn.Name] = append(c.localOrder[fn.Name], st.Name)
