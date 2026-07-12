@@ -40,6 +40,16 @@ func TestClassifyCheckBranches(t *testing.T) {
 		{`function "f" expects 2 arguments`, "arity-mismatch"},
 		{`wrong number of argument for "f"`, "arity-mismatch"},
 		{`arity mismatch for "f"`, "arity-mismatch"},
+		// The wording the type checker actually emits (types.go): none of these
+		// contain "argument"/"expects"/"arity", so they used to leak as "type-error".
+		{"main: expected 2 args, got 3", "arity-mismatch"},
+		{"len: 1 arg", "arity-mismatch"},
+		{"append: 2 args", "arity-mismatch"},
+		{"substr: 3 args (string, start, end)", "arity-mismatch"},
+		{"ed25519_verify: 3 args (pub, msg, sig — all bytes)", "arity-mismatch"},
+		// A struct field-count message must still classify as undefined-field, not
+		// arity (the "field" case is intentionally checked before the arity case).
+		{`struct "P": expected 2 fields, got 3`, "undefined-field"},
 		{"unsupported construct in this context", "unsupported-construct"},
 		{"totally unrecognized checker message", "type-error"},
 		{"", "type-error"},
