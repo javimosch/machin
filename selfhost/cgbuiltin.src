@@ -122,6 +122,7 @@ func builtin_cfn(name) (s) {
     if name == "peek_i8" { s = "mfl_peek_i8"  return s }
     if name == "peek_u8" { s = "mfl_peek_u8"  return s }
     if name == "dot_i8" { s = "mfl_dot_i8"  return s }
+    if name == "dot_q8" { s = "mfl_dot_q8"  return s }
     if name == "ptr_str" { s = "mfl_ptr_str"  return s }
     if name == "dial" { s = "mfl_dial"  return s }
     if name == "listen" { s = "mfl_listen"  return s }
