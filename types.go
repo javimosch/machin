@@ -2128,6 +2128,14 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		c.addPair(argSlots[1], c.cInt)
 		c.addPair(argSlots[2], c.cInt)
 		return c.cInt, nil
+	case "dot_q8":
+		if len(argSlots) != 6 {
+			return 0, fmt.Errorf("dot_q8: 6 args (xq, xs, wq, ws, n, gs)")
+		}
+		for _, s := range argSlots {
+			c.addPair(s, c.cInt)
+		}
+		return c.cFloat, nil
 	case "ptr_str":
 		if len(argSlots) != 1 {
 			return 0, fmt.Errorf("ptr_str: 1 arg (pointer to NUL-terminated bytes)")

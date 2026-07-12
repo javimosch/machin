@@ -481,6 +481,29 @@ static int64_t mfl_dot_i8(int64_t a, int64_t b, int64_t n) {
     for (int64_t k = 0; k < n; k++) acc += (int32_t)x[k] * (int32_t)w[k];
     return (int64_t)acc;
 }
+/* grouped, dual-scaled int8 dot: sum over length-gs groups of
+ * (int32 group dot) * xscale[g] * wscale[g]. The whole quantized-matmul inner
+ * product in ONE call -- one int32 reduction per group (autovectorizes to
+ * vpmaddwd/vpdpbusd) with the two per-group fp32 scales applied group-at-a-time.
+ * Replaces an MFL loop that called dot_i8 + two peek_f32 per group, whose
+ * per-group call overhead capped throughput. xq/wq are int8 buffers (n bytes);
+ * xs/ws are fp32 group-scale buffers (n/gs floats). n must be a multiple of gs. */
+static double mfl_dot_q8(int64_t xq, int64_t xs, int64_t wq, int64_t ws, int64_t n, int64_t gs) {
+    const int8_t* x = (const int8_t*)(intptr_t)xq;
+    const float* xsc = (const float*)(intptr_t)xs;
+    const int8_t* w = (const int8_t*)(intptr_t)wq;
+    const float* wsc = (const float*)(intptr_t)ws;
+    double val = 0.0;
+    int64_t ng = gs > 0 ? n / gs : 0;
+    for (int64_t g = 0; g < ng; g++) {
+        const int8_t* xg = x + g * gs;
+        const int8_t* wg = w + g * gs;
+        int32_t acc = 0;
+        for (int64_t k = 0; k < gs; k++) acc += (int32_t)xg[k] * (int32_t)wg[k];
+        val += (double)acc * (double)xsc[g] * (double)wsc[g];
+    }
+    return val;
+}
 /* base64 (standard alphabet, padded) over text. */
 static char* mfl_base64_encode(const char* s) {
     static const char t[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -4840,6 +4863,8 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("mfl_%s(%s, %s)", ex.Callee, args[0], args[1]), nil
 	case "dot_i8":
 		return fmt.Sprintf("mfl_dot_i8(%s, %s, %s)", args[0], args[1], args[2]), nil
+	case "dot_q8":
+		return fmt.Sprintf("mfl_dot_q8(%s, %s, %s, %s, %s, %s)", args[0], args[1], args[2], args[3], args[4], args[5]), nil
 	case "ptr_str":
 		return fmt.Sprintf("mfl_ptr_str(%s)", args[0]), nil
 	case "dial":

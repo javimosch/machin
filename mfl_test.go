@@ -1269,6 +1269,27 @@ func TestRawMemoryDotI8(t *testing.T) {
 	}
 }
 
+// dot_q8: the grouped, dual-scaled int8 dot. Two groups of gs=2.
+//   group0: x=[2,3] w=[4,5]  dot=23,  xs=0.5 ws=2.0 -> 23*1.0   = 23
+//   group1: x=[1,-2] w=[3,1] dot=1,   xs=0.25 ws=4.0 -> 1*1.0   = 1
+// total 24.0. Verifies grouping, per-group dual scaling, and signedness.
+func TestRawMemoryDotQ8(t *testing.T) {
+	main := `func main() {
+	xq := alloc(4)  wq := alloc(4)
+	xs := alloc(8)  ws := alloc(8)
+	poke_u8(xq, 0, 2)  poke_u8(xq, 1, 3)  poke_u8(xq, 2, 1)  poke_u8(xq, 3, 254)
+	poke_u8(wq, 0, 4)  poke_u8(wq, 1, 5)  poke_u8(wq, 2, 3)  poke_u8(wq, 3, 1)
+	poke_f32(xs, 0, 0.5)  poke_f32(xs, 4, 0.25)
+	poke_f32(ws, 0, 2.0)  poke_f32(ws, 4, 4.0)
+	println(str(dot_q8(xq, xs, wq, ws, 4, 2)))
+	free(xq) free(wq) free(xs) free(ws)
+}`
+	out, _ := buildRun(t, main)
+	if out != "24\n" {
+		t.Fatalf("dot_q8: got %q, want %q", out, "24\n")
+	}
+}
+
 // mmap_file: write a known binary blob, memory-map it, read fields back through
 // peek_* (zero-copy path for large on-disk buffers, e.g. a model checkpoint).
 // Bytes: 0x12345678 LE | f32 2.5 (0x40200000 LE) | u8 200 | pad -> 16 bytes.

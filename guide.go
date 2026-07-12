@@ -259,6 +259,7 @@ func machinGuide() guideCatalog {
 			{"peek_i32", "(int, int) -> int", "read a 32-bit int at ptr+byteoffset", "memory"},
 			{"peek_i8", "(int, int) -> int", "read a signed byte at ptr+byteoffset, sign-extended (also peek_u8, zero-extended) — int8 kernels / binary formats", "memory"},
 			{"dot_i8", "(int, int, int) -> int", "signed-byte dot product of two raw buffers (ptr a, ptr b, count) with a 32-bit accumulator — the quantized-matmul group kernel; exact while |sum| < 2^31 (any count <= ~133k of i8*i8), vectorizes where an i64 reduction cannot", "memory"},
+			{"dot_q8", "(int, int, int, int, int, int) -> float", "grouped, dual-scaled int8 dot product: (xq, xs, wq, ws, n, gs) -> sum over length-gs groups of (int32 group dot) * xs[g] * ws[g]. xq/wq are int8 buffers (n bytes); xs/ws are fp32 group-scale buffers (n/gs floats). The ENTIRE Q8_0 quantized-matmul inner product in one vectorized call — replaces a per-group dot_i8 + two peek_f32 MFL loop whose call overhead capped throughput (LLM inference). n must be a multiple of gs", "memory"},
 			{"ptr_str", "(int) -> string", "read a NUL-terminated string from a raw pointer into an MFL string — the host->wasm string direction (host writes UTF-8+NUL into wasm memory at an alloc'd ptr, passes it to an export). Pairs with alloc/free.", "memory"},
 			// collections
 			{"len", "(string|slice|map) -> int", "length", "collection"},
