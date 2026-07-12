@@ -2128,14 +2128,31 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		c.addPair(argSlots[1], c.cInt)
 		c.addPair(argSlots[2], c.cInt)
 		return c.cInt, nil
-	case "dot_q8":
+	case "dot_q8", "dot_q4":
 		if len(argSlots) != 6 {
-			return 0, fmt.Errorf("dot_q8: 6 args (xq, xs, wq, ws, n, gs)")
+			return 0, fmt.Errorf("%s: 6 args (xq, xs, wq, ws, n, gs)", ex.Callee)
 		}
 		for _, s := range argSlots {
 			c.addPair(s, c.cInt)
 		}
 		return c.cFloat, nil
+	case "dot_f32":
+		if len(argSlots) != 3 {
+			return 0, fmt.Errorf("dot_f32: 3 args (ptr a, ptr b, count)")
+		}
+		c.addPair(argSlots[0], c.cInt)
+		c.addPair(argSlots[1], c.cInt)
+		c.addPair(argSlots[2], c.cInt)
+		return c.cFloat, nil
+	case "axpy_f32":
+		if len(argSlots) != 4 {
+			return 0, fmt.Errorf("axpy_f32: 4 args (ptr y, scale, ptr x, count)")
+		}
+		c.addPair(argSlots[0], c.cInt)
+		c.addPair(argSlots[1], newSlot(c, KNum))
+		c.addPair(argSlots[2], c.cInt)
+		c.addPair(argSlots[3], c.cInt)
+		return c.cVoid, nil
 	case "ptr_str":
 		if len(argSlots) != 1 {
 			return 0, fmt.Errorf("ptr_str: 1 arg (pointer to NUL-terminated bytes)")
