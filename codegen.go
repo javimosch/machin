@@ -4059,6 +4059,23 @@ func (g *cgen) seqExprs(exprs []Expr, build func([]string) (string, error)) (str
 }
 
 func (g *cgen) binary(ex *Binary) (string, error) {
+	// Logical && / || must short-circuit: the right operand is evaluated only
+	// when the left does not already decide the result. seqExprs would hoist
+	// both operands into temporaries whenever either has a side effect, forcing
+	// the right operand to be evaluated unconditionally (#437). C's && / ||
+	// already guarantee left-to-right short-circuit evaluation with a sequence
+	// point between the operands, so emit them directly instead.
+	if ex.Op == "&&" || ex.Op == "||" {
+		l, err := g.expr(ex.L)
+		if err != nil {
+			return "", err
+		}
+		r, err := g.expr(ex.R)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("(%s %s %s)", l, ex.Op, r), nil
+	}
 	return g.seqExprs([]Expr{ex.L, ex.R}, func(n []string) (string, error) {
 		return g.binaryCombine(ex, n[0], n[1]), nil
 	})

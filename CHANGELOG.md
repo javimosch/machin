@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **Fixed `&&` / `||` not short-circuiting: the right operand was evaluated
+  even when the left already decided the result.** When either operand had a
+  side effect (a call or channel receive), codegen hoisted *both* operands
+  into temporaries via `seqExprs` before combining them, so the right operand
+  always ran. This broke guard idioms like `if p != nil && p.ok()` and, under
+  `--safe`, could turn a guarded expression into a crash (e.g.
+  `if j > 0 && boom(xs) == "a"` still called `boom` when `j == 0`). Logical
+  `&&`/`||` are now emitted directly as C's short-circuiting operators, which
+  guarantee left-to-right evaluation with a sequence point between operands.
+  See #437.
+
 ## v0.107.0
 
 - **Fixed a use-after-free/segfault: a `func` literal passed directly as a
