@@ -488,6 +488,26 @@ static int64_t mfl_dot_i8(int64_t a, int64_t b, int64_t n) {
  * Replaces an MFL loop that called dot_i8 + two peek_f32 per group, whose
  * per-group call overhead capped throughput. xq/wq are int8 buffers (n bytes);
  * xs/ws are fp32 group-scale buffers (n/gs floats). n must be a multiple of gs. */
+/* float32 dot product of two raw f32 buffers (a[k]*b[k], k<n) with an fp32
+ * accumulator -- the vectorizable inner product for attention scores (q.k) and
+ * any dense float kernel, where an MFL loop of peek_f32*peek_f32 is scalar and
+ * call-bound. */
+static double mfl_dot_f32(int64_t a, int64_t b, int64_t n) {
+    const float* x = (const float*)(intptr_t)a;
+    const float* y = (const float*)(intptr_t)b;
+    float acc = 0.0f;
+    for (int64_t k = 0; k < n; k++) acc += x[k] * y[k];
+    return (double)acc;
+}
+/* AXPY: y[k] += s * x[k] for k<n, over raw f32 buffers. The attention value
+ * accumulation (weighted sum of V rows) and any scaled-add; vectorizes where an
+ * MFL peek/poke loop cannot. */
+static void mfl_axpy_f32(int64_t y, double s, int64_t x, int64_t n) {
+    float* yy = (float*)(intptr_t)y;
+    const float* xx = (const float*)(intptr_t)x;
+    float sf = (float)s;
+    for (int64_t k = 0; k < n; k++) yy[k] += sf * xx[k];
+}
 static double mfl_dot_q8(int64_t xq, int64_t xs, int64_t wq, int64_t ws, int64_t n, int64_t gs) {
     const int8_t* x = (const int8_t*)(intptr_t)xq;
     const float* xsc = (const float*)(intptr_t)xs;
@@ -500,6 +520,32 @@ static double mfl_dot_q8(int64_t xq, int64_t xs, int64_t wq, int64_t ws, int64_t
         const int8_t* wg = w + g * gs;
         int32_t acc = 0;
         for (int64_t k = 0; k < gs; k++) acc += (int32_t)xg[k] * (int32_t)wg[k];
+        val += (double)acc * (double)xsc[g] * (double)wsc[g];
+    }
+    return val;
+}
+/* grouped, dual-scaled int4 dot: like dot_q8 but the weights are split-nibble
+ * int4 (a group of gs weights packed into gs/2 bytes; byte k holds w[k] in the
+ * low nibble and w[k+gs/2] in the high nibble, each stored as value+8 in 0..15).
+ * Activations stay int8. Halves the weight bytes moved -- the memory-bound-decode
+ * win. n multiple of gs; wq has n/2 packed bytes. */
+static double mfl_dot_q4(int64_t xq, int64_t xs, int64_t wq, int64_t ws, int64_t n, int64_t gs) {
+    const int8_t* x = (const int8_t*)(intptr_t)xq;
+    const float* xsc = (const float*)(intptr_t)xs;
+    const uint8_t* w = (const uint8_t*)(intptr_t)wq;
+    const float* wsc = (const float*)(intptr_t)ws;
+    double val = 0.0;
+    int64_t ng = gs > 0 ? n / gs : 0;
+    int64_t half = gs / 2;
+    for (int64_t g = 0; g < ng; g++) {
+        const int8_t* xg = x + g * gs;
+        const uint8_t* wg = w + g * half;
+        int32_t acc = 0;
+        for (int64_t k = 0; k < half; k++) {
+            uint8_t b = wg[k];
+            acc += (int32_t)xg[k]        * ((int32_t)(b & 15) - 8);
+            acc += (int32_t)xg[k + half] * ((int32_t)(b >> 4) - 8);
+        }
         val += (double)acc * (double)xsc[g] * (double)wsc[g];
     }
     return val;
@@ -4865,6 +4911,12 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("mfl_dot_i8(%s, %s, %s)", args[0], args[1], args[2]), nil
 	case "dot_q8":
 		return fmt.Sprintf("mfl_dot_q8(%s, %s, %s, %s, %s, %s)", args[0], args[1], args[2], args[3], args[4], args[5]), nil
+	case "dot_q4":
+		return fmt.Sprintf("mfl_dot_q4(%s, %s, %s, %s, %s, %s)", args[0], args[1], args[2], args[3], args[4], args[5]), nil
+	case "dot_f32":
+		return fmt.Sprintf("mfl_dot_f32(%s, %s, %s)", args[0], args[1], args[2]), nil
+	case "axpy_f32":
+		return fmt.Sprintf("mfl_axpy_f32(%s, %s, %s, %s)", args[0], args[1], args[2], args[3]), nil
 	case "ptr_str":
 		return fmt.Sprintf("mfl_ptr_str(%s)", args[0]), nil
 	case "dial":

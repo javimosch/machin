@@ -1048,6 +1048,9 @@ func bspec(name) (s) {
     if name == "peek_i32" || name == "peek_i8" || name == "peek_u8" { s = "ii>i"  return s }
     if name == "dot_i8" { s = "iii>i"  return s }
     if name == "dot_q8" { s = "iiiiii>f"  return s }
+    if name == "dot_q4" { s = "iiiiii>f"  return s }
+    if name == "dot_f32" { s = "iii>f"  return s }
+    if name == "axpy_f32" { s = "inii>v"  return s }
     if name == "ptr_str" { s = "i>s"  return s }
     // net / io
     if name == "listen" || name == "accept" || name == "raw_mode" { s = "i>i"  return s }

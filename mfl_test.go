@@ -1290,6 +1290,45 @@ func TestRawMemoryDotQ8(t *testing.T) {
 	}
 }
 
+// dot_q4: grouped dual-scaled int4 (split-nibble). One group gs=4. w=[1,-2,3,0]
+// stored +8 packed: byte0=9|11<<4=185, byte1=6|8<<4=134. x=[2,3,1,4], xs=2, ws=1.
+// dot = 2*1+3*-2+1*3+4*0 = -1, *2*1 = -2.
+func TestRawMemoryDotQ4(t *testing.T) {
+	main := `func main() {
+	xq := alloc(4)  wq := alloc(2)  xs := alloc(4)  ws := alloc(4)
+	poke_u8(xq,0,2)  poke_u8(xq,1,3)  poke_u8(xq,2,1)  poke_u8(xq,3,4)
+	poke_u8(wq,0,185)  poke_u8(wq,1,134)
+	poke_f32(xs,0,2.0)  poke_f32(ws,0,1.0)
+	println(str(dot_q4(xq, xs, wq, ws, 4, 4)))
+	free(xq) free(wq) free(xs) free(ws)
+}`
+	out, _ := buildRun(t, main)
+	if out != "-2\n" {
+		t.Fatalf("dot_q4: got %q, want %q", out, "-2\n")
+	}
+}
+
+// dot_f32 + axpy_f32: vectorized float kernels. dot_f32([1.5,2,3],[4,0.5,2])=12.0;
+// axpy_f32(y,2.0,x,3): y=[10,20,30] += 2*[1,2,3] = [12,24,36].
+func TestRawMemoryFloatKernels(t *testing.T) {
+	main := `func main() {
+	a := alloc(12)  b := alloc(12)
+	poke_f32(a,0,1.5)  poke_f32(a,4,2.0)  poke_f32(a,8,3.0)
+	poke_f32(b,0,4.0)  poke_f32(b,4,0.5)  poke_f32(b,8,2.0)
+	println(str(dot_f32(a, b, 3)))
+	y := alloc(12)  x := alloc(12)
+	poke_f32(y,0,10.0)  poke_f32(y,4,20.0)  poke_f32(y,8,30.0)
+	poke_f32(x,0,1.0)   poke_f32(x,4,2.0)   poke_f32(x,8,3.0)
+	axpy_f32(y, 2.0, x, 3)
+	println(str(peek_f32(y,0)) + " " + str(peek_f32(y,4)) + " " + str(peek_f32(y,8)))
+	free(a) free(b) free(y) free(x)
+}`
+	out, _ := buildRun(t, main)
+	if out != "13\n12 24 36\n" {
+		t.Fatalf("float kernels: got %q, want %q", out, "13\n12 24 36\n")
+	}
+}
+
 // mmap_file: write a known binary blob, memory-map it, read fields back through
 // peek_* (zero-copy path for large on-disk buffers, e.g. a model checkpoint).
 // Bytes: 0x12345678 LE | f32 2.5 (0x40200000 LE) | u8 200 | pad -> 16 bytes.
