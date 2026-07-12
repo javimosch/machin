@@ -949,6 +949,42 @@ func mainPostGlobals(body []Stmt, gset, local map[string]bool) map[string]*gAcce
 	return out
 }
 
+// mainPostCallees returns the set of functions main invokes as NORMAL (non-`go`)
+// calls at or after its first `go` spawn. A callee invoked strictly before the
+// first spawn runs entirely before goroutine creation — a happens-before edge — so
+// its global writes are ordered with respect to the spawned goroutines and must not
+// be treated as concurrent. Excluding those callees propagates the caller's program
+// order through the call, so the canonical "init globals in a helper, then spawn a
+// worker pool" pattern is race-free (issue #434: interprocedural happens-before).
+func mainPostCallees(body []Stmt) map[string]bool {
+	out := map[string]bool{}
+	spawned := false
+	var walk func(ss []Stmt)
+	walk = func(ss []Stmt) {
+		for _, s := range ss {
+			if _, ok := s.(*GoStmt); ok {
+				spawned = true
+				continue
+			}
+			if !spawned {
+				// descend to catch a spawn nested in an early block, but don't collect
+				if b, ok := blockOf(s); ok {
+					walk(b)
+				}
+				continue
+			}
+			var normal []string
+			var gos []goSite
+			collectCallGraph([]Stmt{s}, false, &normal, &gos)
+			for _, n := range normal {
+				out[n] = true
+			}
+		}
+	}
+	walk(body)
+	return out
+}
+
 func blockOf(s Stmt) ([]Stmt, bool) {
 	switch st := s.(type) {
 	case *IfStmt:
@@ -1023,7 +1059,13 @@ func globalRaces(prog *Program, c *Checker) []raceFinding {
 		for g, a := range mainPostGlobals(mainFn.Body, gset, local["main"]) {
 			mergeGAcc(mainConc, g, a)
 		}
+		// Only callees invoked at/after the first spawn are concurrent; a callee
+		// completed before the spawn happens-before the goroutines (issue #434).
+		postCallees := mainPostCallees(mainFn.Body)
 		for _, ce := range normalCallees["main"] {
+			if !postCallees[ce] {
+				continue
+			}
 			for g, a := range gall[ce] {
 				mergeGAcc(mainConc, g, a)
 			}
