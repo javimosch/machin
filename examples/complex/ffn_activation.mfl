@@ -1,0 +1,92 @@
+// ffn_activation.mfl — the feed-forward (MLP) block of a transformer, in pure MFL.
+//
+// After attention, each token vector runs through a position-wise FFN. In
+// LLaMA/Mistral-style nets this is the SwiGLU block:
+//
+//     FFN(x) = down( silu(gate(x)) * up(x) )
+//
+// where gate/up/down are the (quantized) matmuls the fused dot_q8 kernel already
+// covers, and the glue between them is elementwise: the SiLU gate activation and
+// a Hadamard product. This file is the reference implementation of that glue,
+// plus GELU (the activation GPT-style nets use in the same slot) for comparison.
+//
+// Run:  machin run examples/complex/ffn_activation.mfl
+
+// r3 rounds to 3 decimals so the printed output is stable across platforms.
+func r3(x) { return round(x * 1000.0) / 1000.0 }
+
+// sigmoid(x) = 1 / (1 + e^-x).
+func sigmoid(x) { return 1.0 / (1.0 + exp(0.0-x)) }
+
+// silu(x) = x * sigmoid(x), the SwiGLU gate activation. Smooth, non-monotonic,
+// and self-gated: it passes large positive x through and squashes negative x.
+func silu(x) { return x * sigmoid(x) }
+
+// tanhf(x) built from sigmoid (there is no tanh builtin): 2*sigmoid(2x) - 1.
+func tanhf(x) { return 2.0*sigmoid(2.0*x) - 1.0 }
+
+// gelu(x) approximates the Gaussian Error Linear Unit with the tanh form used by
+// GPT-2/BERT: 0.5*x*(1 + tanh(sqrt(2/pi)*(x + 0.044715*x^3))).
+func gelu(x) {
+    c := 0.7978845608   // sqrt(2/pi)
+    inner := c * (x + 0.044715*x*x*x)
+    return 0.5 * x * (1.0 + tanhf(inner))
+}
+
+// hadamard returns the elementwise product of two equal-length vectors — the
+// gate*up multiply at the heart of SwiGLU.
+func hadamard(a, b) (out) {
+    out = []float{}
+    i := 0
+    for i < len(a) {
+        out = append(out, a[i]*b[i])
+        i = i + 1
+    }
+}
+
+// applySilu maps silu over a vector (the activated gate projection).
+func applySilu(xs) (out) {
+    out = []float{}
+    i := 0
+    for i < len(xs) {
+        out = append(out, silu(xs[i]))
+        i = i + 1
+    }
+}
+
+// swiglu implements silu(gate) * up — the FFN's inner activation, given the two
+// projection outputs. The surrounding down-projection is a plain matmul.
+func swiglu(gate, up) {
+    return hadamard(applySilu(gate), up)
+}
+
+func printvec(label, xs) {
+    print(label)
+    i := 0
+    for i < len(xs) {
+        print(" ", r3(xs[i]))
+        i = i + 1
+    }
+    println("")
+}
+
+func main() {
+    // SiLU at a few points: silu(0)=0, bounded-negative for x<0, ~linear for x>>0.
+    println("silu(-2):", r3(silu(0.0-2.0)))
+    println("silu(-1):", r3(silu(0.0-1.0)))
+    println("silu(0):", r3(silu(0.0)))
+    println("silu(1):", r3(silu(1.0)))
+    println("silu(2):", r3(silu(2.0)))
+
+    // GELU tracks SiLU closely but is exactly 0 at x=0 and slightly different in
+    // the tails — the two live in the same activation slot.
+    println("gelu(-1):", r3(gelu(0.0-1.0)))
+    println("gelu(0):", r3(gelu(0.0)))
+    println("gelu(1):", r3(gelu(1.0)))
+    println("gelu(2):", r3(gelu(2.0)))
+
+    // SwiGLU gate: silu(gate) elementwise-times up, the FFN inner activation.
+    gate := []float{1.0, 2.0, 0.0, 0.0 - 1.0}
+    up := []float{2.0, 0.5, 3.0, 4.0}
+    printvec("swiglu:", swiglu(gate, up))
+}
