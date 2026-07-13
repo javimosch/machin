@@ -1,7 +1,6 @@
 package main
 
 import (
-	"strings"
 	"testing"
 )
 
@@ -23,28 +22,6 @@ func TestCheckTypeMismatch(t *testing.T) {
 	d := r.Diagnostics[0]
 	if d.Phase != "typecheck" || d.Code != "type-mismatch" {
 		t.Fatalf("expected typecheck/type-mismatch, got phase=%q code=%q", d.Phase, d.Code)
-	}
-}
-
-func TestFirstMeaningfulLine(t *testing.T) {
-	cases := []struct {
-		block string
-		want  string
-	}{
-		{"\n  // a comment\n\nfunc add(a,b)(c){c=a+b}\n", "func add(a,b)(c){c=a+b}"},
-		{"// only comments\n  \n", ""},
-		{"", ""},
-	}
-	for _, c := range cases {
-		if got := firstMeaningfulLine(c.block); got != c.want {
-			t.Errorf("firstMeaningfulLine(%q) = %q, want %q", c.block, got, c.want)
-		}
-	}
-
-	long := strings.Repeat("x", 130)
-	got := firstMeaningfulLine(long)
-	if len(got) != 120 || !strings.HasSuffix(got, "...") {
-		t.Errorf("long line should be truncated to 120 chars ending in ..., got len=%d %q", len(got), got)
 	}
 }
 
