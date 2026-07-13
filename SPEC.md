@@ -87,8 +87,11 @@ The decoded text of a declaration is tokenized as follows.
   in the canonical single-line form.)
 - **Identifiers.** `[A-Za-z_][A-Za-z0-9_]*`. `_` is the blank identifier.
 - **Integer literals.** decimal (`42`), hex (`0xff`), binary (`0b1010`), or octal
-  (`0o17`); underscores allowed as separators (`0xff_00`).
-- **Float literals.** digits with a `.`, e.g. `3.14`, `0.5`.
+  (`0o17`); underscores allowed as digit-group separators in any base
+  (`1_000_000`, `0xff_00`). Underscores may only sit between digits — a leading,
+  trailing, or doubled `_` is a parse error.
+- **Float literals.** digits with a `.`, e.g. `3.14`, `0.5`; underscores are
+  likewise allowed as separators between digits (`3_000.5`).
 - **String literals.** `"..."` with escapes `\n \t \r \" \\`. No `\uXXXX`
   escape form — embed non-ASCII as raw UTF-8 bytes in the source file instead
   (a tool generating `.src`/`.mfl` text should emit real UTF-8, not escape it —
