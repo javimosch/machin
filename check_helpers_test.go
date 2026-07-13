@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestDeclName covers declName's three declaration shapes: plain, exported,
 // and a decl with no ident (which must fall back to "").
@@ -19,10 +22,30 @@ func TestDeclName(t *testing.T) {
 	}
 }
 
-// firstMeaningfulLine's blank/comment-skipping and long-line-truncation branches
-// are covered by TestFirstMeaningfulLine in check_test.go (this file previously
-// had a second, functionally-identical copy of that test under the same name,
-// which broke the build — see the fix/duplicate-testfirstmeaningfulline branch).
+// TestFirstMeaningfulLine covers leading blank/comment lines being skipped, a
+// normal line returned as-is, long-line truncation past 120 chars (with a "..."
+// suffix), and an all-blank/all-comment block falling through to "".
+func TestFirstMeaningfulLine(t *testing.T) {
+	if got := firstMeaningfulLine("\n// a comment\n\n    x := 1\n"); got != "x := 1" {
+		t.Errorf("firstMeaningfulLine: got %q, want %q", got, "x := 1")
+	}
+
+	long := ""
+	for len(long) < 130 {
+		long += "a"
+	}
+	got := firstMeaningfulLine(long)
+	if len(got) != 120 || !strings.HasSuffix(got, "...") {
+		t.Errorf("firstMeaningfulLine on a %d-char line: got len %d (%q), want len 120 ending in \"...\"", len(long), len(got), got)
+	}
+	if got[:117] != long[:117] {
+		t.Errorf("firstMeaningfulLine truncation: got prefix %q, want %q", got[:117], long[:117])
+	}
+
+	if got := firstMeaningfulLine("\n// only comments\n   \n// more\n"); got != "" {
+		t.Errorf("firstMeaningfulLine on an all-blank/comment block: got %q, want \"\"", got)
+	}
+}
 
 // TestSeedStructNames covers both type and cstruct declarations, and that
 // unrelated declarations don't seed anything.
