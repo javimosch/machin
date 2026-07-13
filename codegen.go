@@ -5077,7 +5077,14 @@ func (g *cgen) jsonParser(typeStr string) (string, error) {
 			return "", fmt.Errorf("parse: cannot parse into type %q", typeStr)
 		}
 		var b strings.Builder
-		fmt.Fprintf(&b, "%s out = {0};\n", ct)
+		// Omitted string fields must default to "" not NULL — an absent JSON key
+		// leaves the field C-zeroed (NULL char*), which crashes len()/concat. Seed
+		// them (recursively) exactly like a struct literal does. See stringZeroInits.
+		if inits := g.stringZeroInits(typeStr); len(inits) > 0 {
+			fmt.Fprintf(&b, "%s out = {%s};\n", ct, strings.Join(inits, ", "))
+		} else {
+			fmt.Fprintf(&b, "%s out = {0};\n", ct)
+		}
 		b.WriteString(`    mfl_js_ws(p);
     if (**p == '{') {
         (*p)++; mfl_js_ws(p);
