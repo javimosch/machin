@@ -90,8 +90,11 @@ The decoded text of a declaration is tokenized as follows.
   (`0o17`); underscores allowed as digit-group separators in any base
   (`1_000_000`, `0xff_00`). Underscores may only sit between digits — a leading,
   trailing, or doubled `_` is a parse error.
-- **Float literals.** digits with a `.`, e.g. `3.14`, `0.5`; underscores are
-  likewise allowed as separators between digits (`3_000.5`).
+- **Float literals.** digits with a `.`, e.g. `3.14`, `0.5`, or with a decimal
+  exponent (`e`/`E`, optionally signed), e.g. `1e3`, `1.5e-9`, `6.022e23` — a
+  literal carrying an exponent is a float even without a `.` (`1e3`). Underscores
+  are likewise allowed as separators between digits in either the mantissa or the
+  exponent (`3_000.5`, `1_000e1_0`).
 - **String literals.** `"..."` with escapes `\n \t \r \" \\`. No `\uXXXX`
   escape form — embed non-ASCII as raw UTF-8 bytes in the source file instead
   (a tool generating `.src`/`.mfl` text should emit real UTF-8, not escape it —

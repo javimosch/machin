@@ -97,6 +97,23 @@ func (l *Lexer) lexNumber() {
 		}
 		l.pos++
 	}
+	// optional exponent: e/E, an optional sign, then one or more digits (scientific
+	// notation, e.g. 1e3, 1.5e-9, 2E+10). The mantissa may be integer-only (1e3 is a
+	// float). Only consume the 'e' when a valid exponent follows, so a trailing 'e'
+	// (e.g. `1e` or a number abutting an identifier) is left for the next token.
+	if l.pos < len(l.src) && (l.src[l.pos] == 'e' || l.src[l.pos] == 'E') {
+		j := l.pos + 1
+		if j < len(l.src) && (l.src[j] == '+' || l.src[j] == '-') {
+			j++
+		}
+		if j < len(l.src) && isDigit(l.src[j]) {
+			isFloat = true
+			l.pos = j
+			for l.pos < len(l.src) && (isDigit(l.src[l.pos]) || l.src[l.pos] == '_') {
+				l.pos++
+			}
+		}
+	}
 	kind := TInt
 	if isFloat {
 		kind = TFloat
