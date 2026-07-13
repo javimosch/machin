@@ -1,0 +1,25 @@
+func sigmoid(x){return 1.0/(1.0+exp(0.0-x))}
+
+func silu(x){return x*sigmoid(x)}
+
+func tanhf(x){e:=exp(2.0*x)return(e-1.0)/(e+1.0)}
+
+func gelu(x){c:=0.7978845608*(x+0.044715*x*x*x)return 0.5*x*(1.0+tanhf(c))}
+
+func getf(buf,i){return peek_f32(buf,i*4)}
+
+func setf(buf,i,v){poke_f32(buf,i*4,v)}
+
+func load(buf,vals){i:=0 while i<len(vals){setf(buf,i,vals[i])i=i+1}}
+
+func rmsnorm(x,w,out,n){ss:=0.0 i:=0 while i<n{v:=getf(x,i)ss=ss+v*v i=i+1}inv:=1.0/sqrt(ss/float(n)+0.00001)i=0 while i<n{setf(out,i,getf(x,i)*inv*getf(w,i))i=i+1}}
+
+func softmax(x,out,n){mx:=getf(x,0)i:=1 while i<n{v:=getf(x,i)if v>mx{mx=v}i=i+1}sum:=0.0 i=0 while i<n{e:=exp(getf(x,i)-mx)setf(out,i,e)sum=sum+e i=i+1}i=0 while i<n{setf(out,i,getf(out,i)/sum)i=i+1}}
+
+func argmax(x,n){best:=0 bv:=getf(x,0)i:=1 while i<n{v:=getf(x,i)if v>bv{bv=v best=i}i=i+1}return best}
+
+func mi(v){return int(round(v*1000.0))}
+
+func dump(name,buf,n){print(name)i:=0 while i<n{print(" ")print(str(mi(getf(buf,i))))i=i+1}println("")}
+
+func main(){println("silu",str(mi(silu(0.0-2.0))),str(mi(silu(0.0))),str(mi(silu(2.0))))println("gelu",str(mi(gelu(0.0-1.0))),str(mi(gelu(0.0))),str(mi(gelu(1.0))))n:=3 x:=alloc(n*4)w:=alloc(n*4)out:=alloc(n*4)load(x,[]float{1.0,2.0,3.0})load(w,[]float{1.0,1.0,1.0})rmsnorm(x,w,out,n)dump("rmsnorm",out,n)softmax(x,out,n)dump("softmax",out,n)println("argmax",str(argmax(x,n)))free(x)free(w)free(out)}
