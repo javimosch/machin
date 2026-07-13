@@ -11,8 +11,17 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"strings"
 )
+
+// arityMsg matches the argument-count errors the type checker emits, whose wording
+// varies across call sites: "expected 2 args, got 3", "len: 1 arg", and the many
+// builtin forms like "substr: 3 args (string, start, end)". None of these contain
+// the literal "argument"/"expects"/"arity" that classifyCheck keyed on, so they were
+// silently bucketed as the generic "type-error" instead of the documented
+// "arity-mismatch" code. The `\d+ args?` shape is the common thread.
+var arityMsg = regexp.MustCompile(`\b\d+ args?\b`)
 
 // Diagnostic is one problem the checker found. `Code` is the stable contract an agent
 // branches on; `Message` is human detail (don't pattern-match it). `Decl` is the
@@ -360,7 +369,7 @@ func classifyCheck(msg string) string {
 		return "undefined-field"
 	case strings.Contains(msg, "undefined") || strings.Contains(msg, "unknown") || strings.Contains(msg, "not defined"):
 		return "undefined-name"
-	case strings.Contains(msg, "argument") || strings.Contains(msg, "expects") || strings.Contains(msg, "arity"):
+	case strings.Contains(msg, "argument") || strings.Contains(msg, "expects") || strings.Contains(msg, "arity") || arityMsg.MatchString(msg):
 		return "arity-mismatch"
 	case strings.Contains(msg, "unsupported"):
 		return "unsupported-construct"

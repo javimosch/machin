@@ -178,6 +178,36 @@ func TestRace_GlobalInitThenSpawn(t *testing.T) {
 	}
 }
 
+func TestRace_GlobalInitInCalleeThenSpawn(t *testing.T) {
+	// interprocedural happens-before (issue #434): a global written in a helper
+	// CALLED before the first spawn is ordered-before the goroutines, exactly like
+	// writing it inline in main. The init-then-spawn worker-pool pattern is safe
+	// even when initialization lives in a callee.
+	fs := rcCheck(t,
+		"var cfg = 0",
+		"func setup(){cfg=7}",
+		"func worker(jc,dc){for j:=range jc {dc<-j*cfg}}",
+		"func main(){setup() jobs:=make(chan int) done:=make(chan int) go worker(jobs,done) jobs<-6 println(str(<-done))}")
+	rcReport(t, "global init-in-callee then spawn", fs)
+	if len(fs) != 0 {
+		t.Fatalf("want CLEAN (callee write ordered-before spawn), got %+v", fs)
+	}
+}
+
+func TestRace_GlobalWriteInCalleeAfterSpawn(t *testing.T) {
+	// the guard for the #434 fix: a helper CALLED after the spawn writes the global
+	// concurrently with the goroutine's read — still a genuine race.
+	fs := rcCheck(t,
+		"var cfg = 0",
+		"func bump(){cfg=7}",
+		"func worker(ch){ch<-cfg}",
+		"func main(){ch:=make(chan int) go worker(ch) bump() print(<-ch)}")
+	rcReport(t, "global write-in-callee after spawn", fs)
+	if len(fs) != 1 || fs[0].Root != "cfg" || fs[0].Kind != "read/write" {
+		t.Fatalf("want 1 read/write race on cfg, got %+v", fs)
+	}
+}
+
 func TestRace_GlobalReadOnly(t *testing.T) {
 	fs := rcCheck(t,
 		"var base = 100",
