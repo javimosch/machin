@@ -31,3 +31,19 @@ jobs:
 
       - name: Run every example (integration smoke test)
         run: ./examples/run.sh
+
+      # Guard the wasm target: a POSIX-only helper (mmap, madvise, a <sys/*> include)
+      # that lands in the always-on cRuntime compiles fine natively but breaks
+      # `--target wasm` under a strict zig (wasi-libc has no mmap). This smoke build
+      # fails CI if that regresses again. See issue #463.
+      - name: Install zig (the C -> wasm compiler)
+        uses: mlugg/setup-zig@v1
+        with:
+          version: 0.16.0
+
+      - name: wasm smoke build (guards POSIX-only code out of cRuntime — #463)
+        run: |
+          go build -o /tmp/machin .
+          printf 'export func ping() (n) { n = 1 }\n' > /tmp/wasm_smoke.mfl
+          /tmp/machin build /tmp/wasm_smoke.mfl --target wasm -o /tmp/wasm_smoke.wasm
+          test -s /tmp/wasm_smoke.wasm && echo "wasm smoke build OK ($(wc -c < /tmp/wasm_smoke.wasm) bytes)"
