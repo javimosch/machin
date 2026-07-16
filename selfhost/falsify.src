@@ -1,0 +1,889 @@
+// selfhost/falsify.src — The Falsifier, self-hosted (Phase 2).
+//
+// Ports falsify.go's detectFalsifiable over the self-hosted IR (nodes[] + g_insts),
+// oracle-diffed against `machin falsifytest --program`. MFL has NO panic/recover,
+// so the Go interpreter's panic(fviol)/panic(funknown) unwinding + ctrl returns
+// are replaced by threaded status globals: g_fstatus (ok/violation/unknown),
+// g_freturned / g_fbreak / g_fcontinue (control flow).
+//
+// Slice 2.2 scope: int + []int params; arithmetic, comparisons, if/while/for-range,
+// index (FALS001 out-of-range), len, div/mod-by-zero (FALS002). Value model is the
+// FV struct (MFL has no [][]int, but a []int field inside a []struct is fine).
+// Floats/strings, structs and interprocedural inlining follow in later slices.
+
+// ---- value model ----
+// FV kinds: 0 int, 1 []int slice, 2 float, 3 string, 4 struct, 5 bool.
+type FV struct { k int  i int  f float  s string  sl []int  sname string  fields []FV  fnames []string }
+
+func fv_int(x) (fv) { fv = FV{k: 0, i: x} }
+func fv_slice(xs) (fv) { fv = FV{k: 1, sl: xs} }
+func fv_float(x) (fv) { fv = FV{k: 2, f: x} }
+func fv_string(x) (fv) { fv = FV{k: 3, s: x} }
+func fv_bool(bi) (fv) { fv = FV{k: 5, i: bi} }   // bi is 0/1
+
+// f_clone gives structs value semantics: a copy binds a fresh fields slice, so
+// mutating a copy's field cannot alias the original (matches falsify.go clone()).
+func f_clone(fv) (out) {
+    out = fv
+    if fv.k != 4 { return out }
+    nf := []FV{}
+    i := 0
+    for i < len(fv.fields) {
+        nf = append(nf, f_clone(fv.fields[i]))
+        i = i + 1
+    }
+    out.fields = nf
+    return out
+}
+
+// fv_str renders a value as its Go fval.String() form (%d int, %g float, %q
+// string, %v bool, []int{...} slice, T{f: v} struct) — must byte-match.
+func fv_str(fv) (out) {
+    if fv.k == 0 { out = str(fv.i)  return out }
+    if fv.k == 2 { out = str(fv.f)  return out }
+    if fv.k == 3 { out = "\"" + fv.s + "\""  return out }
+    if fv.k == 5 { if fv.i != 0 { out = "true" } else { out = "false" }  return out }
+    if fv.k == 4 {
+        out = fv.sname + "{"
+        i := 0
+        for i < len(fv.fnames) {
+            if i > 0 { out = out + ", " }
+            out = out + fv.fnames[i] + ": " + fv_str(fv.fields[i])
+            i = i + 1
+        }
+        out = out + "}"
+        return out
+    }
+    out = "[]int{"
+    i := 0
+    for i < len(fv.sl) {
+        if i > 0 { out = out + ", " }
+        out = out + str(fv.sl[i])
+        i = i + 1
+    }
+    out = out + "}"
+    return out
+}
+
+// ---- interpreter status + control flow (replace panic/recover + ctrl returns) ----
+var g_fstatus = 0        // 0 ok, 1 violation (counterexample), 2 unknown
+var g_fviol_prop = ""
+var g_fviol_expr = ""
+var g_freturned = 0
+var g_fbreak = 0
+var g_fcontinue = 0
+var g_fsteps = 0         // step budget guard (matches falsStepBudget); non-terminating -> unknown on both sides
+var g_fretval = FV{k: 0, i: 0}   // last function's return value (read right after a call returns)
+var g_fdepth = 0                 // interprocedural inlining depth (recursion guard)
+
+func f_tick() {
+    g_fsteps = g_fsteps + 1
+    if g_fsteps > 200000 { g_fstatus = 2 }
+}
+
+// ---- environment: parallel arrays of (name, FV) ----
+var g_env_names = []string{}
+var g_env_vals = []FV{}
+
+func f_env_reset() {
+    g_env_names = []string{}
+    g_env_vals = []FV{}
+}
+
+func f_env_set(name, fv) {
+    i := 0
+    for i < len(g_env_names) {
+        if g_env_names[i] == name { g_env_vals[i] = fv  return }
+        i = i + 1
+    }
+    g_env_names = append(g_env_names, name)
+    g_env_vals = append(g_env_vals, fv)
+}
+
+func f_env_get(name) (fv) {
+    fv = fv_int(0)
+    i := 0
+    for i < len(g_env_names) {
+        if g_env_names[i] == name { fv = g_env_vals[i]  return fv }
+        i = i + 1
+    }
+    g_fstatus = 2   // free ident -> inconclusive
+    return fv
+}
+
+// ---- expression evaluation -> FV (status in g_fstatus) ----
+
+func f_eval(ni) (v) {
+    v = fv_int(0)
+    if g_fstatus != 0 { return v }
+    f_tick()
+    if g_fstatus != 0 { return v }
+    n := nodes[ni]
+    if n.kind == K_INT { v = fv_int(n.ival)  return v }
+    if n.kind == K_FLOAT { v = fv_float(parse_float(n.s))  return v }
+    if n.kind == K_STR { v = fv_string(n.s)  return v }
+    if n.kind == K_BOOL { v = fv_bool(n.ival)  return v }
+    if n.kind == K_ID { v = f_env_get(n.s)  return v }
+    if n.kind == K_UNARY {
+        x := f_eval(n.a)
+        if g_fstatus != 0 { return v }
+        if n.s == "-" {
+            if x.k == 2 { v = fv_float(0.0 - x.f)  return v }
+            if x.k == 0 { v = fv_int(0 - x.i)  return v }
+            g_fstatus = 2  return v
+        }
+        if n.s == "!" {
+            if x.k != 5 { g_fstatus = 2  return v }
+            if x.i == 0 { v = fv_bool(1) } else { v = fv_bool(0) }
+            return v
+        }
+        g_fstatus = 2  return v
+    }
+    if n.kind == K_BIN { v = f_eval_bin(ni)  return v }
+    if n.kind == K_INDEX {
+        base := f_eval(n.a)
+        if g_fstatus != 0 { return v }
+        ix := f_eval(n.b)
+        if g_fstatus != 0 { return v }
+        if ix.k != 0 { g_fstatus = 2  return v }
+        if base.k == 1 {
+            if ix.i < 0 || ix.i >= len(base.sl) {
+                g_fstatus = 1  g_fviol_prop = "index out of range"  g_fviol_expr = f_render(ni, 0)  return v
+            }
+            v = fv_int(base.sl[ix.i])  return v
+        }
+        if base.k == 3 {
+            if ix.i < 0 || ix.i >= len(base.s) {
+                g_fstatus = 1  g_fviol_prop = "index out of range"  g_fviol_expr = f_render(ni, 0)  return v
+            }
+            v = fv_string(substr(base.s, ix.i, ix.i + 1))  return v
+        }
+        g_fstatus = 2  return v
+    }
+    if n.kind == K_CALL {
+        if n.s == "len" && len(n.kids) == 1 {
+            a := f_eval(n.kids[0])
+            if g_fstatus != 0 { return v }
+            if a.k == 1 { v = fv_int(len(a.sl))  return v }
+            if a.k == 3 { v = fv_int(len(a.s))  return v }
+            g_fstatus = 2  return v
+        }
+        if n.s == "abs" && len(n.kids) == 1 {
+            a := f_eval(n.kids[0])            // MFL abs is (number) -> float
+            if g_fstatus != 0 { return v }
+            if a.k == 0 { v = fv_float(f_absf(float(a.i)))  return v }
+            if a.k == 2 { v = fv_float(f_absf(a.f))  return v }
+            g_fstatus = 2  return v
+        }
+        // user function: inline it (interprocedural). Spread calls + non-user
+        // callees (str/println/other builtins) are inconclusive — and, crucially,
+        // their args are NOT evaluated (matches falsify.go evalCall).
+        fr := func_root(n.s)
+        if fr >= 0 && n.ival == 0 { v = f_call_user(fr, n.kids)  return v }
+        g_fstatus = 2  return v
+    }
+    if n.kind == K_STRUCT { v = f_eval_struct(ni)  return v }
+    if n.kind == K_FIELD {
+        base := f_eval(n.a)
+        if g_fstatus != 0 { return v }
+        if base.k != 4 { g_fstatus = 2  return v }
+        j := 0
+        for j < len(base.fnames) {
+            if base.fnames[j] == n.s { v = base.fields[j]  return v }
+            j = j + 1
+        }
+        g_fstatus = 2  return v
+    }
+    g_fstatus = 2   // any other expr kind -> inconclusive
+    return v
+}
+
+// f_eval_struct builds a struct value from a K_STRUCT literal, in the struct's
+// DECLARED field order (named literals matched by name, positional by index,
+// omitted fields zero-filled) — mirrors falsify.go evalStructLit.
+func f_eval_struct(ni) (v) {
+    v = fv_int(0)
+    n := nodes[ni]
+    nm := n.s
+    nf := struct_field_count(nm)
+    fnames := []string{}
+    fields := []FV{}
+    named := 0
+    if len(n.names) > 0 { named = 1 }
+    k := 0
+    for k < nf {
+        fnm := f_struct_fname(nm, k)
+        val := f_zero_for_type(struct_field_type_at(nm, k))
+        if named == 1 {
+            j := 0
+            for j < len(n.names) {
+                if n.names[j] == fnm { val = f_eval(n.kids[j]) }
+                j = j + 1
+            }
+        } else {
+            if k < len(n.kids) { val = f_eval(n.kids[k]) }
+        }
+        if g_fstatus != 0 { return v }
+        fnames = append(fnames, fnm)
+        fields = append(fields, val)
+        k = k + 1
+    }
+    v = FV{k: 4, sname: nm, fields: fields, fnames: fnames}
+    return v
+}
+
+func f_struct_fname(nm, ix) (out) {
+    out = ""
+    for _, d := range g_structdefs {
+        if d.name == nm { out = d.fnames[ix]  return out }
+    }
+    return out
+}
+
+func f_zero_for_type(t) (v) {
+    v = fv_int(0)
+    if t == "float" { v = fv_float(0.0) }
+    if t == "bool" { v = fv_bool(0) }
+    if t == "string" { v = fv_string("") }
+    return v
+}
+
+func f_absf(x) (r) {
+    r = x
+    if x < 0.0 { r = 0.0 - x }
+    return r
+}
+
+// f_call_user inlines a user function: evaluate args in the caller frame, then
+// run the callee body in a fresh env (MFL has no closures/call stack, so the
+// global env is saved and restored around the call). A trap inside the callee is
+// reported against the ENCLOSING function with the callee's expression; the
+// callee's status/return propagate via the globals. Matches falsify.go callUser.
+func f_call_user(fnroot, argnodes) (rv) {
+    rv = fv_int(0)
+    if g_fdepth + 1 > 24 { g_fstatus = 2  return rv }   // falsCallDepth (recursion guard)
+    args := []FV{}
+    i := 0
+    for i < len(argnodes) {
+        a := f_eval(argnodes[i])
+        if g_fstatus != 0 { return rv }
+        args = append(args, a)
+        i = i + 1
+    }
+    fn := nodes[fnroot]
+    params := fn.names
+    rets := fn.names2
+
+    saved_names := g_env_names
+    saved_vals := g_env_vals
+    saved_returned := g_freturned
+    saved_break := g_fbreak
+    saved_continue := g_fcontinue
+
+    g_env_names = []string{}
+    g_env_vals = []FV{}
+    i = 0
+    for i < len(params) {
+        if i < len(args) { f_env_set(params[i], f_clone(args[i])) }
+        i = i + 1
+    }
+    i = 0
+    for i < len(rets) { f_env_set(rets[i], fv_int(0))  i = i + 1 }   // named returns zero-init
+
+    g_freturned = 0
+    g_fbreak = 0
+    g_fcontinue = 0
+    g_fretval = fv_int(0)
+    g_fdepth = g_fdepth + 1
+    f_eval_stmts(fn.kids)
+    rv = g_fretval
+    g_fdepth = g_fdepth - 1
+
+    g_env_names = saved_names
+    g_env_vals = saved_vals
+    g_freturned = saved_returned
+    g_fbreak = saved_break
+    g_fcontinue = saved_continue
+    return rv
+}
+
+func f_eval_bin(ni) (v) {
+    v = fv_int(0)
+    n := nodes[ni]
+    op := n.s
+    l := f_eval(n.a)
+    if g_fstatus != 0 { return v }
+    // short-circuit boolean ops (operands are bool k=5); result bool
+    if op == "&&" { if l.k != 5 { g_fstatus = 2  return v }  if l.i == 0 { v = fv_bool(0)  return v }  r := f_eval(n.b)  if g_fstatus != 0 { return v }  if r.k != 5 { g_fstatus = 2  return v }  v = fv_bool(r.i)  return v }
+    if op == "||" { if l.k != 5 { g_fstatus = 2  return v }  if l.i != 0 { v = fv_bool(1)  return v }  r := f_eval(n.b)  if g_fstatus != 0 { return v }  if r.k != 5 { g_fstatus = 2  return v }  v = fv_bool(r.i)  return v }
+    r := f_eval(n.b)
+    if g_fstatus != 0 { return v }
+    // bool branch (==, != between bools)
+    if l.k == 5 {
+        if r.k != 5 { g_fstatus = 2  return v }
+        if op == "==" { if l.i == r.i { v = fv_bool(1) } else { v = fv_bool(0) }  return v }
+        if op == "!=" { if l.i != r.i { v = fv_bool(1) } else { v = fv_bool(0) }  return v }
+        g_fstatus = 2  return v
+    }
+    // float branch (Go: either operand KFloat) — int operands promote
+    if l.k == 2 || r.k == 2 {
+        if l.k != 0 && l.k != 2 { g_fstatus = 2  return v }
+        if r.k != 0 && r.k != 2 { g_fstatus = 2  return v }
+        lf := l.f
+        if l.k == 0 { lf = float(l.i) }
+        rf := r.f
+        if r.k == 0 { rf = float(r.i) }
+        if op == "+" { v = fv_float(lf + rf)  return v }
+        if op == "-" { v = fv_float(lf - rf)  return v }
+        if op == "*" { v = fv_float(lf * rf)  return v }
+        if op == "/" {
+            if rf == 0.0 { g_fstatus = 1  g_fviol_prop = "division by zero"  g_fviol_expr = f_render(ni, 0)  return v }
+            v = fv_float(lf / rf)  return v
+        }
+        if op == "<" { v = fv_bool(0)  if lf < rf { v = fv_bool(1) }  return v }
+        if op == "<=" { v = fv_bool(0)  if lf <= rf { v = fv_bool(1) }  return v }
+        if op == ">" { v = fv_bool(0)  if lf > rf { v = fv_bool(1) }  return v }
+        if op == ">=" { v = fv_bool(0)  if lf >= rf { v = fv_bool(1) }  return v }
+        if op == "==" { v = fv_bool(0)  if lf == rf { v = fv_bool(1) }  return v }
+        if op == "!=" { v = fv_bool(0)  if lf != rf { v = fv_bool(1) }  return v }
+        g_fstatus = 2  return v
+    }
+    // string branch
+    if l.k == 3 {
+        if r.k != 3 { g_fstatus = 2  return v }
+        if op == "+" { v = fv_string(l.s + r.s)  return v }
+        if op == "==" { v = fv_bool(0)  if l.s == r.s { v = fv_bool(1) }  return v }
+        if op == "!=" { v = fv_bool(0)  if l.s != r.s { v = fv_bool(1) }  return v }
+        if op == "<" { v = fv_bool(0)  if l.s < r.s { v = fv_bool(1) }  return v }
+        if op == ">" { v = fv_bool(0)  if l.s > r.s { v = fv_bool(1) }  return v }
+        if op == "<=" { v = fv_bool(0)  if l.s <= r.s { v = fv_bool(1) }  return v }
+        if op == ">=" { v = fv_bool(0)  if l.s >= r.s { v = fv_bool(1) }  return v }
+        g_fstatus = 2  return v
+    }
+    // int branch
+    if l.k != 0 || r.k != 0 { g_fstatus = 2  return v }
+    a := l.i
+    b := r.i
+    if op == "+" { v = fv_int(a + b)  return v }
+    if op == "-" { v = fv_int(a - b)  return v }
+    if op == "*" { v = fv_int(a * b)  return v }
+    if op == "/" {
+        if b == 0 { g_fstatus = 1  g_fviol_prop = "division by zero"  g_fviol_expr = f_render(ni, 0)  return v }
+        v = fv_int(a / b)  return v
+    }
+    if op == "%" {
+        if b == 0 { g_fstatus = 1  g_fviol_prop = "division by zero"  g_fviol_expr = f_render(ni, 0)  return v }
+        v = fv_int(a % b)  return v
+    }
+    if op == "&" { v = fv_int(a & b)  return v }
+    if op == "|" { v = fv_int(a | b)  return v }
+    if op == "^" { v = fv_int(a ^ b)  return v }
+    if op == "<<" { v = fv_int(a << b)  return v }
+    if op == ">>" { v = fv_int(a >> b)  return v }
+    if op == "<" { v = fv_bool(0)  if a < b { v = fv_bool(1) }  return v }
+    if op == "<=" { v = fv_bool(0)  if a <= b { v = fv_bool(1) }  return v }
+    if op == ">" { v = fv_bool(0)  if a > b { v = fv_bool(1) }  return v }
+    if op == ">=" { v = fv_bool(0)  if a >= b { v = fv_bool(1) }  return v }
+    if op == "==" { v = fv_bool(0)  if a == b { v = fv_bool(1) }  return v }
+    if op == "!=" { v = fv_bool(0)  if a != b { v = fv_bool(1) }  return v }
+    g_fstatus = 2  return v
+}
+
+// ---- statement evaluation ----
+
+func f_stopped() (s) {
+    s = 0
+    if g_fstatus != 0 || g_freturned == 1 || g_fbreak == 1 || g_fcontinue == 1 { s = 1 }
+    return s
+}
+
+func f_eval_stmts(kids) {
+    i := 0
+    for i < len(kids) {
+        f_eval_stmt(kids[i])
+        if f_stopped() == 1 { return }
+        i = i + 1
+    }
+}
+
+func f_eval_stmt(si) {
+    f_tick()
+    if g_fstatus != 0 { return }
+    n := nodes[si]
+    if n.kind == K_RETURN {
+        if len(n.kids) == 1 {
+            g_fretval = f_eval(n.kids[0])
+            if g_fstatus != 0 { return }
+        } else {
+            i := 0
+            for i < len(n.kids) {   // 0 or multi: eval all for trap-checking
+                f_eval(n.kids[i])
+                if g_fstatus != 0 { return }
+                i = i + 1
+            }
+            g_fretval = fv_int(0)   // multi-return in expression position doesn't occur
+        }
+        g_freturned = 1
+        return
+    }
+    if n.kind == K_ASSIGN {
+        val := f_eval(n.a)
+        if g_fstatus != 0 { return }
+        f_env_set(n.s, f_clone(val))   // value semantics for struct copies
+        return
+    }
+    if n.kind == K_FLDASSIGN {
+        fld := nodes[n.a]              // K_FIELD node: a = X, s = field name
+        xn := nodes[fld.a]
+        if xn.kind != K_ID { g_fstatus = 2  return }
+        base := f_env_get(xn.s)
+        if g_fstatus != 0 { return }
+        if base.k != 4 { g_fstatus = 2  return }
+        val := f_eval(n.b)
+        if g_fstatus != 0 { return }
+        j := 0
+        done := 0
+        for j < len(base.fnames) {
+            if base.fnames[j] == fld.s { base.fields[j] = val  done = 1 }
+            j = j + 1
+        }
+        if done == 0 { g_fstatus = 2  return }
+        f_env_set(xn.s, base)
+        return
+    }
+    if n.kind == K_EXPRSTMT { f_eval(n.a)  return }
+    if n.kind == K_BREAK { g_fbreak = 1  return }
+    if n.kind == K_CONTINUE { g_fcontinue = 1  return }
+    if n.kind == K_IF {
+        c := f_eval(n.a)
+        if g_fstatus != 0 { return }
+        if c.k != 5 { g_fstatus = 2  return }
+        if c.i != 0 { f_eval_stmts(n.kids) } else { f_eval_stmts(n.kids2) }
+        return
+    }
+    if n.kind == K_WHILE {
+        loop := 1
+        for loop == 1 {
+            c := f_eval(n.a)
+            if g_fstatus != 0 { return }
+            if c.k != 5 { g_fstatus = 2  return }
+            if c.i == 0 { loop = 0 } else {
+                f_eval_stmts(n.kids)
+                if g_fstatus != 0 { return }
+                if g_freturned == 1 { return }
+                if g_fbreak == 1 { g_fbreak = 0  loop = 0 } else {
+                    if g_fcontinue == 1 { g_fcontinue = 0 }
+                }
+            }
+        }
+        return
+    }
+    if n.kind == K_RANGE {
+        base := f_eval(n.a)
+        if g_fstatus != 0 { return }
+        if base.k != 1 && base.k != 3 { g_fstatus = 2  return }   // range over map -> unknown (later)
+        blen := len(base.sl)
+        if base.k == 3 { blen = len(base.s) }
+        ix := 0
+        for ix < blen {
+            if n.s != "" && n.s != "_" { f_env_set(n.s, fv_int(ix)) }
+            if n.s2 != "" && n.s2 != "_" {
+                if base.k == 1 { f_env_set(n.s2, fv_int(base.sl[ix])) } else { f_env_set(n.s2, fv_string(substr(base.s, ix, ix + 1))) }
+            }
+            f_eval_stmts(n.kids)
+            if g_fstatus != 0 { return }
+            if g_freturned == 1 { return }
+            if g_fbreak == 1 { g_fbreak = 0  ix = blen } else {
+                if g_fcontinue == 1 { g_fcontinue = 0 }
+                ix = ix + 1
+            }
+        }
+        return
+    }
+    if n.kind == K_IDXASSIGN {
+        idxn := nodes[n.a]
+        base := f_eval(idxn.a)
+        if g_fstatus != 0 { return }
+        ixv := f_eval(idxn.b)
+        if g_fstatus != 0 { return }
+        if base.k != 1 { g_fstatus = 2  return }
+        if ixv.k != 0 { g_fstatus = 2  return }
+        if ixv.i < 0 || ixv.i >= len(base.sl) {
+            g_fstatus = 1  g_fviol_prop = "index out of range"  g_fviol_expr = f_render(n.a, 0)  return
+        }
+        val := f_eval(n.b)
+        if g_fstatus != 0 { return }
+        if val.k != 0 { g_fstatus = 2  return }
+        base.sl[ixv.i] = val.i   // slices share backing (MFL reference semantics)
+        return
+    }
+    g_fstatus = 2   // unsupported stmt -> inconclusive
+}
+
+// ---- precedence-correct rendering (must match falsify.go exprPrec byte-for-byte) ----
+
+func f_binprec(op) (p) {
+    p = 0
+    if op == "||" { p = 1  return p }
+    if op == "&&" { p = 2  return p }
+    if op == "==" || op == "!=" || op == "<" || op == "<=" || op == ">" || op == ">=" { p = 3  return p }
+    if op == "+" || op == "-" || op == "|" || op == "^" { p = 4  return p }
+    if op == "*" || op == "/" || op == "%" || op == "&" || op == "<<" || op == ">>" { p = 5  return p }
+    return p
+}
+
+func f_render(ni, parent) (out) {
+    out = "?"
+    n := nodes[ni]
+    if n.kind == K_INT { out = str(n.ival)  return out }
+    if n.kind == K_FLOAT { out = str(parse_float(n.s))  return out }   // %g, matches Go FloatLit render
+    if n.kind == K_STR { out = "\"" + n.s + "\""  return out }         // %q for simple strings
+    if n.kind == K_BOOL { if n.ival != 0 { out = "true" } else { out = "false" }  return out }
+    if n.kind == K_ID { out = n.s  return out }
+    if n.kind == K_UNARY { out = n.s + f_render(n.a, 6)  return out }
+    if n.kind == K_INDEX { out = f_render(n.a, 7) + "[" + f_render(n.b, 0) + "]"  return out }
+    if n.kind == K_FIELD { out = f_render(n.a, 7) + "." + n.s  return out }
+    if n.kind == K_CALL {
+        out = n.s + "("
+        i := 0
+        for i < len(n.kids) {
+            if i > 0 { out = out + ", " }
+            out = out + f_render(n.kids[i], 0)
+            i = i + 1
+        }
+        out = out + ")"
+        return out
+    }
+    if n.kind == K_BIN {
+        p := f_binprec(n.s)
+        s := f_render(n.a, p) + " " + n.s + " " + f_render(n.b, p + 1)
+        if p < parent { out = "(" + s + ")"  return out }
+        out = s  return out
+    }
+    return out
+}
+
+// ---- findings (parallel arrays) ----
+
+var g_ff_decl = []string{}
+var g_ff_code = []string{}
+var g_ff_prop = []string{}
+var g_ff_expr = []string{}
+var g_ff_bind = []string{}
+
+func f_record(decl, code, prop, expr, bind) {
+    key := decl + "|" + code + "|" + expr
+    i := 0
+    for i < len(g_ff_decl) {
+        if g_ff_decl[i] + "|" + g_ff_code[i] + "|" + g_ff_expr[i] == key { return }
+        i = i + 1
+    }
+    g_ff_decl = append(g_ff_decl, decl)
+    g_ff_code = append(g_ff_code, code)
+    g_ff_prop = append(g_ff_prop, prop)
+    g_ff_expr = append(g_ff_expr, expr)
+    g_ff_bind = append(g_ff_bind, bind)
+}
+
+func f_bind(names, vals) (out) {
+    out = ""
+    i := 0
+    for i < len(names) {
+        if i > 0 { out = out + ", " }
+        out = out + names[i] + "=" + fv_str(vals[i])
+        i = i + 1
+    }
+    return out
+}
+
+// ---- domains ----
+
+// int domain — MUST match falsIntDomain = {0, 1, -1, 2, 3} order exactly
+func f_intdom(i) (v) {
+    v = fv_int(0)
+    if i == 1 { v = fv_int(1) }
+    if i == 2 { v = fv_int(0 - 1) }
+    if i == 3 { v = fv_int(2) }
+    if i == 4 { v = fv_int(3) }
+    return v
+}
+
+// float domain — MUST match falsFloatDomain = {0, 1, -1, 2}
+func f_floatdom(i) (v) {
+    v = fv_float(0.0)
+    if i == 1 { v = fv_float(1.0) }
+    if i == 2 { v = fv_float(0.0 - 1.0) }
+    if i == 3 { v = fv_float(2.0) }
+    return v
+}
+
+// string domain — MUST match falsStringDomain = {"", "a", "ab"}
+func f_stringdom(i) (v) {
+    v = fv_string("")
+    if i == 1 { v = fv_string("a") }
+    if i == 2 { v = fv_string("ab") }
+    return v
+}
+
+// []int domain — MUST match falsify.go domain(KSlice): lengths 0..3, elements from
+// {0,1,2}, in gen()'s lexicographic order (first element outermost). 40 values.
+var g_slicedom = []FV{}
+var g_slicedom_ready = 0
+
+func f_init_slicedom() {
+    if g_slicedom_ready == 1 { return }
+    g_slicedom = []FV{}
+    g_slicedom = append(g_slicedom, fv_slice([]int{}))     // length 0
+    a := 0
+    for a < 3 {                                            // length 1
+        g_slicedom = append(g_slicedom, fv_slice([]int{a}))
+        a = a + 1
+    }
+    a = 0
+    for a < 3 {                                            // length 2
+        b := 0
+        for b < 3 {
+            g_slicedom = append(g_slicedom, fv_slice([]int{a, b}))
+            b = b + 1
+        }
+        a = a + 1
+    }
+    a = 0
+    for a < 3 {                                            // length 3
+        b := 0
+        for b < 3 {
+            c := 0
+            for c < 3 {
+                g_slicedom = append(g_slicedom, fv_slice([]int{a, b, c}))
+                c = c + 1
+            }
+            b = b + 1
+        }
+        a = a + 1
+    }
+    g_slicedom_ready = 1
+}
+
+// scalar field domains (used inside struct enumeration) — match falsify.go
+// scalarDomain: int {0,1,-1}, float {0,1}, bool {false,true}, string {"","a"}.
+func f_scalar_dom_size(t) (n) {
+    n = 0
+    if t == "int" { n = 3 }
+    if t == "float" { n = 2 }
+    if t == "bool" { n = 2 }
+    if t == "string" { n = 2 }
+    return n
+}
+func f_scalar_dom_val(t, j) (v) {
+    v = fv_int(0)
+    if t == "int" { if j == 1 { v = fv_int(1) }  if j == 2 { v = fv_int(0 - 1) }  return v }
+    if t == "float" { if j == 1 { v = fv_float(1.0) } else { v = fv_float(0.0) }  return v }
+    if t == "bool" { if j == 1 { v = fv_bool(1) } else { v = fv_bool(0) }  return v }
+    if t == "string" { if j == 1 { v = fv_string("a") } else { v = fv_string("") }  return v }
+    return v
+}
+
+// f_struct_dom_size: product of the struct's scalar-field domains, or 0 if any
+// field is non-scalar or the product exceeds falsStructDomCap (-> out of scope).
+func f_struct_dom_size(nm) (n) {
+    n = 1
+    nf := struct_field_count(nm)
+    k := 0
+    for k < nf {
+        sz := f_scalar_dom_size(struct_field_type_at(nm, k))
+        if sz == 0 { n = 0  return n }
+        n = n * sz
+        if n > 4096 { n = 0  return n }
+        k = k + 1
+    }
+    return n
+}
+
+// f_struct_dom_val: the idx-th struct value (mixed-radix over fields, field[0]
+// least significant — matches falsify.go structDomain's counter order).
+func f_struct_dom_val(nm, idx) (v) {
+    v = fv_int(0)
+    nf := struct_field_count(nm)
+    fnames := []string{}
+    fields := []FV{}
+    tmp := idx
+    k := 0
+    for k < nf {
+        t := struct_field_type_at(nm, k)
+        sz := f_scalar_dom_size(t)
+        ck := tmp % sz
+        tmp = tmp / sz
+        fnames = append(fnames, f_struct_fname(nm, k))
+        fields = append(fields, f_scalar_dom_val(t, ck))
+        k = k + 1
+    }
+    v = FV{k: 4, sname: nm, fields: fields, fnames: fnames}
+    return v
+}
+
+// f_dom_size / f_dom_val: pkind 0=int(5), 1=[]int(40), 2=float(4), 3=string(3),
+// 4=bool(2), 5=struct (sname's product). sname is "" for non-struct params.
+func f_dom_size(pkind, sname) (n) {
+    n = 5
+    if pkind == 1 { n = len(g_slicedom) }
+    if pkind == 2 { n = 4 }
+    if pkind == 3 { n = 3 }
+    if pkind == 4 { n = 2 }
+    if pkind == 5 { n = f_struct_dom_size(sname) }
+    return n
+}
+func f_dom_val(pkind, sname, i) (fv) {
+    fv = f_intdom(i)
+    if pkind == 1 { fv = g_slicedom[i] }
+    if pkind == 2 { fv = f_floatdom(i) }
+    if pkind == 3 { fv = f_stringdom(i) }
+    if pkind == 4 { fv = fv_bool(0)  if i == 1 { fv = fv_bool(1) } }
+    if pkind == 5 { fv = f_struct_dom_val(sname, i) }
+    return fv
+}
+
+// ---- the pass ----
+
+func f_one(iid, fr, pkinds, psnames) {
+    ins := g_insts[iid]
+    np := len(ins.pnames)
+    body := nodes[fr].kids
+
+    idx := []int{}
+    sizes := []int{}
+    k := 0
+    for k < np {
+        idx = append(idx, 0)
+        sizes = append(sizes, f_dom_size(pkinds[k], psnames[k]))
+        k = k + 1
+    }
+
+    tried := 0
+    done := 0
+    for done == 0 {
+        f_env_reset()
+        vals := []FV{}
+        pi := 0
+        for pi < np {
+            fv := f_dom_val(pkinds[pi], psnames[pi], idx[pi])
+            f_env_set(ins.pnames[pi], f_clone(fv))
+            vals = append(vals, fv)
+            pi = pi + 1
+        }
+        g_fstatus = 0
+        g_fviol_prop = ""
+        g_fviol_expr = ""
+        g_freturned = 0
+        g_fbreak = 0
+        g_fcontinue = 0
+        g_fsteps = 0
+        f_eval_stmts(body)
+        if g_fstatus == 1 {
+            code := "FALS002"
+            if has_prefix(g_fviol_prop, "index") { code = "FALS001" }
+            f_record(ins.src, code, g_fviol_prop, g_fviol_expr, f_bind(ins.pnames, vals))
+            return
+        }
+        tried = tried + 1
+        if tried >= 200000 { done = 1 }   // falsInputCap: cap tuples per function
+        // mixed-radix increment (idx[0] least significant), matching falsifyOne
+        carried := 1
+        kk := 0
+        for kk < np {
+            idx[kk] = idx[kk] + 1
+            if idx[kk] < sizes[kk] { carried = 0  break }
+            idx[kk] = 0
+            kk = kk + 1
+        }
+        if carried == 1 { done = 1 }
+    }
+}
+
+func detect_falsifiable() {
+    f_init_slicedom()
+    ri := 0
+    for ri < len(g_insts) {
+        ins := g_insts[ri]
+        fr := func_root(ins.src)
+        if fr >= 0 {
+            scoped := 1
+            pkinds := []int{}
+            psnames := []string{}
+            pi := 0
+            for pi < len(ins.pslots) {
+                s := ins.pslots[pi]
+                ks := kind_of(s)
+                pk := 0
+                sn := ""
+                if ks == 2 { pk = 0 } else {
+                    if ks == 3 { pk = 2 } else {              // KFloat
+                        if ks == 4 { pk = 4 } else {          // KBool
+                            if ks == 5 { pk = 3 } else {      // KString
+                                if ks == 7 {                   // KSlice
+                                    es := g_elem[find(s)]
+                                    if kind_of(es) == 2 { pk = 1 } else { scoped = 0 }
+                                } else {
+                                    if ks == 8 {               // KStruct
+                                        pk = 5
+                                        sn = g_sname[find(s)]
+                                        if f_struct_dom_size(sn) == 0 { scoped = 0 }
+                                    } else { scoped = 0 }
+                                }
+                            }
+                        }
+                    }
+                }
+                pkinds = append(pkinds, pk)
+                psnames = append(psnames, sn)
+                pi = pi + 1
+            }
+            if scoped == 1 { f_one(ri, fr, pkinds, psnames) }
+        }
+        ri = ri + 1
+    }
+}
+
+// dump: findings sorted by (decl, code, expr), one hex line each.
+func f_dump() (out) {
+    order := []int{}
+    k := 0
+    for k < len(g_ff_decl) {
+        pos := len(order)
+        j := 0
+        for j < len(order) {
+            oj := order[j]
+            less := 0
+            if g_ff_decl[k] < g_ff_decl[oj] { less = 1 }
+            if g_ff_decl[k] == g_ff_decl[oj] {
+                if g_ff_code[k] < g_ff_code[oj] { less = 1 }
+                if g_ff_code[k] == g_ff_code[oj] {
+                    if g_ff_expr[k] < g_ff_expr[oj] { less = 1 }
+                }
+            }
+            if less == 1 { pos = j  break }
+            j = j + 1
+        }
+        order = insert_at(order, pos, k)
+        k = k + 1
+    }
+    out = ""
+    m := 0
+    for m < len(order) {
+        e := order[m]
+        out = out + to_hex(bytes(g_ff_decl[e])) + "|" + to_hex(bytes(g_ff_code[e])) + "|" + to_hex(bytes(g_ff_prop[e])) + "|" + to_hex(bytes(g_ff_expr[e])) + "|" + to_hex(bytes(g_ff_bind[e])) + "\n"
+        m = m + 1
+    }
+    return out
+}
+
+func insert_at(xs, pos, val) (out) {
+    out = []int{}
+    i := 0
+    for i < len(xs) {
+        if i == pos { out = append(out, val) }
+        out = append(out, xs[i])
+        i = i + 1
+    }
+    if pos >= len(xs) { out = append(out, val) }
+    return out
+}
