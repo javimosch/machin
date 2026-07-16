@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# Phase 0 spike gate for sound record/replay.
+# Record/replay gate (Slice 1.1). machin programs are proved data-race-free, so
+# the only inter-goroutine nondeterminism is the order channel ops complete. We
+# record that order as a sequence of goroutine PATHS (parent-relative ids, stable
+# across runs even under concurrent nested spawns) and, on replay, gate each op to
+# fire in the recorded order — reproducing the run without recording a single
+# memory access. Proves: replay reproduces the recording; a crafted trace controls
+# the schedule; nested spawns are deterministic; close is an ordered op.
 #
-# machin programs are proved data-race-free, so the ONLY inter-goroutine
-# nondeterminism is the order channel operations complete. We record that order
-# as a sequence of goroutine ids and, on replay, gate each channel op to fire in
-# the recorded order — reproducing the run without recording a single memory
-# access. This gate proves: (1) replay reproduces the recorded execution
-# deterministically, and (2) the trace fully CONTROLS the schedule (a crafted
-# trace yields exactly its corresponding output).
+# Compiles each fixture ONCE and drives the binary via MFL_RR_RECORD/REPLAY env,
+# so the gate is fast (no recompile per run).
 set -u
 N="nice -n 15"
 M=./bin/machin
@@ -18,36 +19,68 @@ chk() { if [ "$1" = "$2" ]; then pass=$((pass+1)); echo "ok   $3 ($1)"; else fai
 echo "building machin…"
 GOMAXPROCS=4 $N go build -o bin/machin . || { echo "go build failed"; exit 1; }
 
+build() { $N $M build "$1" -o "$2" >/dev/null 2>&1 || { echo "build failed: $1"; exit 1; }; }
+rec()   { MFL_RR_RECORD="$2" "$1" 2>/dev/null; }
+rep()   { MFL_RR_REPLAY="$2" "$1" 2>/dev/null; }
+plain() { "$1" 2>/dev/null; }
+
+# ---- fixture 1: flat 4-goroutine channel race ----
 cat > "$T/race.mfl" <<'EOF'
 func worker(id, ch) { ch <- id }
 func main() {
   ch := make(chan int)
-  go worker(1, ch)
-  go worker(2, ch)
-  go worker(3, ch)
-  go worker(4, ch)
-  out := ""
-  i := 0
+  go worker(1, ch)  go worker(2, ch)  go worker(3, ch)  go worker(4, ch)
+  out := ""  i := 0
   for i < 4 { v := <-ch  out = out + str(v)  i = i + 1 }
   println(out)
 }
 EOF
+build "$T/race.mfl" "$T/race"
+R=$(rec "$T/race" "$T/tr"); echo "recorded: $R  trace: $(tr '\n' ' ' < "$T/tr")"
+U=$(for i in $(seq 1 10); do rep "$T/race" "$T/tr"; done | sort -u); chk "$U" "$R" "10 replays reproduce the recording"
+printf '0.1\n0\n0.2\n0\n0.3\n0\n0.4\n0\n' > "$T/fwd"; chk "$(rep "$T/race" "$T/fwd")" "1234" "crafted trace 1,2,3,4 -> 1234"
+printf '0.4\n0\n0.3\n0\n0.2\n0\n0.1\n0\n' > "$T/rev"; chk "$(rep "$T/race" "$T/rev")" "4321" "crafted trace 4,3,2,1 -> 4321"
+printf '0.2\n0\n0.4\n0\n0.1\n0\n0.3\n0\n' > "$T/int"; chk "$(rep "$T/race" "$T/int")" "2413" "interleaved trace -> 2413"
+echo "  plain-run outputs (vary): $(for i in $(seq 1 12); do plain "$T/race"; done | sort -u | tr '\n' ' ')"
 
-# 1. record, then replay 10x — every replay must reproduce the recorded output.
-REC=$($N $M run --record "$T/trace.txt" "$T/race.mfl" 2>/dev/null)
-echo "recorded output: $REC   trace: $(tr '\n' ' ' < "$T/trace.txt")"
-uniq_replays=$(for i in $(seq 1 10); do $N $M run --replay "$T/trace.txt" "$T/race.mfl" 2>/dev/null; done | sort -u)
-chk "$uniq_replays" "$REC" "10 replays reproduce the recorded run"
+# ---- fixture 2: nested concurrent spawns (the gid-race case the path fix targets) ----
+cat > "$T/nested.mfl" <<'EOF'
+func sub(id, ch) { ch <- id }
+func worker(base, ch) { go sub(base*10+1, ch)  go sub(base*10+2, ch) }
+func main() {
+  ch := make(chan int)
+  go worker(1, ch)  go worker(2, ch)
+  out := ""  i := 0
+  for i < 4 { v := <-ch  out = out + str(v) + "-"  i = i + 1 }
+  println(out)
+}
+EOF
+build "$T/nested.mfl" "$T/nested"
+R=$(rec "$T/nested" "$T/tn"); echo "nested recorded: $R  trace: $(tr '\n' ' ' < "$T/tn")"
+U=$(for i in $(seq 1 10); do rep "$T/nested" "$T/tn"; done | sort -u); chk "$U" "$R" "nested spawns replay deterministically"
+echo "  plain nested (vary): $(for i in $(seq 1 10); do plain "$T/nested"; done | sort -u | tr '\n' ' ')"
 
-# 2. crafted traces fully control the schedule.
-printf '1\n2\n3\n4\n0\n0\n0\n0\n' > "$T/fwd"; chk "$($N $M run --replay "$T/fwd" "$T/race.mfl" 2>/dev/null)" "1234" "trace 1,2,3,4 -> 1234"
-printf '4\n3\n2\n1\n0\n0\n0\n0\n' > "$T/rev"; chk "$($N $M run --replay "$T/rev" "$T/race.mfl" 2>/dev/null)" "4321" "trace 4,3,2,1 -> 4321"
-printf '2\n0\n4\n0\n1\n0\n3\n0\n' > "$T/int"; chk "$($N $M run --replay "$T/int" "$T/race.mfl" 2>/dev/null)" "2413" "interleaved trace -> 2413"
-
-# 3. (informational) plain runs vary — the nondeterminism replay pins down.
-echo "plain-run outputs (varies by scheduler): $(for i in $(seq 1 12); do $N $M run "$T/race.mfl" 2>/dev/null; done | sort -u | tr '\n' ' ')"
+# ---- fixture 3: close is an ordered op (range-over-channel terminates on it) ----
+cat > "$T/closed.mfl" <<'EOF'
+func consumer(ch, done) {
+  out := ""
+  for v := range ch { out = out + str(v) }
+  done <- out
+}
+func main() {
+  ch := make(chan int)
+  done := make(chan string)
+  go consumer(ch, done)
+  ch <- 1  ch <- 2  ch <- 3  close(ch)
+  r := <-done
+  println(r)
+}
+EOF
+build "$T/closed.mfl" "$T/closed"
+R=$(rec "$T/closed" "$T/tc"); echo "closed recorded: $R  trace: $(tr '\n' ' ' < "$T/tc")"
+U=$(for i in $(seq 1 10); do rep "$T/closed" "$T/tc"; done | sort -u); chk "$U" "$R" "close + range replay deterministically"
 
 echo
-echo "record/replay spike: $pass pass, $fail fail"
+echo "record/replay gate: $pass pass, $fail fail"
 rm -rf "$T"
 [ "$fail" -eq 0 ]

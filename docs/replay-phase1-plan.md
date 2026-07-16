@@ -65,16 +65,31 @@ Record/replay is a **runtime** feature (C emitted by `codegen.go`), so the "Go
 reference" here is the Go-compiler-emitted runtime; the self-host port (Phase 2)
 is making the self-hosted `cgen.src` emit the same runtime, oracle-diffed.
 
-### Slice 1.1 — Robust gid + full channel coverage
-- **Deterministic gid regardless of spawn timing.** The spike assumes spawns
-  happen in a deterministic order (main spawns all). Fix: derive a gid from the
-  *parent* gid + a per-parent spawn counter (a stable tree path), so ids are
-  identical across runs even when goroutines spawn goroutines concurrently.
-- **Instrument every channel op**, not just `send`/`recv2`: `select`
-  (`mfl_chan_tryrecv2` — the poll loop needs care, a non-ready poll must NOT
-  consume a turn), range-over-channel, `close`. Unbuffered vs buffered channels.
-- Gate: nested-spawn, `select`, buffered, and close programs replay
-  deterministically; extend `verify-replay.sh`.
+### Slice 1.1 — Robust gid + full channel coverage — ✅ DONE
+
+- **Deterministic gid** via a parent-relative PATH (`0`, `0.1`, `0.1.2`), assigned
+  in the spawning goroutine's program order (thread-local `mfl_gid_path` +
+  `mfl_spawn_ctr`, passed to the child as `(parent path, spawn index)`). Ids are
+  now identical across record/replay even under concurrent nested spawns — proven
+  on a 2-level spawn tree that produced paths `0.1.1`/`0.2.1`/… and replayed
+  deterministically while plain runs gave 6 orderings. Replaces the spike's racy
+  global counter. Trace is now a list of path strings.
+- **`close`** instrumented (an observable, ordered op — a recv after close gets
+  "not ok", so its position matters). Range-over-channel and `recv` already ride
+  the `recv2` hook.
+- **Learning / bug fixed:** the drain-after-close `recv2` (returns "not ok")
+  must ALSO `rr_mark` — it gates a turn, so if it doesn't record one, record and
+  replay disagree on the op count and replay hangs. Caught by the close/range
+  fixture. `verify-replay.sh` now 6/6 (flat race, crafted-trace control, nested
+  spawns, close+range), compile-once for speed.
+
+**Deferred to Slice 1.3 (honesty):** `select` (`mfl_chan_tryrecv2`). Its
+poll-loop replay is a distinct, harder problem — a non-ready poll must not consume
+a turn, and a busy-poll select can't just block-until-turn without deadlock. Left
+uninstrumented for now (so it never hangs), and 1.3's boundary work will flag a
+`select`-using program `best-effort` until a dedicated select-determinism slice
+lands. machin channels are unbounded-async (send never blocks), so buffered vs
+unbuffered is not a distinct case.
 
 ### Slice 1.2 — The I/O log
 - Interpose the nondeterministic I/O builtins at the runtime boundary: `now`/time,
