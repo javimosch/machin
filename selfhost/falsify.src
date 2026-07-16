@@ -1,0 +1,323 @@
+// selfhost/falsify.src — The Falsifier, self-hosted (Phase 2).
+//
+// Ports falsify.go's detectFalsifiable over the self-hosted IR (nodes[] + g_insts),
+// oracle-diffed against `machin falsifytest --program`. The one structural change
+// forced by MFL: there is NO panic/recover, so the Go interpreter's panic(fviol)/
+// panic(funknown) unwinding is replaced by a threaded status global (g_fstatus)
+// that every eval site checks and early-returns on.
+//
+// Phase 2 slice 2.1 (feasibility spike): scalar-int params, arithmetic +
+// div/modulo-by-zero (FALS002). This proves the status-threading + enumeration +
+// precedence-rendering + hex-dump all reproduce the Go reference byte-for-byte.
+// Slices, structs, index-OOB (FALS001) and interprocedural inlining follow.
+
+// interpreter status: 0 ok, 1 violation (counterexample), 2 unknown (inconclusive)
+var g_fstatus = 0
+var g_fviol_prop = ""
+var g_fviol_expr = ""
+// returned-flag: MFL has no ctrlReturn, so a K_RETURN sets this and every stmt
+// loop stops on it (else execution falls through past a guarded early return).
+var g_freturned = 0
+
+// environment: parallel arrays, int scalars only (spike)
+var g_env_names = []string{}
+var g_env_vals = []int{}
+
+func f_env_reset() {
+    g_env_names = []string{}
+    g_env_vals = []int{}
+}
+
+func f_env_set(name, v) {
+    i := 0
+    for i < len(g_env_names) {
+        if g_env_names[i] == name { g_env_vals[i] = v  return }
+        i = i + 1
+    }
+    g_env_names = append(g_env_names, name)
+    g_env_vals = append(g_env_vals, v)
+}
+
+func f_env_get(name) (v) {
+    v = 0
+    i := 0
+    for i < len(g_env_names) {
+        if g_env_names[i] == name { v = g_env_vals[i]  return v }
+        i = i + 1
+    }
+    g_fstatus = 2   // free ident -> inconclusive (matches funknown)
+    return v
+}
+
+// ---- expression evaluation (int; status in g_fstatus) ----
+
+func f_eval(ni) (v) {
+    v = 0
+    if g_fstatus != 0 { return v }
+    n := nodes[ni]
+    if n.kind == K_INT { v = n.ival  return v }
+    if n.kind == K_ID { v = f_env_get(n.s)  return v }
+    if n.kind == K_UNARY {
+        x := f_eval(n.a)
+        if g_fstatus != 0 { return v }
+        if n.s == "-" { v = 0 - x  return v }
+        if n.s == "!" { if x == 0 { v = 1 }  return v }
+        g_fstatus = 2  return v
+    }
+    if n.kind == K_BIN { v = f_eval_bin(ni)  return v }
+    g_fstatus = 2   // any other expr kind -> inconclusive (spike scope)
+    return v
+}
+
+func f_eval_bin(ni) (v) {
+    v = 0
+    n := nodes[ni]
+    op := n.s
+    l := f_eval(n.a)
+    if g_fstatus != 0 { return v }
+    // short-circuit boolean ops (values modeled as 0/1)
+    if op == "&&" { if l == 0 { v = 0  return v }  r := f_eval(n.b)  if r != 0 { v = 1 }  return v }
+    if op == "||" { if l != 0 { v = 1  return v }  r := f_eval(n.b)  if r != 0 { v = 1 }  return v }
+    r := f_eval(n.b)
+    if g_fstatus != 0 { return v }
+    if op == "+" { v = l + r  return v }
+    if op == "-" { v = l - r  return v }
+    if op == "*" { v = l * r  return v }
+    if op == "/" {
+        if r == 0 { g_fstatus = 1  g_fviol_prop = "division by zero"  g_fviol_expr = f_render(ni, 0)  return v }
+        v = l / r  return v
+    }
+    if op == "%" {
+        if r == 0 { g_fstatus = 1  g_fviol_prop = "division by zero"  g_fviol_expr = f_render(ni, 0)  return v }
+        v = l % r  return v
+    }
+    if op == "&" { v = l & r  return v }
+    if op == "|" { v = l | r  return v }
+    if op == "^" { v = l ^ r  return v }
+    if op == "<<" { v = l << r  return v }
+    if op == ">>" { v = l >> r  return v }
+    if op == "<" { if l < r { v = 1 }  return v }
+    if op == "<=" { if l <= r { v = 1 }  return v }
+    if op == ">" { if l > r { v = 1 }  return v }
+    if op == ">=" { if l >= r { v = 1 }  return v }
+    if op == "==" { if l == r { v = 1 }  return v }
+    if op == "!=" { if l != r { v = 1 }  return v }
+    g_fstatus = 2  return v
+}
+
+// ---- statement evaluation (spike: return + assign + if) ----
+
+func f_eval_stmts(kids) {
+    i := 0
+    for i < len(kids) {
+        f_eval_stmt(kids[i])
+        if g_fstatus != 0 || g_freturned == 1 { return }
+        i = i + 1
+    }
+}
+
+func f_eval_stmt(si) {
+    n := nodes[si]
+    if n.kind == K_RETURN {
+        i := 0
+        for i < len(n.kids) {
+            f_eval(n.kids[i])
+            if g_fstatus != 0 { return }
+            i = i + 1
+        }
+        g_freturned = 1
+        return
+    }
+    if n.kind == K_ASSIGN {
+        val := f_eval(n.a)
+        if g_fstatus != 0 { return }
+        f_env_set(n.s, val)
+        return
+    }
+    if n.kind == K_IF {
+        c := f_eval(n.a)
+        if g_fstatus != 0 { return }
+        if c != 0 { f_eval_stmts(n.kids) } else { f_eval_stmts(n.kids2) }
+        return
+    }
+    g_fstatus = 2   // unsupported stmt -> inconclusive
+}
+
+// ---- precedence-correct rendering (must match falsify.go exprPrec byte-for-byte) ----
+
+func f_binprec(op) (p) {
+    p = 0
+    if op == "||" { p = 1  return p }
+    if op == "&&" { p = 2  return p }
+    if op == "==" || op == "!=" || op == "<" || op == "<=" || op == ">" || op == ">=" { p = 3  return p }
+    if op == "+" || op == "-" || op == "|" || op == "^" { p = 4  return p }
+    if op == "*" || op == "/" || op == "%" || op == "&" || op == "<<" || op == ">>" { p = 5  return p }
+    return p
+}
+
+func f_render(ni, parent) (out) {
+    out = "?"
+    n := nodes[ni]
+    if n.kind == K_INT { out = str(n.ival)  return out }
+    if n.kind == K_ID { out = n.s  return out }
+    if n.kind == K_UNARY { out = n.s + f_render(n.a, 6)  return out }
+    if n.kind == K_BIN {
+        p := f_binprec(n.s)
+        s := f_render(n.a, p) + " " + n.s + " " + f_render(n.b, p + 1)
+        if p < parent { out = "(" + s + ")"  return out }
+        out = s  return out
+    }
+    return out
+}
+
+// ---- findings (parallel arrays) ----
+
+var g_ff_decl = []string{}
+var g_ff_code = []string{}
+var g_ff_prop = []string{}
+var g_ff_expr = []string{}
+var g_ff_bind = []string{}
+
+func f_record(decl, code, prop, expr, bind) {
+    key := decl + "|" + code + "|" + expr
+    i := 0
+    for i < len(g_ff_decl) {
+        if g_ff_decl[i] + "|" + g_ff_code[i] + "|" + g_ff_expr[i] == key { return }
+        i = i + 1
+    }
+    g_ff_decl = append(g_ff_decl, decl)
+    g_ff_code = append(g_ff_code, code)
+    g_ff_prop = append(g_ff_prop, prop)
+    g_ff_expr = append(g_ff_expr, expr)
+    g_ff_bind = append(g_ff_bind, bind)
+}
+
+func f_bind(names, vals) (out) {
+    out = ""
+    i := 0
+    for i < len(names) {
+        if i > 0 { out = out + ", " }
+        out = out + names[i] + "=" + str(vals[i])
+        i = i + 1
+    }
+    return out
+}
+
+// int domain — MUST match falsIntDomain = {0, 1, -1, 2, 3} order exactly
+func f_intdom(i) (v) {
+    v = 0
+    if i == 1 { v = 1 }
+    if i == 2 { v = 0 - 1 }
+    if i == 3 { v = 2 }
+    if i == 4 { v = 3 }
+    return v
+}
+
+// ---- the pass ----
+
+func f_one(iid, fr) {
+    ins := g_insts[iid]
+    np := len(ins.pnames)
+    body := nodes[fr].kids
+
+    idx := []int{}
+    k := 0
+    for k < np { idx = append(idx, 0)  k = k + 1 }
+
+    done := 0
+    for done == 0 {
+        f_env_reset()
+        vals := []int{}
+        pi := 0
+        for pi < np {
+            v := f_intdom(idx[pi])
+            f_env_set(ins.pnames[pi], v)
+            vals = append(vals, v)
+            pi = pi + 1
+        }
+        g_fstatus = 0
+        g_fviol_prop = ""
+        g_fviol_expr = ""
+        g_freturned = 0
+        f_eval_stmts(body)
+        if g_fstatus == 1 {
+            f_record(ins.src, "FALS002", g_fviol_prop, g_fviol_expr, f_bind(ins.pnames, vals))
+            return   // first counterexample per function
+        }
+        // mixed-radix increment (idx[0] least significant), matching falsifyOne
+        carried := 1
+        kk := 0
+        for kk < np {
+            idx[kk] = idx[kk] + 1
+            if idx[kk] < 5 { carried = 0  break }
+            idx[kk] = 0
+            kk = kk + 1
+        }
+        if carried == 1 { done = 1 }
+    }
+}
+
+func detect_falsifiable() {
+    ri := 0
+    for ri < len(g_insts) {
+        ins := g_insts[ri]
+        fr := func_root(ins.src)
+        if fr >= 0 {
+            scoped := 1
+            pi := 0
+            for pi < len(ins.pslots) {
+                if kind_of(ins.pslots[pi]) != 2 { scoped = 0 }   // 2 = KInt
+                pi = pi + 1
+            }
+            if scoped == 1 { f_one(ri, fr) }
+        }
+        ri = ri + 1
+    }
+}
+
+// dump: findings sorted by (decl, code, expr), one hex line each — matches the
+// Go oracle's detectFalsifiable sort order + falsifytest hex form.
+func f_dump() (out) {
+    order := []int{}
+    k := 0
+    for k < len(g_ff_decl) {
+        // insertion into `order` by (decl, code, expr)
+        pos := len(order)
+        j := 0
+        for j < len(order) {
+            oj := order[j]
+            less := 0
+            if g_ff_decl[k] < g_ff_decl[oj] { less = 1 }
+            if g_ff_decl[k] == g_ff_decl[oj] {
+                if g_ff_code[k] < g_ff_code[oj] { less = 1 }
+                if g_ff_code[k] == g_ff_code[oj] {
+                    if g_ff_expr[k] < g_ff_expr[oj] { less = 1 }
+                }
+            }
+            if less == 1 { pos = j  break }
+            j = j + 1
+        }
+        order = insert_at(order, pos, k)
+        k = k + 1
+    }
+    out = ""
+    m := 0
+    for m < len(order) {
+        e := order[m]
+        out = out + to_hex(bytes(g_ff_decl[e])) + "|" + to_hex(bytes(g_ff_code[e])) + "|" + to_hex(bytes(g_ff_prop[e])) + "|" + to_hex(bytes(g_ff_expr[e])) + "|" + to_hex(bytes(g_ff_bind[e])) + "\n"
+        m = m + 1
+    }
+    return out
+}
+
+func insert_at(xs, pos, val) (out) {
+    out = []int{}
+    i := 0
+    for i < len(xs) {
+        if i == pos { out = append(out, val) }
+        out = append(out, xs[i])
+        i = i + 1
+    }
+    if pos >= len(xs) { out = append(out, val) }
+    return out
+}
