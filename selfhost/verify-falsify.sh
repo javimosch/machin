@@ -5,7 +5,7 @@
 # (Distinct from the repo-root verify-falsify.sh, which behaviorally tests the Go
 # pass. This one proves the MFL port reproduces the Go oracle exactly.)
 #
-# Phase 2 slices 2.1-2.5 + Phase 3: int/[]int/float/string/bool/struct params;
+# Phase 2-4: int/[]int/float/string/bool/struct params;
 # arithmetic, comparisons, if/while/for-range (incl. string range), index
 # (FALS001), len, abs, field access/assign, interprocedural inlining, div/mod-by-
 # zero (FALS002), AND declarative contracts requires/ensures (FALS010). Full
@@ -89,6 +89,21 @@ printf 'func recip(x) (r) requires x > 0  ensures r > 0 { return 10/x - 5 }\nfun
 printf 'func between(x) (r) requires x > 0  requires x < 3  ensures r == x { return x }\nfunc main(){println(str(between(1)))}\n' > "$T/p5"; run "$T/p5" "two requires (clean)"
 printf 'func clamp(x,lo,hi) (r) requires lo <= hi  ensures r >= lo  ensures r <= hi { r = x  if r < lo { r = lo }  if r > hi { r = hi }  return r }\nfunc main(){println(str(clamp(5,0,10)))}\n' > "$T/p6"; run "$T/p6" "clamp 2-ensures (clean)"
 printf 'func clampbad(x,lo,hi) (r) requires lo <= hi  ensures r >= lo  ensures r <= hi { return x }\nfunc main(){println(str(clampbad(5,0,10)))}\n' > "$T/p7"; run "$T/p7" "clamp-bad (FALS010)"
+
+# Phase 4: --prove verdicts (dense enumeration -> proved / proved-bounded / clean).
+runprove() { # file label
+  $N "$MACHIN" falsifytest --program "$1" --prove > "$T/o.txt" 2>/dev/null
+  $N ./selfhost/mfl-falsify --program "$1" --prove > "$T/m.txt" 2>/dev/null
+  if diff -q "$T/o.txt" "$T/m.txt" >/dev/null; then pass=$((pass+1)); echo "ok   $2"; else
+    fail=$((fail+1)); echo "MISMATCH: $2"; echo " oracle:"; cat "$T/o.txt"; echo " mfl:"; cat "$T/m.txt"; fi
+}
+printf 'func pick(a,b,c) (r) ensures r == r { if a { return b } return c }\nfunc main(){println(str(pick(true,false,true)))}\n' > "$T/pr1"; runprove "$T/pr1" "prove: bool-only -> proved"
+printf 'func myabs(x) (r) ensures r >= 0 { if x < 0 { return 0 - x } return x }\nfunc main(){println(str(myabs(-3)))}\n' > "$T/pr2"; runprove "$T/pr2" "prove: int -> proved-bounded"
+printf 'func sumok(xs){total:=0 for _,v:=range xs{total=total+v}return total}\nfunc main(){println(str(sumok([]int{1,2})))}\n' > "$T/pr3"; runprove "$T/pr3" "prove: []int -> proved-bounded"
+printf 'func fpos(x) (r) requires x > 0.0  ensures r > 0.0 { return x }\nfunc main(){println(str(fpos(1.0)))}\n' > "$T/pr4"; runprove "$T/pr4" "prove: float -> clean"
+printf 'func f(x){ if x == 7 { return 1/0 } return 0 }\nfunc main(){println(str(f(1)))}\n' > "$T/pr5"; runprove "$T/pr5" "prove: dense finds x=7 -> counterexample"
+printf 'type F struct{a bool b bool}\nfunc flags(f) (r) ensures r == r { if f.a { return f.b } return f.a }\nfunc main(){println(str(flags(F{a:true,b:false})))}\n' > "$T/pr6"; runprove "$T/pr6" "prove: struct-of-bool -> proved"
+printf 'func g(x) (r) ensures r >= 0 { println(str(x))  if x < 0 { return 0 - x } return x }\nfunc main(){println(str(g(1)))}\n' > "$T/pr7"; runprove "$T/pr7" "prove: unknown path -> unknown"
 
 echo
 echo "self-hosted falsify oracle-diff: $pass pass, $fail fail"

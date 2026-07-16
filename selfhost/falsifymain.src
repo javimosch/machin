@@ -4,8 +4,13 @@
 
 func main() {
     a := args()
-    if len(a) < 3 { write(2, "usage: falsifytest --program <file.mfl>\n")  exit(2) }
+    if len(a) < 3 { write(2, "usage: falsifytest --program <file.mfl> [--prove]\n")  exit(2) }
     if a[1] != "--program" { write(2, "only --program is supported\n")  exit(2) }
+    ai := 0
+    while ai < len(a) {
+        if a[ai] == "--prove" { g_prove = 1 }
+        ai = ai + 1
+    }
     data := read_file(a[2])
     lines := split(data, "\n")
 
@@ -94,5 +99,5 @@ func main() {
 
     // the falsify pass
     detect_falsifiable()
-    write(1, f_dump())
+    if g_prove == 1 { write(1, f_dump_verdicts()) } else { write(1, f_dump()) }
 }
