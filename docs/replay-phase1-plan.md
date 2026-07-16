@@ -91,14 +91,23 @@ uninstrumented for now (so it never hangs), and 1.3's boundary work will flag a
 lands. machin channels are unbounded-async (send never blocks), so buffered vs
 unbuffered is not a distinct case.
 
-### Slice 1.2 — The I/O log
-- Interpose the nondeterministic I/O builtins at the runtime boundary: `now`/time,
-  `random`, `read_stdin`, file reads, socket `recv`. Under `--record`, log the
-  returned bytes at `(gid, io_seq++)`; under `--replay`, return the logged bytes
-  and skip the real call.
-- Implement the versioned trace format (schedule + I/O + header).
-- Gate: a program using time + random + stdin is bit-identical under replay while
-  plain runs differ.
+### Slice 1.2 — The I/O log — ✅ DONE (time + stdin; random/file/net follow-on)
+- **Versioned tagged trace format** (`MFLRR 1` header; `S <path>` schedule lines;
+  `I <path> <hex>` I/O lines). Each goroutine replays its OWN I/O queue in order,
+  so the I/O log needs no global ordering — the schedule already orders everything
+  observable across goroutines.
+- **Interposed** the nondeterministic I/O builtins at the runtime boundary:
+  `now`/`now_ms` (time) and `read_stdin`. Under `--record` the real call runs and
+  its result is hex-logged; under `--replay` the logged value is returned and the
+  real call is **skipped** (so replay never blocks on stdin / never reads the
+  wall clock). Per-goroutine queues keyed by gid path.
+- Proven (`verify-replay.sh` 11/11): recorded time replays identically seconds
+  later (plain differs); recorded stdin replays despite different/empty real
+  stdin without blocking; and a combined fixture where workers **race for a
+  channel AND each record a timestamp** replays schedule + per-worker I/O
+  together.
+- **Follow-on (same pattern, this phase):** `rand_bytes` (crypto-gated, returns a
+  slice — hex-log its bytes like stdin), file reads, and socket `recv`.
 
 ### Slice 1.3 — The determinism boundary + honest refusal
 - Detect boundary exits: an `extern`/FFI call under `--record` sets the trace's

@@ -36,11 +36,11 @@ func main() {
 }
 EOF
 build "$T/race.mfl" "$T/race"
-R=$(rec "$T/race" "$T/tr"); echo "recorded: $R  trace: $(tr '\n' ' ' < "$T/tr")"
+R=$(rec "$T/race" "$T/tr"); echo "recorded: $R  trace: $(grep '^S' "$T/tr" | tr '\n' ' ')"
 U=$(for i in $(seq 1 10); do rep "$T/race" "$T/tr"; done | sort -u); chk "$U" "$R" "10 replays reproduce the recording"
-printf '0.1\n0\n0.2\n0\n0.3\n0\n0.4\n0\n' > "$T/fwd"; chk "$(rep "$T/race" "$T/fwd")" "1234" "crafted trace 1,2,3,4 -> 1234"
-printf '0.4\n0\n0.3\n0\n0.2\n0\n0.1\n0\n' > "$T/rev"; chk "$(rep "$T/race" "$T/rev")" "4321" "crafted trace 4,3,2,1 -> 4321"
-printf '0.2\n0\n0.4\n0\n0.1\n0\n0.3\n0\n' > "$T/int"; chk "$(rep "$T/race" "$T/int")" "2413" "interleaved trace -> 2413"
+printf 'MFLRR 1\nS 0.1\nS 0\nS 0.2\nS 0\nS 0.3\nS 0\nS 0.4\nS 0\n' > "$T/fwd"; chk "$(rep "$T/race" "$T/fwd")" "1234" "crafted trace 1,2,3,4 -> 1234"
+printf 'MFLRR 1\nS 0.4\nS 0\nS 0.3\nS 0\nS 0.2\nS 0\nS 0.1\nS 0\n' > "$T/rev"; chk "$(rep "$T/race" "$T/rev")" "4321" "crafted trace 4,3,2,1 -> 4321"
+printf 'MFLRR 1\nS 0.2\nS 0\nS 0.4\nS 0\nS 0.1\nS 0\nS 0.3\nS 0\n' > "$T/int"; chk "$(rep "$T/race" "$T/int")" "2413" "interleaved trace -> 2413"
 echo "  plain-run outputs (vary): $(for i in $(seq 1 12); do plain "$T/race"; done | sort -u | tr '\n' ' ')"
 
 # ---- fixture 2: nested concurrent spawns (the gid-race case the path fix targets) ----
@@ -79,6 +79,35 @@ EOF
 build "$T/closed.mfl" "$T/closed"
 R=$(rec "$T/closed" "$T/tc"); echo "closed recorded: $R  trace: $(tr '\n' ' ' < "$T/tc")"
 U=$(for i in $(seq 1 10); do rep "$T/closed" "$T/tc"; done | sort -u); chk "$U" "$R" "close + range replay deterministically"
+
+# ---- fixture 4: I/O log — time replays the recorded value ----
+printf 'func main() { println(str(now_ms())) }\n' > "$T/time.mfl"
+build "$T/time.mfl" "$T/time"
+R=$(rec "$T/time" "$T/tt"); sleep 1
+U=$(for i in $(seq 1 5); do rep "$T/time" "$T/tt"; done | sort -u); chk "$U" "$R" "time replays the recorded value (not the current clock)"
+P=$(plain "$T/time"); [ "$P" != "$R" ] && pass=$((pass+1)) && echo "ok   plain time differs from recorded ($P != $R)" || { fail=$((fail+1)); echo "FAIL plain time should differ"; }
+
+# ---- fixture 5: I/O log — stdin replays the recorded input, no real read ----
+printf 'func main() { println("got:[" + read_stdin() + "]") }\n' > "$T/stdin.mfl"
+build "$T/stdin.mfl" "$T/stdin"
+R=$(echo -n "the recorded input" | rec "$T/stdin" "$T/ts")
+chk "$(echo -n "SOMETHING ELSE" | rep "$T/stdin" "$T/ts")" "$R" "stdin replays recorded input despite different real stdin"
+chk "$(rep "$T/stdin" "$T/ts" < /dev/null)" "$R" "stdin replay does not block on empty real stdin"
+
+# ---- fixture 6: schedule + I/O together (each worker records a timestamp) ----
+cat > "$T/combo.mfl" <<'EOF'
+func worker(id, ch) { t := now_ms()  ch <- id * 1000000000000 + t }
+func main() {
+  ch := make(chan int)
+  go worker(1, ch)  go worker(2, ch)  go worker(3, ch)
+  out := ""  i := 0
+  for i < 3 { v := <-ch  out = out + str(v) + " "  i = i + 1 }
+  println(out)
+}
+EOF
+build "$T/combo.mfl" "$T/combo"
+R=$(rec "$T/combo" "$T/tco"); sleep 1
+U=$(for i in $(seq 1 8); do rep "$T/combo" "$T/tco"; done | sort -u); chk "$U" "$R" "schedule + per-worker I/O replay together"
 
 echo
 echo "record/replay gate: $pass pass, $fail fail"

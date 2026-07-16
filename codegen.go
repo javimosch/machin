@@ -318,22 +318,74 @@ static char* mfl_path_child(const char* parent, int idx) {
 }
 static int mfl_rr_mode = 0;              /* 0 off, 1 record, 2 replay */
 static FILE* mfl_rr_out = NULL;
-static char** mfl_rr_trace = NULL; static int mfl_rr_n = 0; static int mfl_rr_pos = 0;
+static char** mfl_rr_trace = NULL; static int mfl_rr_n = 0; static int mfl_rr_pos = 0;  /* schedule (S lines) */
 static pthread_mutex_t mfl_rr_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  mfl_rr_cnd = PTHREAD_COND_INITIALIZER;
+
+/* trace format v1: a header line "MFLRR 1", then tagged lines --
+   "S <path>"        one channel-op completion, in order (the schedule); and
+   "I <path> <hex>"  one I/O result (time/stdin), hex-encoded. Each goroutine
+   replays its OWN I/O queue in order, so the I/O log needs no global ordering --
+   the schedule already orders everything observable across goroutines. */
+static char* mfl_hexenc(const char* s, size_t n) {
+    char* r = malloc(n * 2 + 1);
+    for (size_t i = 0; i < n; i++) sprintf(r + i * 2, "%02x", (unsigned char)s[i]);
+    r[n * 2] = 0; return r;
+}
+static char* mfl_hexdec(const char* h, size_t* outlen) {
+    size_t n = strlen(h) / 2; char* r = malloc(n + 1);
+    for (size_t i = 0; i < n; i++) { unsigned v; sscanf(h + i * 2, "%2x", &v); r[i] = (char)v; }
+    r[n] = 0; *outlen = n; return r;
+}
+/* per-goroutine I/O queue (replay): path -> the values that gid observed, in order */
+typedef struct { char* path; char** vals; int n, cap, cur; } mfl_io_q;
+static mfl_io_q* mfl_io_qs = NULL; static int mfl_io_nq = 0, mfl_io_capq = 0;
+static mfl_io_q* mfl_io_find(const char* path) {
+    for (int i = 0; i < mfl_io_nq; i++) if (strcmp(mfl_io_qs[i].path, path) == 0) return &mfl_io_qs[i];
+    if (mfl_io_nq == mfl_io_capq) { mfl_io_capq = mfl_io_capq ? mfl_io_capq * 2 : 8; mfl_io_qs = realloc(mfl_io_qs, mfl_io_capq * sizeof(mfl_io_q)); }
+    mfl_io_q* q = &mfl_io_qs[mfl_io_nq++]; q->path = strdup(path); q->vals = NULL; q->n = q->cap = q->cur = 0; return q;
+}
+static void mfl_io_push(const char* path, const char* hex) {
+    mfl_io_q* q = mfl_io_find(path);
+    if (q->n == q->cap) { q->cap = q->cap ? q->cap * 2 : 4; q->vals = realloc(q->vals, q->cap * sizeof(char*)); }
+    q->vals[q->n++] = strdup(hex);
+}
+static const char* mfl_io_pop(void) {
+    mfl_io_q* q = mfl_io_find(mfl_gid_path);
+    return (q->cur < q->n) ? q->vals[q->cur++] : "";
+}
+/* record an I/O result (called by the interposed builtins). */
+static void mfl_rr_io_log_hex(const char* h) {
+    pthread_mutex_lock(&mfl_rr_mu);
+    if (mfl_rr_out) fprintf(mfl_rr_out, "I %s %s\n", mfl_gid_path, h);
+    pthread_mutex_unlock(&mfl_rr_mu);
+}
+static void mfl_rr_io_log_i64(int64_t v) { char b[32]; snprintf(b, sizeof b, "%lld", (long long)v); char* h = mfl_hexenc(b, strlen(b)); mfl_rr_io_log_hex(h); free(h); }
+static void mfl_rr_io_log_bytes(const char* s, size_t n) { char* h = mfl_hexenc(s, n); mfl_rr_io_log_hex(h); free(h); }
+static int64_t mfl_rr_io_pop_i64(void) { size_t L; char* s = mfl_hexdec(mfl_io_pop(), &L); int64_t v = L ? strtoll(s, NULL, 10) : 0; free(s); return v; }
+
 static void mfl_rr_init(void) {
     mfl_gid_path = strdup("0");           /* main goroutine */
     const char* rec = getenv("MFL_RR_RECORD");
     const char* rep = getenv("MFL_RR_REPLAY");
-    if (rec) { mfl_rr_mode = 1; mfl_rr_out = fopen(rec, "w"); }
+    if (rec) { mfl_rr_mode = 1; mfl_rr_out = fopen(rec, "w"); if (mfl_rr_out) fprintf(mfl_rr_out, "MFLRR 1\n"); }
     else if (rep) {
         mfl_rr_mode = 2;
         FILE* f = fopen(rep, "r");
-        if (f) { int cap = 64; mfl_rr_trace = malloc(cap * sizeof(char*)); char buf[128];
-            while (fscanf(f, "%127s", buf) == 1) {
-                if (mfl_rr_n == cap) { cap *= 2; mfl_rr_trace = realloc(mfl_rr_trace, cap * sizeof(char*)); }
-                mfl_rr_trace[mfl_rr_n++] = strdup(buf);
-            } fclose(f);
+        if (f) {
+            int cap = 64; mfl_rr_trace = malloc(cap * sizeof(char*));
+            char line[16384];
+            while (fgets(line, sizeof line, f)) {
+                if (line[0] == 'S') {
+                    char p[256]; if (sscanf(line, "S %255s", p) == 1) {
+                        if (mfl_rr_n == cap) { cap *= 2; mfl_rr_trace = realloc(mfl_rr_trace, cap * sizeof(char*)); }
+                        mfl_rr_trace[mfl_rr_n++] = strdup(p);
+                    }
+                } else if (line[0] == 'I') {
+                    char p[256], h[16000]; if (sscanf(line, "I %255s %15999s", p, h) == 2) mfl_io_push(p, h);
+                }
+            }
+            fclose(f);
         }
     }
 }
@@ -352,7 +404,7 @@ static void mfl_rr_enter(void) {
 static void mfl_rr_mark(void) {
     if (mfl_rr_mode != 1) return;
     pthread_mutex_lock(&mfl_rr_mu);
-    if (mfl_rr_out) fprintf(mfl_rr_out, "%s\n", mfl_gid_path);
+    if (mfl_rr_out) fprintf(mfl_rr_out, "S %s\n", mfl_gid_path);
     pthread_mutex_unlock(&mfl_rr_mu);
 }
 /* replay: advance the turn and wake the next goroutine. */
@@ -1082,6 +1134,7 @@ static char* mfl_input(void) {
 /* read all of stdin verbatim until EOF (no line splitting). Exact for text;
    an embedded NUL would truncate the string view (machin strings are C strings). */
 static char* mfl_read_stdin(void) {
+    if (mfl_rr_mode == 2) { size_t L; char* s = mfl_hexdec(mfl_io_pop(), &L); char* a = mfl_dup_arena(s, L); free(s); return a; }
     size_t cap = 65536, len = 0;
     char* buf = (char*)malloc(cap);
     size_t n;
@@ -1090,6 +1143,7 @@ static char* mfl_read_stdin(void) {
         if (len + 1 >= cap) { cap *= 2; buf = (char*)realloc(buf, cap); }
     }
     char* r = mfl_dup_arena(buf, len);
+    if (mfl_rr_mode == 1) mfl_rr_io_log_bytes(buf, len);   /* record the exact input */
     free(buf);
     return r;
 }
@@ -1103,8 +1157,19 @@ static mfl_slice mfl_args(void) {
     return s;
 }
 static char* mfl_env(const char* k) { char* v = getenv(k); return v ? v : ""; }
-static int64_t mfl_now(void) { return (int64_t)time(NULL); }
-static int64_t mfl_now_ms(void) { struct timeval tv; gettimeofday(&tv, NULL); return (int64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000; }
+static int64_t mfl_now(void) {
+    if (mfl_rr_mode == 2) return mfl_rr_io_pop_i64();
+    int64_t v = (int64_t)time(NULL);
+    if (mfl_rr_mode == 1) mfl_rr_io_log_i64(v);
+    return v;
+}
+static int64_t mfl_now_ms(void) {
+    if (mfl_rr_mode == 2) return mfl_rr_io_pop_i64();
+    struct timeval tv; gettimeofday(&tv, NULL);
+    int64_t v = (int64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;
+    if (mfl_rr_mode == 1) mfl_rr_io_log_i64(v);
+    return v;
+}
 /* decompose a Unix timestamp (local time) into
    [year, month(1-12), day(1-31), hour, minute, second, weekday(0=Sun), yearday(1-366)] */
 static mfl_slice mfl_time_fields(int64_t unix) {
