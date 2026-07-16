@@ -61,8 +61,8 @@ One JSON object on stdout (never streamed/partial — trivially parseable):
 ### Diagnostic fields
 | field | type | notes |
 |---|---|---|
-| `severity` | `"error"` \| `"warning"` | only `"error"` in v1 (machin has no warnings yet) |
-| `phase` | `"lex"` \| `"parse"` \| `"typecheck"` \| `"race"` | where it was caught (`race` = the concurrency analysis, below) |
+| `severity` | `"error"` \| `"warning"` | `"warning"` is used by the advisory `falsify` phase (below); everything else is `"error"` |
+| `phase` | `"lex"` \| `"parse"` \| `"typecheck"` \| `"race"` \| `"falsify"` | where it was caught (`race` = concurrency analysis; `falsify` = bounded bug-finding, both below) |
 | `code` | string | **stable machine code** — the agent branches on this, never on `message`. Enumerated below. |
 | `message` | string | the human-readable detail (the agent may still read it, but shouldn't pattern-match it) |
 | `decl` | string | the declaration (function / global / type name) the error is in — the natural fix unit (see below) |
@@ -75,8 +75,8 @@ One JSON object on stdout (never streamed/partial — trivially parseable):
 `parse-unexpected-token`, `parse-unterminated-string`, `parse-unbalanced-braces`,
 `type-mismatch`, `undefined-name`, `undefined-field`, `arity-mismatch`,
 `not-callable`, `no-main`, `unsupported-construct`. Concurrency codes (phase `race`):
-`RACE001`, `RACE002`, `RACE004` (below). New codes are additive; existing codes never
-change meaning.
+`RACE001`, `RACE002`, `RACE004` (below). Falsify codes (phase `falsify`, advisory):
+`FALS001`, `FALS002` (below). New codes are additive; existing codes never change meaning.
 
 ## Concurrency: inferred data-race diagnostics (phase `race`)
 After a clean typecheck, `check` runs an **inferred data-race analysis** — the guarantee
@@ -103,9 +103,57 @@ channel-join barrier (a goroutine whose last statement signals a channel the spa
 receives), is ordered — not a race. Build enforcement: `machin build|run --race-safe`
 refuses to compile a program with an inferred race (plain `build` is unaffected).
 
+## Falsification: bounded bug counterexamples (phase `falsify`, advisory)
+
+After a clean typecheck, `check` also runs a **falsifier** — a bounded, concrete
+bug-finder that enumerates small inputs to each function and reports the **exact input
+that makes a runtime-checked property fail**. It is the mirror image of the race pass:
+where race analysis is *sound* (proves absence, can gate `build`), falsification is
+*unsound-complete* — it **finds bugs but never proves their absence**. Therefore its
+findings are **advisory**: they appear in the separate `warnings` array, **never affect
+`ok`/`errorCount`, and never fail `check` or `build`.**
+
+| code | meaning |
+|---|---|
+| `FALS001` | index out of range — a slice/string index that goes negative or past the end for some concrete input |
+| `FALS002` | divide / modulo by zero — a `/` or `%` whose divisor is zero for some concrete input |
+
+Each finding names the counterexample in `message`:
+`index out of range at \`xs[i]\` when xs=[]int{}`. Reporting is **false-positive-free by
+construction**: a counterexample is emitted only when a *fully-modeled concrete path*
+reaches the trap; the instant evaluation touches anything unmodeled (an unknown call,
+FFI, an unsupported construct) that input is marked *inconclusive* and never reported.
+So a `falsify` warning is always a real bug — the exact input reproduces it.
+
+The analysis reaches **through calls** (interprocedural inlining) and **struct fields**,
+so a bug that only manifests via a helper or a struct member is still found and reported
+against the enclosing function.
+
+The dedicated `machin falsify <file>` command exposes the same analysis with a verdict
+envelope (`--json`):
+
+```
+{ ok, counterexamples, findings,
+  coverage: { checked, skipped, allUnknown },
+  functions: [ { fn, verdict, tried } ],   // verdict: counterexample|clean|unknown|skipped
+  bounds:    { sliceLenMax, intDomain, callDepth } }
+```
+
+`--repro <dir>` writes one runnable `.mfl` per finding — a repro that, built with
+`--safe`, panics at exactly the predicted trap (an auto-promotable regression test).
+`--strict` exits non-zero on any counterexample (for CI; advisory by default — and only
+counterexamples gate, never `unknown`/`skipped`).
+
+The envelope **never claims `proved`**. `functions` gives the per-function verdict (a
+`clean` there means only "no counterexample within the bounds"), and `bounds` states the
+fixed search envelope (int/float/string domains, slice length ≤ `sliceLenMax`, inlining
+depth ≤ `callDepth`) so "clean" is always honestly qualified — "no bug within these
+bounds", not "provably correct".
+
 ### Top-level fields
-`ok` (bool), `files` (the inputs), `errorCount` (int), `diagnostics` (array, **stable
-order**: source order, phase-then-position).
+`ok` (bool — reflects errors only, never falsify warnings), `files` (the inputs),
+`errorCount` (int), `diagnostics` (array, **stable order**: source order,
+phase-then-position), `warnings` (array, optional — advisory `falsify` findings).
 
 ## The key design choice: `decl`-level granularity is enough
 MFL is **one canonical declaration per line** and agents edit **function-by-function**. So
