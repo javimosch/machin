@@ -5,8 +5,9 @@
 # (Distinct from the repo-root verify-falsify.sh, which behaviorally tests the Go
 # pass. This one proves the MFL port reproduces the Go oracle exactly.)
 #
-# Phase 2 slice 2.1: scalar-int params, div/modulo-by-zero (FALS002). Slices,
-# index-OOB (FALS001), structs and interprocedural inlining land in later slices.
+# Phase 2 slices 2.1-2.2: int + []int params; arithmetic, if/while/for-range,
+# index (FALS001 out-of-range), len, div/modulo-by-zero (FALS002). Structs and
+# interprocedural inlining land in later slices.
 set -u
 N="nice -n 15"
 MACHIN=./bin/machin
@@ -40,6 +41,16 @@ printf 'func h(a,b){if b!=0{if a>0{return a/b}}return 0}\nfunc main(){println(st
 printf 'func n(a){return 5/(-a+a)}\nfunc main(){println(str(n(2)))}\n' > "$T/s7"; run "$T/s7" "unary -a+a=0"
 printf 'func p(a,b){c:=a-b return 9/c}\nfunc main(){println(str(p(1,2)))}\n' > "$T/s8"; run "$T/s8" "assign then div"
 printf 'func q(a,b){if b<1{if b>-1{return 0}}return a/b}\nfunc main(){println(str(q(1,2)))}\n' > "$T/s9"; run "$T/s9" "chained guard (clean)"
+
+# []int fixtures (the real Phase 1 patterns): index-OOB, len, while, for-range.
+printf 'func sumbad(xs){total:=0 i:=0 for i<=len(xs){total=total+xs[i] i=i+1}return total}\nfunc main(){println(str(sumbad([]int{1,2})))}\n' > "$T/v1"; run "$T/v1" "sumbad off-by-one (FALS001)"
+printf 'func avg(xs){total:=0 for _,v:=range xs{total=total+v}return total/len(xs)}\nfunc main(){println(str(avg([]int{1,2})))}\n' > "$T/v2"; run "$T/v2" "avg empty div (FALS002)"
+printf 'func safeavg(xs){if len(xs)==0{return 0}total:=0 for _,v:=range xs{total=total+v}return total/len(xs)}\nfunc main(){println(str(safeavg([]int{1,2})))}\n' > "$T/v3"; run "$T/v3" "safeavg guarded (clean)"
+printf 'func sumok(xs){total:=0 for _,v:=range xs{total=total+v}return total}\nfunc main(){println(str(sumok([]int{1,2})))}\n' > "$T/v4"; run "$T/v4" "sumok (clean)"
+printf 'func firstgap(xs){return xs[len(xs)-5]}\nfunc main(){println(str(firstgap([]int{1,2})))}\n' > "$T/v5"; run "$T/v5" "firstgap neg index (FALS001)"
+printf 'func at(xs,i){if i<0{return 0}if i>=len(xs){return 0}return xs[i]}\nfunc main(){println(str(at([]int{1,2},5)))}\n' > "$T/v6"; run "$T/v6" "guarded index (clean)"
+printf 'func first(xs){return xs[0]}\nfunc main(){println(str(first([]int{9})))}\n' > "$T/v7"; run "$T/v7" "xs[0] on empty (FALS001)"
+[ -f examples/complex/multi_return.mfl ] && run examples/complex/multi_return.mfl "corpus multi_return (minmax+divmod)"
 
 echo
 echo "self-hosted falsify oracle-diff: $pass pass, $fail fail"
