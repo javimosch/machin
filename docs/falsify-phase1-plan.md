@@ -212,15 +212,32 @@ Implemented:
 - Optional `--falsify-strict` for CI (fail on any counterexample), off by default.
 </details>
 
-### Slice 1.5 — corpus guard + close-out
-- `verify-falsify.sh`: N fixtures (each planted bug class + guarded-correct
-  negatives + the corpus buckets) as a regression gate, mirroring
-  `verify-race.sh`.
-- Adversarial negatives: correct-but-tricky code (guarded divisions, `len`-bounded
-  loops, early returns) must stay unflagged — these are the false-positive traps.
-- `go test .` green; race/cgen gates untouched (work is additive: `falsify.go`,
-  one `check.go` hook, one `main.go` dispatch line, docs).
-- Update memory + `BOOTSTRAP.md`.
+### Slice 1.5 — corpus guard + close-out — ✅ DONE
+
+- **`verify-falsify.sh`** (15/15): a *behavioral* gate (falsify isn't self-hosted
+  yet, so it drives the real binary, not an oracle diff). 6 planted bugs — each
+  must be found AND its `--repro` must panic under `--safe`; 6 adversarial
+  correct-but-tricky negatives (guarded average/division/index, `len`-bounded sum,
+  struct-copy value-semantics, recursion) — each must stay clean; a corpus sweep
+  that proves the two real latent bugs in `multi_return.mfl` and buckets every
+  `unknown` (printed, never silent).
+- `go test .` green; **race/cgen gates untouched** — the diff is only Go +
+  docs (`falsify.go`, `falsifycmd.go`, one `check.go` hook, one `main.go` dispatch
+  line, `guide.go`, `docs/`), zero `selfhost/`, `racecheck.go`, or `codegen.go`.
+- Memory (`machin-falsify.md`) written. `BOOTSTRAP.md` intentionally NOT touched —
+  it documents the self-hosting oracle-diff bootstrap, and falsify is a Go-only
+  reference until the Phase 2 port.
+
+---
+
+## Phase 1: COMPLETE
+
+The Falsifier is a real, shipped-quality `machin` capability on branch
+`falsify-spike` (unmerged, awaiting the merge gate). It finds `FALS001`/`FALS002`
+bugs across arithmetic, calls, and struct fields; surfaces them advisorily in
+`machin check`; exposes `machin falsify` with an honest verdict envelope and
+runtime-confirmed repros; and is guarded by Go tests + `verify-falsify.sh`.
+Deferred, documented: maps + `FALS003`. Next: Phase 2 (self-host port).
 
 ## After Phase 1 (outline, not committed)
 
