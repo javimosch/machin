@@ -441,6 +441,20 @@ static void mfl_rr_exit(void) {
     pthread_cond_broadcast(&mfl_rr_cnd);
     pthread_mutex_unlock(&mfl_rr_mu);
 }
+/* Concurrent stdout writes are observable and un-synchronized, so their
+   interleaving is nondeterminism too -- gate each print statement like a channel
+   op. record: a print-lock keeps a line atomic + records its order; replay: the
+   turn system serializes prints into the recorded order. No-op when not
+   recording (a normal run pays nothing). */
+static pthread_mutex_t mfl_print_mu = PTHREAD_MUTEX_INITIALIZER;
+static void mfl_rr_print_begin(void) {
+    if (mfl_rr_mode == 2) mfl_rr_enter();
+    else if (mfl_rr_mode == 1) pthread_mutex_lock(&mfl_print_mu);
+}
+static void mfl_rr_print_end(void) {
+    if (mfl_rr_mode == 2) mfl_rr_exit();
+    else if (mfl_rr_mode == 1) { mfl_rr_mark(); pthread_mutex_unlock(&mfl_print_mu); }
+}
 static void mfl_rr_finish(void) {
     if (mfl_rr_out) { fclose(mfl_rr_out); mfl_rr_out = NULL; }
     /* --verify: an honest self-check that replay stayed on-script. A faithful
@@ -4113,6 +4127,10 @@ func (g *cgen) goStmt(st *GoStmt) error {
 // printCall emits one print per argument, with single-space separators, so no
 // runtime variadic machinery is needed.
 func (g *cgen) printCall(call *Call, depth int) error {
+	// gate the whole print statement so concurrent output interleaving is
+	// captured + replayed (a no-op unless recording/replaying).
+	g.buf.WriteString("mfl_rr_print_begin();\n")
+	indentC(&g.buf, depth)
 	for i, a := range call.Args {
 		if i > 0 {
 			g.buf.WriteString("fputs(\" \", stdout); ")
@@ -4151,6 +4169,8 @@ func (g *cgen) printCall(call *Call, depth int) error {
 	} else {
 		g.buf.WriteString("fflush(stdout);\n")
 	}
+	indentC(&g.buf, depth)
+	g.buf.WriteString("mfl_rr_print_end();\n")
 	return nil
 }
 

@@ -148,15 +148,31 @@ unbuffered is not a distinct case.
 - `verify-replay.sh` 20/20; `guide.go` gains the `replay` verb. (Full
   "query any variable at iteration N" replay-debugger remains a follow-up.)
 
-### Slice 1.5 — Corpus, gate, close-out
-- `verify-replay.sh` expanded: nested spawns, `select`, buffered, close, the I/O
-  log, and a boundary/FFI-leak honesty case. Run it across a slice of the concurrent
-  backend corpus (an HTTP handler using channels + the pure-MFL PG driver should
-  replay `faithful`).
-- `go test .` green (the runtime change is a mode-0 no-op by default — Phase 0
-  already confirmed this); cgen/race gates unaffected.
-- Docs (`docs/record-replay.md`) + `guide.go` (`--record`/`--replay`/`replay`
-  verbs + a gotcha) + memory. Merge + release.
+### Slice 1.5 — Corpus, gate, close-out — ✅ DONE
+- **Corpus surfaced a real honesty gap, now fixed:** `goroutines.mfl` has
+  goroutines that `println` with NO channel sync — zero channel ops, yet `--verify`
+  wrongly said FAITHFUL while output interleaving varied (11 orderings). Fix:
+  **concurrent output is gated too** — each `print`/`println` takes a turn (a
+  print-lock in record keeps a line atomic + records its order; the turn system
+  serializes prints in replay). No-op when not recording. `goroutines.mfl` now
+  replays to 1 ordering, `--verify` honestly `7/7 ops` FAITHFUL.
+- `verify-replay.sh` **24/24**: flat/nested spawns, crafted-trace control, close,
+  the I/O log (time + stdin), the combined schedule+I/O fixture, the boundary
+  (faithful vs best-effort for FFI/select), `machin replay` + crash causal report,
+  concurrent-print interleaving, and both real corpus concurrent programs
+  (`channels.mfl`, `goroutines.mfl`) replaying FAITHFUL.
+- `go test .` green (runtime hooks are mode-0 no-ops); `TestCmdReplay` added.
+  `docs/record-replay.md` written; `guide.go` has the `run`/`replay` verbs.
+
+## Phase 1: COMPLETE
+
+Sound record/replay is a real, tested `machin` capability on branch `replay-spike`
+(unmerged, awaiting the merge gate). `machin run --record` + `machin replay`
+reproduce a run byte-for-byte — schedule, I/O, and concurrent output — sound
+because the program is proved race-free; a crash replays into a JSON causal report;
+the determinism boundary (FFI/`select`) is flagged `best-effort` and never
+certified faithful. Deferred, documented: `select` gating, `rand_bytes`/file/net
+I/O, the value-query debugger, and the self-host port (Phase 2).
 
 ## After Phase 1 (outline)
 

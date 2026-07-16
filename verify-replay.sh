@@ -153,6 +153,36 @@ echo "$J" | grep -q '"panic":"index out of range' && echo "$J" | grep -q '"causa
   && { pass=$((pass+1)); echo "ok   causal report: $J"; } \
   || { fail=$((fail+1)); echo "FAIL causal report wrong: $J"; }
 
+# ---- fixture 10: concurrent OUTPUT interleaving is captured (no channels) ----
+# goroutines that only println (no channel sync) still replay faithfully because
+# print statements are gated too.
+cat > "$T/prints.mfl" <<'EOF'
+func w(id) { println("worker " + str(id) + " done") }
+func main() {
+  go w(1)  go w(2)  go w(3)  go w(4)  go w(5)
+  sleep(150)
+  println("main done")
+}
+EOF
+build "$T/prints.mfl" "$T/prints"
+R=$(rec "$T/prints" "$T/tp")
+U=$(for i in $(seq 1 8); do rep "$T/prints" "$T/tp"; done | md5sum | cut -d' ' -f1)
+RH=$(echo "$R" | md5sum | cut -d' ' -f1)
+# every replay must produce the identical multi-line output.
+allsame=$(for i in $(seq 1 8); do rep "$T/prints" "$T/tp" | md5sum; done | sort -u | wc -l)
+chk "$allsame" "1" "concurrent println interleaving replays identically"
+Vp=$(MFL_RR_REPLAY="$T/tp" MFL_RR_VERIFY=1 "$T/prints" 2>&1 >/dev/null); case "$Vp" in *FAITHFUL*) pass=$((pass+1)); echo "ok   concurrent-print replay certifies FAITHFUL";; *) fail=$((fail+1)); echo "FAIL: $Vp";; esac
+echo "  plain concurrent-print orderings (vary): $(for i in $(seq 1 8); do plain "$T/prints" | md5sum | cut -c1-6; done | sort -u | tr '\n' ' ')"
+
+# ---- fixture 11: real corpus concurrent programs replay faithfully ----
+for cf in examples/complex/channels.mfl examples/complex/goroutines.mfl; do
+  [ -f "$cf" ] || continue
+  build "$cf" "$T/corp"
+  rec "$T/corp" "$T/tcorp" >/dev/null
+  Vc=$(MFL_RR_REPLAY="$T/tcorp" MFL_RR_VERIFY=1 "$T/corp" 2>&1 >/dev/null)
+  case "$Vc" in *FAITHFUL*) pass=$((pass+1)); echo "ok   corpus $(basename "$cf") replays FAITHFUL";; *) fail=$((fail+1)); echo "FAIL corpus $(basename "$cf"): $Vc";; esac
+done
+
 echo
 echo "record/replay gate: $pass pass, $fail fail"
 rm -rf "$T"
