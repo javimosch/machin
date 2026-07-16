@@ -164,11 +164,28 @@ envelope (`--json`):
 `--strict` exits non-zero on any counterexample (for CI; advisory by default — and only
 counterexamples gate, never `unknown`/`skipped`).
 
-The envelope **never claims `proved`**. `functions` gives the per-function verdict (a
-`clean` there means only "no counterexample within the bounds"), and `bounds` states the
-fixed search envelope (int/float/string domains, slice length ≤ `sliceLenMax`, inlining
-depth ≤ `callDepth`) so "clean" is always honestly qualified — "no bug within these
-bounds", not "provably correct".
+By default the envelope **never claims `proved`**. `functions` gives the per-function
+verdict (a `clean` there means only "no counterexample in the sparse sample"), and
+`bounds` states the search envelope, so "clean" is always honestly qualified.
+
+### `--prove`: honest bounded proof
+
+`machin falsify --prove` switches from the sparse bug-finding sample to a **dense,
+fully-covered bounded space** (int `[-8, 8]`, slices up to length 4 with elements
+`[-2, 2]`, all bool/struct combinations) and enumerates *every* input. Exhausting that
+space with no counterexample earns a real verdict:
+
+- **`proved`** — the whole input space is finite (bool params, or structs of only
+  finite fields) and was completely covered: an **unconditional total proof**.
+- **`proved-bounded`** — int/`[]int` params were covered only up to the reported
+  `bounds`: an honest **bound-labelled** proof ("no counterexample for any int in
+  `[-8,8]` and any slice up to length 4"), the guarantee a bounded model checker gives
+  — **never "correct"**.
+
+A `proved` verdict additionally requires **every** input to have been *conclusively
+evaluated*: an unmodeled path (an `unknown`) or an infinite-domain param (float/string)
+blocks the proof and the verdict stays `clean`/`unknown`. `--prove` is also a stronger
+bug-finder — the dense domain catches counterexamples the sparse sample misses.
 
 ### Top-level fields
 `ok` (bool — reflects errors only, never falsify warnings), `files` (the inputs),
