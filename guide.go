@@ -253,6 +253,7 @@ func machinGuide() guideCatalog {
 			// raw memory (pointers are ints) — build C buffers/structs for the FFI
 			{"alloc", "(int) -> int", "allocate n zeroed bytes; returns a pointer (as int). For C buffers/structs to hand to an extern fn", "memory"},
 			{"free", "(int) ->", "free a pointer returned by alloc", "memory"},
+			{"madvise_free", "(int, int) ->", "drop resident pages of an mmap region (MADV_DONTNEED); re-faults lazily on next access", "memory"},
 			{"poke_f32", "(int, int, number) ->", "write a 32-bit float at ptr+byteoffset", "memory"},
 			{"poke_i32", "(int, int, int) ->", "write a 32-bit int at ptr+byteoffset (also poke_u8, poke_u16)", "memory"},
 			{"poke_ptr", "(int, int, int) ->", "write an 8-byte pointer value at ptr+byteoffset (e.g. a buffer into a struct field)", "memory"},

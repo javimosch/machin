@@ -1370,6 +1370,23 @@ func TestRawMemoryU16AndPtr(t *testing.T) {
 	}
 }
 
+// madvise_free(ptr, len): MADV_DONTNEED hint to drop resident pages of an mmap
+// region (idle release). On a misaligned/anonymous pointer it's a safe no-op;
+// the point is that it compiles, runs, and never crashes the program.
+func TestMadviseFree(t *testing.T) {
+	main := `func main() {
+	p := alloc(8192)
+	poke_i32(p, 0, 42)
+	madvise_free(p, 4096)
+	println("ok " + str(peek_i32(p, 0)))
+	free(p)
+}`
+	out, _ := buildRun(t, main)
+	if !strings.HasPrefix(out, "ok ") {
+		t.Fatalf("madvise_free: got %q, want prefix %q", out, "ok ")
+	}
+}
+
 // The `*Name` FFI param convention: deref an MFL int (pointer) and pass the
 // pointed-to C struct by value (e.g. LoadModelFromMesh(*Mesh)). Codegen-level.
 func TestFFIDerefParam(t *testing.T) {

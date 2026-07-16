@@ -1042,6 +1042,7 @@ func bspec(name) (s) {
     // memory / ptr
     if name == "alloc" { s = "i>i"  return s }
     if name == "free" { s = "i>v"  return s }
+    if name == "madvise_free" { s = "ii>v"  return s }
     if name == "poke_f32" { s = "iin>v"  return s }
     if name == "poke_i32" || name == "poke_u8" || name == "poke_u16" || name == "poke_ptr" { s = "iii>v"  return s }
     if name == "peek_f32" { s = "ii>f"  return s }

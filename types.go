@@ -2097,6 +2097,13 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		}
 		c.addPair(argSlots[0], c.cInt)
 		return c.cVoid, nil
+	case "madvise_free":
+		if len(argSlots) != 2 {
+			return 0, fmt.Errorf("madvise_free: 2 args (ptr, len)")
+		}
+		c.addPair(argSlots[0], c.cInt)
+		c.addPair(argSlots[1], c.cInt)
+		return c.cVoid, nil
 	case "poke_f32":
 		if len(argSlots) != 3 {
 			return 0, fmt.Errorf("poke_f32: 3 args (ptr, byte offset, value)")
