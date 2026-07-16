@@ -239,11 +239,32 @@ bugs across arithmetic, calls, and struct fields; surfaces them advisorily in
 runtime-confirmed repros; and is guarded by Go tests + `verify-falsify.sh`.
 Deferred, documented: maps + `FALS003`. Next: Phase 2 (self-host port).
 
-## After Phase 1 (outline, not committed)
+## Phase 2 — self-host port: ✅ COMPLETE
 
-- **Phase 2 — self-host port**: port `falsify.go` → `selfhost/falsify.src` over the
-  MFL IR, oracle-diffed via a `falsifytest --program` dumper (hex-encoded findings,
-  sorted) exactly like `racetest`. So machin-in-machin both compiles and falsifies.
+Ported `falsify.go` → `selfhost/falsify.src` over the self-hosted IR (`nodes[]` +
+`g_insts`), oracle-diffed via a `falsifytest --program` hex dumper exactly like
+`racetest`/`racecheck.src`. **machin-in-machin now both compiles AND falsifies,
+byte-identically.** Driver: `selfhost/falsifymain.src`. Gate:
+`selfhost/verify-falsify.sh` (38/38) + a broad corpus sweep (47/47 example files
+where both pipelines parse+check).
+
+The one architectural problem: **MFL has no panic/recover and no closures**, so the
+Go interpreter's `panic(fviol)`/`panic(funknown)` unwinding and `ctrl` returns are
+replaced by threaded status globals (`g_fstatus`, `g_freturned`/`g_fbreak`/
+`g_fcontinue`), and interprocedural inlining saves/restores the global env around
+each call instead of using call frames. The value model is an `FV` struct (int /
+`[]int` / float / string / bool / struct) — MFL has no `[][]FV`, so slice and struct
+domains are enumerated as flat `[]FV` / decoded on-the-fly from the enumeration index.
+
+Slices: 2.1 scalar-int spike (proved status-threading + byte-exact render/hex),
+2.2 `[]int` + `FALS001` + len/while/for-range, 2.3 float + string, 2.4 struct +
+bool (bool renders `true`/`false`, value-semantics clone), 2.5 interprocedural
+inlining (recursion-capped) → **full parity**. The 9 corpus files that differ are
+pre-existing shared self-hosted pipeline gaps (multi-line parse, closures,
+variadic, globals) — the already-shipped race pass diverges on them identically.
+
+## After Phase 2 (outline, not committed)
+
 - **Phase 3 — user contracts**: `requires`/`ensures`/`invariant` as syntax; the
   same enumerator checks them; a violated `ensures` yields a counterexample. This
   is where it stops being "free properties" and becomes real design-by-contract.
