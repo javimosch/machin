@@ -57,6 +57,8 @@ func cmdFalsify(args []string) error {
 			stdin = true
 		case "--strict":
 			strict = true
+		case "--prove":
+			falsProve = true
 		case "--repro":
 			if i+1 >= len(args) {
 				return fmt.Errorf("falsify: --repro needs a directory")
@@ -133,6 +135,10 @@ func cmdFalsify(args []string) error {
 		}
 	}
 
+	bounds := falsifyBounds{SliceLenMax: falsSliceLenMax, IntDomain: falsIntDomain, CallDepth: falsCallDepth}
+	if falsProve {
+		bounds = falsifyBounds{SliceLenMax: falsProveSliceLenMax, IntDomain: falsProveIntDomain(), CallDepth: falsCallDepth}
+	}
 	rep := falsifyReport{
 		OK:              len(findings) == 0,
 		Files:           srcNames,
@@ -140,7 +146,7 @@ func cmdFalsify(args []string) error {
 		Findings:        make([]Diagnostic, 0, len(findings)),
 		Coverage:        falsifyCoverage{Checked: stats.Checked, Skipped: stats.Skipped, AllUnknown: stats.AllUnknown},
 		Functions:       verdicts,
-		Bounds:          falsifyBounds{SliceLenMax: falsSliceLenMax, IntDomain: falsIntDomain, CallDepth: falsCallDepth},
+		Bounds:          bounds,
 	}
 	for _, ff := range findings {
 		d := ff.toDiagnostic()

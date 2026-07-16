@@ -600,8 +600,13 @@ func f_bind(names, vals) (out) {
 
 // ---- domains ----
 
-// int domain — MUST match falsIntDomain = {0, 1, -1, 2, 3} order exactly
+// g_prove: prove mode uses a DENSE bounded domain (int [-8,8], slices len<=4 elems
+// [-2,2]) so exhausting it clean is an honest bounded proof. Set by --prove.
+var g_prove = 0
+
+// int domain. Sparse: {0,1,-1,2,3}. Prove: dense [-8,8] (index i -> i-8).
 func f_intdom(i) (v) {
+    if g_prove == 1 { v = fv_int(i - 8)  return v }
     v = fv_int(0)
     if i == 1 { v = fv_int(1) }
     if i == 2 { v = fv_int(0 - 1) }
@@ -632,36 +637,65 @@ func f_stringdom(i) (v) {
 var g_slicedom = []FV{}
 var g_slicedom_ready = 0
 
+// f_selem: the j-th slice-element value. Sparse {0,1,2}; prove {-2,-1,0,1,2}.
+func f_selem(j) (v) {
+    v = j
+    if g_prove == 1 { v = j - 2 }
+    return v
+}
+
 func f_init_slicedom() {
     if g_slicedom_ready == 1 { return }
+    ec := 3
+    maxlen := 3
+    if g_prove == 1 { ec = 5  maxlen = 4 }
     g_slicedom = []FV{}
     g_slicedom = append(g_slicedom, fv_slice([]int{}))     // length 0
     a := 0
-    for a < 3 {                                            // length 1
-        g_slicedom = append(g_slicedom, fv_slice([]int{a}))
+    for a < ec {                                           // length 1
+        g_slicedom = append(g_slicedom, fv_slice([]int{f_selem(a)}))
         a = a + 1
     }
     a = 0
-    for a < 3 {                                            // length 2
+    for a < ec {                                           // length 2
         b := 0
-        for b < 3 {
-            g_slicedom = append(g_slicedom, fv_slice([]int{a, b}))
+        for b < ec {
+            g_slicedom = append(g_slicedom, fv_slice([]int{f_selem(a), f_selem(b)}))
             b = b + 1
         }
         a = a + 1
     }
     a = 0
-    for a < 3 {                                            // length 3
+    for a < ec {                                           // length 3
         b := 0
-        for b < 3 {
+        for b < ec {
             c := 0
-            for c < 3 {
-                g_slicedom = append(g_slicedom, fv_slice([]int{a, b, c}))
+            for c < ec {
+                g_slicedom = append(g_slicedom, fv_slice([]int{f_selem(a), f_selem(b), f_selem(c)}))
                 c = c + 1
             }
             b = b + 1
         }
         a = a + 1
+    }
+    if maxlen >= 4 {
+        a = 0
+        for a < ec {                                       // length 4 (prove only)
+            b := 0
+            for b < ec {
+                c := 0
+                for c < ec {
+                    d := 0
+                    for d < ec {
+                        g_slicedom = append(g_slicedom, fv_slice([]int{f_selem(a), f_selem(b), f_selem(c), f_selem(d)}))
+                        d = d + 1
+                    }
+                    c = c + 1
+                }
+                b = b + 1
+            }
+            a = a + 1
+        }
     }
     g_slicedom_ready = 1
 }
@@ -727,12 +761,92 @@ func f_struct_dom_val(nm, idx) (v) {
 // 4=bool(2), 5=struct (sname's product). sname is "" for non-struct params.
 func f_dom_size(pkind, sname) (n) {
     n = 5
+    if g_prove == 1 { n = 17 }               // int dense [-8,8]
     if pkind == 1 { n = len(g_slicedom) }
     if pkind == 2 { n = 4 }
     if pkind == 3 { n = 3 }
     if pkind == 4 { n = 2 }
     if pkind == 5 { n = f_struct_dom_size(sname) }
     return n
+}
+
+// f_provability: 2 finite (bool / all-bool struct) — total proof; 1 bounded
+// (int / []int) — proof up to bounds; 0 unprovable (float/string/struct-with-int).
+// Mirrors falsify.go provability.
+func f_provability(slot) (p) {
+    ks := kind_of(slot)
+    p = 0
+    if ks == 4 { p = 2  return p }                                  // KBool
+    if ks == 2 { p = 1  return p }                                  // KInt
+    if ks == 7 {                                                    // KSlice
+        if kind_of(g_elem[find(slot)]) == 2 { p = 1 }
+        return p
+    }
+    if ks == 8 {                                                    // KStruct
+        nm := g_sname[find(slot)]
+        nf := struct_field_count(nm)
+        allbool := 1
+        k := 0
+        for k < nf {
+            if struct_field_type_at(nm, k) != "bool" { allbool = 0 }
+            k = k + 1
+        }
+        if allbool == 1 { p = 2 }
+        return p
+    }
+    return p
+}
+
+// ---- per-function verdict (prove mode) ----
+var g_fv_names = []string{}
+var g_fv_verdicts = []string{}
+
+func f_verdict_rank(v) (r) {
+    r = 0
+    if v == "counterexample" { r = 5 }
+    if v == "unknown" { r = 4 }
+    if v == "clean" { r = 3 }
+    if v == "proved-bounded" { r = 2 }
+    if v == "proved" { r = 1 }
+    return r
+}
+
+// aggregate by source name, worst-instance-wins (matches Go's record closure).
+func f_record_verdict(name, verdict) {
+    i := 0
+    for i < len(g_fv_names) {
+        if g_fv_names[i] == name {
+            if f_verdict_rank(verdict) > f_verdict_rank(g_fv_verdicts[i]) { g_fv_verdicts[i] = verdict }
+            return
+        }
+        i = i + 1
+    }
+    g_fv_names = append(g_fv_names, name)
+    g_fv_verdicts = append(g_fv_verdicts, verdict)
+}
+
+// dump verdicts sorted by fn name, one hex line `fn|verdict` — the --prove oracle.
+func f_dump_verdicts() (out) {
+    order := []int{}
+    k := 0
+    for k < len(g_fv_names) {
+        pos := len(order)
+        j := 0
+        for j < len(order) {
+            if g_fv_names[k] < g_fv_names[order[j]] { pos = j  break }
+            j = j + 1
+        }
+        order = insert_at(order, pos, k)
+        k = k + 1
+    }
+    out = ""
+    m := 0
+    for m < len(order) {
+        e := order[m]
+        out = out + to_hex(bytes(g_fv_names[e])) + "|" + to_hex(bytes(g_fv_verdicts[e])) + "\n"
+        m = m + 1
+    }
+    return out
 }
 func f_dom_val(pkind, sname, i) (fv) {
     fv = f_intdom(i)
@@ -759,7 +873,7 @@ func f_eval_pred(ni) (r) {
     return r
 }
 
-func f_one(iid, fr, pkinds, psnames) {
+func f_one(iid, fr, pkinds, psnames, prov) {
     ins := g_insts[iid]
     np := len(ins.pnames)
     body := nodes[fr].kids
@@ -776,6 +890,9 @@ func f_one(iid, fr, pkinds, psnames) {
         k = k + 1
     }
 
+    saw := 0        // some input conclusively clean
+    anyunk := 0     // some input inconclusive
+    completed := 0  // enumerated the whole space (not cap-truncated)
     tried := 0
     done := 0
     for done == 0 {
@@ -797,12 +914,16 @@ func f_one(iid, fr, pkinds, psnames) {
         g_fsteps = 0
         g_fretvalset = 0
 
-        // requires: precondition filter. A false OR inconclusive requires skips
-        // this input (not a counterexample here).
+        inconcl := 0
+        concl := 0
+
+        // requires filter: false -> skip (filtered), inconclusive -> unknown input.
         keep := 1
         ci := 1
         while ci <= nreq {
-            if f_eval_pred(contract[ci]) != 1 { keep = 0  break }
+            pr := f_eval_pred(contract[ci])
+            if pr == 2 { keep = 0  inconcl = 1  break }
+            if pr == 0 { keep = 0  break }
             ci = ci + 1
         }
 
@@ -816,12 +937,13 @@ func f_one(iid, fr, pkinds, psnames) {
                 code := "FALS002"
                 if has_prefix(g_fviol_prop, "index") { code = "FALS001" }
                 f_record(ins.src, code, g_fviol_prop, g_fviol_expr, f_bind(ins.pnames, vals))
+                f_record_verdict(ins.src, "counterexample")
                 return
             }
+            if g_fstatus == 2 { inconcl = 1 }
             if g_fstatus == 0 {
-                // ensures: postcondition. Bind the single named return to the
-                // returned value, then check each clause; a false one is FALS010.
                 nens := len(contract) - 1 - nreq
+                ensok := 1
                 if nens > 0 {
                     if g_fretvalset == 1 && len(ins.rnames) == 1 { f_env_set(ins.rnames[0], g_fretval) }
                     ei := 1 + nreq
@@ -829,17 +951,21 @@ func f_one(iid, fr, pkinds, psnames) {
                         pe := f_eval_pred(contract[ei])
                         if pe == 0 {
                             f_record(ins.src, "FALS010", "postcondition violated", f_render(contract[ei], 0), f_bind(ins.pnames, vals))
+                            f_record_verdict(ins.src, "counterexample")
                             return
                         }
-                        if pe == 2 { ei = len(contract) } else { ei = ei + 1 }
+                        if pe == 2 { inconcl = 1  ensok = 0  ei = len(contract) } else { ei = ei + 1 }
                     }
                 }
+                if ensok == 1 { concl = 1 }
             }
         }
 
+        if inconcl == 1 { anyunk = 1 }
+        if concl == 1 { saw = 1 }
+
         tried = tried + 1
-        if tried >= 200000 { done = 1 }   // falsInputCap: cap tuples per function
-        // mixed-radix increment (idx[0] least significant), matching falsifyOne
+        if tried >= 200000 { done = 1 }   // falsInputCap
         carried := 1
         kk := 0
         for kk < np {
@@ -848,8 +974,18 @@ func f_one(iid, fr, pkinds, psnames) {
             idx[kk] = 0
             kk = kk + 1
         }
-        if carried == 1 { done = 1 }
+        if carried == 1 { completed = 1  done = 1 }
     }
+
+    // verdict: prove mode needs the whole space enumerated + every input conclusive
+    // + a provable domain. Finite -> proved; bounded -> proved-bounded.
+    verdict := "unknown"
+    if g_prove == 1 && completed == 1 && anyunk == 0 && prov > 0 {
+        if prov == 2 { verdict = "proved" } else { verdict = "proved-bounded" }
+    } else {
+        if saw == 1 { verdict = "clean" } else { verdict = "unknown" }
+    }
+    f_record_verdict(ins.src, verdict)
 }
 
 func detect_falsifiable() {
@@ -862,12 +998,15 @@ func detect_falsifiable() {
             scoped := 1
             pkinds := []int{}
             psnames := []string{}
+            prov := 2
             pi := 0
             for pi < len(ins.pslots) {
                 s := ins.pslots[pi]
                 ks := kind_of(s)
                 pk := 0
                 sn := ""
+                pv := f_provability(s)
+                if pv < prov { prov = pv }
                 if ks == 2 { pk = 0 } else {
                     if ks == 3 { pk = 2 } else {              // KFloat
                         if ks == 4 { pk = 4 } else {          // KBool
@@ -890,7 +1029,8 @@ func detect_falsifiable() {
                 psnames = append(psnames, sn)
                 pi = pi + 1
             }
-            if scoped == 1 { f_one(ri, fr, pkinds, psnames) }
+            if len(ins.pslots) == 0 { prov = 2 }
+            if scoped == 1 { f_one(ri, fr, pkinds, psnames, prov) } else { f_record_verdict(ins.src, "skipped") }
         }
         ri = ri + 1
     }

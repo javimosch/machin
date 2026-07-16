@@ -290,11 +290,33 @@ Known limitation: a FALS010 is a spec violation, not a runtime trap, so its
 `--safe` (an assertion-style repro is a possible follow-up); `invariant` (loop
 invariants) not yet implemented.
 
-## After Phase 3 (outline, not committed)
+## Phase 4 — the `proved` verdict: ✅ COMPLETE
 
-- **Phase 4 — the `proved(k≤N)` verdict**: symbolic/path-bounded upgrade (still
-  pure-MFL, no SMT dependency — a bounded model check over the typed IR). Only
-  now may output claim proof, always bound-labelled and honest.
+`machin falsify --prove` reverses the Phase-1 "never claims proved" law — honestly.
+It swaps the sparse bug-finding sample for a **dense, fully-covered bounded space**
+(int `[-8,8]`, slices len≤4 elems `[-2,2]`, all bool/struct combos) and enumerates
+*every* input. Exhausting it clean is a real bounded model check by exhaustion (no
+SMT, pure enumeration over the typed IR):
+
+- **`proved`** — the space is finite (bool params / all-bool structs) and fully
+  covered: an **unconditional total proof**.
+- **`proved-bounded`** — int/`[]int` covered only up to the reported `bounds`: an
+  honest **bound-labelled** proof, **never "correct"**.
+
+Soundness: a `proved` also requires **every** input to have been conclusively
+evaluated — an unmodeled path (`unknown`) or infinite-domain param (float/string,
+struct-with-int) blocks it, verdict stays `clean`/`unknown` (so no bound is ever
+overstated). Bonus: dense enumeration finds bugs the sparse sample misses.
+
+Go reference (`provability` + `falsifyOne` verdict + `--prove`) AND self-host port
+(`selfhost/falsify.src` g_prove/f_provability/verdict, `falsifytest --prove`
+verdict dump) both **oracle-diffed** — `selfhost/verify-falsify.sh` 52/52.
+
+## After Phase 4 (outline, not committed)
+
+- **Assertion-style FALS010 repro** (a postcondition violation isn't a runtime
+  trap); **`invariant`** (loop invariants); **densified struct int fields** so
+  struct-with-int can be `proved-bounded` too.
 - **Blog** (blog.intrane.fr via ~/ai/superlandings): "The compiler that hands you
   the murder weapon" — falsification as the default agent workflow.
 

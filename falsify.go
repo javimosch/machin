@@ -42,6 +42,65 @@ var (
 	falsSliceElemVals = []int64{0, 1, 2}
 )
 
+// ---- prove mode (Phase 4) ----
+//
+// `clean` uses the SPARSE domains above — fast bug-finding, no completeness claim.
+// Prove mode instead enumerates a DENSE, fully-covered bounded space, so exhausting
+// it clean is an honest bounded proof ("no counterexample for ANY int in [-N,N] and
+// ANY slice up to length K"), never "correct". For finite-domain params (bool) the
+// cover is total, so the proof carries no bound caveat.
+var falsProve = false
+
+const (
+	falsProveIntBound    = 8 // dense int domain is [-8, 8]
+	falsProveSliceLenMax = 4
+)
+
+var falsProveSliceElemVals = []int64{-2, -1, 0, 1, 2}
+
+func falsProveIntDomain() []int64 {
+	out := make([]int64, 0, 2*falsProveIntBound+1)
+	for v := int64(-falsProveIntBound); v <= falsProveIntBound; v++ {
+		out = append(out, v)
+	}
+	return out
+}
+
+// provability classifies how completely a param's domain can be covered:
+//
+//	2 = finite   (bool, or a struct of only-finite fields) — a TOTAL proof
+//	1 = bounded  (int, []int, or a struct reaching int) — proof only up to bounds
+//	0 = unprovable (float/string/other — the domain is an infinite sample)
+func (c *Checker) provability(slot int) int {
+	switch c.kindOf(slot) {
+	case KBool:
+		return 2
+	case KInt:
+		return 1
+	case KSlice:
+		if c.kindOf(c.elem[c.find(slot)]) == KInt {
+			return 1
+		}
+		return 0
+	case KStruct:
+		// Only an all-finite struct (bool fields) proves — its whole space is
+		// covered. A struct reaching int would need its int fields densified to
+		// match the reported int bound; until then it is not provable (stays clean),
+		// so we never overstate a bound.
+		td := c.structs[c.sname[c.find(slot)]]
+		if td == nil {
+			return 0
+		}
+		for _, f := range td.Fields {
+			if f.Type != "bool" {
+				return 0
+			}
+		}
+		return 2
+	}
+	return 0
+}
+
 // ---- finding ----
 
 type falsifyFinding struct {
@@ -671,10 +730,18 @@ func exprPrec(e Expr, parent int) string {
 // domain returns the candidate values for a param of the given slot's kind, or
 // (nil, false) when the type is out of Slice 1.1 scope.
 func (c *Checker) domain(slot int) ([]fval, bool) {
+	intDom := falsIntDomain
+	sliceLenMax := falsSliceLenMax
+	sliceElemVals := falsSliceElemVals
+	if falsProve {
+		intDom = falsProveIntDomain()
+		sliceLenMax = falsProveSliceLenMax
+		sliceElemVals = falsProveSliceElemVals
+	}
 	switch c.kindOf(slot) {
 	case KInt:
-		out := make([]fval, len(falsIntDomain))
-		for i, v := range falsIntDomain {
+		out := make([]fval, len(intDom))
+		for i, v := range intDom {
 			out[i] = vint(v)
 		}
 		return out, true
@@ -697,8 +764,8 @@ func (c *Checker) domain(slot int) ([]fval, bool) {
 			return nil, false // 1.1: only []int
 		}
 		var out []fval
-		for n := 0; n <= falsSliceLenMax; n++ {
-			for _, combo := range gen(n, falsSliceElemVals) {
+		for n := 0; n <= sliceLenMax; n++ {
+			for _, combo := range gen(n, sliceElemVals) {
 				sl := make([]fval, n)
 				for i, v := range combo {
 					sl[i] = vint(v)
@@ -799,12 +866,16 @@ type falsifyStats struct {
 	AllUnknown int // functions where every input was inconclusive
 }
 
-// funcVerdict is the per-function honesty record: what actually happened when the
-// falsifier looked at this function. `verdict` is NEVER "proved" — a `clean`
-// result means only "no counterexample within the bounds".
+// funcVerdict is the per-function honesty record. In the default (sparse) mode the
+// verdict is never "proved" — `clean` means only "no counterexample in the sample".
+// Under `--prove` the falsifier enumerates a DENSE, fully-covered bounded space, so
+// exhausting it clean earns `proved` (finite domains: a total proof) or
+// `proved-bounded` (int/slice: honest only up to the stated `bounds`) — never
+// "correct". A `proved` still requires every input to have been conclusively
+// evaluated; an unmodeled path or infinite-domain (float/string) param blocks it.
 type funcVerdict struct {
 	Fn      string `json:"fn"`
-	Verdict string `json:"verdict"` // "counterexample" | "clean" | "unknown" | "skipped"
+	Verdict string `json:"verdict"` // counterexample | clean | proved | proved-bounded | unknown | skipped
 	Tried   int    `json:"tried"`   // concrete inputs enumerated
 }
 
@@ -813,10 +884,14 @@ type funcVerdict struct {
 func verdictRank(v string) int {
 	switch v {
 	case "counterexample":
-		return 3
+		return 5
 	case "unknown":
-		return 2
+		return 4
 	case "clean":
+		return 3
+	case "proved-bounded":
+		return 2
+	case "proved":
 		return 1
 	default: // skipped
 		return 0
@@ -864,6 +939,7 @@ func detectFalsifiableStats(prog *Program, c *Checker) ([]falsifyFinding, falsif
 
 		domains := make([][]fval, len(fn.Params))
 		scoped := true
+		prov := 2 // aggregate provability: min over params (finite unless something weakens it)
 		for i, slot := range slots {
 			d, ok := c.domain(slot)
 			if !ok {
@@ -871,14 +947,20 @@ func detectFalsifiableStats(prog *Program, c *Checker) ([]falsifyFinding, falsif
 				break
 			}
 			domains[i] = d
+			if p := c.provability(slot); p < prov {
+				prov = p
+			}
 		}
 		if !scoped {
 			st.Skipped++
 			record(fn.Name, "skipped", 0)
 			continue
 		}
+		if len(slots) == 0 {
+			prov = 2 // no params -> a single input, fully covered
+		}
 
-		ff, verdict, tried := falsifyOne(fn, domains, funcs, c.structs)
+		ff, verdict, tried := falsifyOne(fn, domains, funcs, c.structs, prov)
 		record(fn.Name, verdict, tried)
 		switch verdict {
 		case "counterexample":
@@ -888,7 +970,7 @@ func detectFalsifiableStats(prog *Program, c *Checker) ([]falsifyFinding, falsif
 				seen[key] = true
 				out = append(out, ff)
 			}
-		case "clean":
+		case "clean", "proved", "proved-bounded":
 			st.Checked++
 		case "unknown":
 			st.AllUnknown++
@@ -911,13 +993,15 @@ func detectFalsifiableStats(prog *Program, c *Checker) ([]falsifyFinding, falsif
 // on the first fully-modeled trap, (_, "clean", tried) if all inputs ran to
 // completion without tripping, or (_, "unknown", tried) if every input was
 // inconclusive / the cap was hit before any conclusive result.
-func falsifyOne(fn *FuncDecl, domains [][]fval, funcs map[string]*FuncDecl, structs map[string]*TypeDecl) (falsifyFinding, string, int) {
+func falsifyOne(fn *FuncDecl, domains [][]fval, funcs map[string]*FuncDecl, structs map[string]*TypeDecl, prov int) (falsifyFinding, string, int) {
 	idx := make([]int, len(domains))
 	tried := 0
 	sawConclusive := false
+	anyUnknown := false
+	completed := false
 	for {
 		if tried >= falsInputCap {
-			break
+			break // hit the cap before covering the whole space
 		}
 		args := make([]fval, len(domains))
 		for i := range domains {
@@ -936,6 +1020,9 @@ func falsifyOne(fn *FuncDecl, domains [][]fval, funcs map[string]*FuncDecl, stru
 				args: args,
 			}, "counterexample", tried
 		}
+		if unknown {
+			anyUnknown = true
+		}
 		// a `requires`-filtered input is neither conclusive nor unknown — skip it.
 		if !unknown && !filtered {
 			sawConclusive = true
@@ -950,8 +1037,21 @@ func falsifyOne(fn *FuncDecl, domains [][]fval, funcs map[string]*FuncDecl, stru
 			idx[k] = 0
 		}
 		if k == len(idx) {
+			completed = true // enumerated the whole (bounded) space
 			break
 		}
+	}
+
+	// Prove mode: a `proved` verdict requires the ENTIRE space to have been
+	// enumerated (completed, not cap-truncated), EVERY input to have been
+	// conclusively evaluated (no unknown path), and no param to be unprovable.
+	// Finite domains give an unconditional proof; bounded domains give a
+	// bound-labelled one.
+	if falsProve && completed && !anyUnknown && prov > 0 {
+		if prov == 2 {
+			return falsifyFinding{}, "proved", tried
+		}
+		return falsifyFinding{}, "proved-bounded", tried
 	}
 	if sawConclusive {
 		return falsifyFinding{}, "clean", tried
