@@ -5,9 +5,10 @@
 # (Distinct from the repo-root verify-falsify.sh, which behaviorally tests the Go
 # pass. This one proves the MFL port reproduces the Go oracle exactly.)
 #
-# Phase 2 slices 2.1-2.3: int + []int + float + string params; arithmetic,
-# comparisons, if/while/for-range (incl. string range), index (FALS001), len,
-# div/modulo-by-zero (FALS002). Structs and interprocedural inlining land next.
+# Phase 2 slices 2.1-2.4: int + []int + float + string + bool + struct params;
+# arithmetic, comparisons, if/while/for-range (incl. string range), index
+# (FALS001), len, field access/assign, div/modulo-by-zero (FALS002).
+# Interprocedural inlining lands next.
 set -u
 N="nice -n 15"
 MACHIN=./bin/machin
@@ -61,6 +62,14 @@ printf 'func scat(s,t){if s==t{return len(s)}if s<t{return 0}if s>t{return 1}ret
 printf 'func slen(s){return 10/len(s)}\nfunc main(){println(str(slen("hi")))}\n' > "$T/f6"; run "$T/f6" "10/len(s) empty-string div (FALS002)"
 printf 'func vowels(s){n:=0 for _,c:=range s{if c=="a"{n=n+1}}return 100/n}\nfunc main(){println(str(vowels("aaa")))}\n' > "$T/f7"; run "$T/f7" "string range + div"
 printf 'func firstc(s){return s[0]}\nfunc main(){println(firstc("x"))}\n' > "$T/f8"; run "$T/f8" "string index s[0] (FALS001)"
+
+# struct + bool fixtures.
+printf 'type Cfg struct{n int}\nfunc run(c){return 100/c.n}\nfunc main(){println(str(run(Cfg{n:1})))}\n' > "$T/t1"; run "$T/t1" "div by struct field (FALS002)"
+printf 'type Box struct{sz int}\nfunc at(b,xs){return xs[b.sz]}\nfunc main(){println(str(at(Box{sz:0},[]int{1})))}\n' > "$T/t2"; run "$T/t2" "index by struct field (FALS001)"
+printf 'type P struct{n int}\nfunc vs(c){d:=c d.n=d.n+1 return d.n}\nfunc main(){println(str(vs(P{n:1})))}\n' > "$T/t3"; run "$T/t3" "struct copy value-semantics (clean)"
+printf 'type M struct{a int b bool}\nfunc g(m){if m.b{return 0}return 10/m.a}\nfunc main(){println(str(g(M{a:1,b:true})))}\n' > "$T/t4"; run "$T/t4" "struct with bool field"
+printf 'func bs(flag,a){if flag{return 0}return 10/a}\nfunc main(){println(str(bs(true,2)))}\n' > "$T/t5"; run "$T/t5" "bool param (true/false render)"
+printf 'type S struct{name string cnt int}\nfunc h(s){return len(s.name)/s.cnt}\nfunc main(){println(str(h(S{name:"x",cnt:1})))}\n' > "$T/t6"; run "$T/t6" "struct string+int fields"
 
 echo
 echo "self-hosted falsify oracle-diff: $pass pass, $fail fail"
