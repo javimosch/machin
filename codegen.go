@@ -185,7 +185,7 @@ static void mfl_arena_free(mfl_arena* a) {
 }
 
 /* --safe runtime checks (used only when the program is built with --safe) */
-static void mfl_panic(const char* msg) { fputs("panic: ", stderr); fputs(msg, stderr); fputc('\n', stderr); exit(1); }
+static void mfl_panic(const char* msg);   /* defined after the record/replay runtime (it enriches a crash with the schedule that led there) */
 static int64_t mfl_bounds(int64_t i, int64_t n) {
     if (i < 0 || i >= n) { char b[80]; snprintf(b, 80, "index out of range [%lld] with length %lld", (long long)i, (long long)n); mfl_panic(b); }
     return i;
@@ -373,17 +373,25 @@ static int64_t mfl_rr_io_pop_i64(void) { size_t L; char* s = mfl_hexdec(mfl_io_p
 static int mfl_rr_prog_boundary(void);
 static int mfl_rr_besteffort = 0;   /* trace was recorded from a boundary-unsafe program */
 static int mfl_rr_verify = 0;       /* MFL_RR_VERIFY: report a faithfulness self-check */
+static int mfl_rr_json = 0;         /* MFL_RR_JSON: emit a crash as a JSON causal report */
 
 static void mfl_rr_init(void) {
     mfl_gid_path = strdup("0");           /* main goroutine */
     if (getenv("MFL_RR_VERIFY")) mfl_rr_verify = 1;
+    if (getenv("MFL_RR_JSON")) mfl_rr_json = 1;
     const char* rec = getenv("MFL_RR_RECORD");
     const char* rep = getenv("MFL_RR_REPLAY");
     if (rec) {
         mfl_rr_mode = 1; mfl_rr_out = fopen(rec, "w");
-        /* honest header: a boundary-unsafe program can't be faithfully replayed. */
-        if (mfl_rr_out) fprintf(mfl_rr_out, "MFLRR 1\nboundary %s\n",
-                                 mfl_rr_prog_boundary() ? "best-effort" : "faithful");
+        /* honest header: a boundary-unsafe program can't be faithfully replayed.
+           The program path lets machin replay <trace> re-run without re-naming it. */
+        if (mfl_rr_out) {
+            fprintf(mfl_rr_out, "MFLRR 1\nboundary %s\n", mfl_rr_prog_boundary() ? "best-effort" : "faithful");
+            const char* src = getenv("MFL_RR_SRC");
+            if (src) fprintf(mfl_rr_out, "program %s\n", src);
+            const char* sf = getenv("MFL_RR_SAFE");
+            fprintf(mfl_rr_out, "safe %s\n", (sf && sf[0] == '1') ? "1" : "0");
+        }
     } else if (rep) {
         mfl_rr_mode = 2;
         FILE* f = fopen(rep, "r");
@@ -444,6 +452,30 @@ static void mfl_rr_finish(void) {
                 mfl_rr_pos, mfl_rr_n, mfl_rr_io_underrun ? "yes" : "no",
                 mfl_rr_besteffort ? "best-effort" : "faithful", ok ? "FAITHFUL" : "DIVERGED");
     }
+}
+
+/* A crash IS the artifact. When record/replay is active, enrich a panic with the
+   goroutine that hit it and how far into the schedule it got; under MFL_RR_JSON,
+   emit a structured causal report an agent reads instead of reproduces -- the
+   panicking goroutine, the message, the schedule position, and the causal chain
+   (the sequence of channel-op goroutines that led to the crash). */
+static void mfl_panic(const char* msg) {
+    if (mfl_rr_mode != 0 && mfl_rr_json) {
+        fputs("{\"panic\":\"", stderr);
+        for (const char* p = msg; *p; p++) { if (*p == '"' || *p == '\\') fputc('\\', stderr); fputc(*p, stderr); }
+        fprintf(stderr, "\",\"goroutine\":\"%s\",\"scheduleOp\":%d,\"scheduleTotal\":%d,\"causalChain\":[",
+                mfl_gid_path ? mfl_gid_path : "0", mfl_rr_pos, mfl_rr_n);
+        int lim = mfl_rr_pos < mfl_rr_n ? mfl_rr_pos : mfl_rr_n;
+        for (int i = 0; i < lim; i++) fprintf(stderr, "%s\"%s\"", i ? "," : "", mfl_rr_trace[i]);
+        fputs("]}\n", stderr);
+    } else {
+        fputs("panic: ", stderr); fputs(msg, stderr); fputc('\n', stderr);
+        if (mfl_rr_mode != 0)
+            fprintf(stderr, "  (%s: goroutine %s, schedule op %d/%d)\n",
+                    mfl_rr_mode == 1 ? "record" : "replay",
+                    mfl_gid_path ? mfl_gid_path : "0", mfl_rr_pos, mfl_rr_n);
+    }
+    exit(1);
 }
 
 static void mfl_chan_send(mfl_chan* c, const void* v) {

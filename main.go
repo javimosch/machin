@@ -28,6 +28,8 @@ func main() {
 	}
 	var err error
 	switch os.Args[1] {
+	case "replay":
+		err = cmdReplay(os.Args[2:])
 	case "run":
 		err = cmdRun(os.Args[2:])
 	case "build":
@@ -288,11 +290,83 @@ func cmdRun(args []string) error {
 	cmd.Env = os.Environ()
 	if recordTrace != "" {
 		abs, _ := filepath.Abs(recordTrace)
-		cmd.Env = append(cmd.Env, "MFL_RR_RECORD="+abs)
+		srcAbs, _ := filepath.Abs(src)
+		safeFlag := "0"
+		if safe {
+			safeFlag = "1"
+		}
+		cmd.Env = append(cmd.Env, "MFL_RR_RECORD="+abs, "MFL_RR_SRC="+srcAbs, "MFL_RR_SAFE="+safeFlag)
 	}
 	if replayTrace != "" {
 		abs, _ := filepath.Abs(replayTrace)
 		cmd.Env = append(cmd.Env, "MFL_RR_REPLAY="+abs)
+	}
+	if verify {
+		cmd.Env = append(cmd.Env, "MFL_RR_VERIFY=1")
+	}
+	if err := cmd.Run(); err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			os.Exit(ee.ExitCode())
+		}
+		return err
+	}
+	return nil
+}
+
+// cmdReplay re-executes a recorded trace. The trace carries its program path, so
+// you replay a run without re-naming the source. A recorded crash reproduces
+// exactly; --json turns it into a structured causal report an agent can read.
+func cmdReplay(args []string) error {
+	jsonOut, verify := false, false
+	var trace string
+	for _, a := range args {
+		switch a {
+		case "--json":
+			jsonOut = true
+		case "--verify":
+			verify = true
+		default:
+			trace = a
+		}
+	}
+	if trace == "" {
+		return fmt.Errorf("replay: need a trace file (from `machin run --record <trace> <file>`)")
+	}
+	data, err := os.ReadFile(trace)
+	if err != nil {
+		return err
+	}
+	var src string
+	safe := false
+	for _, ln := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(ln, "program ") {
+			src = strings.TrimSpace(ln[len("program "):])
+		} else if strings.TrimSpace(ln) == "safe 1" {
+			safe = true // reproduce a crash the recorded --safe run caught
+		}
+	}
+	if src == "" {
+		return fmt.Errorf("replay: trace has no `program` line — record it with `machin run --record`")
+	}
+	prog, err := loadMFL(src)
+	if err != nil {
+		return err
+	}
+	bin, err := os.CreateTemp("", "mfl-replay-*")
+	if err != nil {
+		return err
+	}
+	bin.Close()
+	defer os.Remove(bin.Name())
+	if err := BuildBinary(prog, bin.Name(), safe); err != nil {
+		return err
+	}
+	traceAbs, _ := filepath.Abs(trace)
+	cmd := exec.Command(bin.Name())
+	cmd.Stdout, cmd.Stderr, cmd.Stdin = os.Stdout, os.Stderr, os.Stdin
+	cmd.Env = append(os.Environ(), "MFL_RR_REPLAY="+traceAbs)
+	if jsonOut {
+		cmd.Env = append(cmd.Env, "MFL_RR_JSON=1")
 	}
 	if verify {
 		cmd.Env = append(cmd.Env, "MFL_RR_VERIFY=1")

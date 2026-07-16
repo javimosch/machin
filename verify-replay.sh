@@ -128,6 +128,31 @@ build "$T/sel.mfl" "$T/sel"
 rec "$T/sel" "$T/tsl" >/dev/null
 hdr=$(sed -n 2p "$T/tsl"); chk "$hdr" "boundary best-effort" "select program -> best-effort trace"
 
+# ---- fixture 8: `machin replay <trace>` command (program path embedded) ----
+R=$($N $M run --record "$T/rc.tr" "$T/race.mfl" 2>/dev/null)   # records with a `program` line
+U=$(for i in $(seq 1 5); do $N $M replay "$T/rc.tr" 2>/dev/null; done | sort -u)
+chk "$U" "$R" "machin replay <trace> reproduces the run (no source re-specified)"
+
+# ---- fixture 9: a crash replays into a structured causal report ----
+# a schedule-caused index-out-of-range; craft the crashing schedule for determinism.
+cat > "$T/crash.mfl" <<'EOF'
+func worker(id, ch) { ch <- id }
+func main() {
+  ch := make(chan int)
+  go worker(0, ch)  go worker(1, ch)
+  xs := []int{100}
+  a := <-ch
+  println(str(xs[a]))
+}
+EOF
+printf 'MFLRR 1\nboundary faithful\nprogram %s\nsafe 1\nS 0.2\nS 0.1\nS 0\n' "$T/crash.mfl" > "$T/crash.tr"
+$N $M replay "$T/crash.tr" >/dev/null 2>&1; rc=$?
+[ "$rc" -ne 0 ] && pass=$((pass+1)) && echo "ok   crash trace reproduces the crash (exit $rc)" || { fail=$((fail+1)); echo "FAIL crash should reproduce"; }
+J=$($N $M replay "$T/crash.tr" --json 2>&1 >/dev/null)
+echo "$J" | grep -q '"panic":"index out of range' && echo "$J" | grep -q '"causalChain":\["0.2","0.1","0"\]' \
+  && { pass=$((pass+1)); echo "ok   causal report: $J"; } \
+  || { fail=$((fail+1)); echo "FAIL causal report wrong: $J"; }
+
 echo
 echo "record/replay gate: $pass pass, $fail fail"
 rm -rf "$T"

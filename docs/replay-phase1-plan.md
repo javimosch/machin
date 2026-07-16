@@ -129,16 +129,24 @@ unbuffered is not a distinct case.
   without re-specifying the source — is Slice 1.4; here replay rides
   `machin run --replay`.)
 
-### Slice 1.4 — The payoff: `machin replay` + the causal report
-- `machin replay <trace>` re-executes deterministically (the headline command).
-- **Crash → causal artifact.** Record continuously; if the recorded run panicked,
-  `machin replay` re-runs to that panic and emits a structured (JSON) causal
-  report: the panicking goroutine (gid + its spawn path), the source site, the
-  channel-op sequence that led there, and — via the existing `--safe` trap
-  machinery — the offending value. This is the agent-facing surface: a crash the
-  agent *reads* instead of reproduces.
-- (Scope note: a full "query any variable at iteration N" replay-debugger is a
-  follow-up; the first cut is faithful re-execution + a panic causal report.)
+### Slice 1.4 — The payoff: `machin replay` + the causal report — ✅ DONE
+- **`machin replay <trace>`** — the headline verb. The trace embeds its `program`
+  path + `safe` build flag (written at record time from `MFL_RR_SRC`/`MFL_RR_SAFE`),
+  so you replay *without re-naming the source* and a crash the recorded `--safe`
+  run caught reproduces (replay rebuilds with the same `--safe`). Proven: replays
+  a run 5/5 identically; `--verify` certifies FAITHFUL.
+- **Crash → causal artifact.** `mfl_panic` is enriched: when record/replay is
+  active it names the panicking goroutine + schedule position; under `--json` it
+  emits a structured causal report — `{panic, goroutine, scheduleOp,
+  scheduleTotal, causalChain:[the channel-op goroutine-ids that led to the
+  crash]}`. Proven on a schedule-caused index-out-of-range: the report pinpoints
+  goroutine `0` panicking after 3 ops with `causalChain ["0.2","0.1","0"]` (worker
+  `0.2` sent first → main got the bad index), and the crash replays deterministically.
+- **Learning:** replay must rebuild with the recorded program's `--safe` setting,
+  or an index-OOB/div-zero crash silently *doesn't* reproduce (reads garbage
+  instead of panicking) — so the `safe` flag is recorded in the trace.
+- `verify-replay.sh` 20/20; `guide.go` gains the `replay` verb. (Full
+  "query any variable at iteration N" replay-debugger remains a follow-up.)
 
 ### Slice 1.5 — Corpus, gate, close-out
 - `verify-replay.sh` expanded: nested spawns, `select`, buffered, close, the I/O

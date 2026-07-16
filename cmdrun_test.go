@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -126,5 +127,43 @@ func TestCmdBuildMissingFlagArg(t *testing.T) {
 	// cmdBuild --target with no value should error
 	if err := cmdBuild([]string{"--target", srcPath}); err == nil {
 		t.Fatal("cmdBuild --target with no value should error, got nil")
+	}
+}
+
+// TestCmdReplay covers the record/replay round trip + cmdReplay's error paths.
+func TestCmdReplay(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "p.mfl")
+	if err := os.WriteFile(src, []byte("func w(id, ch) { ch <- id }\nfunc main() { ch := make(chan int)  go w(1, ch)  go w(2, ch)  println(str(<-ch) + str(<-ch)) }"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	trace := filepath.Join(dir, "t.tr")
+	// record: produces a trace with a `program` line.
+	if err := cmdRun([]string{"--record", trace, src}); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	data, err := os.ReadFile(trace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "program ") || !strings.Contains(string(data), "MFLRR 1") {
+		t.Fatalf("trace missing header/program line:\n%s", data)
+	}
+	// replay: re-runs from the embedded program path (+ --verify).
+	if err := cmdReplay([]string{trace, "--verify"}); err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+
+	// error paths.
+	if err := cmdReplay(nil); err == nil {
+		t.Fatal("replay with no trace should error")
+	}
+	noProg := filepath.Join(dir, "np.tr")
+	os.WriteFile(noProg, []byte("MFLRR 1\nboundary faithful\nS 0\n"), 0o644)
+	if err := cmdReplay([]string{noProg}); err == nil {
+		t.Fatal("replay of a trace without a program line should error")
+	}
+	if err := cmdReplay([]string{filepath.Join(dir, "nope.tr")}); err == nil {
+		t.Fatal("replay of a missing trace should error")
 	}
 }
