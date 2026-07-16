@@ -237,15 +237,27 @@ func raceGate(prog *Program) error {
 
 func cmdRun(args []string) error {
 	safe, raceSafe := false, false
-	var src string
-	for _, a := range args {
-		switch a {
+	var src, recordTrace, replayTrace string
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
 		case "--safe":
 			safe = true
 		case "--race-safe":
 			raceSafe = true
+		case "--record":
+			if i+1 >= len(args) {
+				return fmt.Errorf("run: --record needs a trace file")
+			}
+			i++
+			recordTrace = args[i]
+		case "--replay":
+			if i+1 >= len(args) {
+				return fmt.Errorf("run: --replay needs a trace file")
+			}
+			i++
+			replayTrace = args[i]
 		default:
-			src = a
+			src = args[i]
 		}
 	}
 	if src == "" {
@@ -271,6 +283,15 @@ func cmdRun(args []string) error {
 	}
 	cmd := exec.Command(bin.Name())
 	cmd.Stdout, cmd.Stderr, cmd.Stdin = os.Stdout, os.Stderr, os.Stdin
+	cmd.Env = os.Environ()
+	if recordTrace != "" {
+		abs, _ := filepath.Abs(recordTrace)
+		cmd.Env = append(cmd.Env, "MFL_RR_RECORD="+abs)
+	}
+	if replayTrace != "" {
+		abs, _ := filepath.Abs(replayTrace)
+		cmd.Env = append(cmd.Env, "MFL_RR_REPLAY="+abs)
+	}
 	if err := cmd.Run(); err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
 			os.Exit(ee.ExitCode())

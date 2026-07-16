@@ -291,7 +291,65 @@ static void mfl_chan_close(mfl_chan* c) {
     pthread_cond_broadcast(&c->cnd);
     pthread_mutex_unlock(&c->mu);
 }
+/* ---- record/replay (Phase 0 spike) ------------------------------------------
+   SOUND because the program is proved data-race-free: the only inter-goroutine
+   nondeterminism is the ORDER channel operations complete. We record that order
+   as a sequence of goroutine ids (--record) and, on --replay, gate each
+   channel op so it fires in exactly the recorded order -- reproducing the run
+   without recording a single memory access (which is what makes rr unsound
+   under races and x86-only). Scope: channel-only concurrency, no I/O yet. */
+static _Thread_local int mfl_gid = 0;     /* stable goroutine id (main = 0) */
+static int mfl_next_gid = 0;              /* spawn counter, bumped at each go stmt */
+static int mfl_rr_mode = 0;              /* 0 off, 1 record, 2 replay */
+static FILE* mfl_rr_out = NULL;
+static int* mfl_rr_trace = NULL; static int mfl_rr_n = 0; static int mfl_rr_pos = 0;
+static pthread_mutex_t mfl_rr_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  mfl_rr_cnd = PTHREAD_COND_INITIALIZER;
+static void mfl_rr_init(void) {
+    const char* rec = getenv("MFL_RR_RECORD");
+    const char* rep = getenv("MFL_RR_REPLAY");
+    if (rec) { mfl_rr_mode = 1; mfl_rr_out = fopen(rec, "w"); }
+    else if (rep) {
+        mfl_rr_mode = 2;
+        FILE* f = fopen(rep, "r");
+        if (f) { int cap = 64; mfl_rr_trace = malloc(cap * sizeof(int)); int gg;
+            while (fscanf(f, "%d", &gg) == 1) {
+                if (mfl_rr_n == cap) { cap *= 2; mfl_rr_trace = realloc(mfl_rr_trace, cap * sizeof(int)); }
+                mfl_rr_trace[mfl_rr_n++] = gg;
+            } fclose(f);
+        }
+    }
+}
+/* replay: block until it is this goroutine's turn to complete a channel op.
+   Only the current-turn goroutine runs its op between enter and exit, so the
+   op's effect order equals the recorded order. */
+static void mfl_rr_enter(void) {
+    if (mfl_rr_mode != 2) return;
+    pthread_mutex_lock(&mfl_rr_mu);
+    while (mfl_rr_pos < mfl_rr_n && mfl_rr_trace[mfl_rr_pos] != mfl_gid)
+        pthread_cond_wait(&mfl_rr_cnd, &mfl_rr_mu);
+    pthread_mutex_unlock(&mfl_rr_mu);
+}
+/* record: append this goroutine's id in true channel-effect order (called while
+   holding the channel mutex). */
+static void mfl_rr_mark(void) {
+    if (mfl_rr_mode != 1) return;
+    pthread_mutex_lock(&mfl_rr_mu);
+    if (mfl_rr_out) fprintf(mfl_rr_out, "%d\n", mfl_gid);
+    pthread_mutex_unlock(&mfl_rr_mu);
+}
+/* replay: advance the turn and wake the next goroutine. */
+static void mfl_rr_exit(void) {
+    if (mfl_rr_mode != 2) return;
+    pthread_mutex_lock(&mfl_rr_mu);
+    mfl_rr_pos++;
+    pthread_cond_broadcast(&mfl_rr_cnd);
+    pthread_mutex_unlock(&mfl_rr_mu);
+}
+static void mfl_rr_finish(void) { if (mfl_rr_out) { fclose(mfl_rr_out); mfl_rr_out = NULL; } }
+
 static void mfl_chan_send(mfl_chan* c, const void* v) {
+    mfl_rr_enter();
     mfl_cnode* n = malloc(sizeof(mfl_cnode));
     if (c->ser) {
         char* j = c->ser(v);                 /* arena JSON of the whole value */
@@ -306,7 +364,9 @@ static void mfl_chan_send(mfl_chan* c, const void* v) {
     if (c->tail) c->tail->next = n; else c->head = n;
     c->tail = n;
     pthread_cond_signal(&c->cnd);
+    mfl_rr_mark();
     pthread_mutex_unlock(&c->mu);
+    mfl_rr_exit();
 }
 /* deliver node n's payload into out (receiver arena), then free the node. */
 static void mfl_chan_deliver(mfl_chan* c, mfl_cnode* n, void* out) {
@@ -322,14 +382,17 @@ static void mfl_chan_deliver(mfl_chan* c, mfl_cnode* n, void* out) {
    is closed and drained (out left untouched). The primitive behind range-over-
    channel and the comma-ok receive. */
 static int mfl_chan_recv2(mfl_chan* c, void* out) {
+    mfl_rr_enter();
     pthread_mutex_lock(&c->mu);
     while (!c->head && !c->closed) pthread_cond_wait(&c->cnd, &c->mu);
     mfl_cnode* n = c->head;
-    if (!n) { pthread_mutex_unlock(&c->mu); return 0; }
+    if (!n) { pthread_mutex_unlock(&c->mu); mfl_rr_exit(); return 0; }
     c->head = n->next;
     if (!c->head) c->tail = NULL;
+    mfl_rr_mark();
     pthread_mutex_unlock(&c->mu);
     mfl_chan_deliver(c, n, out);
+    mfl_rr_exit();
     return 1;
 }
 static void mfl_chan_recv(mfl_chan* c, void* out) {
@@ -3120,7 +3183,7 @@ func (g *cgen) program(p *Program) (string, error) {
 	if !g.wasm() && g.c.HasMain() {
 		// Ignore SIGPIPE so a write to a peer that closed the connection (e.g. an SSE
 		// client that navigated away) returns -1/EPIPE instead of killing the process.
-		out.WriteString("int main(int argc, char** argv) { signal(SIGPIPE, SIG_IGN); mfl_argc = argc; mfl_argv = argv; mfl_main(); return 0; }\n")
+		out.WriteString("int main(int argc, char** argv) { signal(SIGPIPE, SIG_IGN); mfl_argc = argc; mfl_argv = argv; mfl_rr_init(); mfl_main(); mfl_rr_finish(); return 0; }\n")
 	}
 	return out.String(), nil
 }
@@ -3802,7 +3865,7 @@ func (g *cgen) goStmt(st *GoStmt) error {
 	// A JSON-mode argument gets an extra _jN field carrying the malloc'd JSON
 	// blob across the arena boundary; its real aN field is populated inside
 	// the trampoline, once mfl_arena_cur is the NEW goroutine's arena.
-	fmt.Fprintf(&g.tramp, "struct mfl_go_%d { char _;", id)
+	fmt.Fprintf(&g.tramp, "struct mfl_go_%d { char _; int _gid;", id)
 	for i := 0; i < n; i++ {
 		fmt.Fprintf(&g.tramp, " %s a%d;", g.c.ParamCType(inst, i), i)
 		if _, ok := jsonArgs[i]; ok {
@@ -3815,7 +3878,7 @@ func (g *cgen) goStmt(st *GoStmt) error {
 		}
 	}
 	g.tramp.WriteString(" };\n")
-	fmt.Fprintf(&g.tramp, "static void* mfl_go_run_%d(void* p) { mfl_arena _a = {0}; mfl_arena_cur = &_a; struct mfl_go_%d* s = (struct mfl_go_%d*)p;\n",
+	fmt.Fprintf(&g.tramp, "static void* mfl_go_run_%d(void* p) { mfl_arena _a = {0}; mfl_arena_cur = &_a; struct mfl_go_%d* s = (struct mfl_go_%d*)p; mfl_gid = s->_gid;\n",
 		id, id, id)
 	for i := 0; i < n; i++ {
 		if j, ok := jsonArgs[i]; ok {
@@ -3853,6 +3916,10 @@ func (g *cgen) goStmt(st *GoStmt) error {
 	// goroutine gets a chance to thaw it back out.
 	g.buf.WriteString("{\n")
 	fmt.Fprintf(&g.buf, "        struct mfl_go_%d* s = malloc(sizeof(*s));\n", id)
+	// record/replay: assign a stable goroutine id in the SPAWNING goroutine's
+	// program order (not in the new thread, whose start races), so the schedule
+	// trace matches across record and replay.
+	g.buf.WriteString("        s->_gid = __atomic_add_fetch(&mfl_next_gid, 1, __ATOMIC_SEQ_CST);\n")
 	for i, a := range st.Call.Args {
 		e, err := g.expr(a)
 		if err != nil {
