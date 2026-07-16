@@ -2,6 +2,44 @@
 
 ## Unreleased
 
+## v0.108.0
+
+- **The Falsifier — a compile-time bounded bug-finder and bounded prover, new
+  `machin falsify` command and a `falsify` phase in `machin check`.** It
+  enumerates small concrete inputs to each function and reports the *exact* input
+  that trips a runtime-checked property: `FALS001` index-out-of-range, `FALS002`
+  divide/modulo-by-zero. Findings are **advisory** (a separate `warnings` channel;
+  they never fail `check`/`build`) and **false-positive-free by construction** —
+  a counterexample is emitted only from a fully-modeled concrete path; anything it
+  can't model (opaque call, unsupported construct) makes that input *inconclusive*
+  and is dropped. The analysis reaches through calls (interprocedural inlining) and
+  struct fields. `machin falsify --repro <dir>` writes one runnable `.mfl` per
+  finding that panics under `--safe` at exactly the predicted trap — an
+  auto-promotable regression test. `--json` returns a verdict envelope
+  (`counterexamples`, per-function `verdict`, and the search `bounds`) that never
+  overstates. Pointed at the example corpus it surfaced two real latent bugs
+  (`divmod` ÷0, `minmax` indexing an empty slice).
+- **Design-by-contract: declarative `requires` / `ensures` clauses on a function
+  signature.** `requires <expr>` (over params, after the return list, before the
+  body) is a precondition that *filters* the input domain — an input failing it is
+  the caller's fault, so it suppresses a would-be `FALS001`/`FALS002`. `ensures
+  <expr>` (over params + named returns) is a postcondition; an input satisfying
+  every `requires` that makes an `ensures` false is a `FALS010` counterexample.
+  Predicates are tri-state, so a non-bool / trapping / unmodeled predicate is
+  inconclusive, never a false positive. Codegen ignores contracts (analysis-only).
+- **Honest bounded proof: `machin falsify --prove`.** Switches from the sparse
+  bug-finding sample to a *dense, fully-covered* bounded space (int `[-8,8]`, slices
+  up to length 4, all bool/struct combinations) and enumerates every input — a
+  bounded model check by exhaustion, no SMT. Exhausting it clean earns `proved`
+  (finite/bool domains — a total proof) or `proved-bounded` (int/`[]int` — only up
+  to the reported `bounds`, never "correct"); float/string params and any
+  unmodeled path block a proof (verdict stays `clean`/`unknown`), so a bound is
+  never overstated. Dense enumeration also finds bugs the sparse sample misses.
+- **The Falsifier is self-hosted.** The whole pass — counterexample search,
+  contracts, and bounded proofs — is ported to MFL (`selfhost/falsify.src`) and
+  verified byte-for-byte against the Go reference via `machin falsifytest`, so the
+  machin-in-machin compiler both compiles *and* falsifies *and* proves, provably
+  identically.
 - **Fixed `&&` / `||` not short-circuiting: the right operand was evaluated
   even when the left already decided the result.** When either operand had a
   side effect (a call or channel receive), codegen hoisted *both* operands
