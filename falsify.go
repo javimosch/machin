@@ -83,23 +83,20 @@ func (c *Checker) provability(slot int) int {
 		}
 		return 0
 	case KStruct:
+		// Only an all-finite struct (bool fields) proves — its whole space is
+		// covered. A struct reaching int would need its int fields densified to
+		// match the reported int bound; until then it is not provable (stays clean),
+		// so we never overstate a bound.
 		td := c.structs[c.sname[c.find(slot)]]
 		if td == nil {
 			return 0
 		}
-		p := 2
 		for _, f := range td.Fields {
-			switch f.Type {
-			case "bool":
-			case "int":
-				if p > 1 {
-					p = 1
-				}
-			default:
+			if f.Type != "bool" {
 				return 0
 			}
 		}
-		return p
+		return 2
 	}
 	return 0
 }
