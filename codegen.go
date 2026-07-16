@@ -83,6 +83,7 @@ type cgen struct {
 	usesRegex    bool            // program calls regex_* -> emit POSIX regex runtime
 	usesSQLite   bool            // program calls sqlite_* -> emit SQLite runtime + link -lsqlite3
 	usesCrypto   bool            // program calls crypto builtins -> emit crypto runtime + link -lcrypto
+	usesSelect   bool            // program uses `select` -> record/replay is best-effort (not yet gated)
 	usesXEdDSA   bool            // program calls xeddsa_* -> emit XEdDSA runtime + link -lsodium -lcrypto
 	usesMath     bool            // program calls math builtins (sin/cos/sqrt/...) -> emit math runtime + link -lm
 	usesNoise    bool            // program calls noise2/noise3 -> emit Perlin noise runtime + link -lm
@@ -184,7 +185,7 @@ static void mfl_arena_free(mfl_arena* a) {
 }
 
 /* --safe runtime checks (used only when the program is built with --safe) */
-static void mfl_panic(const char* msg) { fputs("panic: ", stderr); fputs(msg, stderr); fputc('\n', stderr); exit(1); }
+static void mfl_panic(const char* msg);   /* defined after the record/replay runtime (it enriches a crash with the schedule that led there) */
 static int64_t mfl_bounds(int64_t i, int64_t n) {
     if (i < 0 || i >= n) { char b[80]; snprintf(b, 80, "index out of range [%lld] with length %lld", (long long)i, (long long)n); mfl_panic(b); }
     return i;
@@ -283,15 +284,216 @@ static void mfl_thaw_strs(int nstr, int* stroff, void* elem) {
 }
 static void mfl_chan_freeze(mfl_chan* c, void* elem) { mfl_freeze_strs(c->nstr, c->stroff, elem); }
 static void mfl_chan_thaw(mfl_chan* c, void* elem) { mfl_thaw_strs(c->nstr, c->stroff, elem); }
+/* record/replay hooks (defined below, before mfl_chan_send). */
+static void mfl_rr_enter(void); static void mfl_rr_mark(void); static void mfl_rr_exit(void);
 /* close a channel: receivers drain the buffer then get "not ok". Wakes every
-   blocked receiver so range/recv stop instead of hanging forever. */
+   blocked receiver so range/recv stop instead of hanging forever. close is an
+   observable, ordered channel op -- it takes a turn so replay reproduces its
+   position relative to receivers (a recv after close gets "not ok"). */
 static void mfl_chan_close(mfl_chan* c) {
+    mfl_rr_enter();
     pthread_mutex_lock(&c->mu);
     c->closed = 1;
     pthread_cond_broadcast(&c->cnd);
+    mfl_rr_mark();
     pthread_mutex_unlock(&c->mu);
+    mfl_rr_exit();
 }
+/* ---- record/replay (Phase 0 spike) ------------------------------------------
+   SOUND because the program is proved data-race-free: the only inter-goroutine
+   nondeterminism is the ORDER channel operations complete. We record that order
+   as a sequence of goroutine ids (--record) and, on --replay, gate each
+   channel op so it fires in exactly the recorded order -- reproducing the run
+   without recording a single memory access (which is what makes rr unsound
+   under races and x86-only). Scope: channel-only concurrency, no I/O yet. */
+/* Stable goroutine id = a parent-relative PATH ("0", "0.1", "0.1.2"). Assigned in
+   the spawning goroutine's program order (not in the racing new thread), so a
+   goroutine's id is identical across record and replay even when goroutines spawn
+   goroutines concurrently — the global-counter scheme of the spike would race. */
+static _Thread_local char* mfl_gid_path = NULL;  /* this goroutine's path */
+static _Thread_local int mfl_spawn_ctr = 0;      /* this goroutine's spawn count */
+static char* mfl_path_child(const char* parent, int idx) {
+    char* r = malloc(strlen(parent) + 16);
+    sprintf(r, "%s.%d", parent, idx);
+    return r;
+}
+static int mfl_rr_mode = 0;              /* 0 off, 1 record, 2 replay */
+static FILE* mfl_rr_out = NULL;
+static char** mfl_rr_trace = NULL; static int mfl_rr_n = 0; static int mfl_rr_pos = 0;  /* schedule (S lines) */
+static pthread_mutex_t mfl_rr_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  mfl_rr_cnd = PTHREAD_COND_INITIALIZER;
+
+/* trace format v1: a header line "MFLRR 1", then tagged lines --
+   "S <path>"        one channel-op completion, in order (the schedule); and
+   "I <path> <hex>"  one I/O result (time/stdin), hex-encoded. Each goroutine
+   replays its OWN I/O queue in order, so the I/O log needs no global ordering --
+   the schedule already orders everything observable across goroutines. */
+static char* mfl_hexenc(const char* s, size_t n) {
+    char* r = malloc(n * 2 + 1);
+    for (size_t i = 0; i < n; i++) sprintf(r + i * 2, "%02x", (unsigned char)s[i]);
+    r[n * 2] = 0; return r;
+}
+static char* mfl_hexdec(const char* h, size_t* outlen) {
+    size_t n = strlen(h) / 2; char* r = malloc(n + 1);
+    for (size_t i = 0; i < n; i++) { unsigned v; sscanf(h + i * 2, "%2x", &v); r[i] = (char)v; }
+    r[n] = 0; *outlen = n; return r;
+}
+/* per-goroutine I/O queue (replay): path -> the values that gid observed, in order */
+typedef struct { char* path; char** vals; int n, cap, cur; } mfl_io_q;
+static mfl_io_q* mfl_io_qs = NULL; static int mfl_io_nq = 0, mfl_io_capq = 0;
+static mfl_io_q* mfl_io_find(const char* path) {
+    for (int i = 0; i < mfl_io_nq; i++) if (strcmp(mfl_io_qs[i].path, path) == 0) return &mfl_io_qs[i];
+    if (mfl_io_nq == mfl_io_capq) { mfl_io_capq = mfl_io_capq ? mfl_io_capq * 2 : 8; mfl_io_qs = realloc(mfl_io_qs, mfl_io_capq * sizeof(mfl_io_q)); }
+    mfl_io_q* q = &mfl_io_qs[mfl_io_nq++]; q->path = strdup(path); q->vals = NULL; q->n = q->cap = q->cur = 0; return q;
+}
+static void mfl_io_push(const char* path, const char* hex) {
+    mfl_io_q* q = mfl_io_find(path);
+    if (q->n == q->cap) { q->cap = q->cap ? q->cap * 2 : 4; q->vals = realloc(q->vals, q->cap * sizeof(char*)); }
+    q->vals[q->n++] = strdup(hex);
+}
+static int mfl_rr_io_underrun = 0;   /* replay needed more I/O than was recorded -> divergence */
+static const char* mfl_io_pop(void) {
+    mfl_io_q* q = mfl_io_find(mfl_gid_path);
+    if (q->cur < q->n) return q->vals[q->cur++];
+    mfl_rr_io_underrun = 1;
+    return "";
+}
+/* record an I/O result (called by the interposed builtins). */
+static void mfl_rr_io_log_hex(const char* h) {
+    pthread_mutex_lock(&mfl_rr_mu);
+    if (mfl_rr_out) fprintf(mfl_rr_out, "I %s %s\n", mfl_gid_path, h);
+    pthread_mutex_unlock(&mfl_rr_mu);
+}
+static void mfl_rr_io_log_i64(int64_t v) { char b[32]; snprintf(b, sizeof b, "%lld", (long long)v); char* h = mfl_hexenc(b, strlen(b)); mfl_rr_io_log_hex(h); free(h); }
+static void mfl_rr_io_log_bytes(const char* s, size_t n) { char* h = mfl_hexenc(s, n); mfl_rr_io_log_hex(h); free(h); }
+static int64_t mfl_rr_io_pop_i64(void) { size_t L; char* s = mfl_hexdec(mfl_io_pop(), &L); int64_t v = L ? strtoll(s, NULL, 10) : 0; free(s); return v; }
+
+/* the determinism boundary of the recorded program (program-dependent, emitted by
+   codegen after this fixed runtime): 1 if the program uses FFI or select. */
+static int mfl_rr_prog_boundary(void);
+static int mfl_rr_besteffort = 0;   /* trace was recorded from a boundary-unsafe program */
+static int mfl_rr_verify = 0;       /* MFL_RR_VERIFY: report a faithfulness self-check */
+static int mfl_rr_json = 0;         /* MFL_RR_JSON: emit a crash as a JSON causal report */
+
+static void mfl_rr_init(void) {
+    mfl_gid_path = strdup("0");           /* main goroutine */
+    if (getenv("MFL_RR_VERIFY")) mfl_rr_verify = 1;
+    if (getenv("MFL_RR_JSON")) mfl_rr_json = 1;
+    const char* rec = getenv("MFL_RR_RECORD");
+    const char* rep = getenv("MFL_RR_REPLAY");
+    if (rec) {
+        mfl_rr_mode = 1; mfl_rr_out = fopen(rec, "w");
+        /* honest header: a boundary-unsafe program can't be faithfully replayed.
+           The program path lets machin replay <trace> re-run without re-naming it. */
+        if (mfl_rr_out) {
+            fprintf(mfl_rr_out, "MFLRR 1\nboundary %s\n", mfl_rr_prog_boundary() ? "best-effort" : "faithful");
+            const char* src = getenv("MFL_RR_SRC");
+            if (src) fprintf(mfl_rr_out, "program %s\n", src);
+            const char* sf = getenv("MFL_RR_SAFE");
+            fprintf(mfl_rr_out, "safe %s\n", (sf && sf[0] == '1') ? "1" : "0");
+        }
+    } else if (rep) {
+        mfl_rr_mode = 2;
+        FILE* f = fopen(rep, "r");
+        if (f) {
+            int cap = 64; mfl_rr_trace = malloc(cap * sizeof(char*));
+            char line[16384];
+            while (fgets(line, sizeof line, f)) {
+                if (strncmp(line, "boundary ", 9) == 0) { if (strstr(line, "best-effort")) mfl_rr_besteffort = 1; }
+                else if (line[0] == 'S') {
+                    char p[256]; if (sscanf(line, "S %255s", p) == 1) {
+                        if (mfl_rr_n == cap) { cap *= 2; mfl_rr_trace = realloc(mfl_rr_trace, cap * sizeof(char*)); }
+                        mfl_rr_trace[mfl_rr_n++] = strdup(p);
+                    }
+                } else if (line[0] == 'I') {
+                    char p[256], h[16000]; if (sscanf(line, "I %255s %15999s", p, h) == 2) mfl_io_push(p, h);
+                }
+            }
+            fclose(f);
+        }
+        if (mfl_rr_besteffort)
+            fprintf(stderr, "warning: best-effort trace (the program uses FFI/select) -- replay may diverge from the recorded run\n");
+    }
+}
+/* replay: block until it is this goroutine's turn to complete a channel op.
+   Only the current-turn goroutine runs its op between enter and exit, so the
+   op's effect order equals the recorded order. */
+static void mfl_rr_enter(void) {
+    if (mfl_rr_mode != 2) return;
+    pthread_mutex_lock(&mfl_rr_mu);
+    while (mfl_rr_pos < mfl_rr_n && strcmp(mfl_rr_trace[mfl_rr_pos], mfl_gid_path) != 0)
+        pthread_cond_wait(&mfl_rr_cnd, &mfl_rr_mu);
+    pthread_mutex_unlock(&mfl_rr_mu);
+}
+/* record: append this goroutine's path in true channel-effect order (called while
+   holding the channel mutex). */
+static void mfl_rr_mark(void) {
+    if (mfl_rr_mode != 1) return;
+    pthread_mutex_lock(&mfl_rr_mu);
+    if (mfl_rr_out) fprintf(mfl_rr_out, "S %s\n", mfl_gid_path);
+    pthread_mutex_unlock(&mfl_rr_mu);
+}
+/* replay: advance the turn and wake the next goroutine. */
+static void mfl_rr_exit(void) {
+    if (mfl_rr_mode != 2) return;
+    pthread_mutex_lock(&mfl_rr_mu);
+    mfl_rr_pos++;
+    pthread_cond_broadcast(&mfl_rr_cnd);
+    pthread_mutex_unlock(&mfl_rr_mu);
+}
+/* Concurrent stdout writes are observable and un-synchronized, so their
+   interleaving is nondeterminism too -- gate each print statement like a channel
+   op. record: a print-lock keeps a line atomic + records its order; replay: the
+   turn system serializes prints into the recorded order. No-op when not
+   recording (a normal run pays nothing). */
+static pthread_mutex_t mfl_print_mu = PTHREAD_MUTEX_INITIALIZER;
+static void mfl_rr_print_begin(void) {
+    if (mfl_rr_mode == 2) mfl_rr_enter();
+    else if (mfl_rr_mode == 1) pthread_mutex_lock(&mfl_print_mu);
+}
+static void mfl_rr_print_end(void) {
+    if (mfl_rr_mode == 2) mfl_rr_exit();
+    else if (mfl_rr_mode == 1) { mfl_rr_mark(); pthread_mutex_unlock(&mfl_print_mu); }
+}
+static void mfl_rr_finish(void) {
+    if (mfl_rr_out) { fclose(mfl_rr_out); mfl_rr_out = NULL; }
+    /* --verify: an honest self-check that replay stayed on-script. A faithful
+       replay consumes exactly the recorded schedule and never underruns the I/O
+       log; anything else means the replay diverged from the recorded run. */
+    if (mfl_rr_mode == 2 && mfl_rr_verify) {
+        int ok = (mfl_rr_pos == mfl_rr_n) && !mfl_rr_io_underrun && !mfl_rr_besteffort;
+        fprintf(stderr, "replay-verify: schedule %d/%d ops, io-underrun=%s, boundary=%s -> %s\n",
+                mfl_rr_pos, mfl_rr_n, mfl_rr_io_underrun ? "yes" : "no",
+                mfl_rr_besteffort ? "best-effort" : "faithful", ok ? "FAITHFUL" : "DIVERGED");
+    }
+}
+
+/* A crash IS the artifact. When record/replay is active, enrich a panic with the
+   goroutine that hit it and how far into the schedule it got; under MFL_RR_JSON,
+   emit a structured causal report an agent reads instead of reproduces -- the
+   panicking goroutine, the message, the schedule position, and the causal chain
+   (the sequence of channel-op goroutines that led to the crash). */
+static void mfl_panic(const char* msg) {
+    if (mfl_rr_mode != 0 && mfl_rr_json) {
+        fputs("{\"panic\":\"", stderr);
+        for (const char* p = msg; *p; p++) { if (*p == '"' || *p == '\\') fputc('\\', stderr); fputc(*p, stderr); }
+        fprintf(stderr, "\",\"goroutine\":\"%s\",\"scheduleOp\":%d,\"scheduleTotal\":%d,\"causalChain\":[",
+                mfl_gid_path ? mfl_gid_path : "0", mfl_rr_pos, mfl_rr_n);
+        int lim = mfl_rr_pos < mfl_rr_n ? mfl_rr_pos : mfl_rr_n;
+        for (int i = 0; i < lim; i++) fprintf(stderr, "%s\"%s\"", i ? "," : "", mfl_rr_trace[i]);
+        fputs("]}\n", stderr);
+    } else {
+        fputs("panic: ", stderr); fputs(msg, stderr); fputc('\n', stderr);
+        if (mfl_rr_mode != 0)
+            fprintf(stderr, "  (%s: goroutine %s, schedule op %d/%d)\n",
+                    mfl_rr_mode == 1 ? "record" : "replay",
+                    mfl_gid_path ? mfl_gid_path : "0", mfl_rr_pos, mfl_rr_n);
+    }
+    exit(1);
+}
+
 static void mfl_chan_send(mfl_chan* c, const void* v) {
+    mfl_rr_enter();
     mfl_cnode* n = malloc(sizeof(mfl_cnode));
     if (c->ser) {
         char* j = c->ser(v);                 /* arena JSON of the whole value */
@@ -306,7 +508,9 @@ static void mfl_chan_send(mfl_chan* c, const void* v) {
     if (c->tail) c->tail->next = n; else c->head = n;
     c->tail = n;
     pthread_cond_signal(&c->cnd);
+    mfl_rr_mark();
     pthread_mutex_unlock(&c->mu);
+    mfl_rr_exit();
 }
 /* deliver node n's payload into out (receiver arena), then free the node. */
 static void mfl_chan_deliver(mfl_chan* c, mfl_cnode* n, void* out) {
@@ -322,14 +526,20 @@ static void mfl_chan_deliver(mfl_chan* c, mfl_cnode* n, void* out) {
    is closed and drained (out left untouched). The primitive behind range-over-
    channel and the comma-ok receive. */
 static int mfl_chan_recv2(mfl_chan* c, void* out) {
+    mfl_rr_enter();
     pthread_mutex_lock(&c->mu);
     while (!c->head && !c->closed) pthread_cond_wait(&c->cnd, &c->mu);
     mfl_cnode* n = c->head;
-    if (!n) { pthread_mutex_unlock(&c->mu); return 0; }
+    /* draining a closed+empty channel (returns "not ok") is still an observable,
+       ordered op — it must record/gate a turn like a real receive, or record and
+       replay disagree on the op count and replay hangs. */
+    if (!n) { mfl_rr_mark(); pthread_mutex_unlock(&c->mu); mfl_rr_exit(); return 0; }
     c->head = n->next;
     if (!c->head) c->tail = NULL;
+    mfl_rr_mark();
     pthread_mutex_unlock(&c->mu);
     mfl_chan_deliver(c, n, out);
+    mfl_rr_exit();
     return 1;
 }
 static void mfl_chan_recv(mfl_chan* c, void* out) {
@@ -999,6 +1209,7 @@ static char* mfl_input(void) {
 /* read all of stdin verbatim until EOF (no line splitting). Exact for text;
    an embedded NUL would truncate the string view (machin strings are C strings). */
 static char* mfl_read_stdin(void) {
+    if (mfl_rr_mode == 2) { size_t L; char* s = mfl_hexdec(mfl_io_pop(), &L); char* a = mfl_dup_arena(s, L); free(s); return a; }
     size_t cap = 65536, len = 0;
     char* buf = (char*)malloc(cap);
     size_t n;
@@ -1007,6 +1218,7 @@ static char* mfl_read_stdin(void) {
         if (len + 1 >= cap) { cap *= 2; buf = (char*)realloc(buf, cap); }
     }
     char* r = mfl_dup_arena(buf, len);
+    if (mfl_rr_mode == 1) mfl_rr_io_log_bytes(buf, len);   /* record the exact input */
     free(buf);
     return r;
 }
@@ -1020,8 +1232,19 @@ static mfl_slice mfl_args(void) {
     return s;
 }
 static char* mfl_env(const char* k) { char* v = getenv(k); return v ? v : ""; }
-static int64_t mfl_now(void) { return (int64_t)time(NULL); }
-static int64_t mfl_now_ms(void) { struct timeval tv; gettimeofday(&tv, NULL); return (int64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000; }
+static int64_t mfl_now(void) {
+    if (mfl_rr_mode == 2) return mfl_rr_io_pop_i64();
+    int64_t v = (int64_t)time(NULL);
+    if (mfl_rr_mode == 1) mfl_rr_io_log_i64(v);
+    return v;
+}
+static int64_t mfl_now_ms(void) {
+    if (mfl_rr_mode == 2) return mfl_rr_io_pop_i64();
+    struct timeval tv; gettimeofday(&tv, NULL);
+    int64_t v = (int64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;
+    if (mfl_rr_mode == 1) mfl_rr_io_log_i64(v);
+    return v;
+}
 /* decompose a Unix timestamp (local time) into
    [year, month(1-12), day(1-31), hour, minute, second, weekday(0=Sun), yearday(1-366)] */
 static mfl_slice mfl_time_fields(int64_t unix) {
@@ -2892,6 +3115,15 @@ func (g *cgen) program(p *Program) (string, error) {
 	if !g.bodyOnly {
 		out.WriteString(cRuntime)
 		out.WriteByte('\n')
+		// record/replay determinism boundary: a program that uses FFI (extern) or
+		// `select` leaves the boundary machin can control, so its trace is
+		// best-effort — replay may diverge. Emitted as a program-dependent fn that
+		// the (fixed) rr runtime reads at init.
+		rrBoundary := 0
+		if len(p.Externs) > 0 || g.usesSelect {
+			rrBoundary = 1
+		}
+		fmt.Fprintf(&out, "static int mfl_rr_prog_boundary(void) { return %d; }\n", rrBoundary)
 		// POSIX socket + tty runtimes: always present for the native target; for the
 		// wasm target emitted only when actually used, so a browser app pulls in no
 		// socket/termios symbols (which wasi-libc does not fully provide).
@@ -3120,7 +3352,7 @@ func (g *cgen) program(p *Program) (string, error) {
 	if !g.wasm() && g.c.HasMain() {
 		// Ignore SIGPIPE so a write to a peer that closed the connection (e.g. an SSE
 		// client that navigated away) returns -1/EPIPE instead of killing the process.
-		out.WriteString("int main(int argc, char** argv) { signal(SIGPIPE, SIG_IGN); mfl_argc = argc; mfl_argv = argv; mfl_main(); return 0; }\n")
+		out.WriteString("int main(int argc, char** argv) { signal(SIGPIPE, SIG_IGN); mfl_argc = argc; mfl_argv = argv; mfl_rr_init(); mfl_main(); mfl_rr_finish(); return 0; }\n")
 	}
 	return out.String(), nil
 }
@@ -3408,6 +3640,7 @@ func multiRetBuiltinC(name string) (cfn, ctype string, fields []string, needsTLS
 // and no default, it polls (1ms). The chosen body runs OUTSIDE the poll loop, so
 // break/continue/return inside a case affect the enclosing loop/function.
 func (g *cgen) selectStmt(st *SelectStmt, depth int) error {
+	g.usesSelect = true // select's poll-loop isn't gated yet -> record/replay best-effort
 	id := g.tmpID
 	g.tmpID++
 	g.buf.WriteString("{\n")
@@ -3802,7 +4035,7 @@ func (g *cgen) goStmt(st *GoStmt) error {
 	// A JSON-mode argument gets an extra _jN field carrying the malloc'd JSON
 	// blob across the arena boundary; its real aN field is populated inside
 	// the trampoline, once mfl_arena_cur is the NEW goroutine's arena.
-	fmt.Fprintf(&g.tramp, "struct mfl_go_%d { char _;", id)
+	fmt.Fprintf(&g.tramp, "struct mfl_go_%d { char _; char* _ppath; int _cidx;", id)
 	for i := 0; i < n; i++ {
 		fmt.Fprintf(&g.tramp, " %s a%d;", g.c.ParamCType(inst, i), i)
 		if _, ok := jsonArgs[i]; ok {
@@ -3815,7 +4048,7 @@ func (g *cgen) goStmt(st *GoStmt) error {
 		}
 	}
 	g.tramp.WriteString(" };\n")
-	fmt.Fprintf(&g.tramp, "static void* mfl_go_run_%d(void* p) { mfl_arena _a = {0}; mfl_arena_cur = &_a; struct mfl_go_%d* s = (struct mfl_go_%d*)p;\n",
+	fmt.Fprintf(&g.tramp, "static void* mfl_go_run_%d(void* p) { mfl_arena _a = {0}; mfl_arena_cur = &_a; struct mfl_go_%d* s = (struct mfl_go_%d*)p; mfl_gid_path = mfl_path_child(s->_ppath, s->_cidx); mfl_spawn_ctr = 0; free(s->_ppath);\n",
 		id, id, id)
 	for i := 0; i < n; i++ {
 		if j, ok := jsonArgs[i]; ok {
@@ -3853,6 +4086,11 @@ func (g *cgen) goStmt(st *GoStmt) error {
 	// goroutine gets a chance to thaw it back out.
 	g.buf.WriteString("{\n")
 	fmt.Fprintf(&g.buf, "        struct mfl_go_%d* s = malloc(sizeof(*s));\n", id)
+	// record/replay: assign a stable parent-relative goroutine path in the
+	// SPAWNING goroutine's program order (not in the new thread, whose start
+	// races), so a goroutine's id is identical across record and replay even under
+	// concurrent nested spawns. The child gets (parent path, its spawn index).
+	g.buf.WriteString("        s->_cidx = ++mfl_spawn_ctr; s->_ppath = strdup(mfl_gid_path ? mfl_gid_path : \"0\");\n")
 	for i, a := range st.Call.Args {
 		e, err := g.expr(a)
 		if err != nil {
@@ -3889,6 +4127,10 @@ func (g *cgen) goStmt(st *GoStmt) error {
 // printCall emits one print per argument, with single-space separators, so no
 // runtime variadic machinery is needed.
 func (g *cgen) printCall(call *Call, depth int) error {
+	// gate the whole print statement so concurrent output interleaving is
+	// captured + replayed (a no-op unless recording/replaying).
+	g.buf.WriteString("mfl_rr_print_begin();\n")
+	indentC(&g.buf, depth)
 	for i, a := range call.Args {
 		if i > 0 {
 			g.buf.WriteString("fputs(\" \", stdout); ")
@@ -3927,6 +4169,8 @@ func (g *cgen) printCall(call *Call, depth int) error {
 	} else {
 		g.buf.WriteString("fflush(stdout);\n")
 	}
+	indentC(&g.buf, depth)
+	g.buf.WriteString("mfl_rr_print_end();\n")
 	return nil
 }
 

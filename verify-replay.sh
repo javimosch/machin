@@ -1,0 +1,189 @@
+#!/usr/bin/env bash
+# Record/replay gate (Slice 1.1). machin programs are proved data-race-free, so
+# the only inter-goroutine nondeterminism is the order channel ops complete. We
+# record that order as a sequence of goroutine PATHS (parent-relative ids, stable
+# across runs even under concurrent nested spawns) and, on replay, gate each op to
+# fire in the recorded order — reproducing the run without recording a single
+# memory access. Proves: replay reproduces the recording; a crafted trace controls
+# the schedule; nested spawns are deterministic; close is an ordered op.
+#
+# Compiles each fixture ONCE and drives the binary via MFL_RR_RECORD/REPLAY env,
+# so the gate is fast (no recompile per run).
+set -u
+N="nice -n 15"
+M=./bin/machin
+T=$(mktemp -d)
+pass=0; fail=0
+chk() { if [ "$1" = "$2" ]; then pass=$((pass+1)); echo "ok   $3 ($1)"; else fail=$((fail+1)); echo "FAIL $3: got '$1' want '$2'"; fi; }
+
+echo "building machin…"
+GOMAXPROCS=4 $N go build -o bin/machin . || { echo "go build failed"; exit 1; }
+
+build() { $N $M build "$1" -o "$2" >/dev/null 2>&1 || { echo "build failed: $1"; exit 1; }; }
+rec()   { MFL_RR_RECORD="$2" "$1" 2>/dev/null; }
+rep()   { MFL_RR_REPLAY="$2" "$1" 2>/dev/null; }
+plain() { "$1" 2>/dev/null; }
+
+# ---- fixture 1: flat 4-goroutine channel race ----
+cat > "$T/race.mfl" <<'EOF'
+func worker(id, ch) { ch <- id }
+func main() {
+  ch := make(chan int)
+  go worker(1, ch)  go worker(2, ch)  go worker(3, ch)  go worker(4, ch)
+  out := ""  i := 0
+  for i < 4 { v := <-ch  out = out + str(v)  i = i + 1 }
+  println(out)
+}
+EOF
+build "$T/race.mfl" "$T/race"
+R=$(rec "$T/race" "$T/tr"); echo "recorded: $R  trace: $(grep '^S' "$T/tr" | tr '\n' ' ')"
+U=$(for i in $(seq 1 10); do rep "$T/race" "$T/tr"; done | sort -u); chk "$U" "$R" "10 replays reproduce the recording"
+printf 'MFLRR 1\nS 0.1\nS 0\nS 0.2\nS 0\nS 0.3\nS 0\nS 0.4\nS 0\n' > "$T/fwd"; chk "$(rep "$T/race" "$T/fwd")" "1234" "crafted trace 1,2,3,4 -> 1234"
+printf 'MFLRR 1\nS 0.4\nS 0\nS 0.3\nS 0\nS 0.2\nS 0\nS 0.1\nS 0\n' > "$T/rev"; chk "$(rep "$T/race" "$T/rev")" "4321" "crafted trace 4,3,2,1 -> 4321"
+printf 'MFLRR 1\nS 0.2\nS 0\nS 0.4\nS 0\nS 0.1\nS 0\nS 0.3\nS 0\n' > "$T/int"; chk "$(rep "$T/race" "$T/int")" "2413" "interleaved trace -> 2413"
+echo "  plain-run outputs (vary): $(for i in $(seq 1 12); do plain "$T/race"; done | sort -u | tr '\n' ' ')"
+
+# ---- fixture 2: nested concurrent spawns (the gid-race case the path fix targets) ----
+cat > "$T/nested.mfl" <<'EOF'
+func sub(id, ch) { ch <- id }
+func worker(base, ch) { go sub(base*10+1, ch)  go sub(base*10+2, ch) }
+func main() {
+  ch := make(chan int)
+  go worker(1, ch)  go worker(2, ch)
+  out := ""  i := 0
+  for i < 4 { v := <-ch  out = out + str(v) + "-"  i = i + 1 }
+  println(out)
+}
+EOF
+build "$T/nested.mfl" "$T/nested"
+R=$(rec "$T/nested" "$T/tn"); echo "nested recorded: $R  trace: $(tr '\n' ' ' < "$T/tn")"
+U=$(for i in $(seq 1 10); do rep "$T/nested" "$T/tn"; done | sort -u); chk "$U" "$R" "nested spawns replay deterministically"
+echo "  plain nested (vary): $(for i in $(seq 1 10); do plain "$T/nested"; done | sort -u | tr '\n' ' ')"
+
+# ---- fixture 3: close is an ordered op (range-over-channel terminates on it) ----
+cat > "$T/closed.mfl" <<'EOF'
+func consumer(ch, done) {
+  out := ""
+  for v := range ch { out = out + str(v) }
+  done <- out
+}
+func main() {
+  ch := make(chan int)
+  done := make(chan string)
+  go consumer(ch, done)
+  ch <- 1  ch <- 2  ch <- 3  close(ch)
+  r := <-done
+  println(r)
+}
+EOF
+build "$T/closed.mfl" "$T/closed"
+R=$(rec "$T/closed" "$T/tc"); echo "closed recorded: $R  trace: $(tr '\n' ' ' < "$T/tc")"
+U=$(for i in $(seq 1 10); do rep "$T/closed" "$T/tc"; done | sort -u); chk "$U" "$R" "close + range replay deterministically"
+
+# ---- fixture 4: I/O log — time replays the recorded value ----
+printf 'func main() { println(str(now_ms())) }\n' > "$T/time.mfl"
+build "$T/time.mfl" "$T/time"
+R=$(rec "$T/time" "$T/tt"); sleep 1
+U=$(for i in $(seq 1 5); do rep "$T/time" "$T/tt"; done | sort -u); chk "$U" "$R" "time replays the recorded value (not the current clock)"
+P=$(plain "$T/time"); [ "$P" != "$R" ] && pass=$((pass+1)) && echo "ok   plain time differs from recorded ($P != $R)" || { fail=$((fail+1)); echo "FAIL plain time should differ"; }
+
+# ---- fixture 5: I/O log — stdin replays the recorded input, no real read ----
+printf 'func main() { println("got:[" + read_stdin() + "]") }\n' > "$T/stdin.mfl"
+build "$T/stdin.mfl" "$T/stdin"
+R=$(echo -n "the recorded input" | rec "$T/stdin" "$T/ts")
+chk "$(echo -n "SOMETHING ELSE" | rep "$T/stdin" "$T/ts")" "$R" "stdin replays recorded input despite different real stdin"
+chk "$(rep "$T/stdin" "$T/ts" < /dev/null)" "$R" "stdin replay does not block on empty real stdin"
+
+# ---- fixture 6: schedule + I/O together (each worker records a timestamp) ----
+cat > "$T/combo.mfl" <<'EOF'
+func worker(id, ch) { t := now_ms()  ch <- id * 1000000000000 + t }
+func main() {
+  ch := make(chan int)
+  go worker(1, ch)  go worker(2, ch)  go worker(3, ch)
+  out := ""  i := 0
+  for i < 3 { v := <-ch  out = out + str(v) + " "  i = i + 1 }
+  println(out)
+}
+EOF
+build "$T/combo.mfl" "$T/combo"
+R=$(rec "$T/combo" "$T/tco"); sleep 1
+U=$(for i in $(seq 1 8); do rep "$T/combo" "$T/tco"; done | sort -u); chk "$U" "$R" "schedule + per-worker I/O replay together"
+
+# ---- fixture 7: determinism boundary — honest faithful vs best-effort ----
+# a pure program records a `faithful` trace and --verify certifies it.
+hdr=$(sed -n 2p "$T/tr"); chk "$hdr" "boundary faithful" "pure program -> faithful trace"
+V=$(MFL_RR_REPLAY="$T/tr" MFL_RR_VERIFY=1 "$T/race" 2>&1 >/dev/null); case "$V" in *FAITHFUL*) pass=$((pass+1)); echo "ok   --verify certifies FAITHFUL";; *) fail=$((fail+1)); echo "FAIL --verify: $V";; esac
+
+# an FFI program records a `best-effort` trace; replay warns; --verify never certifies it.
+printf 'extern "m" { header "math.h" link "m" fn sqrt(float) float }\nfunc main() { println(str(sqrt(16.0))) }\n' > "$T/ffi.mfl"
+build "$T/ffi.mfl" "$T/ffi"
+rec "$T/ffi" "$T/tf" >/dev/null
+hdr=$(sed -n 2p "$T/tf"); chk "$hdr" "boundary best-effort" "FFI program -> best-effort trace"
+W=$(MFL_RR_REPLAY="$T/tf" "$T/ffi" 2>&1 >/dev/null); case "$W" in *best-effort*) pass=$((pass+1)); echo "ok   replay warns on a best-effort trace";; *) fail=$((fail+1)); echo "FAIL no best-effort warning: $W";; esac
+V=$(MFL_RR_REPLAY="$T/tf" MFL_RR_VERIFY=1 "$T/ffi" 2>&1 >/dev/null); case "$V" in *DIVERGED*) pass=$((pass+1)); echo "ok   --verify refuses to certify a best-effort trace (DIVERGED)";; *) fail=$((fail+1)); echo "FAIL best-effort should not certify: $V";; esac
+
+# a select program is flagged best-effort too.
+printf 'func send(ch) { ch <- 7 }\nfunc main() { ch := make(chan int)  go send(ch)  select { case v := <-ch: println(str(v)) } }\n' > "$T/sel.mfl"
+build "$T/sel.mfl" "$T/sel"
+rec "$T/sel" "$T/tsl" >/dev/null
+hdr=$(sed -n 2p "$T/tsl"); chk "$hdr" "boundary best-effort" "select program -> best-effort trace"
+
+# ---- fixture 8: `machin replay <trace>` command (program path embedded) ----
+R=$($N $M run --record "$T/rc.tr" "$T/race.mfl" 2>/dev/null)   # records with a `program` line
+U=$(for i in $(seq 1 5); do $N $M replay "$T/rc.tr" 2>/dev/null; done | sort -u)
+chk "$U" "$R" "machin replay <trace> reproduces the run (no source re-specified)"
+
+# ---- fixture 9: a crash replays into a structured causal report ----
+# a schedule-caused index-out-of-range; craft the crashing schedule for determinism.
+cat > "$T/crash.mfl" <<'EOF'
+func worker(id, ch) { ch <- id }
+func main() {
+  ch := make(chan int)
+  go worker(0, ch)  go worker(1, ch)
+  xs := []int{100}
+  a := <-ch
+  println(str(xs[a]))
+}
+EOF
+printf 'MFLRR 1\nboundary faithful\nprogram %s\nsafe 1\nS 0.2\nS 0.1\nS 0\n' "$T/crash.mfl" > "$T/crash.tr"
+$N $M replay "$T/crash.tr" >/dev/null 2>&1; rc=$?
+[ "$rc" -ne 0 ] && pass=$((pass+1)) && echo "ok   crash trace reproduces the crash (exit $rc)" || { fail=$((fail+1)); echo "FAIL crash should reproduce"; }
+J=$($N $M replay "$T/crash.tr" --json 2>&1 >/dev/null)
+echo "$J" | grep -q '"panic":"index out of range' && echo "$J" | grep -q '"causalChain":\["0.2","0.1","0"\]' \
+  && { pass=$((pass+1)); echo "ok   causal report: $J"; } \
+  || { fail=$((fail+1)); echo "FAIL causal report wrong: $J"; }
+
+# ---- fixture 10: concurrent OUTPUT interleaving is captured (no channels) ----
+# goroutines that only println (no channel sync) still replay faithfully because
+# print statements are gated too.
+cat > "$T/prints.mfl" <<'EOF'
+func w(id) { println("worker " + str(id) + " done") }
+func main() {
+  go w(1)  go w(2)  go w(3)  go w(4)  go w(5)
+  sleep(150)
+  println("main done")
+}
+EOF
+build "$T/prints.mfl" "$T/prints"
+R=$(rec "$T/prints" "$T/tp")
+U=$(for i in $(seq 1 8); do rep "$T/prints" "$T/tp"; done | md5sum | cut -d' ' -f1)
+RH=$(echo "$R" | md5sum | cut -d' ' -f1)
+# every replay must produce the identical multi-line output.
+allsame=$(for i in $(seq 1 8); do rep "$T/prints" "$T/tp" | md5sum; done | sort -u | wc -l)
+chk "$allsame" "1" "concurrent println interleaving replays identically"
+Vp=$(MFL_RR_REPLAY="$T/tp" MFL_RR_VERIFY=1 "$T/prints" 2>&1 >/dev/null); case "$Vp" in *FAITHFUL*) pass=$((pass+1)); echo "ok   concurrent-print replay certifies FAITHFUL";; *) fail=$((fail+1)); echo "FAIL: $Vp";; esac
+echo "  plain concurrent-print orderings (vary): $(for i in $(seq 1 8); do plain "$T/prints" | md5sum | cut -c1-6; done | sort -u | tr '\n' ' ')"
+
+# ---- fixture 11: real corpus concurrent programs replay faithfully ----
+for cf in examples/complex/channels.mfl examples/complex/goroutines.mfl; do
+  [ -f "$cf" ] || continue
+  build "$cf" "$T/corp"
+  rec "$T/corp" "$T/tcorp" >/dev/null
+  Vc=$(MFL_RR_REPLAY="$T/tcorp" MFL_RR_VERIFY=1 "$T/corp" 2>&1 >/dev/null)
+  case "$Vc" in *FAITHFUL*) pass=$((pass+1)); echo "ok   corpus $(basename "$cf") replays FAITHFUL";; *) fail=$((fail+1)); echo "FAIL corpus $(basename "$cf"): $Vc";; esac
+done
+
+echo
+echo "record/replay gate: $pass pass, $fail fail"
+rm -rf "$T"
+[ "$fail" -eq 0 ]
