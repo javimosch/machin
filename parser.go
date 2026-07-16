@@ -499,11 +499,32 @@ func (p *Parser) parseFuncDecl() (*FuncDecl, error) {
 			return nil, err
 		}
 	}
+	// optional declarative contract clauses: `requires <expr>` / `ensures <expr>`,
+	// zero or more, between the return clause and the body. Each predicate is a
+	// full boolean expression; the loop stops at the body's `{`.
+	var requires, ensures []Expr
+	for {
+		t := p.peek()
+		if t.Kind == TIdent && (t.Val == "requires" || t.Val == "ensures") {
+			p.next()
+			pred, err := p.parseExpr()
+			if err != nil {
+				return nil, err
+			}
+			if t.Val == "requires" {
+				requires = append(requires, pred)
+			} else {
+				ensures = append(ensures, pred)
+			}
+			continue
+		}
+		break
+	}
 	body, err := p.parseBlock()
 	if err != nil {
 		return nil, err
 	}
-	return &FuncDecl{Name: nameTok.Val, Params: params, Returns: returns, Variadic: variadic, Body: body, Exported: exported}, nil
+	return &FuncDecl{Name: nameTok.Val, Params: params, Returns: returns, Requires: requires, Ensures: ensures, Variadic: variadic, Body: body, Exported: exported}, nil
 }
 
 func (p *Parser) parseBlock() ([]Stmt, error) {

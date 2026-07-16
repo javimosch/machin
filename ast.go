@@ -320,6 +320,15 @@ type FuncDecl struct {
 	// bare `return`. Empty when the function has no named returns.
 	Returns []string
 	Body    []Stmt
+	// Requires / Ensures are declarative contract predicates parsed from trailing
+	// `requires <expr>` / `ensures <expr>` clauses on the signature. Each must be a
+	// boolean expression over the params (requires) or params+named-returns
+	// (ensures). The Falsifier treats `requires` as a precondition that filters the
+	// input domain (inputs failing it are skipped, not counterexamples) and
+	// `ensures` as a postcondition (an input satisfying all `requires` that makes
+	// an `ensures` false is a FALS010 counterexample). Runtime codegen ignores them.
+	Requires []Expr
+	Ensures  []Expr
 	// Variadic marks the last parameter as variadic: it collects trailing call
 	// arguments into a slice.
 	Variadic bool

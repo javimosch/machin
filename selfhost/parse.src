@@ -685,8 +685,25 @@ func parse_func_decl() (idx) {
         }
         eat(")")
     }
+    // optional declarative contracts: `requires <expr>` / `ensures <expr>`, zero or
+    // more, between the return clause and the body. Encoded into kids2 (free for
+    // K_FUNC) as [nReq, req0.., ens0..]; empty when there are no contracts. The
+    // falsify pass reads them; codegen ignores kids2 for K_FUNC.
+    reqs := []int{}
+    enss := []int{}
+    while pk().val == "requires" || pk().val == "ensures" {
+        kw := adv().val
+        pred := parse_expr()
+        if kw == "requires" { reqs = append(reqs, pred) } else { enss = append(enss, pred) }
+    }
+    contract := []int{}
+    if len(reqs) > 0 || len(enss) > 0 {
+        contract = append(contract, len(reqs))
+        for _, r := range reqs { contract = append(contract, r) }
+        for _, e := range enss { contract = append(contract, e) }
+    }
     body := parse_block()
-    idx = emit(Node{kind: K_FUNC, s: name, ival: exported, b: variadic, names: params, names2: returns, kids: body})
+    idx = emit(Node{kind: K_FUNC, s: name, ival: exported, b: variadic, names: params, names2: returns, kids: body, kids2: contract})
 }
 
 // ---- S-expression dumper (must match sexprExpr in parsetest.go byte-for-byte) ----

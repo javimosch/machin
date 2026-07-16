@@ -263,11 +263,35 @@ inlining (recursion-capped) → **full parity**. The 9 corpus files that differ 
 pre-existing shared self-hosted pipeline gaps (multi-line parse, closures,
 variadic, globals) — the already-shipped race pass diverges on them identically.
 
-## After Phase 2 (outline, not committed)
+## Phase 3 — user contracts: ✅ COMPLETE
 
-- **Phase 3 — user contracts**: `requires`/`ensures`/`invariant` as syntax; the
-  same enumerator checks them; a violated `ensures` yields a counterexample. This
-  is where it stops being "free properties" and becomes real design-by-contract.
+Declarative **design-by-contract**: a function carries trailing `requires <expr>` /
+`ensures <expr>` clauses on its signature (after the returns, before the body).
+This is where falsify stops checking only free properties and starts checking
+**author intent**.
+
+- **`requires`** (over params) is a **precondition that filters the input domain** —
+  an input failing it is the caller's fault, skipped; it *suppresses* a would-be
+  `FALS001`/`FALS002` that only occurs on invalid input.
+- **`ensures`** (over params + named returns) is a **postcondition** checked after
+  the body; an input satisfying every `requires` that makes an `ensures` false is a
+  **`FALS010`**, carrying the offending clause.
+
+Both the Go reference (parser clause on `FuncDecl.Requires`/`Ensures`; `runOne`
+filter + `evalPred`) and the self-host port (`selfhost/parse.src` encodes contracts
+into `K_FUNC.kids2`; `selfhost/falsify.src` `f_eval_pred` + `f_one`) are done and
+**oracle-diffed byte-identically** — `selfhost/verify-falsify.sh` 45/45, corpus
+47/47. Predicates are tri-state (false/true/inconclusive): a non-bool / trapping /
+unmodeled predicate is inconclusive, never a false FALS010.
+
+Chosen syntax: **declarative clauses** (over inline assert/assume) — user decision.
+Known limitation: a FALS010 is a spec violation, not a runtime trap, so its
+`--repro` runs the function with the failing input but does not panic under
+`--safe` (an assertion-style repro is a possible follow-up); `invariant` (loop
+invariants) not yet implemented.
+
+## After Phase 3 (outline, not committed)
+
 - **Phase 4 — the `proved(k≤N)` verdict**: symbolic/path-bounded upgrade (still
   pure-MFL, no SMT dependency — a bounded model check over the typed IR). Only
   now may output claim proof, always bound-labelled and honest.

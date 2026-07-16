@@ -153,12 +153,13 @@ const (
 )
 
 type interp struct {
-	env     map[string]fval
-	funcs   map[string]*FuncDecl // user functions, for interprocedural inlining
-	structs map[string]*TypeDecl // struct type decls, for literal construction
-	steps   int
-	depth   int  // current inlining depth
-	retVal  fval // last function's return value (read right after a call returns)
+	env       map[string]fval
+	funcs     map[string]*FuncDecl // user functions, for interprocedural inlining
+	structs   map[string]*TypeDecl // struct type decls, for literal construction
+	steps     int
+	depth     int  // current inlining depth
+	retVal    fval // last function's return value (read right after a call returns)
+	retValSet bool // an explicit `return <expr>` ran (so retVal is meaningful for ensures)
 }
 
 func (ip *interp) fail(prop, expr string) { panic(fviol{prop, expr}) }
@@ -193,6 +194,7 @@ func (ip *interp) evalStmt(st Stmt) ctrl {
 			ip.retVal = fval{}
 		case 1:
 			ip.retVal = ip.eval(s.Vals[0])
+			ip.retValSet = true // an explicit `return <expr>` — value known for ensures
 		default:
 			for _, v := range s.Vals { // still evaluate for trap-checking
 				ip.eval(v)
@@ -922,7 +924,7 @@ func falsifyOne(fn *FuncDecl, domains [][]fval, funcs map[string]*FuncDecl, stru
 			args[i] = domains[i][idx[i]]
 		}
 		tried++
-		viol, unknown := runOne(fn, args, funcs, structs)
+		viol, unknown, filtered := runOne(fn, args, funcs, structs)
 		if viol != nil {
 			bind := bindings(fn.Params, args)
 			return falsifyFinding{
@@ -934,7 +936,8 @@ func falsifyOne(fn *FuncDecl, domains [][]fval, funcs map[string]*FuncDecl, stru
 				args: args,
 			}, "counterexample", tried
 		}
-		if !unknown {
+		// a `requires`-filtered input is neither conclusive nor unknown — skip it.
+		if !unknown && !filtered {
 			sawConclusive = true
 		}
 		// mixed-radix increment
@@ -960,6 +963,9 @@ func propCode(prop string) string {
 	if strings.HasPrefix(prop, "index") {
 		return "FALS001"
 	}
+	if strings.HasPrefix(prop, "postcondition") {
+		return "FALS010"
+	}
 	return "FALS002" // division by zero
 }
 
@@ -974,7 +980,7 @@ func bindings(names []string, args []fval) string {
 // runOne evaluates fn on one concrete tuple. Returns (violation, unknown): a
 // non-nil violation is a fully-modeled counterexample; unknown means the path
 // touched something unmodeled and is inconclusive (never reported).
-func runOne(fn *FuncDecl, args []fval, funcs map[string]*FuncDecl, structs map[string]*TypeDecl) (v *fviol, unknown bool) {
+func runOne(fn *FuncDecl, args []fval, funcs map[string]*FuncDecl, structs map[string]*TypeDecl) (v *fviol, unknown bool, filtered bool) {
 	ip := &interp{env: map[string]fval{}, funcs: funcs, structs: structs}
 	for i, p := range fn.Params {
 		if i < len(args) {
@@ -984,11 +990,73 @@ func runOne(fn *FuncDecl, args []fval, funcs map[string]*FuncDecl, structs map[s
 	for _, r := range fn.Returns {
 		ip.env[r] = vint(0)
 	}
+
+	// requires: a precondition filters the input domain. A false `requires` means
+	// this input is the caller's fault, not a bug here (skip); an inconclusive one
+	// makes the input unknown.
+	for _, req := range fn.Requires {
+		ok, cond := ip.evalPred(req)
+		if !ok {
+			return nil, true, false
+		}
+		if !cond {
+			return nil, false, true
+		}
+	}
+
+	// body: check the free properties (FALS001/002) as before.
+	trap, unk := ip.runBody(fn.Body)
+	if unk {
+		return nil, true, false
+	}
+	if trap != nil {
+		return trap, false, false
+	}
+
+	// ensures: a postcondition. Bind the (single) named return to the returned
+	// value; an input satisfying all `requires` that makes an `ensures` false is a
+	// FALS010 counterexample.
+	if len(fn.Ensures) > 0 {
+		if ip.retValSet && len(fn.Returns) == 1 {
+			ip.env[fn.Returns[0]] = ip.retVal
+		}
+		for _, ens := range fn.Ensures {
+			ok, cond := ip.evalPred(ens)
+			if !ok {
+				return nil, true, false
+			}
+			if !cond {
+				return &fviol{prop: "postcondition violated", expr: exprStr(ens)}, false, false
+			}
+		}
+	}
+	return nil, false, false
+}
+
+// evalPred evaluates a contract predicate, recovering from the interpreter's
+// panics: a non-bool result, an unmodeled construct (funknown), or a trap inside
+// the predicate itself all yield ok=false (inconclusive). Otherwise cond is the
+// boolean value.
+func (ip *interp) evalPred(e Expr) (ok, cond bool) {
+	defer func() {
+		if recover() != nil {
+			ok = false
+		}
+	}()
+	x := ip.eval(e)
+	if x.k != KBool {
+		return false, false
+	}
+	return true, x.b
+}
+
+// runBody runs a function body, recovering a trap (fviol) or unknown (funknown).
+func (ip *interp) runBody(body []Stmt) (trap *fviol, unknown bool) {
 	defer func() {
 		if r := recover(); r != nil {
 			switch e := r.(type) {
 			case fviol:
-				v = &e
+				trap = &e
 			case funknown:
 				unknown = true
 			default:
@@ -996,7 +1064,7 @@ func runOne(fn *FuncDecl, args []fval, funcs map[string]*FuncDecl, structs map[s
 			}
 		}
 	}()
-	ip.evalStmts(fn.Body)
+	ip.evalStmts(body)
 	return nil, false
 }
 
