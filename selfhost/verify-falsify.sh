@@ -5,10 +5,11 @@
 # (Distinct from the repo-root verify-falsify.sh, which behaviorally tests the Go
 # pass. This one proves the MFL port reproduces the Go oracle exactly.)
 #
-# Phase 2 slices 2.1-2.5: int + []int + float + string + bool + struct params;
+# Phase 2 slices 2.1-2.5 + Phase 3: int/[]int/float/string/bool/struct params;
 # arithmetic, comparisons, if/while/for-range (incl. string range), index
-# (FALS001), len, abs, field access/assign, interprocedural inlining (recursion-
-# capped), div/modulo-by-zero (FALS002). This is full parity with the Go pass.
+# (FALS001), len, abs, field access/assign, interprocedural inlining, div/mod-by-
+# zero (FALS002), AND declarative contracts requires/ensures (FALS010). Full
+# parity with the Go pass.
 set -u
 N="nice -n 15"
 MACHIN=./bin/machin
@@ -79,6 +80,15 @@ printf 'func idx(xs,i){return xs[i]}\nfunc get(xs){return idx(xs,5)}\nfunc main(
 printf 'func mag(a){return abs(a)}\nfunc r(a){return 10/(mag(a)-1.0)}\nfunc main(){println(str(r(2)))}\n' > "$T/i5"; run "$T/i5" "abs + interproc float"
 printf 'type Cfg struct{n int}\nfunc div(c){return 100/c.n}\nfunc run(c){return div(c)}\nfunc main(){println(str(run(Cfg{n:1})))}\n' > "$T/i6"; run "$T/i6" "interproc struct-field div"
 printf 'func chain3(n){return n}\nfunc chain2(n){return chain3(n)+1}\nfunc chain1(n){return 9/chain2(n)}\nfunc main(){println(str(chain1(1)))}\n' > "$T/i7"; run "$T/i7" "3-deep call chain"
+
+# Phase 3: declarative contracts (requires/ensures, FALS010).
+printf 'func div(a,b) requires b != 0 { return a/b }\nfunc main(){println(str(div(6,2)))}\n' > "$T/p1"; run "$T/p1" "requires suppresses div-by-zero"
+printf 'func bad(x) (r) ensures r >= x { return x - 1 }\nfunc main(){println(str(bad(5)))}\n' > "$T/p2"; run "$T/p2" "ensures violated (FALS010)"
+printf 'func myabs(x) (r) ensures r >= 0 { if x < 0 { return 0 - x } return x }\nfunc main(){println(str(myabs(-3)))}\n' > "$T/p3"; run "$T/p3" "ensures holds (clean)"
+printf 'func recip(x) (r) requires x > 0  ensures r > 0 { return 10/x - 5 }\nfunc main(){println(str(recip(1)))}\n' > "$T/p4"; run "$T/p4" "requires narrows, FALS010 remains"
+printf 'func between(x) (r) requires x > 0  requires x < 3  ensures r == x { return x }\nfunc main(){println(str(between(1)))}\n' > "$T/p5"; run "$T/p5" "two requires (clean)"
+printf 'func clamp(x,lo,hi) (r) requires lo <= hi  ensures r >= lo  ensures r <= hi { r = x  if r < lo { r = lo }  if r > hi { r = hi }  return r }\nfunc main(){println(str(clamp(5,0,10)))}\n' > "$T/p6"; run "$T/p6" "clamp 2-ensures (clean)"
+printf 'func clampbad(x,lo,hi) (r) requires lo <= hi  ensures r >= lo  ensures r <= hi { return x }\nfunc main(){println(str(clampbad(5,0,10)))}\n' > "$T/p7"; run "$T/p7" "clamp-bad (FALS010)"
 
 echo
 echo "self-hosted falsify oracle-diff: $pass pass, $fail fail"

@@ -74,6 +74,7 @@ var g_fbreak = 0
 var g_fcontinue = 0
 var g_fsteps = 0         // step budget guard (matches falsStepBudget); non-terminating -> unknown on both sides
 var g_fretval = FV{k: 0, i: 0}   // last function's return value (read right after a call returns)
+var g_fretvalset = 0             // an explicit `return <expr>` ran (retval meaningful for ensures)
 var g_fdepth = 0                 // interprocedural inlining depth (recursion guard)
 
 func f_tick() {
@@ -414,6 +415,7 @@ func f_eval_stmt(si) {
         if len(n.kids) == 1 {
             g_fretval = f_eval(n.kids[0])
             if g_fstatus != 0 { return }
+            g_fretvalset = 1
         } else {
             i := 0
             for i < len(n.kids) {   // 0 or multi: eval all for trap-checking
@@ -744,10 +746,26 @@ func f_dom_val(pkind, sname, i) (fv) {
 
 // ---- the pass ----
 
+// f_eval_pred evaluates a contract predicate. Returns 0 (false), 1 (true), or
+// 2 (inconclusive: a trap/unknown in the predicate, or a non-bool result). Resets
+// g_fstatus so a prior inconclusive doesn't short-circuit this eval.
+func f_eval_pred(ni) (r) {
+    r = 2
+    g_fstatus = 0
+    v := f_eval(ni)
+    if g_fstatus != 0 { return r }   // trap or unknown inside the predicate
+    if v.k != 5 { return r }         // non-bool predicate
+    r = v.i
+    return r
+}
+
 func f_one(iid, fr, pkinds, psnames) {
     ins := g_insts[iid]
     np := len(ins.pnames)
     body := nodes[fr].kids
+    contract := nodes[fr].kids2   // [nReq, req0.., ens0..]; empty if none
+    nreq := 0
+    if len(contract) > 0 { nreq = contract[0] }
 
     idx := []int{}
     sizes := []int{}
@@ -777,13 +795,48 @@ func f_one(iid, fr, pkinds, psnames) {
         g_fbreak = 0
         g_fcontinue = 0
         g_fsteps = 0
-        f_eval_stmts(body)
-        if g_fstatus == 1 {
-            code := "FALS002"
-            if has_prefix(g_fviol_prop, "index") { code = "FALS001" }
-            f_record(ins.src, code, g_fviol_prop, g_fviol_expr, f_bind(ins.pnames, vals))
-            return
+        g_fretvalset = 0
+
+        // requires: precondition filter. A false OR inconclusive requires skips
+        // this input (not a counterexample here).
+        keep := 1
+        ci := 1
+        while ci <= nreq {
+            if f_eval_pred(contract[ci]) != 1 { keep = 0  break }
+            ci = ci + 1
         }
+
+        if keep == 1 {
+            g_fstatus = 0
+            g_freturned = 0
+            g_fbreak = 0
+            g_fcontinue = 0
+            f_eval_stmts(body)
+            if g_fstatus == 1 {
+                code := "FALS002"
+                if has_prefix(g_fviol_prop, "index") { code = "FALS001" }
+                f_record(ins.src, code, g_fviol_prop, g_fviol_expr, f_bind(ins.pnames, vals))
+                return
+            }
+            if g_fstatus == 0 {
+                // ensures: postcondition. Bind the single named return to the
+                // returned value, then check each clause; a false one is FALS010.
+                nens := len(contract) - 1 - nreq
+                if nens > 0 {
+                    if g_fretvalset == 1 && len(ins.rnames) == 1 { f_env_set(ins.rnames[0], g_fretval) }
+                    ei := 1 + nreq
+                    while ei < len(contract) {
+                        pe := f_eval_pred(contract[ei])
+                        if pe == 0 {
+                            f_record(ins.src, "FALS010", "postcondition violated", f_render(contract[ei], 0), f_bind(ins.pnames, vals))
+                            return
+                        }
+                        if pe == 2 { ei = len(contract) } else { ei = ei + 1 }
+                    }
+                }
+            }
+        }
+
         tried = tried + 1
         if tried >= 200000 { done = 1 }   // falsInputCap: cap tuples per function
         // mixed-radix increment (idx[0] least significant), matching falsifyOne
