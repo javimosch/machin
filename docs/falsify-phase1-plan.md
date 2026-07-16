@@ -130,7 +130,40 @@ release. Tests: `TestFalsifyInCheck`, `TestFalsifyCmdJSON/Repro/Errors`. Full
   a `falsify` gotcha/verb entry so agents discover it in-binary).
 </details>
 
-### Slice 1.3 — widen the domain: structs, maps, interprocedural
+### Slice 1.3 — widen the domain: structs + interprocedural — ✅ DONE (maps deferred)
+
+Implemented **interprocedural inlining** and **struct params**:
+- **Inlining**: a user call is no longer `unknown` — the callee is interpreted in
+  a fresh frame (args by value), so a bug that manifests only through a call is
+  found and reported against the *enclosing* function (a callee that hits anything
+  unmodeled still makes the whole path inconclusive). Recursion is capped
+  (`falsCallDepth`) → `unknown`, never a hang. `abs` is modeled; other builtins
+  stay `unknown`. `main` is now a valid target (its repro is the program verbatim).
+- **Structs**: `fval` gains a struct variant; `StructLit` construction (named +
+  positional + partial), `FieldAccess`, and `FieldAssign` are interpreted. Struct
+  values get **value semantics** via `clone()` on every bind/param (slice fields
+  keep shared backing, per MFL) — so mutating a copy can't alias the original, a
+  false-positive hazard. `structDomain` enumerates bounded field tuples (small
+  per-field domains, product capped at `falsStructDomCap`); counterexamples render
+  as real struct literals (`Cfg{n: 0}`) so `--repro` stays valid.
+- **Proven on the corpus**: `machin falsify examples/complex/multi_return.mfl`
+  finds two genuine latent bugs — `divmod(a,b)` divides by zero at `b=0`, and
+  `minmax(xs)` indexes `xs[0]` on an empty slice — neither guarded by the source.
+- Tests: `TestFalsifyStructsAndCalls` (interproc bug, struct-field div + index,
+  value-semantic copy = no FP, unbounded recursion = inconclusive), each `found`
+  case verified by a repro that panics under `--safe`.
+
+**Maps deferred** (documented follow-up, like FALS003). Two reasons they don't
+fit the 1.3 guarantees: (1) maps are an MFL *reference* type with
+nondeterministic range order — modeling them without risking false results needs
+canonicalized iteration and careful aliasing; (2) there is **no map literal**, so
+a map counterexample cannot become a clean `target(args)` repro (it needs
+multi-statement `make`+assign construction) — which would break the
+repro-panics-under-`--safe` firewall that keeps the pass honest. Structs (7 corpus
+files) are as common as maps (6) and have valid literal repros, so 1.3 ships
+structs and parks maps + `FALS003` (nil-map write) together for a later slice.
+
+<details><summary>original plan</summary>
 This is the bulk of the work and where real programs live.
 - **Structs**: enumerate field tuples (bounded, reuse scalar domains per field);
   interpreter already needs a struct value in `fval` (add `k:KStruct, fields
@@ -147,6 +180,7 @@ This is the bulk of the work and where real programs live.
 - Corpus: run over the example/backend corpus; **bucket every `unknown`** by
   cause (unsupported node, cap hit, FFI) so we never mistake "didn't check" for
   "clean". FFI calls are opaque → `unknown` by construction (documented).
+</details>
 
 ### Slice 1.4 — repro hardening + honesty surface
 - Repro determinism: literal-args form only (no globals/time); confirm each

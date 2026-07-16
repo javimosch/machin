@@ -233,6 +233,104 @@ func TestFalsifyOperators(t *testing.T) {
 	}
 }
 
+// TestFalsifyStructsAndCalls exercises Slice 1.3: interprocedural inlining and
+// struct params. Bugs that manifest only through a call or a struct field must be
+// found (with a repro that panics under --safe); value-semantics copies and
+// unbounded recursion must NOT produce false positives.
+func TestFalsifyStructsAndCalls(t *testing.T) {
+	cases := []struct {
+		name     string
+		decls    []string
+		target   string
+		wantCode string // "" => no finding
+		wantExpr string
+		wantBind string // substring expected in the counterexample bindings
+	}{
+		{
+			name: "bug through a call (interprocedural)",
+			decls: []string{
+				`func helper(n){return 100/n}`,
+				`func caller(n){return helper(n)+1}`,
+				`func main(){println(str(caller(2)))}`,
+			},
+			target: "caller", wantCode: "FALS002", wantExpr: "100 / n", wantBind: "n=0",
+		},
+		{
+			name: "div by a struct field",
+			decls: []string{
+				`type Cfg struct{n int}`,
+				`func run(c){return 100/c.n}`,
+				`func main(){println(str(run(Cfg{n:1})))}`,
+			},
+			target: "run", wantCode: "FALS002", wantExpr: "100 / c.n", wantBind: "Cfg{n: 0}",
+		},
+		{
+			name: "index by a struct field",
+			decls: []string{
+				`type Box struct{sz int}`,
+				`func at(b,xs){return xs[b.sz]}`,
+				`func main(){println(str(at(Box{sz:0},[]int{1})))}`,
+			},
+			target: "at", wantCode: "FALS001", wantExpr: "xs[b.sz]", wantBind: "Box{sz:",
+		},
+		{
+			name: "struct copy + field mutate is value-semantic (no false positive)",
+			decls: []string{
+				`type P struct{n int}`,
+				`func vs(c){d:=c d.n=d.n+1 return d.n}`,
+				`func main(){println(str(vs(P{n:1})))}`,
+			},
+			target: "vs", wantCode: "",
+		},
+		{
+			name: "unbounded recursion -> inconclusive, not a false positive",
+			decls: []string{
+				`func fact(n){if n<=1{return 1}return n*fact(n-1)}`,
+				`func main(){println(str(fact(3)))}`,
+			},
+			target: "fact", wantCode: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prog, err := ParseProgram(tc.decls)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			c, err := Check(prog)
+			if err != nil {
+				t.Fatalf("check: %v", err)
+			}
+			var got *falsifyFinding
+			for _, f := range detectFalsifiable(prog, c) {
+				if f.Decl == tc.target {
+					g := f
+					got = &g
+					break
+				}
+			}
+			if tc.wantCode == "" {
+				if got != nil {
+					t.Fatalf("false positive for %s: %+v", tc.target, *got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatalf("no finding for %s", tc.target)
+			}
+			if got.Code != tc.wantCode || got.Expr != tc.wantExpr {
+				t.Fatalf("code/expr = %s/%q, want %s/%q", got.Code, got.Expr, tc.wantCode, tc.wantExpr)
+			}
+			if !strings.Contains(got.Bind, tc.wantBind) {
+				t.Fatalf("bind = %q, want substring %q", got.Bind, tc.wantBind)
+			}
+			t.Logf("FALSIFIED %s: %s at `%s` when %s", tc.target, got.Prop, got.Expr, got.Bind)
+			// the counterexample must be a REAL bug: its repro panics under --safe.
+			verifyReproPanics(t, reproProgram(tc.decls, tc.target, got.args))
+		})
+	}
+}
+
 // TestFalsifyHelpers unit-tests the pure rendering / value / domain helpers.
 func TestFalsifyHelpers(t *testing.T) {
 	if got := (fval{k: KSlice, sl: []fval{vint(1), vint(2)}}).String(); got != "[]int{1, 2}" {

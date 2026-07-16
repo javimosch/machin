@@ -27,9 +27,11 @@ import (
 // ---- bound policy (auditable in one place; logged by the verdict envelope) ----
 
 const (
-	falsSliceLenMax = 3      // enumerate slice lengths 0..falsSliceLenMax
-	falsInputCap    = 200000 // max concrete input tuples per function
-	falsStepBudget  = 200000 // max interpreter steps per input (loop guard)
+	falsSliceLenMax  = 3      // enumerate slice lengths 0..falsSliceLenMax
+	falsInputCap     = 200000 // max concrete input tuples per function
+	falsStepBudget   = 200000 // max interpreter steps per input (loop guard)
+	falsCallDepth    = 24     // max interprocedural inlining depth (recursion guard)
+	falsStructDomCap = 4096   // skip a struct param if its field product exceeds this
 )
 
 var (
@@ -64,12 +66,15 @@ func (ff falsifyFinding) toDiagnostic() Diagnostic {
 // ---- concrete values ----
 
 type fval struct {
-	k  Kind
-	i  int64
-	f  float64
-	b  bool
-	s  string
-	sl []fval
+	k          Kind
+	i          int64
+	f          float64
+	b          bool
+	s          string
+	sl         []fval
+	sname      string          // KStruct: the struct type name
+	fields     map[string]fval // KStruct: field values
+	fieldOrder []string        // KStruct: declared field order (deterministic render)
 }
 
 func vint(i int64) fval     { return fval{k: KInt, i: i} }
@@ -78,6 +83,22 @@ func vbool(b bool) fval     { return fval{k: KBool, b: b} }
 func vstr(s string) fval    { return fval{k: KString, s: s} }
 
 func (v fval) truthy() bool { return v.b }
+
+// clone gives value semantics to structs: a struct copy (bind to a variable, pass
+// as an argument) is independent, so mutating a field of the copy cannot alias the
+// original — a false-positive hazard otherwise. Slices are MFL reference types, so
+// a slice field keeps its shared backing (shallow); scalars pass by value.
+func (v fval) clone() fval {
+	if v.k != KStruct {
+		return v
+	}
+	nf := make(map[string]fval, len(v.fields))
+	for k, f := range v.fields {
+		nf[k] = f.clone()
+	}
+	v.fields = nf
+	return v
+}
 
 func (v fval) String() string {
 	switch v.k {
@@ -95,8 +116,20 @@ func (v fval) String() string {
 			parts[i] = e.String()
 		}
 		return "[]int{" + strings.Join(parts, ", ") + "}"
+	case KStruct:
+		return v.sname + "{" + v.structArgs() + "}"
 	}
 	return "?"
+}
+
+// structArgs renders a struct's fields as a named literal body in the struct's
+// declared field order (deterministic), e.g. `x: 0, y: 1`.
+func (v fval) structArgs() string {
+	parts := make([]string, 0, len(v.fieldOrder))
+	for _, name := range v.fieldOrder {
+		parts = append(parts, name+": "+v.fields[name].String())
+	}
+	return strings.Join(parts, ", ")
 }
 
 // ---- interpreter control signals ----
@@ -120,9 +153,12 @@ const (
 )
 
 type interp struct {
-	env   map[string]fval
-	funcs map[string]*FuncDecl // for len() only in 1.1; user calls -> unknown
-	steps int
+	env     map[string]fval
+	funcs   map[string]*FuncDecl // user functions, for interprocedural inlining
+	structs map[string]*TypeDecl // struct type decls, for literal construction
+	steps   int
+	depth   int  // current inlining depth
+	retVal  fval // last function's return value (read right after a call returns)
 }
 
 func (ip *interp) fail(prop, expr string) { panic(fviol{prop, expr}) }
@@ -148,12 +184,20 @@ func (ip *interp) evalStmt(st Stmt) ctrl {
 	ip.tick()
 	switch s := st.(type) {
 	case *AssignStmt:
-		ip.env[s.Name] = ip.eval(s.Val)
+		ip.env[s.Name] = ip.eval(s.Val).clone() // value semantics for struct copies
 	case *ExprStmt:
 		ip.eval(s.X)
 	case *ReturnStmt:
-		for _, v := range s.Vals {
-			ip.eval(v)
+		switch len(s.Vals) {
+		case 0:
+			ip.retVal = fval{}
+		case 1:
+			ip.retVal = ip.eval(s.Vals[0])
+		default:
+			for _, v := range s.Vals { // still evaluate for trap-checking
+				ip.eval(v)
+			}
+			ip.retVal = fval{} // multi-return in expression position doesn't occur
 		}
 		return ctrlReturn
 	case *BreakStmt:
@@ -186,6 +230,18 @@ func (ip *interp) evalStmt(st Stmt) ctrl {
 		if id, ok := s.Target.X.(*Ident); ok && base.k == KSlice {
 			base.sl[idx.i] = v
 			ip.env[id.Name] = base
+		}
+	case *FieldAssign:
+		base := ip.eval(s.Target.X)
+		if base.k != KStruct {
+			ip.unknown("field assign on " + kindName(base.k))
+		}
+		v := ip.eval(s.Val)
+		if id, ok := s.Target.X.(*Ident); ok {
+			base.fields[s.Target.Name] = v
+			ip.env[id.Name] = base
+		} else {
+			ip.unknown("field assign to non-variable")
 		}
 	case *ArenaStmt:
 		return ip.evalStmts(s.Body) // allocation is transparent to interpretation
@@ -283,8 +339,29 @@ func (ip *interp) eval(e Expr) fval {
 			return base.sl[idx.i]
 		}
 		return vstr(string(base.s[idx.i]))
+	case *StructLit:
+		return ip.evalStructLit(x)
+	case *FieldAccess:
+		base := ip.eval(x.X)
+		if base.k != KStruct {
+			ip.unknown("field access on " + kindName(base.k))
+		}
+		v, ok := base.fields[x.Name]
+		if !ok {
+			ip.unknown("unknown field " + x.Name)
+		}
+		return v
 	case *Call:
-		if x.Callee == "len" && len(x.Args) == 1 {
+		return ip.evalCall(x)
+	}
+	ip.unknown(fmt.Sprintf("expr %T", e))
+	return fval{} // unreachable
+}
+
+func (ip *interp) evalCall(x *Call) fval {
+	switch x.Callee {
+	case "len":
+		if len(x.Args) == 1 {
 			v := ip.eval(x.Args[0])
 			switch v.k {
 			case KSlice:
@@ -294,11 +371,105 @@ func (ip *interp) eval(e Expr) fval {
 			}
 			ip.unknown("len of " + kindName(v.k))
 		}
-		// any other call (user func or unmodeled builtin) -> inconclusive.
-		ip.unknown("call " + x.Callee)
+	case "abs":
+		if len(x.Args) == 1 {
+			v := ip.eval(x.Args[0]) // MFL abs is (number) -> float
+			if v.k == KInt {
+				return vfloat(absF(float64(v.i)))
+			}
+			if v.k == KFloat {
+				return vfloat(absF(v.f))
+			}
+		}
 	}
-	ip.unknown(fmt.Sprintf("expr %T", e))
-	return fval{} // unreachable
+	// user function: inline it (interprocedural). Anything else -> inconclusive.
+	if fn, ok := ip.funcs[x.Callee]; ok && !x.Spread {
+		return ip.callUser(fn, x.Args)
+	}
+	ip.unknown("call " + x.Callee)
+	return fval{}
+}
+
+func absF(f float64) float64 {
+	if f < 0 {
+		return -f
+	}
+	return f
+}
+
+// callUser inlines a user function: evaluate args in the caller frame, bind them
+// (by value; clone gives structs value semantics) into a fresh frame, run the
+// body, and return its value. A trap inside the callee is a real bug reported
+// against the ENCLOSING function's counterexample; a callee that hits anything
+// unmodeled makes the whole evaluation inconclusive (funknown propagates).
+func (ip *interp) callUser(fn *FuncDecl, argExprs []Expr) fval {
+	if ip.depth+1 > falsCallDepth {
+		ip.unknown("call depth (recursion?)")
+	}
+	args := make([]fval, len(argExprs))
+	for i, a := range argExprs {
+		args[i] = ip.eval(a)
+	}
+	savedEnv := ip.env
+	ip.env = make(map[string]fval, len(fn.Params)+len(fn.Returns))
+	for i, p := range fn.Params {
+		if i < len(args) {
+			ip.env[p] = args[i].clone()
+		}
+	}
+	for _, r := range fn.Returns {
+		ip.env[r] = vint(0) // named returns: zero-init (scalar common case)
+	}
+	ip.depth++
+	ip.retVal = fval{}
+	ip.evalStmts(fn.Body)
+	ret := ip.retVal
+	ip.depth--
+	ip.env = savedEnv
+	return ret
+}
+
+func (ip *interp) evalStructLit(x *StructLit) fval {
+	td := ip.structs[x.Type]
+	if td == nil {
+		ip.unknown("struct literal " + x.Type)
+	}
+	order := make([]string, len(td.Fields))
+	for i, f := range td.Fields {
+		order[i] = f.Name
+	}
+	fields := make(map[string]fval, len(td.Fields))
+	if x.FieldNames != nil { // named literal
+		for i, name := range x.FieldNames {
+			fields[name] = ip.eval(x.Vals[i])
+		}
+	} else { // positional literal, in declared order
+		for i, v := range x.Vals {
+			if i < len(order) {
+				fields[order[i]] = ip.eval(v)
+			}
+		}
+	}
+	// any field omitted by a partial named literal defaults to its zero value
+	for _, f := range td.Fields {
+		if _, ok := fields[f.Name]; !ok {
+			fields[f.Name] = zeroForType(f.Type)
+		}
+	}
+	return fval{k: KStruct, sname: x.Type, fields: fields, fieldOrder: order}
+}
+
+func zeroForType(t string) fval {
+	switch t {
+	case "float":
+		return vfloat(0)
+	case "bool":
+		return vbool(false)
+	case "string":
+		return vstr("")
+	default:
+		return vint(0) // int and anything we don't model as a scalar
+	}
 }
 
 func (ip *interp) evalBinary(x *Binary) fval {
@@ -534,8 +705,72 @@ func (c *Checker) domain(slot int) ([]fval, bool) {
 			}
 		}
 		return out, true
+	case KStruct:
+		return c.structDomain(c.sname[c.find(slot)])
 	}
 	return nil, false
+}
+
+// structDomain enumerates bounded struct values: the cartesian product of each
+// scalar field's (small) domain. A struct with a slice / nested-struct / map
+// field, or one whose product exceeds falsStructDomCap, is out of scope (skip).
+func (c *Checker) structDomain(name string) ([]fval, bool) {
+	td := c.structs[name]
+	if td == nil {
+		return nil, false
+	}
+	order := make([]string, len(td.Fields))
+	fieldDoms := make([][]fval, len(td.Fields))
+	total := 1
+	for i, f := range td.Fields {
+		order[i] = f.Name
+		d := scalarDomain(f.Type)
+		if d == nil {
+			return nil, false
+		}
+		fieldDoms[i] = d
+		total *= len(d)
+		if total > falsStructDomCap {
+			return nil, false
+		}
+	}
+	var out []fval
+	idx := make([]int, len(fieldDoms))
+	for {
+		fields := make(map[string]fval, len(order))
+		for i := range order {
+			fields[order[i]] = fieldDoms[i][idx[i]]
+		}
+		out = append(out, fval{k: KStruct, sname: name, fields: fields, fieldOrder: order})
+		k := 0
+		for ; k < len(idx); k++ {
+			idx[k]++
+			if idx[k] < len(fieldDoms[k]) {
+				break
+			}
+			idx[k] = 0
+		}
+		if k == len(idx) {
+			break
+		}
+	}
+	return out, true
+}
+
+// scalarDomain gives the small per-field domain used inside struct enumeration
+// (kept tight so the struct product stays bounded). nil => non-scalar field.
+func scalarDomain(t string) []fval {
+	switch t {
+	case "int":
+		return []fval{vint(0), vint(1), vint(-1)}
+	case "float":
+		return []fval{vfloat(0), vfloat(1)}
+	case "bool":
+		return []fval{vbool(false), vbool(true)}
+	case "string":
+		return []fval{vstr(""), vstr("a")}
+	}
+	return nil
 }
 
 func gen(n int, vals []int64) [][]int64 {
@@ -600,7 +835,7 @@ func detectFalsifiableStats(prog *Program, c *Checker) ([]falsifyFinding, falsif
 			continue
 		}
 
-		ff, verdict := falsifyOne(fn, domains, funcs)
+		ff, verdict := falsifyOne(fn, domains, funcs, c.structs)
 		switch verdict {
 		case "counterexample":
 			st.Checked++
@@ -632,7 +867,7 @@ func detectFalsifiableStats(prog *Program, c *Checker) ([]falsifyFinding, falsif
 // first fully-modeled trap, ("clean", _) if all inputs ran to completion without
 // tripping, or ("unknown", _) if every input was inconclusive / the cap was hit
 // before any conclusive result.
-func falsifyOne(fn *FuncDecl, domains [][]fval, funcs map[string]*FuncDecl) (falsifyFinding, string) {
+func falsifyOne(fn *FuncDecl, domains [][]fval, funcs map[string]*FuncDecl, structs map[string]*TypeDecl) (falsifyFinding, string) {
 	idx := make([]int, len(domains))
 	tried := 0
 	sawConclusive := false
@@ -645,7 +880,7 @@ func falsifyOne(fn *FuncDecl, domains [][]fval, funcs map[string]*FuncDecl) (fal
 			args[i] = domains[i][idx[i]]
 		}
 		tried++
-		viol, unknown := runOne(fn, args, funcs)
+		viol, unknown := runOne(fn, args, funcs, structs)
 		if viol != nil {
 			bind := bindings(fn.Params, args)
 			return falsifyFinding{
@@ -697,11 +932,11 @@ func bindings(names []string, args []fval) string {
 // runOne evaluates fn on one concrete tuple. Returns (violation, unknown): a
 // non-nil violation is a fully-modeled counterexample; unknown means the path
 // touched something unmodeled and is inconclusive (never reported).
-func runOne(fn *FuncDecl, args []fval, funcs map[string]*FuncDecl) (v *fviol, unknown bool) {
-	ip := &interp{env: map[string]fval{}, funcs: funcs}
+func runOne(fn *FuncDecl, args []fval, funcs map[string]*FuncDecl, structs map[string]*TypeDecl) (v *fviol, unknown bool) {
+	ip := &interp{env: map[string]fval{}, funcs: funcs, structs: structs}
 	for i, p := range fn.Params {
 		if i < len(args) {
-			ip.env[p] = args[i]
+			ip.env[p] = args[i].clone()
 		}
 	}
 	for _, r := range fn.Returns {
@@ -728,6 +963,16 @@ func runOne(fn *FuncDecl, args []fval, funcs map[string]*FuncDecl) (v *fviol, un
 // --safe it panics at exactly the offending op — the auto-promotable regression
 // test. (Used by the `machin falsify --repro` driver in Slice 1.2 and the test.)
 func reproProgram(decls []string, target string, bindArgs []fval) string {
+	// A bug in `main` itself already reproduces when the program runs as-is —
+	// there is no argument tuple and you cannot call main(), so emit it verbatim.
+	if target == "main" {
+		var b strings.Builder
+		for _, d := range decls {
+			b.WriteString(d)
+			b.WriteString("\n")
+		}
+		return b.String()
+	}
 	var b strings.Builder
 	for _, d := range decls {
 		if declName(d) == "main" {
