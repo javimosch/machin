@@ -5,9 +5,9 @@
 # (Distinct from the repo-root verify-falsify.sh, which behaviorally tests the Go
 # pass. This one proves the MFL port reproduces the Go oracle exactly.)
 #
-# Phase 2 slices 2.1-2.2: int + []int params; arithmetic, if/while/for-range,
-# index (FALS001 out-of-range), len, div/modulo-by-zero (FALS002). Structs and
-# interprocedural inlining land in later slices.
+# Phase 2 slices 2.1-2.3: int + []int + float + string params; arithmetic,
+# comparisons, if/while/for-range (incl. string range), index (FALS001), len,
+# div/modulo-by-zero (FALS002). Structs and interprocedural inlining land next.
 set -u
 N="nice -n 15"
 MACHIN=./bin/machin
@@ -51,6 +51,16 @@ printf 'func firstgap(xs){return xs[len(xs)-5]}\nfunc main(){println(str(firstga
 printf 'func at(xs,i){if i<0{return 0}if i>=len(xs){return 0}return xs[i]}\nfunc main(){println(str(at([]int{1,2},5)))}\n' > "$T/v6"; run "$T/v6" "guarded index (clean)"
 printf 'func first(xs){return xs[0]}\nfunc main(){println(str(first([]int{9})))}\n' > "$T/v7"; run "$T/v7" "xs[0] on empty (FALS001)"
 [ -f examples/complex/multi_return.mfl ] && run examples/complex/multi_return.mfl "corpus multi_return (minmax+divmod)"
+
+# float + string fixtures.
+printf 'func fdiv(a){return 1.0/a}\nfunc main(){println(str(fdiv(2.0)))}\n' > "$T/f1"; run "$T/f1" "float 1.0/a div (FALS002)"
+printf 'func fmath(a,b){c:=a+b-a*b if c<b||c>a{return c}return a}\nfunc main(){println(str(fmath(1.0,2.0)))}\n' > "$T/f2"; run "$T/f2" "float arith+cmp (clean)"
+printf 'func mix(a,x){return x/float(a)}\nfunc main(){println(str(mix(2,3.0)))}\n' > "$T/f3"; run "$T/f3" "mixed int/float div"
+printf 'func fg(a){if a==0.0{return 0.0}return 1.0/a}\nfunc main(){println(str(fg(2.0)))}\n' > "$T/f4"; run "$T/f4" "float guarded (clean)"
+printf 'func scat(s,t){if s==t{return len(s)}if s<t{return 0}if s>t{return 1}return len(s+t)}\nfunc main(){println(str(scat("a","b")))}\n' > "$T/f5"; run "$T/f5" "string concat+cmp (clean)"
+printf 'func slen(s){return 10/len(s)}\nfunc main(){println(str(slen("hi")))}\n' > "$T/f6"; run "$T/f6" "10/len(s) empty-string div (FALS002)"
+printf 'func vowels(s){n:=0 for _,c:=range s{if c=="a"{n=n+1}}return 100/n}\nfunc main(){println(str(vowels("aaa")))}\n' > "$T/f7"; run "$T/f7" "string range + div"
+printf 'func firstc(s){return s[0]}\nfunc main(){println(firstc("x"))}\n' > "$T/f8"; run "$T/f8" "string index s[0] (FALS001)"
 
 echo
 echo "self-hosted falsify oracle-diff: $pass pass, $fail fail"

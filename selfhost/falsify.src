@@ -11,23 +11,29 @@
 // FV struct (MFL has no [][]int, but a []int field inside a []struct is fine).
 // Floats/strings, structs and interprocedural inlining follow in later slices.
 
-// ---- value model: FV is int (k=0) or []int slice (k=1) ----
-type FV struct { k int  i int  sl []int }
+// ---- value model: FV is int (k=0), []int slice (k=1), float (k=2) or string (k=3) ----
+type FV struct { k int  i int  f float  s string  sl []int }
 
 func fv_int(x) (fv) { fv = FV{k: 0, i: x} }
 func fv_slice(xs) (fv) { fv = FV{k: 1, sl: xs} }
+func fv_float(x) (fv) { fv = FV{k: 2, f: x} }
+func fv_string(x) (fv) { fv = FV{k: 3, s: x} }
 
-func fv_str(fv) (s) {
-    if fv.k == 0 { s = str(fv.i)  return s }
-    s = "[]int{"
+// fv_str renders a value as its Go fval.String() form (%d int, %g float, %q
+// string, []int{...} slice) — used for counterexample bindings + must byte-match.
+func fv_str(fv) (out) {
+    if fv.k == 0 { out = str(fv.i)  return out }
+    if fv.k == 2 { out = str(fv.f)  return out }
+    if fv.k == 3 { out = "\"" + fv.s + "\""  return out }
+    out = "[]int{"
     i := 0
     for i < len(fv.sl) {
-        if i > 0 { s = s + ", " }
-        s = s + str(fv.sl[i])
+        if i > 0 { out = out + ", " }
+        out = out + str(fv.sl[i])
         i = i + 1
     }
-    s = s + "}"
-    return s
+    out = out + "}"
+    return out
 }
 
 // ---- interpreter status + control flow (replace panic/recover + ctrl returns) ----
@@ -83,14 +89,23 @@ func f_eval(ni) (v) {
     if g_fstatus != 0 { return v }
     n := nodes[ni]
     if n.kind == K_INT { v = fv_int(n.ival)  return v }
+    if n.kind == K_FLOAT { v = fv_float(parse_float(n.s))  return v }
+    if n.kind == K_STR { v = fv_string(n.s)  return v }
     if n.kind == K_BOOL { if n.ival != 0 { v = fv_int(1) } else { v = fv_int(0) }  return v }
     if n.kind == K_ID { v = f_env_get(n.s)  return v }
     if n.kind == K_UNARY {
         x := f_eval(n.a)
         if g_fstatus != 0 { return v }
-        if x.k != 0 { g_fstatus = 2  return v }
-        if n.s == "-" { v = fv_int(0 - x.i)  return v }
-        if n.s == "!" { if x.i == 0 { v = fv_int(1) } else { v = fv_int(0) }  return v }
+        if n.s == "-" {
+            if x.k == 2 { v = fv_float(0.0 - x.f)  return v }
+            if x.k == 0 { v = fv_int(0 - x.i)  return v }
+            g_fstatus = 2  return v
+        }
+        if n.s == "!" {
+            if x.k != 0 { g_fstatus = 2  return v }
+            if x.i == 0 { v = fv_int(1) } else { v = fv_int(0) }
+            return v
+        }
         g_fstatus = 2  return v
     }
     if n.kind == K_BIN { v = f_eval_bin(ni)  return v }
@@ -99,19 +114,28 @@ func f_eval(ni) (v) {
         if g_fstatus != 0 { return v }
         ix := f_eval(n.b)
         if g_fstatus != 0 { return v }
-        if base.k != 1 { g_fstatus = 2  return v }   // index non-slice (string) -> unknown (later slice)
         if ix.k != 0 { g_fstatus = 2  return v }
-        if ix.i < 0 || ix.i >= len(base.sl) {
-            g_fstatus = 1  g_fviol_prop = "index out of range"  g_fviol_expr = f_render(ni, 0)  return v
+        if base.k == 1 {
+            if ix.i < 0 || ix.i >= len(base.sl) {
+                g_fstatus = 1  g_fviol_prop = "index out of range"  g_fviol_expr = f_render(ni, 0)  return v
+            }
+            v = fv_int(base.sl[ix.i])  return v
         }
-        v = fv_int(base.sl[ix.i])  return v
+        if base.k == 3 {
+            if ix.i < 0 || ix.i >= len(base.s) {
+                g_fstatus = 1  g_fviol_prop = "index out of range"  g_fviol_expr = f_render(ni, 0)  return v
+            }
+            v = fv_string(substr(base.s, ix.i, ix.i + 1))  return v
+        }
+        g_fstatus = 2  return v
     }
     if n.kind == K_CALL {
         if n.s == "len" && len(n.kids) == 1 {
             a := f_eval(n.kids[0])
             if g_fstatus != 0 { return v }
             if a.k == 1 { v = fv_int(len(a.sl))  return v }
-            g_fstatus = 2  return v   // len of non-slice (string) -> unknown (later slice)
+            if a.k == 3 { v = fv_int(len(a.s))  return v }
+            g_fstatus = 2  return v
         }
         g_fstatus = 2  return v   // other calls -> unknown (interprocedural is a later slice)
     }
@@ -125,13 +149,48 @@ func f_eval_bin(ni) (v) {
     op := n.s
     l := f_eval(n.a)
     if g_fstatus != 0 { return v }
-    if l.k != 0 { g_fstatus = 2  return v }
-    // short-circuit boolean ops (0/1)
-    if op == "&&" { if l.i == 0 { v = fv_int(0)  return v }  r := f_eval(n.b)  if g_fstatus != 0 { return v }  if r.k != 0 { g_fstatus = 2  return v }  if r.i != 0 { v = fv_int(1) }  return v }
-    if op == "||" { if l.i != 0 { v = fv_int(1)  return v }  r := f_eval(n.b)  if g_fstatus != 0 { return v }  if r.k != 0 { g_fstatus = 2  return v }  if r.i != 0 { v = fv_int(1) }  return v }
+    // short-circuit boolean ops (0/1); operands are int-modeled bools
+    if op == "&&" { if l.k != 0 { g_fstatus = 2  return v }  if l.i == 0 { v = fv_int(0)  return v }  r := f_eval(n.b)  if g_fstatus != 0 { return v }  if r.k != 0 { g_fstatus = 2  return v }  if r.i != 0 { v = fv_int(1) }  return v }
+    if op == "||" { if l.k != 0 { g_fstatus = 2  return v }  if l.i != 0 { v = fv_int(1)  return v }  r := f_eval(n.b)  if g_fstatus != 0 { return v }  if r.k != 0 { g_fstatus = 2  return v }  if r.i != 0 { v = fv_int(1) }  return v }
     r := f_eval(n.b)
     if g_fstatus != 0 { return v }
-    if r.k != 0 { g_fstatus = 2  return v }
+    // float branch (Go: either operand KFloat) — int operands promote
+    if l.k == 2 || r.k == 2 {
+        if l.k != 0 && l.k != 2 { g_fstatus = 2  return v }
+        if r.k != 0 && r.k != 2 { g_fstatus = 2  return v }
+        lf := l.f
+        if l.k == 0 { lf = float(l.i) }
+        rf := r.f
+        if r.k == 0 { rf = float(r.i) }
+        if op == "+" { v = fv_float(lf + rf)  return v }
+        if op == "-" { v = fv_float(lf - rf)  return v }
+        if op == "*" { v = fv_float(lf * rf)  return v }
+        if op == "/" {
+            if rf == 0.0 { g_fstatus = 1  g_fviol_prop = "division by zero"  g_fviol_expr = f_render(ni, 0)  return v }
+            v = fv_float(lf / rf)  return v
+        }
+        if op == "<" { if lf < rf { v = fv_int(1) }  return v }
+        if op == "<=" { if lf <= rf { v = fv_int(1) }  return v }
+        if op == ">" { if lf > rf { v = fv_int(1) }  return v }
+        if op == ">=" { if lf >= rf { v = fv_int(1) }  return v }
+        if op == "==" { if lf == rf { v = fv_int(1) }  return v }
+        if op == "!=" { if lf != rf { v = fv_int(1) }  return v }
+        g_fstatus = 2  return v
+    }
+    // string branch
+    if l.k == 3 {
+        if r.k != 3 { g_fstatus = 2  return v }
+        if op == "+" { v = fv_string(l.s + r.s)  return v }
+        if op == "==" { if l.s == r.s { v = fv_int(1) }  return v }
+        if op == "!=" { if l.s != r.s { v = fv_int(1) }  return v }
+        if op == "<" { if l.s < r.s { v = fv_int(1) }  return v }
+        if op == ">" { if l.s > r.s { v = fv_int(1) }  return v }
+        if op == "<=" { if l.s <= r.s { v = fv_int(1) }  return v }
+        if op == ">=" { if l.s >= r.s { v = fv_int(1) }  return v }
+        g_fstatus = 2  return v
+    }
+    // int branch
+    if l.k != 0 || r.k != 0 { g_fstatus = 2  return v }
     a := l.i
     b := r.i
     if op == "+" { v = fv_int(a + b)  return v }
@@ -226,15 +285,19 @@ func f_eval_stmt(si) {
     if n.kind == K_RANGE {
         base := f_eval(n.a)
         if g_fstatus != 0 { return }
-        if base.k != 1 { g_fstatus = 2  return }   // range over non-slice (string/map) -> unknown (later)
+        if base.k != 1 && base.k != 3 { g_fstatus = 2  return }   // range over map -> unknown (later)
+        blen := len(base.sl)
+        if base.k == 3 { blen = len(base.s) }
         ix := 0
-        for ix < len(base.sl) {
+        for ix < blen {
             if n.s != "" && n.s != "_" { f_env_set(n.s, fv_int(ix)) }
-            if n.s2 != "" && n.s2 != "_" { f_env_set(n.s2, fv_int(base.sl[ix])) }
+            if n.s2 != "" && n.s2 != "_" {
+                if base.k == 1 { f_env_set(n.s2, fv_int(base.sl[ix])) } else { f_env_set(n.s2, fv_string(substr(base.s, ix, ix + 1))) }
+            }
             f_eval_stmts(n.kids)
             if g_fstatus != 0 { return }
             if g_freturned == 1 { return }
-            if g_fbreak == 1 { g_fbreak = 0  ix = len(base.sl) } else {
+            if g_fbreak == 1 { g_fbreak = 0  ix = blen } else {
                 if g_fcontinue == 1 { g_fcontinue = 0 }
                 ix = ix + 1
             }
@@ -277,6 +340,8 @@ func f_render(ni, parent) (out) {
     out = "?"
     n := nodes[ni]
     if n.kind == K_INT { out = str(n.ival)  return out }
+    if n.kind == K_FLOAT { out = str(parse_float(n.s))  return out }   // %g, matches Go FloatLit render
+    if n.kind == K_STR { out = "\"" + n.s + "\""  return out }         // %q for simple strings
     if n.kind == K_BOOL { if n.ival != 0 { out = "true" } else { out = "false" }  return out }
     if n.kind == K_ID { out = n.s  return out }
     if n.kind == K_UNARY { out = n.s + f_render(n.a, 6)  return out }
@@ -346,6 +411,23 @@ func f_intdom(i) (v) {
     return v
 }
 
+// float domain — MUST match falsFloatDomain = {0, 1, -1, 2}
+func f_floatdom(i) (v) {
+    v = fv_float(0.0)
+    if i == 1 { v = fv_float(1.0) }
+    if i == 2 { v = fv_float(0.0 - 1.0) }
+    if i == 3 { v = fv_float(2.0) }
+    return v
+}
+
+// string domain — MUST match falsStringDomain = {"", "a", "ab"}
+func f_stringdom(i) (v) {
+    v = fv_string("")
+    if i == 1 { v = fv_string("a") }
+    if i == 2 { v = fv_string("ab") }
+    return v
+}
+
 // []int domain — MUST match falsify.go domain(KSlice): lengths 0..3, elements from
 // {0,1,2}, in gen()'s lexicographic order (first element outermost). 40 values.
 var g_slicedom = []FV{}
@@ -385,15 +467,19 @@ func f_init_slicedom() {
     g_slicedom_ready = 1
 }
 
-// f_dom_size / f_dom_val: pkind 0 = int (5 values), 1 = []int (40 values)
+// f_dom_size / f_dom_val: pkind 0=int(5), 1=[]int(40), 2=float(4), 3=string(3)
 func f_dom_size(pkind) (n) {
     n = 5
     if pkind == 1 { n = len(g_slicedom) }
+    if pkind == 2 { n = 4 }
+    if pkind == 3 { n = 3 }
     return n
 }
 func f_dom_val(pkind, i) (fv) {
     fv = f_intdom(i)
     if pkind == 1 { fv = g_slicedom[i] }
+    if pkind == 2 { fv = f_floatdom(i) }
+    if pkind == 3 { fv = f_stringdom(i) }
     return fv
 }
 
@@ -466,10 +552,14 @@ func detect_falsifiable() {
                 ks := kind_of(s)
                 pk := 0
                 if ks == 2 { pk = 0 } else {
-                    if ks == 7 {
-                        es := g_elem[find(s)]
-                        if kind_of(es) == 2 { pk = 1 } else { scoped = 0 }
-                    } else { scoped = 0 }
+                    if ks == 3 { pk = 2 } else {              // KFloat
+                        if ks == 5 { pk = 3 } else {          // KString
+                            if ks == 7 {                       // KSlice
+                                es := g_elem[find(s)]
+                                if kind_of(es) == 2 { pk = 1 } else { scoped = 0 }
+                            } else { scoped = 0 }
+                        }
+                    }
                 }
                 pkinds = append(pkinds, pk)
                 pi = pi + 1
