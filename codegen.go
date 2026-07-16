@@ -440,6 +440,12 @@ static char* mfl_dup(const char* s) { size_t n = strlen(s); char* r = mfl_alloc(
    filling C buffers (vertex arrays) and structs to hand to a C API. */
 static int64_t mfl_raw_alloc(int64_t n) { return (int64_t)(intptr_t)calloc(1, (size_t)(n > 0 ? n : 0)); }
 static void mfl_raw_free(int64_t p) { free((void*)(intptr_t)p); }
+/* madvise_free: hint the kernel to drop the resident pages of an mmap'd region
+   (MADV_DONTNEED) — RSS falls, pages re-fault lazily on next access. For idle
+   release of large mmap_file mappings without unmapping. */
+static void mfl_madvise_free(int64_t ptr, int64_t len) {
+    if (ptr && len > 0) madvise((void*)(intptr_t)ptr, (size_t)len, MADV_DONTNEED);
+}
 /* mmap a file read-only into memory -> (pointer-as-int, size-in-bytes), or (0,0)
    on error. Zero-copy access to a large on-disk buffer (a model checkpoint, a
    memory-mapped asset) via peek_*; pages fault in lazily. The mapping lives
@@ -4920,6 +4926,8 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("mfl_raw_alloc(%s)", args[0]), nil
 	case "free":
 		return fmt.Sprintf("mfl_raw_free(%s)", args[0]), nil
+	case "madvise_free":
+		return fmt.Sprintf("mfl_madvise_free(%s, %s)", args[0], args[1]), nil
 	case "poke_f32", "poke_i32", "poke_u8", "poke_u16", "poke_ptr":
 		return fmt.Sprintf("mfl_%s(%s, %s, %s)", ex.Callee, args[0], args[1], args[2]), nil
 	case "peek_f32", "peek_i32", "peek_i8", "peek_u8":
