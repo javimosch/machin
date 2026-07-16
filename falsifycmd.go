@@ -25,18 +25,28 @@ type falsifyCoverage struct {
 	AllUnknown int `json:"allUnknown"` // every input inconclusive (e.g. calls, FFI)
 }
 
-// falsifyReport is the JSON verdict envelope. It never claims `proved` — coverage
-// tells the agent what was and was not actually checked.
+// falsifyBounds records the (fixed) search envelope so a `clean`/`unknown` verdict
+// is honestly qualified: "no bug within THESE bounds", never "proved correct".
+type falsifyBounds struct {
+	SliceLenMax int     `json:"sliceLenMax"`
+	IntDomain   []int64 `json:"intDomain"`
+	CallDepth   int     `json:"callDepth"`
+}
+
+// falsifyReport is the JSON verdict envelope. It never claims `proved` — coverage,
+// the per-function verdicts, and the bounds tell the agent exactly what was checked.
 type falsifyReport struct {
 	OK              bool            `json:"ok"` // no counterexamples found
 	Files           []string        `json:"files"`
 	Counterexamples int             `json:"counterexamples"`
 	Findings        []Diagnostic    `json:"findings"`
 	Coverage        falsifyCoverage `json:"coverage"`
+	Functions       []funcVerdict   `json:"functions"`
+	Bounds          falsifyBounds   `json:"bounds"`
 }
 
 func cmdFalsify(args []string) error {
-	jsonOut, stdin := false, false
+	jsonOut, stdin, strict := false, false, false
 	reproDir := ""
 	var files []string
 	for i := 0; i < len(args); i++ {
@@ -45,6 +55,8 @@ func cmdFalsify(args []string) error {
 			jsonOut = true
 		case "--stdin":
 			stdin = true
+		case "--strict":
+			strict = true
 		case "--repro":
 			if i+1 >= len(args) {
 				return fmt.Errorf("falsify: --repro needs a directory")
@@ -105,7 +117,7 @@ func cmdFalsify(args []string) error {
 		declLine[declName(d)] = blockLines[i]
 	}
 
-	findings, stats := detectFalsifiableStats(prog, c)
+	findings, stats, verdicts := detectFalsifiableStats(prog, c)
 
 	// write repros if requested
 	if reproDir != "" {
@@ -127,6 +139,8 @@ func cmdFalsify(args []string) error {
 		Counterexamples: len(findings),
 		Findings:        make([]Diagnostic, 0, len(findings)),
 		Coverage:        falsifyCoverage{Checked: stats.Checked, Skipped: stats.Skipped, AllUnknown: stats.AllUnknown},
+		Functions:       verdicts,
+		Bounds:          falsifyBounds{SliceLenMax: falsSliceLenMax, IntDomain: falsIntDomain, CallDepth: falsCallDepth},
 	}
 	for _, ff := range findings {
 		d := ff.toDiagnostic()
@@ -138,11 +152,10 @@ func cmdFalsify(args []string) error {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetEscapeHTML(false)
 		enc.SetIndent("", "  ")
-		return enc.Encode(rep)
-	}
-
-	// human-readable
-	if rep.OK {
+		if err := enc.Encode(rep); err != nil {
+			return err
+		}
+	} else if rep.OK {
 		fmt.Fprintf(os.Stderr, "no counterexamples (checked %d, skipped %d, inconclusive %d)\n",
 			stats.Checked, stats.Skipped, stats.AllUnknown)
 	} else {
@@ -159,6 +172,13 @@ func cmdFalsify(args []string) error {
 		if reproDir != "" {
 			fmt.Fprintf(os.Stderr, "repros written to %s/\n", reproDir)
 		}
+	}
+
+	// --strict: advisory by default, but CI can opt in to a non-zero exit on any
+	// counterexample. Only counterexamples gate — `unknown`/`skipped` never do
+	// (the finder is unsound-complete; absence of a bug is not a proof of safety).
+	if strict && len(findings) > 0 {
+		os.Exit(1)
 	}
 	return nil
 }

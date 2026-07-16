@@ -57,6 +57,44 @@ func TestFalsifyCmdJSON(t *testing.T) {
 	if rep.Coverage.Checked == 0 || rep.Coverage.AllUnknown == 0 {
 		t.Fatalf("coverage envelope looks wrong: %+v", rep.Coverage)
 	}
+	// honesty surface (Slice 1.4): per-function verdicts, bounds, never "proved".
+	if rep.Bounds.SliceLenMax != falsSliceLenMax || rep.Bounds.CallDepth != falsCallDepth {
+		t.Fatalf("bounds not reported: %+v", rep.Bounds)
+	}
+	vs := map[string]string{}
+	for _, fv := range rep.Functions {
+		vs[fv.Fn] = fv.Verdict
+		if fv.Verdict == "proved" {
+			t.Fatal("the falsifier must NEVER claim proved")
+		}
+	}
+	if vs["avg"] != "counterexample" || vs["safe"] != "clean" || vs["main"] != "unknown" {
+		t.Fatalf("per-function verdicts wrong: %v", vs)
+	}
+	if strings.Contains(out, "proved") {
+		t.Fatal("envelope must not contain the word proved")
+	}
+}
+
+// TestFalsifyCmdStrict confirms --strict exits non-zero only on a counterexample.
+func TestFalsifyCmdStrict(t *testing.T) {
+	bin := "bin/machin"
+	if _, e := os.Stat(bin); e != nil {
+		t.Skipf("no bin/machin: %v", e)
+	}
+	abs, _ := filepath.Abs(bin)
+	dir := t.TempDir()
+	buggy := filepath.Join(dir, "buggy.mfl")
+	clean := filepath.Join(dir, "clean.mfl")
+	os.WriteFile(buggy, []byte(buggyProg), 0o644)
+	os.WriteFile(clean, []byte("func safe(xs){if len(xs)==0{return 0}return xs[0]}\nfunc main(){println(str(safe([]int{1})))}\n"), 0o644)
+
+	if err := exec.Command(abs, "falsify", "--strict", buggy).Run(); err == nil {
+		t.Fatal("--strict must exit non-zero when a counterexample exists")
+	}
+	if err := exec.Command(abs, "falsify", "--strict", clean).Run(); err != nil {
+		t.Fatalf("--strict must exit 0 on a clean program, got %v", err)
+	}
 }
 
 // TestFalsifyCmdRepro drives --repro and confirms each emitted repro is a real

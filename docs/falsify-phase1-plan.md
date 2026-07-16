@@ -182,7 +182,27 @@ This is the bulk of the work and where real programs live.
   "clean". FFI calls are opaque → `unknown` by construction (documented).
 </details>
 
-### Slice 1.4 — repro hardening + honesty surface
+### Slice 1.4 — repro hardening + honesty surface — ✅ DONE
+
+Implemented:
+- **Per-function verdict envelope**: the `--json` report gains `functions:[{fn,
+  verdict, tried}]` (verdict ∈ counterexample|clean|unknown|skipped, aggregated by
+  source name with worst-instance-wins) and `bounds:{sliceLenMax, intDomain,
+  callDepth}`. It **never** emits `proved` — a `clean` verdict is explicitly "no
+  bug within these bounds". (Dropped the planned `elapsed_us` field: timing is
+  nondeterministic and would break the golden/reproducibility tests; agents get
+  `tried` + `bounds` instead, which is what actually qualifies the verdict.)
+- **`--strict`** (named `--strict`, not `--falsify-strict`): exits non-zero on any
+  counterexample, advisory (exit 0) by default. Only counterexamples gate —
+  `unknown`/`skipped` never do (absence of a bug is not a proof of safety).
+- **Repro golden gate**: the repro-builds-and-panics-under-`--safe` assertion is a
+  permanent test across `TestFalsifyFinds`, `TestFalsifyStructsAndCalls`,
+  `TestFalsifyCmdRepro` (the shell corpus gate `verify-falsify.sh` lands in 1.5).
+- Docs (`check-json.md` envelope block + interproc/struct note) and `guide.go`
+  (`--strict`, `functions`/`bounds`) updated. Tests: `TestFalsifyCmdJSON`
+  (functions/bounds/no-`proved`), `TestFalsifyCmdStrict` (exit codes via exec).
+
+<details><summary>original plan</summary>
 - Repro determinism: literal-args form only (no globals/time); confirm each
   emitted repro builds+panics under `--safe` in a golden test (the spike already
   does this — make it a permanent gate).
@@ -190,6 +210,7 @@ This is the bulk of the work and where real programs live.
   "counterexample"|"unknown", tried, elapsed_us, bound}` so an agent sees the
   coverage, not just findings. Never emit `proved` in Phase 1.
 - Optional `--falsify-strict` for CI (fail on any counterexample), off by default.
+</details>
 
 ### Slice 1.5 — corpus guard + close-out
 - `verify-falsify.sh`: N fixtures (each planted bug class + guarded-correct

@@ -125,14 +125,30 @@ reaches the trap; the instant evaluation touches anything unmodeled (an unknown 
 FFI, an unsupported construct) that input is marked *inconclusive* and never reported.
 So a `falsify` warning is always a real bug — the exact input reproduces it.
 
+The analysis reaches **through calls** (interprocedural inlining) and **struct fields**,
+so a bug that only manifests via a helper or a struct member is still found and reported
+against the enclosing function.
+
 The dedicated `machin falsify <file>` command exposes the same analysis with a verdict
-envelope (`--json` → `{ok, counterexamples, findings, coverage:{checked, skipped,
-allUnknown}}`) and `--repro <dir>` to write one runnable `.mfl` per finding — a repro
-that, built with `--safe`, panics at exactly the predicted trap (an auto-promotable
-regression test). The envelope **never claims `proved`**; `coverage` tells you what was
-and was not actually checked. Bounds (int/float/string domains, slice length ≤ 3, a
-per-function input+step cap) are fixed and honest — a clean result means "no bug within
-these bounds", not "provably correct".
+envelope (`--json`):
+
+```
+{ ok, counterexamples, findings,
+  coverage: { checked, skipped, allUnknown },
+  functions: [ { fn, verdict, tried } ],   // verdict: counterexample|clean|unknown|skipped
+  bounds:    { sliceLenMax, intDomain, callDepth } }
+```
+
+`--repro <dir>` writes one runnable `.mfl` per finding — a repro that, built with
+`--safe`, panics at exactly the predicted trap (an auto-promotable regression test).
+`--strict` exits non-zero on any counterexample (for CI; advisory by default — and only
+counterexamples gate, never `unknown`/`skipped`).
+
+The envelope **never claims `proved`**. `functions` gives the per-function verdict (a
+`clean` there means only "no counterexample within the bounds"), and `bounds` states the
+fixed search envelope (int/float/string domains, slice length ≤ `sliceLenMax`, inlining
+depth ≤ `callDepth`) so "clean" is always honestly qualified — "no bug within these
+bounds", not "provably correct".
 
 ### Top-level fields
 `ok` (bool — reflects errors only, never falsify warnings), `files` (the inputs),

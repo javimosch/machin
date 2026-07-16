@@ -797,14 +797,38 @@ type falsifyStats struct {
 	AllUnknown int // functions where every input was inconclusive
 }
 
+// funcVerdict is the per-function honesty record: what actually happened when the
+// falsifier looked at this function. `verdict` is NEVER "proved" — a `clean`
+// result means only "no counterexample within the bounds".
+type funcVerdict struct {
+	Fn      string `json:"fn"`
+	Verdict string `json:"verdict"` // "counterexample" | "clean" | "unknown" | "skipped"
+	Tried   int    `json:"tried"`   // concrete inputs enumerated
+}
+
+// verdictRank orders verdicts worst-first, so aggregating a function's monomorphized
+// instances keeps the most severe: a function is only `clean` if every instance was.
+func verdictRank(v string) int {
+	switch v {
+	case "counterexample":
+		return 3
+	case "unknown":
+		return 2
+	case "clean":
+		return 1
+	default: // skipped
+		return 0
+	}
+}
+
 // detectFalsifiable bounded-checks every representative instance and returns the
 // counterexamples found, sorted deterministically. Mirrors detectRaces.
 func detectFalsifiable(prog *Program, c *Checker) []falsifyFinding {
-	out, _ := detectFalsifiableStats(prog, c)
+	out, _, _ := detectFalsifiableStats(prog, c)
 	return out
 }
 
-func detectFalsifiableStats(prog *Program, c *Checker) ([]falsifyFinding, falsifyStats) {
+func detectFalsifiableStats(prog *Program, c *Checker) ([]falsifyFinding, falsifyStats, []funcVerdict) {
 	funcs := map[string]*FuncDecl{}
 	for _, f := range prog.Funcs {
 		funcs[f.Name] = f
@@ -812,6 +836,22 @@ func detectFalsifiableStats(prog *Program, c *Checker) ([]falsifyFinding, falsif
 	var out []falsifyFinding
 	var st falsifyStats
 	seen := map[string]bool{} // dedup (Decl|Code|Expr) across monomorphized instances
+
+	// per-function verdict, aggregated by source name (worst instance wins),
+	// preserving first-seen order for deterministic output.
+	vIndex := map[string]int{}
+	var verdicts []funcVerdict
+	record := func(name, verdict string, tried int) {
+		if i, ok := vIndex[name]; ok {
+			verdicts[i].Tried += tried
+			if verdictRank(verdict) > verdictRank(verdicts[i].Verdict) {
+				verdicts[i].Verdict = verdict
+			}
+			return
+		}
+		vIndex[name] = len(verdicts)
+		verdicts = append(verdicts, funcVerdict{Fn: name, Verdict: verdict, Tried: tried})
+	}
 
 	for _, inst := range c.reps {
 		fn := c.instFn[inst]
@@ -832,10 +872,12 @@ func detectFalsifiableStats(prog *Program, c *Checker) ([]falsifyFinding, falsif
 		}
 		if !scoped {
 			st.Skipped++
+			record(fn.Name, "skipped", 0)
 			continue
 		}
 
-		ff, verdict := falsifyOne(fn, domains, funcs, c.structs)
+		ff, verdict, tried := falsifyOne(fn, domains, funcs, c.structs)
+		record(fn.Name, verdict, tried)
 		switch verdict {
 		case "counterexample":
 			st.Checked++
@@ -860,14 +902,14 @@ func detectFalsifiableStats(prog *Program, c *Checker) ([]falsifyFinding, falsif
 		}
 		return out[i].Expr < out[j].Expr
 	})
-	return out, st
+	return out, st, verdicts
 }
 
-// falsifyOne enumerates one function. Returns ("counterexample", finding) on the
-// first fully-modeled trap, ("clean", _) if all inputs ran to completion without
-// tripping, or ("unknown", _) if every input was inconclusive / the cap was hit
-// before any conclusive result.
-func falsifyOne(fn *FuncDecl, domains [][]fval, funcs map[string]*FuncDecl, structs map[string]*TypeDecl) (falsifyFinding, string) {
+// falsifyOne enumerates one function. Returns (finding, "counterexample", tried)
+// on the first fully-modeled trap, (_, "clean", tried) if all inputs ran to
+// completion without tripping, or (_, "unknown", tried) if every input was
+// inconclusive / the cap was hit before any conclusive result.
+func falsifyOne(fn *FuncDecl, domains [][]fval, funcs map[string]*FuncDecl, structs map[string]*TypeDecl) (falsifyFinding, string, int) {
 	idx := make([]int, len(domains))
 	tried := 0
 	sawConclusive := false
@@ -890,7 +932,7 @@ func falsifyOne(fn *FuncDecl, domains [][]fval, funcs map[string]*FuncDecl, stru
 				Expr: viol.expr,
 				Bind: bind,
 				args: args,
-			}, "counterexample"
+			}, "counterexample", tried
 		}
 		if !unknown {
 			sawConclusive = true
@@ -909,9 +951,9 @@ func falsifyOne(fn *FuncDecl, domains [][]fval, funcs map[string]*FuncDecl, stru
 		}
 	}
 	if sawConclusive {
-		return falsifyFinding{}, "clean"
+		return falsifyFinding{}, "clean", tried
 	}
-	return falsifyFinding{}, "unknown"
+	return falsifyFinding{}, "unknown", tried
 }
 
 func propCode(prop string) string {
