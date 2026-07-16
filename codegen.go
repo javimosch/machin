@@ -3115,15 +3115,6 @@ func (g *cgen) program(p *Program) (string, error) {
 	if !g.bodyOnly {
 		out.WriteString(cRuntime)
 		out.WriteByte('\n')
-		// record/replay determinism boundary: a program that uses FFI (extern) or
-		// `select` leaves the boundary machin can control, so its trace is
-		// best-effort — replay may diverge. Emitted as a program-dependent fn that
-		// the (fixed) rr runtime reads at init.
-		rrBoundary := 0
-		if len(p.Externs) > 0 || g.usesSelect {
-			rrBoundary = 1
-		}
-		fmt.Fprintf(&out, "static int mfl_rr_prog_boundary(void) { return %d; }\n", rrBoundary)
 		// POSIX socket + tty runtimes: always present for the native target; for the
 		// wasm target emitted only when actually used, so a browser app pulls in no
 		// socket/termios symbols (which wasi-libc does not fully provide).
@@ -3346,6 +3337,15 @@ func (g *cgen) program(p *Program) (string, error) {
 	if g.wasm() {
 		out.WriteString("__attribute__((constructor)) static void mfl_wasm_stdio_init(void) { setvbuf(stdout, NULL, _IONBF, 0); setvbuf(stderr, NULL, _IONBF, 0); }\n")
 	}
+	// record/replay determinism boundary: 1 if the program uses FFI (extern) or
+	// `select` — it leaves the boundary machin can control, so its trace is
+	// best-effort. Program-dependent, so emitted here (in the body region, compared
+	// by cgentest) rather than the fixed prelude; the rr runtime forward-declares it.
+	rrBoundary := 0
+	if len(p.Externs) > 0 || g.usesSelect {
+		rrBoundary = 1
+	}
+	fmt.Fprintf(&out, "static int mfl_rr_prog_boundary(void) { return %d; }\n", rrBoundary)
 	// Native entry point. The wasm target is a reactor module (no `int main`): the
 	// host drives it through the exported functions, so emit the C main only for
 	// native, and only when the program actually defines an MFL main.
