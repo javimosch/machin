@@ -5,10 +5,10 @@
 # (Distinct from the repo-root verify-falsify.sh, which behaviorally tests the Go
 # pass. This one proves the MFL port reproduces the Go oracle exactly.)
 #
-# Phase 2 slices 2.1-2.4: int + []int + float + string + bool + struct params;
+# Phase 2 slices 2.1-2.5: int + []int + float + string + bool + struct params;
 # arithmetic, comparisons, if/while/for-range (incl. string range), index
-# (FALS001), len, field access/assign, div/modulo-by-zero (FALS002).
-# Interprocedural inlining lands next.
+# (FALS001), len, abs, field access/assign, interprocedural inlining (recursion-
+# capped), div/modulo-by-zero (FALS002). This is full parity with the Go pass.
 set -u
 N="nice -n 15"
 MACHIN=./bin/machin
@@ -70,6 +70,15 @@ printf 'type P struct{n int}\nfunc vs(c){d:=c d.n=d.n+1 return d.n}\nfunc main()
 printf 'type M struct{a int b bool}\nfunc g(m){if m.b{return 0}return 10/m.a}\nfunc main(){println(str(g(M{a:1,b:true})))}\n' > "$T/t4"; run "$T/t4" "struct with bool field"
 printf 'func bs(flag,a){if flag{return 0}return 10/a}\nfunc main(){println(str(bs(true,2)))}\n' > "$T/t5"; run "$T/t5" "bool param (true/false render)"
 printf 'type S struct{name string cnt int}\nfunc h(s){return len(s.name)/s.cnt}\nfunc main(){println(str(h(S{name:"x",cnt:1})))}\n' > "$T/t6"; run "$T/t6" "struct string+int fields"
+
+# interprocedural inlining fixtures.
+printf 'func helper(n){return 100/n}\nfunc caller(n){return helper(n)+1}\nfunc main(){println(str(caller(2)))}\n' > "$T/i1"; run "$T/i1" "interproc div-by-zero"
+printf 'func dbl(y){return y*2}\nfunc use(x){return x+dbl(x)}\nfunc main(){println(str(use(3)))}\n' > "$T/i2"; run "$T/i2" "interproc clean"
+printf 'func fact(n){if n<=1{return 1}return n*fact(n-1)}\nfunc main(){println(str(fact(3)))}\n' > "$T/i3"; run "$T/i3" "recursion (depth guard)"
+printf 'func idx(xs,i){return xs[i]}\nfunc get(xs){return idx(xs,5)}\nfunc main(){println(str(get([]int{1,2})))}\n' > "$T/i4"; run "$T/i4" "interproc index-OOB (FALS001)"
+printf 'func mag(a){return abs(a)}\nfunc r(a){return 10/(mag(a)-1.0)}\nfunc main(){println(str(r(2)))}\n' > "$T/i5"; run "$T/i5" "abs + interproc float"
+printf 'type Cfg struct{n int}\nfunc div(c){return 100/c.n}\nfunc run(c){return div(c)}\nfunc main(){println(str(run(Cfg{n:1})))}\n' > "$T/i6"; run "$T/i6" "interproc struct-field div"
+printf 'func chain3(n){return n}\nfunc chain2(n){return chain3(n)+1}\nfunc chain1(n){return 9/chain2(n)}\nfunc main(){println(str(chain1(1)))}\n' > "$T/i7"; run "$T/i7" "3-deep call chain"
 
 echo
 echo "self-hosted falsify oracle-diff: $pass pass, $fail fail"

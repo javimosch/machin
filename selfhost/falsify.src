@@ -73,6 +73,8 @@ var g_freturned = 0
 var g_fbreak = 0
 var g_fcontinue = 0
 var g_fsteps = 0         // step budget guard (matches falsStepBudget); non-terminating -> unknown on both sides
+var g_fretval = FV{k: 0, i: 0}   // last function's return value (read right after a call returns)
+var g_fdepth = 0                 // interprocedural inlining depth (recursion guard)
 
 func f_tick() {
     g_fsteps = g_fsteps + 1
@@ -166,7 +168,19 @@ func f_eval(ni) (v) {
             if a.k == 3 { v = fv_int(len(a.s))  return v }
             g_fstatus = 2  return v
         }
-        g_fstatus = 2  return v   // other calls -> unknown (interprocedural is a later slice)
+        if n.s == "abs" && len(n.kids) == 1 {
+            a := f_eval(n.kids[0])            // MFL abs is (number) -> float
+            if g_fstatus != 0 { return v }
+            if a.k == 0 { v = fv_float(f_absf(float(a.i)))  return v }
+            if a.k == 2 { v = fv_float(f_absf(a.f))  return v }
+            g_fstatus = 2  return v
+        }
+        // user function: inline it (interprocedural). Spread calls + non-user
+        // callees (str/println/other builtins) are inconclusive — and, crucially,
+        // their args are NOT evaluated (matches falsify.go evalCall).
+        fr := func_root(n.s)
+        if fr >= 0 && n.ival == 0 { v = f_call_user(fr, n.kids)  return v }
+        g_fstatus = 2  return v
     }
     if n.kind == K_STRUCT { v = f_eval_struct(ni)  return v }
     if n.kind == K_FIELD {
@@ -232,6 +246,65 @@ func f_zero_for_type(t) (v) {
     if t == "bool" { v = fv_bool(0) }
     if t == "string" { v = fv_string("") }
     return v
+}
+
+func f_absf(x) (r) {
+    r = x
+    if x < 0.0 { r = 0.0 - x }
+    return r
+}
+
+// f_call_user inlines a user function: evaluate args in the caller frame, then
+// run the callee body in a fresh env (MFL has no closures/call stack, so the
+// global env is saved and restored around the call). A trap inside the callee is
+// reported against the ENCLOSING function with the callee's expression; the
+// callee's status/return propagate via the globals. Matches falsify.go callUser.
+func f_call_user(fnroot, argnodes) (rv) {
+    rv = fv_int(0)
+    if g_fdepth + 1 > 24 { g_fstatus = 2  return rv }   // falsCallDepth (recursion guard)
+    args := []FV{}
+    i := 0
+    for i < len(argnodes) {
+        a := f_eval(argnodes[i])
+        if g_fstatus != 0 { return rv }
+        args = append(args, a)
+        i = i + 1
+    }
+    fn := nodes[fnroot]
+    params := fn.names
+    rets := fn.names2
+
+    saved_names := g_env_names
+    saved_vals := g_env_vals
+    saved_returned := g_freturned
+    saved_break := g_fbreak
+    saved_continue := g_fcontinue
+
+    g_env_names = []string{}
+    g_env_vals = []FV{}
+    i = 0
+    for i < len(params) {
+        if i < len(args) { f_env_set(params[i], f_clone(args[i])) }
+        i = i + 1
+    }
+    i = 0
+    for i < len(rets) { f_env_set(rets[i], fv_int(0))  i = i + 1 }   // named returns zero-init
+
+    g_freturned = 0
+    g_fbreak = 0
+    g_fcontinue = 0
+    g_fretval = fv_int(0)
+    g_fdepth = g_fdepth + 1
+    f_eval_stmts(fn.kids)
+    rv = g_fretval
+    g_fdepth = g_fdepth - 1
+
+    g_env_names = saved_names
+    g_env_vals = saved_vals
+    g_freturned = saved_returned
+    g_fbreak = saved_break
+    g_fcontinue = saved_continue
+    return rv
 }
 
 func f_eval_bin(ni) (v) {
@@ -338,11 +411,17 @@ func f_eval_stmt(si) {
     if g_fstatus != 0 { return }
     n := nodes[si]
     if n.kind == K_RETURN {
-        i := 0
-        for i < len(n.kids) {
-            f_eval(n.kids[i])
+        if len(n.kids) == 1 {
+            g_fretval = f_eval(n.kids[0])
             if g_fstatus != 0 { return }
-            i = i + 1
+        } else {
+            i := 0
+            for i < len(n.kids) {   // 0 or multi: eval all for trap-checking
+                f_eval(n.kids[i])
+                if g_fstatus != 0 { return }
+                i = i + 1
+            }
+            g_fretval = fv_int(0)   // multi-return in expression position doesn't occur
         }
         g_freturned = 1
         return
