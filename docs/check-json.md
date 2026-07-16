@@ -76,7 +76,7 @@ One JSON object on stdout (never streamed/partial — trivially parseable):
 `type-mismatch`, `undefined-name`, `undefined-field`, `arity-mismatch`,
 `not-callable`, `no-main`, `unsupported-construct`. Concurrency codes (phase `race`):
 `RACE001`, `RACE002`, `RACE004` (below). Falsify codes (phase `falsify`, advisory):
-`FALS001`, `FALS002` (below). New codes are additive; existing codes never change meaning.
+`FALS001`, `FALS002`, `FALS010` (below). New codes are additive; existing codes never change meaning.
 
 ## Concurrency: inferred data-race diagnostics (phase `race`)
 After a clean typecheck, `check` runs an **inferred data-race analysis** — the guarantee
@@ -117,6 +117,26 @@ findings are **advisory**: they appear in the separate `warnings` array, **never
 |---|---|
 | `FALS001` | index out of range — a slice/string index that goes negative or past the end for some concrete input |
 | `FALS002` | divide / modulo by zero — a `/` or `%` whose divisor is zero for some concrete input |
+| `FALS010` | postcondition violated — an input satisfying every `requires` makes an `ensures` clause false |
+
+### Design-by-contract: `requires` / `ensures`
+
+A function may carry declarative contract clauses on its signature, after the return
+list and before the body:
+
+```
+func div(a, b) requires b != 0 { return a / b }
+func clamp(x, lo, hi) (r) requires lo <= hi  ensures r >= lo  ensures r <= hi { ... }
+```
+
+Each clause is a boolean expression. **`requires`** (over the params) is a
+**precondition**: the falsifier *filters the input domain* — inputs that fail a
+`requires` are the caller's fault, not a bug here, so they are skipped (this
+suppresses a would-be `FALS002`/`FALS001` that only occurs on invalid input).
+**`ensures`** (over the params and named returns) is a **postcondition**, checked
+after the body returns; an input that satisfies every `requires` yet makes an
+`ensures` false is a **`FALS010`** counterexample, with the offending `ensures`
+expression in `message`. Codegen ignores contracts (they are analysis-only).
 
 Each finding names the counterexample in `message`:
 `index out of range at \`xs[i]\` when xs=[]int{}`. Reporting is **false-positive-free by
