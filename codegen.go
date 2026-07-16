@@ -83,6 +83,7 @@ type cgen struct {
 	usesRegex    bool            // program calls regex_* -> emit POSIX regex runtime
 	usesSQLite   bool            // program calls sqlite_* -> emit SQLite runtime + link -lsqlite3
 	usesCrypto   bool            // program calls crypto builtins -> emit crypto runtime + link -lcrypto
+	usesSelect   bool            // program uses `select` -> record/replay is best-effort (not yet gated)
 	usesXEdDSA   bool            // program calls xeddsa_* -> emit XEdDSA runtime + link -lsodium -lcrypto
 	usesMath     bool            // program calls math builtins (sin/cos/sqrt/...) -> emit math runtime + link -lm
 	usesNoise    bool            // program calls noise2/noise3 -> emit Perlin noise runtime + link -lm
@@ -350,9 +351,12 @@ static void mfl_io_push(const char* path, const char* hex) {
     if (q->n == q->cap) { q->cap = q->cap ? q->cap * 2 : 4; q->vals = realloc(q->vals, q->cap * sizeof(char*)); }
     q->vals[q->n++] = strdup(hex);
 }
+static int mfl_rr_io_underrun = 0;   /* replay needed more I/O than was recorded -> divergence */
 static const char* mfl_io_pop(void) {
     mfl_io_q* q = mfl_io_find(mfl_gid_path);
-    return (q->cur < q->n) ? q->vals[q->cur++] : "";
+    if (q->cur < q->n) return q->vals[q->cur++];
+    mfl_rr_io_underrun = 1;
+    return "";
 }
 /* record an I/O result (called by the interposed builtins). */
 static void mfl_rr_io_log_hex(const char* h) {
@@ -364,19 +368,31 @@ static void mfl_rr_io_log_i64(int64_t v) { char b[32]; snprintf(b, sizeof b, "%l
 static void mfl_rr_io_log_bytes(const char* s, size_t n) { char* h = mfl_hexenc(s, n); mfl_rr_io_log_hex(h); free(h); }
 static int64_t mfl_rr_io_pop_i64(void) { size_t L; char* s = mfl_hexdec(mfl_io_pop(), &L); int64_t v = L ? strtoll(s, NULL, 10) : 0; free(s); return v; }
 
+/* the determinism boundary of the recorded program (program-dependent, emitted by
+   codegen after this fixed runtime): 1 if the program uses FFI or select. */
+static int mfl_rr_prog_boundary(void);
+static int mfl_rr_besteffort = 0;   /* trace was recorded from a boundary-unsafe program */
+static int mfl_rr_verify = 0;       /* MFL_RR_VERIFY: report a faithfulness self-check */
+
 static void mfl_rr_init(void) {
     mfl_gid_path = strdup("0");           /* main goroutine */
+    if (getenv("MFL_RR_VERIFY")) mfl_rr_verify = 1;
     const char* rec = getenv("MFL_RR_RECORD");
     const char* rep = getenv("MFL_RR_REPLAY");
-    if (rec) { mfl_rr_mode = 1; mfl_rr_out = fopen(rec, "w"); if (mfl_rr_out) fprintf(mfl_rr_out, "MFLRR 1\n"); }
-    else if (rep) {
+    if (rec) {
+        mfl_rr_mode = 1; mfl_rr_out = fopen(rec, "w");
+        /* honest header: a boundary-unsafe program can't be faithfully replayed. */
+        if (mfl_rr_out) fprintf(mfl_rr_out, "MFLRR 1\nboundary %s\n",
+                                 mfl_rr_prog_boundary() ? "best-effort" : "faithful");
+    } else if (rep) {
         mfl_rr_mode = 2;
         FILE* f = fopen(rep, "r");
         if (f) {
             int cap = 64; mfl_rr_trace = malloc(cap * sizeof(char*));
             char line[16384];
             while (fgets(line, sizeof line, f)) {
-                if (line[0] == 'S') {
+                if (strncmp(line, "boundary ", 9) == 0) { if (strstr(line, "best-effort")) mfl_rr_besteffort = 1; }
+                else if (line[0] == 'S') {
                     char p[256]; if (sscanf(line, "S %255s", p) == 1) {
                         if (mfl_rr_n == cap) { cap *= 2; mfl_rr_trace = realloc(mfl_rr_trace, cap * sizeof(char*)); }
                         mfl_rr_trace[mfl_rr_n++] = strdup(p);
@@ -387,6 +403,8 @@ static void mfl_rr_init(void) {
             }
             fclose(f);
         }
+        if (mfl_rr_besteffort)
+            fprintf(stderr, "warning: best-effort trace (the program uses FFI/select) -- replay may diverge from the recorded run\n");
     }
 }
 /* replay: block until it is this goroutine's turn to complete a channel op.
@@ -415,7 +433,18 @@ static void mfl_rr_exit(void) {
     pthread_cond_broadcast(&mfl_rr_cnd);
     pthread_mutex_unlock(&mfl_rr_mu);
 }
-static void mfl_rr_finish(void) { if (mfl_rr_out) { fclose(mfl_rr_out); mfl_rr_out = NULL; } }
+static void mfl_rr_finish(void) {
+    if (mfl_rr_out) { fclose(mfl_rr_out); mfl_rr_out = NULL; }
+    /* --verify: an honest self-check that replay stayed on-script. A faithful
+       replay consumes exactly the recorded schedule and never underruns the I/O
+       log; anything else means the replay diverged from the recorded run. */
+    if (mfl_rr_mode == 2 && mfl_rr_verify) {
+        int ok = (mfl_rr_pos == mfl_rr_n) && !mfl_rr_io_underrun && !mfl_rr_besteffort;
+        fprintf(stderr, "replay-verify: schedule %d/%d ops, io-underrun=%s, boundary=%s -> %s\n",
+                mfl_rr_pos, mfl_rr_n, mfl_rr_io_underrun ? "yes" : "no",
+                mfl_rr_besteffort ? "best-effort" : "faithful", ok ? "FAITHFUL" : "DIVERGED");
+    }
+}
 
 static void mfl_chan_send(mfl_chan* c, const void* v) {
     mfl_rr_enter();
@@ -3040,6 +3069,15 @@ func (g *cgen) program(p *Program) (string, error) {
 	if !g.bodyOnly {
 		out.WriteString(cRuntime)
 		out.WriteByte('\n')
+		// record/replay determinism boundary: a program that uses FFI (extern) or
+		// `select` leaves the boundary machin can control, so its trace is
+		// best-effort — replay may diverge. Emitted as a program-dependent fn that
+		// the (fixed) rr runtime reads at init.
+		rrBoundary := 0
+		if len(p.Externs) > 0 || g.usesSelect {
+			rrBoundary = 1
+		}
+		fmt.Fprintf(&out, "static int mfl_rr_prog_boundary(void) { return %d; }\n", rrBoundary)
 		// POSIX socket + tty runtimes: always present for the native target; for the
 		// wasm target emitted only when actually used, so a browser app pulls in no
 		// socket/termios symbols (which wasi-libc does not fully provide).
@@ -3556,6 +3594,7 @@ func multiRetBuiltinC(name string) (cfn, ctype string, fields []string, needsTLS
 // and no default, it polls (1ms). The chosen body runs OUTSIDE the poll loop, so
 // break/continue/return inside a case affect the enclosing loop/function.
 func (g *cgen) selectStmt(st *SelectStmt, depth int) error {
+	g.usesSelect = true // select's poll-loop isn't gated yet -> record/replay best-effort
 	id := g.tmpID
 	g.tmpID++
 	g.buf.WriteString("{\n")

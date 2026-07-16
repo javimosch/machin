@@ -109,16 +109,25 @@ unbuffered is not a distinct case.
 - **Follow-on (same pattern, this phase):** `rand_bytes` (crypto-gated, returns a
   slice — hex-log its bytes like stdin), file reads, and socket `recv`.
 
-### Slice 1.3 — The determinism boundary + honest refusal
-- Detect boundary exits: an `extern`/FFI call under `--record` sets the trace's
-  `boundary` flag to `best-effort` (and, optionally, records a warning naming the
-  call). A `faithful` claim requires the program to have stayed pure-MFL + no-cgo
-  I/O for the whole run.
-- `machin replay` reports the boundary status up front and, on a `best-effort`
-  trace, says so — never presents a possibly-divergent replay as faithful.
-- Optional `--verify`: re-hash the replay's output stream against a recorded hash
-  and report match/divergence (a self-check that the replay reproduced the run).
-- Document the boundary in `docs/` + `guide.go`.
+### Slice 1.3 — The determinism boundary + honest refusal — ✅ DONE
+- **Boundary detection (compile-time).** codegen emits `mfl_rr_prog_boundary()`
+  returning 1 when the program uses **FFI (`extern`)** or **`select`** — the two
+  ways a program leaves the boundary machin can control. Conservative + honest: a
+  program that *can* call FFI is best-effort.
+- **Honest trace header.** `--record` writes `boundary faithful|best-effort` into
+  the trace. `--replay` reads it and, on a best-effort trace, prints a `warning:`
+  to stderr — never presents a possibly-divergent replay as faithful.
+- **`--verify`** (`MFL_RR_VERIFY`): an honest self-check at replay end — a faithful
+  replay consumes exactly the recorded schedule (`pos == n`) and never underruns
+  the I/O log; anything else (or a best-effort trace) reports `DIVERGED`. Wired to
+  `machin run --verify`.
+- Proven (`verify-replay.sh` 17/17): a pure program → `faithful` + `--verify`
+  certifies FAITHFUL; an FFI program → `best-effort`, replay warns, `--verify`
+  refuses to certify (DIVERGED); a `select` program → `best-effort`. `guide.go`
+  updated (run verb documents `--record`/`--replay`/`--verify` + the boundary).
+- (The dedicated `machin replay <trace>` command — loading a trace + re-running
+  without re-specifying the source — is Slice 1.4; here replay rides
+  `machin run --replay`.)
 
 ### Slice 1.4 — The payoff: `machin replay` + the causal report
 - `machin replay <trace>` re-executes deterministically (the headline command).

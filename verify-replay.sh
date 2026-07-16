@@ -109,6 +109,25 @@ build "$T/combo.mfl" "$T/combo"
 R=$(rec "$T/combo" "$T/tco"); sleep 1
 U=$(for i in $(seq 1 8); do rep "$T/combo" "$T/tco"; done | sort -u); chk "$U" "$R" "schedule + per-worker I/O replay together"
 
+# ---- fixture 7: determinism boundary — honest faithful vs best-effort ----
+# a pure program records a `faithful` trace and --verify certifies it.
+hdr=$(sed -n 2p "$T/tr"); chk "$hdr" "boundary faithful" "pure program -> faithful trace"
+V=$(MFL_RR_REPLAY="$T/tr" MFL_RR_VERIFY=1 "$T/race" 2>&1 >/dev/null); case "$V" in *FAITHFUL*) pass=$((pass+1)); echo "ok   --verify certifies FAITHFUL";; *) fail=$((fail+1)); echo "FAIL --verify: $V";; esac
+
+# an FFI program records a `best-effort` trace; replay warns; --verify never certifies it.
+printf 'extern "m" { header "math.h" link "m" fn sqrt(float) float }\nfunc main() { println(str(sqrt(16.0))) }\n' > "$T/ffi.mfl"
+build "$T/ffi.mfl" "$T/ffi"
+rec "$T/ffi" "$T/tf" >/dev/null
+hdr=$(sed -n 2p "$T/tf"); chk "$hdr" "boundary best-effort" "FFI program -> best-effort trace"
+W=$(MFL_RR_REPLAY="$T/tf" "$T/ffi" 2>&1 >/dev/null); case "$W" in *best-effort*) pass=$((pass+1)); echo "ok   replay warns on a best-effort trace";; *) fail=$((fail+1)); echo "FAIL no best-effort warning: $W";; esac
+V=$(MFL_RR_REPLAY="$T/tf" MFL_RR_VERIFY=1 "$T/ffi" 2>&1 >/dev/null); case "$V" in *DIVERGED*) pass=$((pass+1)); echo "ok   --verify refuses to certify a best-effort trace (DIVERGED)";; *) fail=$((fail+1)); echo "FAIL best-effort should not certify: $V";; esac
+
+# a select program is flagged best-effort too.
+printf 'func send(ch) { ch <- 7 }\nfunc main() { ch := make(chan int)  go send(ch)  select { case v := <-ch: println(str(v)) } }\n' > "$T/sel.mfl"
+build "$T/sel.mfl" "$T/sel"
+rec "$T/sel" "$T/tsl" >/dev/null
+hdr=$(sed -n 2p "$T/tsl"); chk "$hdr" "boundary best-effort" "select program -> best-effort trace"
+
 echo
 echo "record/replay gate: $pass pass, $fail fail"
 rm -rf "$T"
