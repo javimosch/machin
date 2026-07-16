@@ -236,6 +236,10 @@ func cg_builtin(iid, call_idx, callee, names) (out) {
 func cg_print(iid, call_idx, depth) {
     n := nodes[call_idx]
     args := n.kids
+    // gate the whole print statement so concurrent output interleaving is
+    // captured + replayed (a no-op unless recording/replaying).
+    cemit("mfl_rr_print_begin();\n")
+    indent(depth)
     i := 0
     for i < len(args) {
         if i > 0 { cemit("fputs(\" \", stdout); ") }
@@ -254,6 +258,8 @@ func cg_print(iid, call_idx, depth) {
     }
     indent(depth)
     if n.s == "println" { cemit("fputs(\"\\n\", stdout);\n") } else { cemit("fflush(stdout);\n") }
+    indent(depth)
+    cemit("mfl_rr_print_end();\n")
 }
 
 func assign_line(iid, name, val, depth) {

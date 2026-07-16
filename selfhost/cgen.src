@@ -539,7 +539,10 @@ func cg_stmt(iid, idx, depth) {
 // channel op into temps, spins trying each case in source order (default, if any,
 // always fires last; otherwise mfl_sleep(1) and retry), then dispatches the winning
 // case body. The leading indent is already emitted by cg_stmt.
+var g_uses_select = 0   // program uses select -> record/replay best-effort boundary
+
 func cg_select(iid, idx, depth) {
+    g_uses_select = 1
     n := nodes[idx]
     id := g_tmpid
     g_tmpid = g_tmpid + 1
@@ -657,7 +660,7 @@ func cg_go(iid, idx) {
     }
 
     // arg struct (a leading dummy field avoids an empty struct)
-    sline := "struct mfl_go_" + ids + " { char _;"
+    sline := "struct mfl_go_" + ids + " { char _; char* _ppath; int _cidx;"
     i = 0
     for i < len(cargs) {
         sline = sline + " " + ctype_slot(g_insts[cinst].pslots[i]) + " a" + str(i) + ";"
@@ -666,7 +669,7 @@ func cg_go(iid, idx) {
     tramp_emit(sline + " };\n")
     // trampoline function: thaw any frozen strings into the NEW arena before
     // calling through, so the arena boundary is safe on the receiving side.
-    tramp_emit("static void* mfl_go_run_" + ids + "(void* p) { mfl_arena _a = {0}; mfl_arena_cur = &_a; struct mfl_go_" + ids + "* s = (struct mfl_go_" + ids + "*)p;\n")
+    tramp_emit("static void* mfl_go_run_" + ids + "(void* p) { mfl_arena _a = {0}; mfl_arena_cur = &_a; struct mfl_go_" + ids + "* s = (struct mfl_go_" + ids + "*)p; mfl_gid_path = mfl_path_child(s->_ppath, s->_cidx); mfl_spawn_ctr = 0; free(s->_ppath);\n")
     if len(stroffs) > 0 {
         tramp_emit("    mfl_thaw_strs(" + str(len(stroffs)) + ", (int[]){" + join_offs(stroffs) + "}, s);\n")
     }
@@ -683,6 +686,7 @@ func cg_go(iid, idx) {
     // goroutine gets a chance to thaw it back out.
     cemit("{\n")
     cemit("        struct mfl_go_" + ids + "* s = malloc(sizeof(*s));\n")
+    cemit("        s->_cidx = ++mfl_spawn_ctr; s->_ppath = strdup(mfl_gid_path ? mfl_gid_path : \"0\");\n")
     i = 0
     for i < len(cargs) {
         cemit("        s->a" + str(i) + " = (" + cg_expr(iid, cargs[i]) + ");\n")

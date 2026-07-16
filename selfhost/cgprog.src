@@ -224,8 +224,13 @@ func cg_program() {
         }
         cemit("}\n")
     }
+    // record/replay determinism boundary: 1 if the program uses FFI or select.
+    rr_boundary := 0
+    if len(g_extblocks) > 0 { rr_boundary = 1 }
+    if g_uses_select == 1 { rr_boundary = 1 }
+    cemit("static int mfl_rr_prog_boundary(void) { return " + str(rr_boundary) + "; }\n")
     // 7. native entry point (only when the program defines main)
     if func_root("main") >= 0 {
-        cemit("int main(int argc, char** argv) { signal(SIGPIPE, SIG_IGN); mfl_argc = argc; mfl_argv = argv; mfl_main(); return 0; }\n")
+        cemit("int main(int argc, char** argv) { signal(SIGPIPE, SIG_IGN); mfl_argc = argc; mfl_argv = argv; mfl_rr_init(); mfl_main(); mfl_rr_finish(); return 0; }\n")
     }
 }

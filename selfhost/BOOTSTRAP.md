@@ -269,6 +269,27 @@ channels (make/send/recv/select), closures (MakeClosure/CallValue) — the ~11 c
 codegen skips. The base prelude covers programs using no math/crypto/sqlite/regex/tls
 builtins (the compiler is one); embedding the gated blocks would generalize `--full`.
 
+### ✅ Record/replay (Phase 2) — self-host port, byte-identical
+Sound record/replay (`machin run --record`/`replay`/`--verify`) is a **runtime** feature:
+the C the compiler emits carries an `mfl_rr_*` instrumentation layer (goroutine gid paths,
+channel-op schedule, I/O log, print-interleave gating, causal crash JSON). Porting it to
+the self-hosted compiler was purely mechanical because the oracle-diff catches any drift:
+- **Prelude half** (the always-native runtime: `mfl_rr_init`/`finish`/`print_begin`/
+  `path_child`/`gid_path`/`spawn_ctr`) is *regenerated*, not hand-ported — `gen-prelude.py`
+  re-derives `cgprelude.src`'s base64 blocks from `machin build --emit-c` minus the
+  bodyOnly body. Re-run it after any `cRuntime` change.
+- **BodyOnly half** (program-dependent, hand-ported + oracle-diffed): `main()` prologue
+  (`mfl_rr_init(); mfl_main(); mfl_rr_finish();`) and the boundary in `cgprog.src`;
+  print gating in `cgbuiltin.src` (`cg_print` wraps `mfl_rr_print_begin/end`); goroutine
+  gid in `cgen.src` (struct `_ppath`/`_cidx`, trampoline `mfl_gid_path = mfl_path_child(...)`,
+  callsite `s->_cidx = ++mfl_spawn_ctr; s->_ppath = strdup(...)`); `g_uses_select` flag.
+- **Honesty invariant:** `mfl_rr_prog_boundary()`'s *definition* is emitted per-program
+  (`return 0/1` by FFI/select usage) in the bodyOnly region — it is NOT baked into the
+  prelude as a constant, or the self-hosted compiler would always claim `faithful`. Only
+  its forward-decl + call sites live in the prelude.
+Verified: verify-cgen.sh **413 PASS / 2 pre-existing FAIL** (byte-identical), `go test .`
+green, verify-replay.sh 24/24.
+
 ### Stage 4 — C codegen, Stage 5 — driver, Stage 6 — fixpoint
 (unchanged; see top.)
 
