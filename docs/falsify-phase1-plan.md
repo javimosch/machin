@@ -71,7 +71,7 @@ document that `phase=="falsify"` diagnostics are non-fatal unless `--falsify-str
 Modelled on the race arc (Go reference → integrate into `check` → self-host port
 → blog). Each slice is independently shippable and corpus-validated.
 
-### Slice 1.1 — `falsify.go`: promote the spike to a real Go pass
+### Slice 1.1 — `falsify.go`: promote the spike to a real Go pass — ✅ DONE (commit 452c76d)
 - Move the spike interpreter/enumerator into a non-throwaway `falsify.go` with an
   exported `detectFalsifiable(prog, c) []falsifyFinding` mirroring
   `detectRaces`'s signature and finding struct.
@@ -81,16 +81,27 @@ Modelled on the race arc (Go reference → integrate into `check` → self-host 
   - **String-range value** currently treated as int; make range-over-string bind
     a 1-char string (matches MFL semantics) — or drop string bodies from scope
     and mark `unknown`.
-- Add `FALS003` nil-deref: enumerate a `nil` candidate for map/slice params and
-  trap on index/len/field-use of nil.
+- ~~Add `FALS003` nil-deref~~ **deferred to Slice 1.3.** MFL has value semantics
+  and no source-level null pointers; the only nil surface in 1.1 scope is a nil
+  slice, whose index already traps as `FALS001`. A distinct `FALS003` earns its
+  keep only once maps (nil-map write) and structs land in 1.3, so it moves there.
 - **Domain generator**: extract the `domain(slot)` logic; make bounds a single
-  named policy (`intDomain`, sliceLenMax=3, sliceElemVals) so the honesty story
-  is auditable and logged.
-- **Cost cap + `unknown`**: keep the mixed-radix product cap and the per-input
-  step budget; when either trips, record `unknown` (do not silently under-report).
-  `log()` the drop, per the "no silent caps" rule.
-- Test: port `falsify_spike_test.go` fixtures + the `--safe` repro-confirms-bug
-  assertion into a permanent `falsify_test.go`.
+  named policy (`falsIntDomain`, `falsSliceLenMax=3`, `falsSliceElemVals`, …) so
+  the honesty story is auditable. ✅
+- **Cost cap + `unknown`**: mixed-radix product cap + per-input step budget; on
+  trip, the input is `unknown` (never silently counted clean). `falsifyStats`
+  exposes `Skipped`/`AllUnknown`; the user-facing `log()` of drops lands with the
+  verdict envelope in Slice 1.2. ✅
+- **Key hardening beyond the plan**: the interpreter marks any unmodeled node or
+  call `unknown` and never reports it, so a counterexample is emitted only from a
+  fully-modeled concrete path — no stubbed value can manufacture a false positive.
+- Test: permanent `falsify_test.go` — `TestFalsifyFinds` (planted bugs +
+  `--safe` repro-panics), `TestFalsifyOperators` (operator families + unknown
+  paths), `TestFalsifyHelpers`, `TestFalsifyDiagnostic`. Package coverage 87.60%
+  (floor 87.00%); `go test .` green. ✅
+
+*Scope note carried into 1.2/1.3:* the two spike defects are fixed
+(precedence-correct render, range-over-string binds a 1-char string).
 
 ### Slice 1.2 — integrate into `check` + the `machin falsify` driver
 - In `analyzeSource` (`check.go`), after the race pass, run `detectFalsifiable`
