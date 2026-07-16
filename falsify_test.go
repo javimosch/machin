@@ -126,8 +126,8 @@ func TestFalsifyFinds(t *testing.T) {
 func TestFalsifyDiagnostic(t *testing.T) {
 	ff := falsifyFinding{Decl: "avg", Code: "FALS002", Prop: "division by zero", Expr: "total / len(xs)", Bind: "xs=[]int{}"}
 	d := ff.toDiagnostic()
-	if d.Phase != "falsify" || d.Code != "FALS002" {
-		t.Fatalf("phase/code = %s/%s", d.Phase, d.Code)
+	if d.Phase != "falsify" || d.Code != "FALS002" || d.Severity != "warning" {
+		t.Fatalf("phase/code/sev = %s/%s/%s", d.Phase, d.Code, d.Severity)
 	}
 	want := "division by zero at `total / len(xs)` when xs=[]int{}"
 	if d.Message != want {

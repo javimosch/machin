@@ -103,7 +103,21 @@ Modelled on the race arc (Go reference → integrate into `check` → self-host 
 *Scope note carried into 1.2/1.3:* the two spike defects are fixed
 (precedence-correct render, range-over-string binds a 1-char string).
 
-### Slice 1.2 — integrate into `check` + the `machin falsify` driver
+### Slice 1.2 — integrate into `check` + the `machin falsify` driver — ✅ DONE
+
+Implemented: `CheckResult.Warnings` (advisory channel — falsify findings never
+touch `ok`/`errorCount`/exit code); `analyzeSource` runs `detectFalsifiable`
+after the race pass on a clean typecheck; `emitCheck` prints warnings in human
+mode; `machin falsify` driver (`falsifycmd.go`) with `--json` verdict envelope
+`{ok, counterexamples, findings, coverage:{checked,skipped,allUnknown}}` (never
+claims `proved`) and `--repro <dir>` (drops any existing `main`, writes runnable
+repros that panic under `--safe`). Docs (`check-json.md` — new phase/codes +
+`warnings` field + falsify section) and `guide.go` (falsify verb + `check`
+description + `falsification` gotcha) updated. Version bump held for the 1.5
+release. Tests: `TestFalsifyInCheck`, `TestFalsifyCmdJSON/Repro/Errors`. Full
+`go test .` green; coverage floor held.
+
+<details><summary>original plan</summary>
 - In `analyzeSource` (`check.go`), after the race pass, run `detectFalsifiable`
   and append findings as `phase:"falsify"` diagnostics, `Line` via `declLine`.
   Default on for `check --json` (it's advisory); gated off `build`.
@@ -114,6 +128,7 @@ Modelled on the race arc (Go reference → integrate into `check` → self-host 
   form). Repros are the auto-promotable regression tests.
 - Update `docs/check-json.md` (new phase + codes) and `guide.go` (version bump +
   a `falsify` gotcha/verb entry so agents discover it in-binary).
+</details>
 
 ### Slice 1.3 — widen the domain: structs, maps, interprocedural
 This is the bulk of the work and where real programs live.

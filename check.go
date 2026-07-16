@@ -42,6 +42,10 @@ type CheckResult struct {
 	Files       []string     `json:"files"`
 	ErrorCount  int          `json:"errorCount"`
 	Diagnostics []Diagnostic `json:"diagnostics"`
+	// Warnings are advisory findings (phase:"falsify") — bounded bug counterexamples
+	// that DO NOT affect OK/ErrorCount or the exit code. An agent reads them as
+	// "the compiler found an input that breaks this", not "this failed to compile".
+	Warnings []Diagnostic `json:"warnings,omitempty"`
 }
 
 func cmdCheck(args []string) error {
@@ -95,6 +99,7 @@ func cmdCheck(args []string) error {
 // call it directly). lex -> parse (per declaration, collecting all errors) -> typecheck.
 func analyzeSource(combined string, srcNames []string) CheckResult {
 	diags := []Diagnostic{}
+	var warns []Diagnostic
 
 	// split into declaration blocks, tracking each one's start line for reporting
 	blocks, blockLines, err := splitFunctionsLoc(combined)
@@ -157,10 +162,18 @@ func analyzeSource(combined string, srcNames []string) CheckResult {
 				d.Line = declLine[rf.Decl]
 				diags = append(diags, d)
 			}
+
+			// falsify phase: bounded counterexamples (Slice 1.2). Advisory —
+			// emitted as Warnings, never affecting OK / exit code.
+			for _, ff := range detectFalsifiable(prog, c) {
+				d := ff.toDiagnostic()
+				d.Line = declLine[ff.Decl]
+				warns = append(warns, d)
+			}
 		}
 	}
 
-	return CheckResult{OK: len(diags) == 0, Files: srcNames, ErrorCount: len(diags), Diagnostics: diags}
+	return CheckResult{OK: len(diags) == 0, Files: srcNames, ErrorCount: len(diags), Diagnostics: diags, Warnings: warns}
 }
 
 // emitCheck writes the verdict (JSON to stdout, or human text to stderr) and exits
@@ -175,10 +188,11 @@ func emitCheck(res CheckResult, jsonOut bool) error {
 		if err := enc.Encode(res); err != nil {
 			return err
 		}
-	} else if res.OK {
-		fmt.Fprintln(os.Stderr, "ok — no errors")
 	} else {
-		for _, d := range res.Diagnostics {
+		if res.OK {
+			fmt.Fprintln(os.Stderr, "ok — no errors")
+		}
+		for _, d := range append(append([]Diagnostic{}, res.Diagnostics...), res.Warnings...) {
 			loc := ""
 			if d.Decl != "" {
 				loc = " in " + d.Decl

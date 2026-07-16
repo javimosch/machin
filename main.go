@@ -35,7 +35,9 @@ func main() {
 	case "encode":
 		err = cmdEncode(os.Args[2:])
 	case "check":
-		err = cmdCheck(os.Args[2:]) // agent-native diagnostics (lex/parse/typecheck only, JSON)
+		err = cmdCheck(os.Args[2:]) // agent-native diagnostics (lex/parse/typecheck + advisory falsify, JSON)
+	case "falsify":
+		err = cmdFalsify(os.Args[2:]) // bounded counterexamples: the exact input that breaks a function
 	case "test":
 		err = cmdTest(os.Args[2:]) // native MFL test runner (framework/test.src assert helpers)
 	case "pack":

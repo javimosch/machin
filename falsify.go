@@ -53,7 +53,7 @@ type falsifyFinding struct {
 
 func (ff falsifyFinding) toDiagnostic() Diagnostic {
 	return Diagnostic{
-		Severity: "error", // advisory; check.go documents phase=="falsify" as non-fatal
+		Severity: "warning", // advisory: falsify findings never fail `check`/`build`
 		Phase:    "falsify",
 		Code:     ff.Code,
 		Message:  fmt.Sprintf("%s at `%s` when %s", ff.Prop, ff.Expr, ff.Bind),
@@ -730,6 +730,9 @@ func runOne(fn *FuncDecl, args []fval, funcs map[string]*FuncDecl) (v *fviol, un
 func reproProgram(decls []string, target string, bindArgs []fval) string {
 	var b strings.Builder
 	for _, d := range decls {
+		if declName(d) == "main" {
+			continue // the repro supplies its own main
+		}
 		b.WriteString(d)
 		b.WriteString("\n")
 	}
