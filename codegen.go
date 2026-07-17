@@ -264,12 +264,15 @@ typedef struct {
     int nstr; int* stroff;
     char* (*ser)(const void*);          /* json mode: element -> arena JSON */
     void (*des)(const char*, void*);    /* json mode: JSON -> *out (arena) */
+    int64_t id;                         /* sequential channel id, for the deadlock wait-cycle report */
 } mfl_chan;
+static int64_t mfl_chan_id_ctr = 0;
 static mfl_chan* mfl_make_chan(int64_t es, char* (*ser)(const void*), void (*des)(const char*, void*), int nstr, ...) {
     mfl_chan* c = malloc(sizeof(mfl_chan));
     pthread_mutex_init(&c->mu, NULL); pthread_cond_init(&c->cnd, NULL);
     c->head = c->tail = NULL; c->es = es; c->closed = 0;
     c->ser = ser; c->des = des;
+    c->id = __atomic_fetch_add(&mfl_chan_id_ctr, 1, __ATOMIC_RELAXED);
     c->nstr = nstr; c->stroff = NULL;
     if (nstr > 0) {
         c->stroff = (int*)malloc((size_t)nstr * sizeof(int));
@@ -549,7 +552,31 @@ static void mfl_dl_deadlock(void);
 static void mfl_dl_note(void)    { pthread_mutex_lock(&mfl_dl_mu); mfl_dl_gen++;  pthread_mutex_unlock(&mfl_dl_mu); }
 static void mfl_dl_spawn(void)   { pthread_mutex_lock(&mfl_dl_mu); mfl_dl_live++; pthread_mutex_unlock(&mfl_dl_mu); }
 static void mfl_dl_finish(void)  { pthread_mutex_lock(&mfl_dl_mu); mfl_dl_live--; pthread_mutex_unlock(&mfl_dl_mu); }
-static void mfl_dl_unblock(void) { pthread_mutex_lock(&mfl_dl_mu); mfl_dl_blocked--; pthread_mutex_unlock(&mfl_dl_mu); }
+
+/* wait table: which goroutine (its stable gid path) is parked receiving on which channel
+   id. Populated as goroutines block, so a declared deadlock can print the exact wait-cycle
+   an agent reads — the same causal-artifact idea as the replay crash report. */
+typedef struct { char* gid; int64_t chan; } mfl_dl_waiter;
+static mfl_dl_waiter* mfl_dl_w = NULL;
+static int mfl_dl_nw = 0, mfl_dl_capw = 0;
+static void mfl_dl_wait_add(const char* gid, int64_t chan) { /* caller holds mfl_dl_mu */
+    if (mfl_dl_nw == mfl_dl_capw) { mfl_dl_capw = mfl_dl_capw ? mfl_dl_capw * 2 : 8; mfl_dl_w = realloc(mfl_dl_w, (size_t)mfl_dl_capw * sizeof(mfl_dl_waiter)); }
+    mfl_dl_w[mfl_dl_nw].gid = strdup(gid ? gid : "0");
+    mfl_dl_w[mfl_dl_nw].chan = chan;
+    mfl_dl_nw++;
+}
+static void mfl_dl_wait_del(const char* gid) { /* caller holds mfl_dl_mu */
+    const char* g = gid ? gid : "0";
+    for (int i = 0; i < mfl_dl_nw; i++) {
+        if (strcmp(mfl_dl_w[i].gid, g) == 0) { free(mfl_dl_w[i].gid); mfl_dl_w[i] = mfl_dl_w[--mfl_dl_nw]; return; }
+    }
+}
+static void mfl_dl_unblock(void) {
+    pthread_mutex_lock(&mfl_dl_mu);
+    mfl_dl_blocked--;
+    mfl_dl_wait_del(mfl_gid_path);
+    pthread_mutex_unlock(&mfl_dl_mu);
+}
 /* quiescence-based detection: a deadlock is only declared when every live goroutine is
    parked in a receive AND no channel send/close has happened across a short window. A
    plain "blocked == live" snapshot is racy — a receiver just signaled by a send/close is
@@ -571,17 +598,30 @@ static void* mfl_dl_watchdog(void* _p) {
     }
     return NULL;
 }
-static void mfl_dl_block(void) {
+static void mfl_dl_block(int64_t chan) {
     /* lazily start the watchdog on the first receive that parks — a program that never
        blocks on a channel pays nothing. */
     pthread_mutex_lock(&mfl_dl_mu);
     mfl_dl_blocked++;
+    mfl_dl_wait_add(mfl_gid_path, chan);
     int start = !mfl_dl_wd; mfl_dl_wd = 1;
     pthread_mutex_unlock(&mfl_dl_mu);
     if (start) { pthread_t t; pthread_create(&t, NULL, mfl_dl_watchdog, NULL); pthread_detach(t); }
 }
+/* report the wait-cycle: every parked goroutine and the channel it can never receive from.
+   Under MFL_RR_JSON, a structured artifact an agent reads instead of a hang. */
 static void mfl_dl_deadlock(void) {
-    fprintf(stderr, "fatal: deadlock — all %d goroutine(s) are blocked on a channel receive, none can send\n", mfl_dl_live);
+    pthread_mutex_lock(&mfl_dl_mu);
+    if (mfl_rr_json) {
+        fprintf(stderr, "{\"deadlock\":true,\"goroutines\":%d,\"blocked\":[", mfl_dl_live);
+        for (int i = 0; i < mfl_dl_nw; i++)
+            fprintf(stderr, "%s{\"goroutine\":\"%s\",\"recvOnChannel\":%lld}", i ? "," : "", mfl_dl_w[i].gid, (long long)mfl_dl_w[i].chan);
+        fputs("]}\n", stderr);
+    } else {
+        fprintf(stderr, "fatal: deadlock — all %d goroutine(s) blocked on a channel receive, none can send:\n", mfl_dl_live);
+        for (int i = 0; i < mfl_dl_nw; i++)
+            fprintf(stderr, "  goroutine %-5s waiting to receive on channel #%lld\n", mfl_dl_w[i].gid, (long long)mfl_dl_w[i].chan);
+    }
     fflush(stderr);
     _exit(2);
 }
@@ -624,7 +664,7 @@ static int mfl_chan_recv2(mfl_chan* c, void* out) {
     mfl_rr_enter();
     pthread_mutex_lock(&c->mu);
     if (!c->head && !c->closed) {
-        mfl_dl_block(); /* about to park on an empty open channel */
+        mfl_dl_block(c->id); /* about to park on an empty open channel */
         while (!c->head && !c->closed) pthread_cond_wait(&c->cnd, &c->mu);
         mfl_dl_unblock();
     }

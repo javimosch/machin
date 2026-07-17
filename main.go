@@ -242,6 +242,7 @@ func raceGate(prog *Program) error {
 func cmdRun(args []string) error {
 	safe, raceSafe, verify := false, false, false
 	var src, recordTrace, replayTrace string
+	jsonReport := false
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--safe":
@@ -250,6 +251,8 @@ func cmdRun(args []string) error {
 			raceSafe = true
 		case "--verify":
 			verify = true
+		case "--json":
+			jsonReport = true
 		case "--record":
 			if i+1 >= len(args) {
 				return fmt.Errorf("run: --record needs a trace file")
@@ -305,6 +308,9 @@ func cmdRun(args []string) error {
 	}
 	if verify {
 		cmd.Env = append(cmd.Env, "MFL_RR_VERIFY=1")
+	}
+	if jsonReport {
+		cmd.Env = append(cmd.Env, "MFL_RR_JSON=1") // deadlock / crash reported as a JSON causal artifact
 	}
 	if err := cmd.Run(); err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
