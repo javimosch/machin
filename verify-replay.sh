@@ -267,6 +267,38 @@ allsame=$(for i in $(seq 1 8); do rep "$T/seld" "$T/tseld"; done | sort -u | wc 
 chk "$allsame" "1" "select-default miss count replays identically"
 chk "$(rep "$T/seld" "$T/tseld")" "$Rd" "select-default replay reproduces the recorded miss count"
 
+# ---- fixture 16: raw fd socket I/O is captured — self-contained replay (no network) ----
+# a loopback server+client exchange whose message carries now_ms()%1000 (varies each run);
+# replay reproduces it with NO real sockets (listen/accept/dial/read/write all served from
+# the I/O log), even while another process holds the port.
+cat > "$T/sock.mfl" <<'EOF'
+func serve(l) { fd := accept(l)  msg := read(fd)  n := write(fd, "echo:" + msg)  n = n + 0  close(fd) }
+func main() {
+  l := listen(18197)
+  go serve(l)
+  sleep(50)
+  c := dial("127.0.0.1", 18197)
+  w := write(c, "hi-" + str(now_ms() % 1000))  w = w + 0
+  resp := read(c)
+  println(resp)
+  close(c)
+}
+EOF
+build "$T/sock.mfl" "$T/sock"
+Rk=$(rec "$T/sock" "$T/tsock")
+chk "$(grep '^boundary' "$T/tsock")" "boundary faithful" "raw-socket trace boundary is faithful"
+allsame=$(for i in $(seq 1 5); do rep "$T/sock" "$T/tsock"; done | sort -u | wc -l)
+chk "$allsame" "1" "socket exchange replays identically (no network)"
+chk "$(rep "$T/sock" "$T/tsock")" "$Rk" "socket replay reproduces the recorded exchange"
+Vk=$(MFL_RR_REPLAY="$T/tsock" MFL_RR_VERIFY=1 "$T/sock" 2>&1 >/dev/null); case "$Vk" in *FAITHFUL*) pass=$((pass+1)); echo "ok   socket replay certifies FAITHFUL";; *) fail=$((fail+1)); echo "FAIL socket verify: $Vk";; esac
+
+# ---- fixture 17: high-level HTTP is honestly flagged best-effort (response not yet captured) ----
+# (points at a fast-refusing local port; the boundary is written at init, no external network.)
+printf 'func main() { s, b, e := http_get("http://127.0.0.1:1")  b=b  e=e  println(str(s)) }\n' > "$T/http.mfl"
+build "$T/http.mfl" "$T/http"
+rec "$T/http" "$T/thttp" >/dev/null 2>&1
+chk "$(grep '^boundary' "$T/thttp")" "boundary best-effort" "http_get trace is honestly best-effort (uncaptured)"
+
 echo
 echo "record/replay gate: $pass pass, $fail fail"
 rm -rf "$T"
