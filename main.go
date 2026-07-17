@@ -249,6 +249,7 @@ func cmdRun(args []string) error {
 	safe, raceSafe, verify := false, false, false
 	var src, recordTrace, replayTrace string
 	jsonReport := false
+	deadlockStrict := false
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--safe":
@@ -259,6 +260,8 @@ func cmdRun(args []string) error {
 			verify = true
 		case "--json":
 			jsonReport = true
+		case "--deadlock-strict":
+			deadlockStrict = true
 		case "--record":
 			if i+1 >= len(args) {
 				return fmt.Errorf("run: --record needs a trace file")
@@ -317,6 +320,9 @@ func cmdRun(args []string) error {
 	}
 	if jsonReport {
 		cmd.Env = append(cmd.Env, "MFL_RR_JSON=1") // deadlock / crash reported as a JSON causal artifact
+	}
+	if deadlockStrict {
+		cmd.Env = append(cmd.Env, "MFL_DL_STRICT=1") // also treat a blocking read as a park (opt-in)
 	}
 	if err := cmd.Run(); err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {

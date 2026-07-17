@@ -115,3 +115,43 @@ func TestDeadlockSelectSpin(t *testing.T) {
 		t.Fatalf("select-with-default should complete; got code=%d out=%q", code, out)
 	}
 }
+
+// buildRunEnv is buildRunExit with extra environment variables.
+func buildRunEnv(t *testing.T, timeoutSecs int, env []string, srcs ...string) (string, int) {
+	t.Helper()
+	bin, err := os.CreateTemp("", "mfl-dlio-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin.Close()
+	defer os.Remove(bin.Name())
+	if err := BuildBinary(&Program{Funcs: parseFuncs(t, srcs...)}, bin.Name(), false); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	cmd := exec.Command("timeout", strconv.Itoa(timeoutSecs), bin.Name())
+	cmd.Env = append(os.Environ(), env...)
+	out, _ := cmd.CombinedOutput()
+	return string(out), cmd.ProcessState.ExitCode()
+}
+
+// TestDeadlockStrictIO: --deadlock-strict (MFL_DL_STRICT) treats a blocking read that never
+// arrives as a park, so a program stuck on I/O is reported instead of hanging — but ONLY in
+// strict mode; by default an I/O wait is never flagged (a server idling on accept/read must
+// not be mistaken for a deadlock).
+func TestDeadlockStrictIO(t *testing.T) {
+	// both ends read from a socket, neither writes → stuck on I/O.
+	srcs := []string{
+		`func serve(l) { fd := accept(l) s := read(fd) println("srv" + str(len(s))) }`,
+		`func main() { l := listen(19351) go serve(l) c := dial("127.0.0.1", 19351) r := read(c) println("cli" + r) }`,
+	}
+	// strict: flagged as a deadlock on a blocking read.
+	out, code := buildRunEnv(t, 8, []string{"MFL_DL_STRICT=1"}, srcs...)
+	if code != 2 || !strings.Contains(out, "blocking read") {
+		t.Fatalf("strict mode should flag the I/O hang; got code=%d out=%q", code, out)
+	}
+	// default: NOT flagged — the read may still complete, so it waits (timeout => code 124).
+	out, code = buildRunEnv(t, 3, nil, srcs...)
+	if code == 2 {
+		t.Fatalf("default mode must NOT flag a blocking I/O wait; got code=%d out=%q", code, out)
+	}
+}

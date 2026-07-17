@@ -545,10 +545,14 @@ static void mfl_panic(const char* msg) {
    goroutine; a spawned goroutine is counted from its spawn site until its body returns. */
 static pthread_mutex_t mfl_dl_mu = PTHREAD_MUTEX_INITIALIZER;
 static int mfl_dl_live = 1;         /* main */
-static int mfl_dl_blocked = 0;      /* goroutines parked in a receive */
+static int mfl_dl_blocked = 0;      /* goroutines parked in a channel receive / select */
+static int mfl_dl_io = 0;           /* goroutines parked in a blocking read (strict mode only) */
+static int mfl_dl_strict = 0;       /* MFL_DL_STRICT: also treat a blocking read as parked */
 static unsigned long mfl_dl_gen = 0;/* bumped on every channel send/close (progress) */
 static int mfl_dl_wd = 0;           /* watchdog started? */
 static void mfl_dl_deadlock(void);
+static void* mfl_dl_watchdog(void* _p);
+__attribute__((constructor)) static void mfl_dl_init(void) { if (getenv("MFL_DL_STRICT")) mfl_dl_strict = 1; }
 static void mfl_dl_note(void)    { pthread_mutex_lock(&mfl_dl_mu); mfl_dl_gen++;  pthread_mutex_unlock(&mfl_dl_mu); }
 static void mfl_dl_spawn(void)   { pthread_mutex_lock(&mfl_dl_mu); mfl_dl_live++; pthread_mutex_unlock(&mfl_dl_mu); }
 static void mfl_dl_finish(void)  { pthread_mutex_lock(&mfl_dl_mu); mfl_dl_live--; pthread_mutex_unlock(&mfl_dl_mu); }
@@ -577,6 +581,25 @@ static void mfl_dl_unblock(void) {
     mfl_dl_wait_del(mfl_gid_path);
     pthread_mutex_unlock(&mfl_dl_mu);
 }
+/* strict mode (MFL_DL_STRICT): a blocking read (socket/stdin) that may never arrive is a
+   park too. Off by default — flagging I/O waits would falsely fire on every idle server, so
+   this is opt-in for batch jobs/tests/tools that must not hang on I/O. A no-op otherwise, so
+   the default path (and replay, which serves reads from the log) pays nothing. */
+static void mfl_dl_io_park(int enter) {
+    if (!mfl_dl_strict || mfl_rr_mode == 2) return;
+    pthread_mutex_lock(&mfl_dl_mu);
+    if (enter) {
+        mfl_dl_io++;
+        mfl_dl_wait_add(mfl_gid_path, -2); /* -2 = blocking external I/O */
+        int start = !mfl_dl_wd; mfl_dl_wd = 1;
+        pthread_mutex_unlock(&mfl_dl_mu);
+        if (start) { pthread_t t; pthread_create(&t, NULL, mfl_dl_watchdog, NULL); pthread_detach(t); }
+        return;
+    }
+    mfl_dl_io--;
+    mfl_dl_wait_del(mfl_gid_path);
+    pthread_mutex_unlock(&mfl_dl_mu);
+}
 /* quiescence-based detection: a deadlock is only declared when every live goroutine is
    parked in a receive AND no channel send/close has happened across a short window. A
    plain "blocked == live" snapshot is racy — a receiver just signaled by a send/close is
@@ -589,7 +612,9 @@ static void* mfl_dl_watchdog(void* _p) {
         usleep(20000); /* 20ms poll */
         int dead = 0;
         pthread_mutex_lock(&mfl_dl_mu);
-        if (mfl_dl_live > 0 && mfl_dl_blocked >= mfl_dl_live) {
+        /* io is 0 unless strict mode (mfl_dl_io_park is a no-op otherwise), so by default
+           this is purely the channel-parked condition — blocking I/O is not counted. */
+        if (mfl_dl_live > 0 && mfl_dl_blocked + mfl_dl_io >= mfl_dl_live) {
             if (mfl_dl_gen == last) { if (++stable >= 2) dead = 1; }
             else { stable = 0; last = mfl_dl_gen; }
         } else { stable = 0; last = mfl_dl_gen; }
@@ -615,14 +640,16 @@ static void mfl_dl_deadlock(void) {
     if (mfl_rr_json) {
         fprintf(stderr, "{\"deadlock\":true,\"goroutines\":%d,\"blocked\":[", mfl_dl_live);
         for (int i = 0; i < mfl_dl_nw; i++) {
-            if (mfl_dl_w[i].chan < 0) fprintf(stderr, "%s{\"goroutine\":\"%s\",\"blockedInSelect\":true}", i ? "," : "", mfl_dl_w[i].gid);
+            if (mfl_dl_w[i].chan == -1) fprintf(stderr, "%s{\"goroutine\":\"%s\",\"blockedInSelect\":true}", i ? "," : "", mfl_dl_w[i].gid);
+            else if (mfl_dl_w[i].chan == -2) fprintf(stderr, "%s{\"goroutine\":\"%s\",\"blockedOnIO\":true}", i ? "," : "", mfl_dl_w[i].gid);
             else fprintf(stderr, "%s{\"goroutine\":\"%s\",\"recvOnChannel\":%lld}", i ? "," : "", mfl_dl_w[i].gid, (long long)mfl_dl_w[i].chan);
         }
         fputs("]}\n", stderr);
     } else {
         fprintf(stderr, "fatal: deadlock — all %d goroutine(s) blocked, none can make progress:\n", mfl_dl_live);
         for (int i = 0; i < mfl_dl_nw; i++) {
-            if (mfl_dl_w[i].chan < 0) fprintf(stderr, "  goroutine %-5s waiting in a select (no case can ever fire)\n", mfl_dl_w[i].gid);
+            if (mfl_dl_w[i].chan == -1) fprintf(stderr, "  goroutine %-5s waiting in a select (no case can ever fire)\n", mfl_dl_w[i].gid);
+            else if (mfl_dl_w[i].chan == -2) fprintf(stderr, "  goroutine %-5s waiting on a blocking read that may never arrive (--deadlock-strict)\n", mfl_dl_w[i].gid);
             else fprintf(stderr, "  goroutine %-5s waiting to receive on channel #%lld\n", mfl_dl_w[i].gid, (long long)mfl_dl_w[i].chan);
         }
     }
@@ -1395,8 +1422,14 @@ static char* mfl_read_stdin(void) {
     if (mfl_rr_mode == 2) { size_t L; char* s = mfl_hexdec(mfl_io_pop(), &L); char* a = mfl_dup_arena(s, L); free(s); return a; }
     size_t cap = 65536, len = 0;
     char* buf = (char*)malloc(cap);
-    size_t n;
-    while ((n = fread(buf + len, 1, cap - len - 1, stdin)) > 0) {
+    for (;;) {
+        size_t want = cap - len - 1;
+        if (want > 65536) want = 65536; /* bounded per-read so an active reader signals progress often */
+        mfl_dl_io_park(1);
+        size_t n = fread(buf + len, 1, want, stdin);
+        mfl_dl_io_park(0);
+        if (n == 0) break;
+        mfl_dl_note(); /* got data = progress; only a stalled read parks with no progress */
         len += n;
         if (len + 1 >= cap) { cap *= 2; buf = (char*)realloc(buf, cap); }
     }
@@ -1818,7 +1851,10 @@ static char* mfl_read(int64_t fd) {
        replay reproduces the exchange with no network (the trace is self-contained). */
     if (mfl_rr_mode == 2) { size_t L; char* s = mfl_hexdec(mfl_io_pop(), &L); char* a = mfl_dup_arena(s, L); free(s); return a; }
     char* buf = mfl_alloc(65536);
+    mfl_dl_io_park(1);
     ssize_t n = read((int)fd, buf, 65535);
+    mfl_dl_io_park(0);
+    if (n > 0) mfl_dl_note(); /* got data = progress, so an active reader isn't "parked" */
     if (n < 0) n = 0;
     buf[n] = 0;
     if (mfl_rr_mode == 1) mfl_rr_io_log_bytes(buf, (size_t)n);
@@ -1834,7 +1870,10 @@ static mfl_bytes mfl_read_bytes(int64_t fd) {
         if (L) memcpy(b.data, s, L); free(s); return b;
     }
     mfl_bytes b; b.data = (uint8_t*)mfl_alloc(65536);
+    mfl_dl_io_park(1);
     ssize_t n = read((int)fd, b.data, 65536);
+    mfl_dl_io_park(0);
+    if (n > 0) mfl_dl_note(); /* got data = progress */
     if (n < 0) n = 0;
     b.len = (int64_t)n;
     if (mfl_rr_mode == 1) mfl_rr_io_log_bytes((char*)b.data, (size_t)n);
