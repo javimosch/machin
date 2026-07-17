@@ -83,7 +83,7 @@ type cgen struct {
 	usesRegex    bool            // program calls regex_* -> emit POSIX regex runtime
 	usesSQLite   bool            // program calls sqlite_* -> emit SQLite runtime + link -lsqlite3
 	usesCrypto   bool            // program calls crypto builtins -> emit crypto runtime + link -lcrypto
-	usesSelect   bool            // program uses `select` -> record/replay is best-effort (not yet gated)
+	usesSelect   bool            // program uses `select` (now record/replay-gated; kept for diagnostics)
 	usesXEdDSA   bool            // program calls xeddsa_* -> emit XEdDSA runtime + link -lsodium -lcrypto
 	usesMath     bool            // program calls math builtins (sin/cos/sqrt/...) -> emit math runtime + link -lm
 	usesNoise    bool            // program calls noise2/noise3 -> emit Perlin noise runtime + link -lm
@@ -420,7 +420,7 @@ static void mfl_rr_init(void) {
             fclose(f);
         }
         if (mfl_rr_besteffort)
-            fprintf(stderr, "warning: best-effort trace (the program uses FFI/select) -- replay may diverge from the recorded run\n");
+            fprintf(stderr, "warning: best-effort trace (the program uses FFI) -- replay may diverge from the recorded run\n");
     }
 }
 /* replay: block until it is this goroutine's turn to complete a channel op.
@@ -561,6 +561,11 @@ static int mfl_chan_tryrecv2(mfl_chan* c, void* out, int* ok) {
     mfl_cnode* n = c->head;
     if (n) { c->head = n->next; if (!c->head) c->tail = NULL; }
     int closed = c->closed;
+    /* a select recv that fires IS an ordered channel effect — mark it in schedule
+       order (under c->mu, like mfl_chan_recv2) so a select-using program records a
+       faithful, not best-effort, trace. Only fires in record mode; replay never
+       polls (it forces the recorded case with a blocking recv). */
+    if ((n || closed) && mfl_rr_mode == 1) mfl_rr_mark();
     pthread_mutex_unlock(&c->mu);
     if (n) { mfl_chan_deliver(c, n, out); *ok = 1; return 1; }
     if (closed) { memset(out, 0, c->es); *ok = 0; return 1; }
@@ -3361,12 +3366,14 @@ func (g *cgen) program(p *Program) (string, error) {
 	if g.wasm() {
 		out.WriteString("__attribute__((constructor)) static void mfl_wasm_stdio_init(void) { setvbuf(stdout, NULL, _IONBF, 0); setvbuf(stderr, NULL, _IONBF, 0); }\n")
 	}
-	// record/replay determinism boundary: 1 if the program uses FFI (extern) or
-	// `select` — it leaves the boundary machin can control, so its trace is
-	// best-effort. Program-dependent, so emitted here (in the body region, compared
-	// by cgentest) rather than the fixed prelude; the rr runtime forward-declares it.
+	// record/replay determinism boundary: 1 if the program uses FFI (extern) — that
+	// leaves the boundary machin can control, so its trace is best-effort. `select` is
+	// now gated (the recorded case index is replayed with a blocking op), so it stays
+	// inside the boundary and does NOT flag best-effort. Program-dependent, so emitted
+	// here (body region, compared by cgentest) rather than the fixed prelude; the rr
+	// runtime forward-declares it.
 	rrBoundary := 0
-	if len(p.Externs) > 0 || g.usesSelect {
+	if len(p.Externs) > 0 {
 		rrBoundary = 1
 	}
 	fmt.Fprintf(&out, "static int mfl_rr_prog_boundary(void) { return %d; }\n", rrBoundary)
@@ -3664,7 +3671,7 @@ func multiRetBuiltinC(name string) (cfn, ctype string, fields []string, needsTLS
 // and no default, it polls (1ms). The chosen body runs OUTSIDE the poll loop, so
 // break/continue/return inside a case affect the enclosing loop/function.
 func (g *cgen) selectStmt(st *SelectStmt, depth int) error {
-	g.usesSelect = true // select's poll-loop isn't gated yet -> record/replay best-effort
+	g.usesSelect = true // record/replay gates the select (chosen case recorded + replayed)
 	id := g.tmpID
 	g.tmpID++
 	g.buf.WriteString("{\n")
@@ -3693,23 +3700,47 @@ func (g *cgen) selectStmt(st *SelectStmt, depth int) error {
 	}
 	indentC(&g.buf, depth+1)
 	fmt.Fprintf(&g.buf, "int _sel%d = -1;\n", id)
+	// record/replay gating: on replay we do NOT poll — we pop the recorded case index
+	// and force exactly that case with a BLOCKING op (recv2/send), which waits its turn
+	// in the replayed schedule so the value & ordering match the recording byte-for-byte.
+	// A recorded select is therefore faithful, not best-effort.
 	indentC(&g.buf, depth+1)
-	g.buf.WriteString("for (;;) {\n")
+	fmt.Fprintf(&g.buf, "if (mfl_rr_mode == 2) {\n")
+	indentC(&g.buf, depth+2)
+	fmt.Fprintf(&g.buf, "_sel%d = (int)mfl_rr_io_pop_i64();\n", id)
 	for i := range st.Cases {
 		sc := &st.Cases[i]
 		indentC(&g.buf, depth+2)
+		if sc.RecvCh != nil {
+			fmt.Fprintf(&g.buf, "if (_sel%d == %d) { if (!(_sok%d_%d = mfl_chan_recv2(_sc%d_%d, &_sv%d_%d))) memset(&_sv%d_%d, 0, sizeof(_sv%d_%d)); }\n", id, i, id, i, id, i, id, i, id, i, id, i)
+		} else {
+			fmt.Fprintf(&g.buf, "if (_sel%d == %d) { mfl_chan_send(_sc%d_%d, &_sv%d_%d); }\n", id, i, id, i, id, i)
+		}
+	}
+	indentC(&g.buf, depth+1)
+	g.buf.WriteString("} else {\n")
+	indentC(&g.buf, depth+2)
+	g.buf.WriteString("for (;;) {\n")
+	for i := range st.Cases {
+		sc := &st.Cases[i]
+		indentC(&g.buf, depth+3)
 		if sc.RecvCh != nil {
 			fmt.Fprintf(&g.buf, "if (mfl_chan_tryrecv2(_sc%d_%d, &_sv%d_%d, &_sok%d_%d)) { _sel%d = %d; break; }\n", id, i, id, i, id, i, id, i)
 		} else {
 			fmt.Fprintf(&g.buf, "{ mfl_chan_send(_sc%d_%d, &_sv%d_%d); _sel%d = %d; break; }\n", id, i, id, i, id, i)
 		}
 	}
-	indentC(&g.buf, depth+2)
+	indentC(&g.buf, depth+3)
 	if st.HasDefault {
 		fmt.Fprintf(&g.buf, "{ _sel%d = %d; break; }\n", id, len(st.Cases))
 	} else {
 		g.buf.WriteString("mfl_sleep(1);\n")
 	}
+	indentC(&g.buf, depth+2)
+	g.buf.WriteString("}\n")
+	// record the chosen case index so replay can force it (I/O queue, per goroutine).
+	indentC(&g.buf, depth+2)
+	fmt.Fprintf(&g.buf, "if (mfl_rr_mode == 1) mfl_rr_io_log_i64(_sel%d);\n", id)
 	indentC(&g.buf, depth+1)
 	g.buf.WriteString("}\n")
 	for i := range st.Cases {
