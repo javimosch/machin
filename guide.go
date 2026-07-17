@@ -210,6 +210,8 @@ func machinGuide() guideCatalog {
 			{"mmap_file", "(string) -> (int, size)", "memory-map a file read-only -> (pointer-as-int, byte size), or (0,0) on error. MULTI-ASSIGN ONLY: p, n := mmap_file(path). Zero-copy: read the mapped bytes with peek_i8/peek_u8/peek_i32/peek_f32 (pages fault in lazily) instead of read_file_bytes + a copy — for large on-disk buffers like a model checkpoint. Read-only, native only; the mapping lives until the process exits", "io"},
 			{"write_file", "(string, string) -> int", "write a file (text; -1 on error)", "io"},
 			{"write_file_bytes", "(string, bytes) -> int", "write raw bytes to a file, NUL-safe (-1 on error) — for binary uploads/assets", "io"},
+			{"write_file_raw", "(string, int, int) -> int", "write a raw memory region (ptr, nbytes) to a file in one fwrite; for large buffers a bytes value cant hold (e.g. a KV-cache snapshot)", "io"},
+			{"read_file_raw", "(string, int, int) -> int", "read a file into a raw memory region (ptr, nbytes) in one fread; returns bytes read, -1 on open error", "io"},
 			{"remove", "(string) -> int", "delete a file (0 ok; -1 error)", "io"},
 			{"list_dir", "(string) -> []string", "directory entries (excludes . / ..)", "io"},
 			{"mkdir", "(string) -> int", "create a directory (0 ok; -1 error)", "io"},

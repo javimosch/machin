@@ -1388,6 +1388,23 @@ static int64_t mfl_write_file_bytes(const char* path, mfl_bytes b) {
     size_t w = b.len ? fwrite(b.data, 1, (size_t)b.len, f) : 0;
     fclose(f); return (int64_t)w;
 }
+/* raw region file I/O: dump/restore a memory region (ptr,nbytes) to/from a file
+   with a single fwrite/fread. For large buffers that a bytes value cannot hold
+   cheaply (e.g. a serialized KV cache). Returns bytes transferred, -1 on open. */
+static int64_t mfl_write_file_raw(const char* path, int64_t ptr, int64_t nbytes) {
+    FILE* f = fopen(path, "wb");
+    if (!f) return -1;
+    size_t w = nbytes > 0 ? fwrite((const void*)(intptr_t)ptr, 1, (size_t)nbytes, f) : 0;
+    fclose(f);
+    return (int64_t)w;
+}
+static int64_t mfl_read_file_raw(const char* path, int64_t ptr, int64_t nbytes) {
+    FILE* f = fopen(path, "rb");
+    if (!f) return -1;
+    size_t r = nbytes > 0 ? fread((void*)(intptr_t)ptr, 1, (size_t)nbytes, f) : 0;
+    fclose(f);
+    return (int64_t)r;
+}
 /* delete a file (0 on success, -1 on error) — e.g. removing a stored upload. */
 static int64_t mfl_remove_file(const char* path) { return remove(path) == 0 ? 0 : -1; }
 /* read a file's raw bytes (NUL-safe, unlike read_file which returns a C string).
@@ -5461,6 +5478,10 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("mfl_write_file(%s, %s)", args[0], args[1]), nil
 	case "write_file_bytes":
 		return fmt.Sprintf("mfl_write_file_bytes(%s, %s)", args[0], args[1]), nil
+	case "write_file_raw":
+		return fmt.Sprintf("mfl_write_file_raw(%s, %s, %s)", args[0], args[1], args[2]), nil
+	case "read_file_raw":
+		return fmt.Sprintf("mfl_read_file_raw(%s, %s, %s)", args[0], args[1], args[2]), nil
 	case "remove":
 		return fmt.Sprintf("mfl_remove_file(%s)", args[0]), nil
 	case "list_dir":
