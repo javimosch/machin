@@ -1561,40 +1561,60 @@ static mfl_json_result mfl_json_get(const char* json, const char* path) {
 // then references no POSIX networking symbols at all).
 const netRuntime = `/* networking: the low-level shape of Go's net package */
 static int64_t mfl_listen(int64_t port) {
+    /* replay: return the recorded fd without binding a real port (it may be taken, and
+       no bytes flow through it on replay anyway — reads are served from the I/O log). */
+    if (mfl_rr_mode == 2) return mfl_rr_io_pop_i64();
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     int opt = 1; setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
     struct sockaddr_in a; memset(&a, 0, sizeof(a));
     a.sin_family = AF_INET; a.sin_addr.s_addr = INADDR_ANY; a.sin_port = htons((uint16_t)port);
     if (bind(fd, (struct sockaddr*)&a, sizeof(a)) < 0) { perror("bind"); exit(1); }
     if (listen(fd, 64) < 0) { perror("listen"); exit(1); }
+    if (mfl_rr_mode == 1) mfl_rr_io_log_i64(fd);
     return fd;
 }
-static int64_t mfl_accept(int64_t fd) { return accept((int)fd, NULL, NULL); }
+static int64_t mfl_accept(int64_t fd) {
+    /* replay: recorded fd, and crucially DON'T block on a real accept (no client exists). */
+    if (mfl_rr_mode == 2) return mfl_rr_io_pop_i64();
+    int64_t r = accept((int)fd, NULL, NULL);
+    if (mfl_rr_mode == 1) mfl_rr_io_log_i64(r);
+    return r;
+}
 /* peer_addr: the remote IP of a connected socket (getpeername), "" on error — the real
    client IP when not behind a proxy (behind one, prefer X-Forwarded-For). */
 static const char* mfl_peer_addr(int64_t fd) {
+    if (mfl_rr_mode == 2) { size_t L; char* s = mfl_hexdec(mfl_io_pop(), &L); char* a = mfl_dup_arena(s, L); free(s); return a; }
+    const char* out = "";
     struct sockaddr_storage ss; socklen_t sl = sizeof(ss);
-    if (getpeername((int)fd, (struct sockaddr*)&ss, &sl) != 0) return "";
     char host[64] = {0};
-    if (getnameinfo((struct sockaddr*)&ss, sl, host, sizeof(host), NULL, 0, NI_NUMERICHOST) != 0) return "";
-    char* r = (char*)mfl_alloc(strlen(host) + 1); strcpy(r, host); return r;
+    if (getpeername((int)fd, (struct sockaddr*)&ss, &sl) == 0 &&
+        getnameinfo((struct sockaddr*)&ss, sl, host, sizeof(host), NULL, 0, NI_NUMERICHOST) == 0) {
+        char* r = (char*)mfl_alloc(strlen(host) + 1); strcpy(r, host); out = r;
+    }
+    if (mfl_rr_mode == 1) mfl_rr_io_log_bytes(out, strlen(out));
+    return out;
 }
 /* socket_timeout: cap blocking recv/send on a socket to ms milliseconds (0 = none), so a
    slow client can't park a connection forever. Returns 0 on success, -1 on error. */
 static int64_t mfl_socket_timeout(int64_t fd, int64_t ms) {
+    if (mfl_rr_mode == 2) return mfl_rr_io_pop_i64();
     struct timeval tv; tv.tv_sec = ms / 1000; tv.tv_usec = (ms % 1000) * 1000;
     int a = setsockopt((int)fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     int b = setsockopt((int)fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-    return (a == 0 && b == 0) ? 0 : -1;
+    int64_t r = (a == 0 && b == 0) ? 0 : -1;
+    if (mfl_rr_mode == 1) mfl_rr_io_log_i64(r);
+    return r;
 }
 /* dial: connect a TCP socket to host:port, returning an fd (-1 on failure).
    The fd is used with the same read/write/close as an accepted connection. */
 static int64_t mfl_dial(const char* host, int64_t port) {
+    /* replay: recorded fd, no real connect (the peer's bytes come from the I/O log). */
+    if (mfl_rr_mode == 2) return mfl_rr_io_pop_i64();
     struct addrinfo hints, *res, *rp;
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_UNSPEC; hints.ai_socktype = SOCK_STREAM;
     char ps[16]; snprintf(ps, sizeof(ps), "%lld", (long long)port);
-    if (getaddrinfo(host, ps, &hints, &res) != 0) return -1;
+    if (getaddrinfo(host, ps, &hints, &res) != 0) { if (mfl_rr_mode == 1) mfl_rr_io_log_i64(-1); return -1; }
     int fd = -1;
     for (rp = res; rp; rp = rp->ai_next) {
         fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
@@ -1603,34 +1623,54 @@ static int64_t mfl_dial(const char* host, int64_t port) {
         close(fd); fd = -1;
     }
     freeaddrinfo(res);
+    if (mfl_rr_mode == 1) mfl_rr_io_log_i64(fd);
     return fd;
 }
 static char* mfl_read(int64_t fd) {
+    /* a socket read is external input, like read_file/read_stdin — record the bytes so
+       replay reproduces the exchange with no network (the trace is self-contained). */
+    if (mfl_rr_mode == 2) { size_t L; char* s = mfl_hexdec(mfl_io_pop(), &L); char* a = mfl_dup_arena(s, L); free(s); return a; }
     char* buf = mfl_alloc(65536);
     ssize_t n = read((int)fd, buf, 65535);
     if (n < 0) n = 0;
     buf[n] = 0;
+    if (mfl_rr_mode == 1) mfl_rr_io_log_bytes(buf, (size_t)n);
     return buf;
 }
 // mfl_read_bytes is the NUL-safe socket read: returns the raw bytes of one chunk
 // (empty at EOF / on error). For binary wire protocols where read() (a C string)
 // would truncate at the first 0 byte.
 static mfl_bytes mfl_read_bytes(int64_t fd) {
+    if (mfl_rr_mode == 2) {
+        size_t L; char* s = mfl_hexdec(mfl_io_pop(), &L);
+        mfl_bytes b; b.data = (uint8_t*)mfl_alloc(L ? L : 1); b.len = (int64_t)L;
+        if (L) memcpy(b.data, s, L); free(s); return b;
+    }
     mfl_bytes b; b.data = (uint8_t*)mfl_alloc(65536);
     ssize_t n = read((int)fd, b.data, 65536);
     if (n < 0) n = 0;
     b.len = (int64_t)n;
+    if (mfl_rr_mode == 1) mfl_rr_io_log_bytes((char*)b.data, (size_t)n);
     return b;
 }
-static int64_t mfl_write(int64_t fd, const char* s) { return (int64_t)write((int)fd, s, strlen(s)); }
+/* a write is an output side-effect: replay records/returns the byte count but performs
+   no real send (the fd is a recorded sentinel, so writing would EPIPE). */
+static int64_t mfl_write(int64_t fd, const char* s) {
+    if (mfl_rr_mode == 2) return mfl_rr_io_pop_i64();
+    int64_t r = (int64_t)write((int)fd, s, strlen(s));
+    if (mfl_rr_mode == 1) mfl_rr_io_log_i64(r);
+    return r;
+}
 /* write the exact bytes of a buffer to an fd (NUL-safe, for binary responses). */
 static int64_t mfl_write_bytes(int64_t fd, mfl_bytes b) {
+    if (mfl_rr_mode == 2) return mfl_rr_io_pop_i64();
     size_t off = 0;
     while (off < (size_t)b.len) {
         ssize_t w = write((int)fd, b.data + off, (size_t)b.len - off);
         if (w <= 0) break;
         off += (size_t)w;
     }
+    if (mfl_rr_mode == 1) mfl_rr_io_log_i64((int64_t)off);
     return (int64_t)off;
 }
 static void mfl_close(int64_t fd) { close((int)fd); }
@@ -3366,14 +3406,16 @@ func (g *cgen) program(p *Program) (string, error) {
 	if g.wasm() {
 		out.WriteString("__attribute__((constructor)) static void mfl_wasm_stdio_init(void) { setvbuf(stdout, NULL, _IONBF, 0); setvbuf(stderr, NULL, _IONBF, 0); }\n")
 	}
-	// record/replay determinism boundary: 1 if the program uses FFI (extern) — that
-	// leaves the boundary machin can control, so its trace is best-effort. `select` is
-	// now gated (the recorded case index is replayed with a blocking op), so it stays
-	// inside the boundary and does NOT flag best-effort. Program-dependent, so emitted
-	// here (body region, compared by cgentest) rather than the fixed prelude; the rr
-	// runtime forward-declares it.
+	// record/replay determinism boundary: 1 if the program leaves the boundary machin
+	// can control, so its trace is best-effort. Triggers: FFI (extern) — the call's
+	// result is uncaptured; and the high-level HTTP/TLS/WebSocket reads (http/https/
+	// wss/tls) whose response bytes this slice does not yet record. Raw fd sockets
+	// (dial/listen/accept/read/write) ARE captured, so usesNet stays faithful; `select`
+	// is gated too. (http_get/http_request set usesTLS too, so usesTLS||usesWSS covers
+	// every uncaptured high-level read.) Program-dependent, so emitted here (body region,
+	// compared by cgentest) rather than the fixed prelude; the rr runtime forward-declares it.
 	rrBoundary := 0
-	if len(p.Externs) > 0 {
+	if len(p.Externs) > 0 || g.usesTLS || g.usesWSS {
 		rrBoundary = 1
 	}
 	fmt.Fprintf(&out, "static int mfl_rr_prog_boundary(void) { return %d; }\n", rrBoundary)

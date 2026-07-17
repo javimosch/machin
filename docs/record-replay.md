@@ -38,6 +38,7 @@ rebuilds and re-runs without you re-naming the source — and a crash the record
 | Stdin | `read_stdin` is logged; replay never blocks on the real stdin |
 | Randomness | `rand_bytes` draws are logged; a crypto program replays **faithfully**, not best-effort |
 | Files | `read_file`/`read_file_bytes` contents are logged, so replay reproduces even after the files are gone — the trace is self-contained ("the crash you can mail") |
+| Raw sockets | `dial`/`listen`/`accept`/`read`/`read_bytes`/`write`/`socket_timeout`/`peer_addr` are logged; replay serves the whole exchange from the trace — no network, no peer, works even while another process holds the port |
 
 Goroutine ids are **parent-relative paths** (`0`, `0.1`, `0.1.2`) assigned in the
 spawning goroutine's program order, so they're stable across record and replay even
@@ -46,10 +47,13 @@ under concurrent nested spawns.
 ## The determinism boundary (honest by design)
 
 Replay is faithful only inside the boundary machin controls. A program that uses
-**FFI (`extern`)** leaves it — the FFI call's result is uncaptured. Such a trace
-is flagged **`best-effort`** in its header; `machin replay` prints a warning, and
-`--verify` will never certify it `FAITHFUL`. The tool would rather refuse than
-present a possibly-divergent replay as the real thing.
+**FFI (`extern`)** leaves it — the FFI call's result is uncaptured — as does the
+**high-level HTTP/TLS/WebSocket** layer (`http_get`/`http_request`/`https_*`/
+`wss_*`/`tls_*`), whose response bytes are not yet recorded. (Raw fd sockets —
+`dial`/`listen`/`accept`/`read`/`write` — *are* captured, so they stay faithful.)
+Such a trace is flagged **`best-effort`** in its header; `machin replay` prints a
+warning, and `--verify` will never certify it `FAITHFUL`. The tool would rather
+refuse than present a possibly-divergent replay as the real thing.
 
 `select` **is** inside the boundary: its poll is gated. The chosen case index is
 recorded and, on replay, forced with a blocking op that waits its turn in the
@@ -80,9 +84,10 @@ which panicked.
 ## Scope
 
 In-process determinism only. Cross-process coordination between goroutines is out
-of scope. The trace format is versioned (`MFLRR 1`). Randomness (`rand_bytes`) and
-file reads (`read_file`/`read_file_bytes`) are now captured, and `select` is gated,
-so those programs replay faithfully and self-contained. Not yet covered (same
-pattern, follow-ons): socket I/O, and a value-query replay debugger
-(`--at <site> --print <var>`). The runtime is self-hosted (the self-hosted compiler
-emits byte-identical instrumentation).
+of scope. The trace format is versioned (`MFLRR 1`). Randomness (`rand_bytes`),
+file reads (`read_file`/`read_file_bytes`) and raw fd sockets (`dial`/`listen`/
+`accept`/`read`/`write`) are captured, and `select` is gated, so those programs
+replay faithfully and self-contained. Not yet covered (same pattern, follow-ons):
+the high-level HTTP/TLS/WebSocket response bytes (currently flagged best-effort),
+and a value-query replay debugger (`--at <site> --print <var>`). The runtime is
+self-hosted (the self-hosted compiler emits byte-identical instrumentation).

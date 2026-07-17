@@ -224,11 +224,14 @@ func cg_program() {
         }
         cemit("}\n")
     }
-    // record/replay determinism boundary: 1 if the program uses FFI. `select` is now
-    // gated (chosen case recorded + replayed with a blocking op), so it stays inside the
-    // boundary and does NOT flag best-effort.
+    // record/replay determinism boundary: 1 if the program uses FFI, or the high-level
+    // HTTP/TLS/WebSocket reads (http/https/wss/tls all set g_uses_tls or g_uses_wss),
+    // whose response bytes are not yet recorded. Raw fd sockets (dial/listen/accept/
+    // read/write) ARE captured, so they stay faithful; `select` is gated too.
     rr_boundary := 0
     if len(g_extblocks) > 0 { rr_boundary = 1 }
+    if g_uses_tls == 1 { rr_boundary = 1 }
+    if g_uses_wss == 1 { rr_boundary = 1 }
     cemit("static int mfl_rr_prog_boundary(void) { return " + str(rr_boundary) + "; }\n")
     // 7. native entry point (only when the program defines main)
     if func_root("main") >= 0 {
