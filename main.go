@@ -319,12 +319,26 @@ func cmdRun(args []string) error {
 func cmdReplay(args []string) error {
 	jsonOut, verify := false, false
 	var trace string
-	for _, a := range args {
+	var printVars []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
 		switch a {
 		case "--json":
 			jsonOut = true
 		case "--verify":
 			verify = true
+		case "--print":
+			// value-query debugger: --print <var>[,<var>...] emits a probe after each
+			// assignment to those variables, so replay shows their deterministic history.
+			if i+1 >= len(args) {
+				return fmt.Errorf("replay: --print needs a variable name (e.g. --print balance)")
+			}
+			i++
+			for _, v := range strings.Split(args[i], ",") {
+				if v = strings.TrimSpace(v); v != "" {
+					printVars = append(printVars, v)
+				}
+			}
 		default:
 			trace = a
 		}
@@ -358,7 +372,12 @@ func cmdReplay(args []string) error {
 	}
 	bin.Close()
 	defer os.Remove(bin.Name())
-	if err := BuildBinary(prog, bin.Name(), safe); err != nil {
+	// --print watches variables: instrument the rebuild for probes, then reset the global
+	// so it never leaks into any other build in this process.
+	debugProbeVars = printVars
+	err = BuildBinary(prog, bin.Name(), safe)
+	debugProbeVars = nil
+	if err != nil {
 		return err
 	}
 	traceAbs, _ := filepath.Abs(trace)
@@ -370,6 +389,9 @@ func cmdReplay(args []string) error {
 	}
 	if verify {
 		cmd.Env = append(cmd.Env, "MFL_RR_VERIFY=1")
+	}
+	if len(printVars) > 0 {
+		cmd.Env = append(cmd.Env, "MFL_RR_PROBE=1")
 	}
 	if err := cmd.Run(); err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
