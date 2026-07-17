@@ -42,6 +42,8 @@ func main() {
 		err = cmdFalsify(os.Args[2:]) // bounded counterexamples: the exact input that breaks a function
 	case "certify":
 		err = cmdCertify(os.Args[2:]) // translation validation: prove the compiler matched the source (within bounds)
+	case "equiv":
+		err = cmdEquiv(os.Args[2:]) // bounded equivalence oracle: prove two functions agree, or return the diverging input
 	case "test":
 		err = cmdTest(os.Args[2:]) // native MFL test runner (framework/test.src assert helpers)
 	case "pack":
