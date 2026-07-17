@@ -39,7 +39,11 @@ jobs:
       - name: Install zig (the C -> wasm compiler)
         uses: mlugg/setup-zig@v1
         with:
-          version: 0.16.0
+          # 0.15.2 (not the newest 0.16.0): setup-zig fetches from community mirrors that
+          # lag the latest release by days, so a brand-new version 404s in CI. `zig cc` is
+          # clang-based and version-stable for the C->wasm smoke build, so an older stable
+          # is equivalent here and reliably fetchable.
+          version: 0.15.2
 
       - name: wasm smoke build (guards POSIX-only code out of cRuntime — #463)
         run: |
