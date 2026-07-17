@@ -2150,7 +2150,7 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 			c.addPair(s, c.cInt)
 		}
 		return c.cFloat, nil
-	case "matmul_q8_batch":
+	case "matmul_q8_batch", "matmul_q4_batch":
 		if len(argSlots) != 11 {
 			return 0, fmt.Errorf("matmul_q8_batch: 11 args (ob, ostride, xq, xs, wq, ws, n, gs, B, lo, hi)")
 		}
