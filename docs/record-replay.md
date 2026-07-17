@@ -36,6 +36,8 @@ rebuilds and re-runs without you re-naming the source — and a crash the record
 | Concurrent stdout | each `print`/`println` is gated too, so output interleaving replays |
 | Time | `now`/`now_ms` results are logged and fed back |
 | Stdin | `read_stdin` is logged; replay never blocks on the real stdin |
+| Randomness | `rand_bytes` draws are logged; a crypto program replays **faithfully**, not best-effort |
+| Files | `read_file`/`read_file_bytes` contents are logged, so replay reproduces even after the files are gone — the trace is self-contained ("the crash you can mail") |
 
 Goroutine ids are **parent-relative paths** (`0`, `0.1`, `0.1.2`) assigned in the
 spawning goroutine's program order, so they're stable across record and replay even
@@ -73,8 +75,10 @@ which panicked.
 
 ## Scope
 
-In-process determinism only. Filesystem / cross-process coordination between
-goroutines is out of scope. The trace format is versioned (`MFLRR 1`). Not yet
-covered (same pattern, follow-ons): `select` gating, `rand_bytes`/file/socket I/O,
-and a value-query replay debugger (`--at <site> --print <var>`). The pass is
-self-hosted as a follow-up phase, like the Falsifier's.
+In-process determinism only. Cross-process coordination between goroutines is out
+of scope. The trace format is versioned (`MFLRR 1`). Randomness (`rand_bytes`) and
+file reads (`read_file`/`read_file_bytes`) are now captured, so those programs
+replay faithfully and self-contained. Not yet covered (same pattern, follow-ons):
+`select` gating (a select-using program is still flagged `best-effort`), socket
+I/O, and a value-query replay debugger (`--at <site> --print <var>`). The runtime
+is self-hosted (the self-hosted compiler emits byte-identical instrumentation).

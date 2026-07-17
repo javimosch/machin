@@ -183,6 +183,39 @@ for cf in examples/complex/channels.mfl examples/complex/goroutines.mfl; do
   case "$Vc" in *FAITHFUL*) pass=$((pass+1)); echo "ok   corpus $(basename "$cf") replays FAITHFUL";; *) fail=$((fail+1)); echo "FAIL corpus $(basename "$cf"): $Vc";; esac
 done
 
+# ---- fixture 12: rand_bytes is I/O — recording makes crypto FAITHFULLY replayable ----
+# rand draws fresh entropy each run (plain runs vary), but replay reproduces the recorded
+# draw byte-for-byte and --verify certifies FAITHFUL (not best-effort).
+cat > "$T/rand.mfl" <<'EOF'
+func main() {
+  b := rand_bytes(16)
+  s := 0  i := 0
+  for i < len(b) { s = s + int(byte_at(b, i))  i = i + 1 }
+  println(str(s))
+}
+EOF
+build "$T/rand.mfl" "$T/rand"
+Rr=$(rec "$T/rand" "$T/trand")
+allsame=$(for i in $(seq 1 8); do rep "$T/rand" "$T/trand"; done | sort -u | wc -l)
+chk "$allsame" "1" "rand_bytes replays identically"
+chk "$(rep "$T/rand" "$T/trand")" "$Rr" "rand replay reproduces the recorded draw"
+Vr=$(MFL_RR_REPLAY="$T/trand" MFL_RR_VERIFY=1 "$T/rand" 2>&1 >/dev/null); case "$Vr" in *FAITHFUL*) pass=$((pass+1)); echo "ok   rand_bytes replay certifies FAITHFUL";; *) fail=$((fail+1)); echo "FAIL rand verify: $Vr";; esac
+echo "  plain rand outputs (vary): $(for i in $(seq 1 6); do plain "$T/rand"; done | sort -u | tr '\n' ' ')"
+
+# ---- fixture 13: file reads are recorded — the "mailable crash" (replay w/o the files) ----
+# record with the input file present, then DELETE it; replay must still reproduce from the
+# recorded bytes (a plain run now reads empty), proving the trace is self-contained.
+echo "payload-13-$$" > "$T/in.txt"
+cat > "$T/file.mfl" <<EOF
+func main() { println("read:" + read_file("$T/in.txt")) }
+EOF
+build "$T/file.mfl" "$T/file"
+Rf=$(rec "$T/file" "$T/tfile")
+rm -f "$T/in.txt"
+chk "$(rep "$T/file" "$T/tfile")" "$Rf" "file replay reproduces recorded bytes after the file is deleted"
+chk "$(plain "$T/file")" "read:" "plain run reads empty once the file is gone (control)"
+Vf=$(MFL_RR_REPLAY="$T/tfile" MFL_RR_VERIFY=1 "$T/file" 2>&1 >/dev/null); case "$Vf" in *FAITHFUL*) pass=$((pass+1)); echo "ok   deleted-file replay certifies FAITHFUL";; *) fail=$((fail+1)); echo "FAIL file verify: $Vf";; esac
+
 echo
 echo "record/replay gate: $pass pass, $fail fail"
 rm -rf "$T"

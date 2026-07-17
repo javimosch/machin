@@ -367,6 +367,14 @@ static void mfl_rr_io_log_hex(const char* h) {
 static void mfl_rr_io_log_i64(int64_t v) { char b[32]; snprintf(b, sizeof b, "%lld", (long long)v); char* h = mfl_hexenc(b, strlen(b)); mfl_rr_io_log_hex(h); free(h); }
 static void mfl_rr_io_log_bytes(const char* s, size_t n) { char* h = mfl_hexenc(s, n); mfl_rr_io_log_hex(h); free(h); }
 static int64_t mfl_rr_io_pop_i64(void) { size_t L; char* s = mfl_hexdec(mfl_io_pop(), &L); int64_t v = L ? strtoll(s, NULL, 10) : 0; free(s); return v; }
+/* pop the next recorded I/O value into a caller buffer (up to n bytes); the recorded
+   length matches the record-time buffer, so a short read means underrun (already flagged). */
+static void mfl_rr_io_pop_into(uint8_t* dst, size_t n) {
+    size_t L; char* s = mfl_hexdec(mfl_io_pop(), &L);
+    size_t m = L < n ? L : n;
+    if (m) memcpy(dst, s, m);
+    free(s);
+}
 
 /* the determinism boundary of the recorded program (program-dependent, emitted by
    codegen after this fixed runtime): 1 if the program uses FFI or select. */
@@ -1313,14 +1321,19 @@ static int mfl_is_dir(const char* path) {
     return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
 }
 static char* mfl_read_file(const char* path) {
-    if (mfl_is_dir(path)) return mfl_dup("");
+    /* a file read is external input: recording its contents makes replay self-contained —
+       it reproduces even after the original files are gone (the "mailable crash"). */
+    if (mfl_rr_mode == 2) { size_t L; char* s = mfl_hexdec(mfl_io_pop(), &L); char* a = mfl_dup_arena(s, L); free(s); return a; }
+    if (mfl_is_dir(path)) { if (mfl_rr_mode == 1) mfl_rr_io_log_bytes("", 0); return mfl_dup(""); }
     FILE* f = fopen(path, "rb");
-    if (!f) return mfl_dup("");
+    if (!f) { if (mfl_rr_mode == 1) mfl_rr_io_log_bytes("", 0); return mfl_dup(""); }
     fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
     if (n < 0) n = 0;
     char* buf = mfl_alloc((size_t)n + 1);
     size_t r = fread(buf, 1, (size_t)n, f); buf[r] = 0;
-    fclose(f); return buf;
+    fclose(f);
+    if (mfl_rr_mode == 1) mfl_rr_io_log_bytes(buf, r);
+    return buf;
 }
 static int64_t mfl_write_file(const char* path, const char* content) {
     FILE* f = fopen(path, "wb");
@@ -1342,14 +1355,21 @@ static int64_t mfl_remove_file(const char* path) { return remove(path) == 0 ? 0 
    Empty bytes if the file can't be opened. */
 static mfl_bytes mfl_read_file_bytes(const char* path) {
     mfl_bytes b; b.len = 0; b.data = (uint8_t*)mfl_alloc(1);
-    if (mfl_is_dir(path)) return b;
+    /* same rationale as mfl_read_file: record the raw bytes for a self-contained replay. */
+    if (mfl_rr_mode == 2) {
+        size_t L; char* s = mfl_hexdec(mfl_io_pop(), &L);
+        b.data = (uint8_t*)mfl_alloc(L ? L : 1); b.len = (int64_t)L;
+        if (L) memcpy(b.data, s, L); free(s); return b;
+    }
+    if (mfl_is_dir(path)) { if (mfl_rr_mode == 1) mfl_rr_io_log_bytes("", 0); return b; }
     FILE* f = fopen(path, "rb");
-    if (!f) return b;
+    if (!f) { if (mfl_rr_mode == 1) mfl_rr_io_log_bytes("", 0); return b; }
     fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
     if (n < 0) n = 0;
     b.data = (uint8_t*)mfl_alloc((size_t)n ? (size_t)n : 1);
     b.len = (int64_t)fread(b.data, 1, (size_t)n, f);
     fclose(f);
+    if (mfl_rr_mode == 1) mfl_rr_io_log_bytes((char*)b.data, (size_t)b.len);
     return b;
 }
 static mfl_slice mfl_list_dir(const char* path) {
@@ -2493,7 +2513,11 @@ static mfl_bytes mfl_crypto_buf(int64_t n) {
 }
 static mfl_bytes mfl_crypto_rand(int64_t n) {
     mfl_bytes b = mfl_crypto_buf(n);
+    /* rand is genuinely nondeterministic every run — recording the drawn bytes makes a
+       crypto program FAITHFULLY replayable (not best-effort); replay returns them verbatim. */
+    if (mfl_rr_mode == 2) { mfl_rr_io_pop_into(b.data, (size_t)b.len); return b; }
     if (b.len > 0) RAND_bytes(b.data, (int)b.len);
+    if (mfl_rr_mode == 1) mfl_rr_io_log_bytes((char*)b.data, (size_t)b.len);
     return b;
 }
 static mfl_bytes mfl_crypto_sha256(mfl_bytes m) {
