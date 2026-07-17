@@ -46,11 +46,15 @@ under concurrent nested spawns.
 ## The determinism boundary (honest by design)
 
 Replay is faithful only inside the boundary machin controls. A program that uses
-**FFI (`extern`)** or **`select`** leaves it — an FFI call's result is
-uncaptured, and `select`'s poll loop isn't gated yet. Such a trace is flagged
-**`best-effort`** in its header; `machin replay` prints a warning, and `--verify`
-will never certify it `FAITHFUL`. The tool would rather refuse than present a
-possibly-divergent replay as the real thing.
+**FFI (`extern`)** leaves it — the FFI call's result is uncaptured. Such a trace
+is flagged **`best-effort`** in its header; `machin replay` prints a warning, and
+`--verify` will never certify it `FAITHFUL`. The tool would rather refuse than
+present a possibly-divergent replay as the real thing.
+
+`select` **is** inside the boundary: its poll is gated. The chosen case index is
+recorded and, on replay, forced with a blocking op that waits its turn in the
+replayed schedule — so which case fired (including how often `default` fired) is
+reproduced exactly. A select-using program records a `faithful` trace.
 
 `--verify` is a self-check: a faithful replay consumes exactly the recorded
 schedule and never underruns the I/O log — anything else reports `DIVERGED`.
@@ -77,8 +81,8 @@ which panicked.
 
 In-process determinism only. Cross-process coordination between goroutines is out
 of scope. The trace format is versioned (`MFLRR 1`). Randomness (`rand_bytes`) and
-file reads (`read_file`/`read_file_bytes`) are now captured, so those programs
-replay faithfully and self-contained. Not yet covered (same pattern, follow-ons):
-`select` gating (a select-using program is still flagged `best-effort`), socket
-I/O, and a value-query replay debugger (`--at <site> --print <var>`). The runtime
-is self-hosted (the self-hosted compiler emits byte-identical instrumentation).
+file reads (`read_file`/`read_file_bytes`) are now captured, and `select` is gated,
+so those programs replay faithfully and self-contained. Not yet covered (same
+pattern, follow-ons): socket I/O, and a value-query replay debugger
+(`--at <site> --print <var>`). The runtime is self-hosted (the self-hosted compiler
+emits byte-identical instrumentation).

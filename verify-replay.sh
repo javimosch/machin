@@ -122,11 +122,12 @@ hdr=$(sed -n 2p "$T/tf"); chk "$hdr" "boundary best-effort" "FFI program -> best
 W=$(MFL_RR_REPLAY="$T/tf" "$T/ffi" 2>&1 >/dev/null); case "$W" in *best-effort*) pass=$((pass+1)); echo "ok   replay warns on a best-effort trace";; *) fail=$((fail+1)); echo "FAIL no best-effort warning: $W";; esac
 V=$(MFL_RR_REPLAY="$T/tf" MFL_RR_VERIFY=1 "$T/ffi" 2>&1 >/dev/null); case "$V" in *DIVERGED*) pass=$((pass+1)); echo "ok   --verify refuses to certify a best-effort trace (DIVERGED)";; *) fail=$((fail+1)); echo "FAIL best-effort should not certify: $V";; esac
 
-# a select program is flagged best-effort too.
-printf 'func send(ch) { ch <- 7 }\nfunc main() { ch := make(chan int)  go send(ch)  select { case v := <-ch: println(str(v)) } }\n' > "$T/sel.mfl"
-build "$T/sel.mfl" "$T/sel"
-rec "$T/sel" "$T/tsl" >/dev/null
-hdr=$(sed -n 2p "$T/tsl"); chk "$hdr" "boundary best-effort" "select program -> best-effort trace"
+# a select program is now GATED (see fixtures 14/15), so its trace is faithful, not
+# best-effort — FFI is the only remaining best-effort boundary.
+printf 'func send(ch) { ch <- 7 }\nfunc main() { ch := make(chan int)  go send(ch)  select { case v := <-ch: println(str(v)) } }\n' > "$T/selb.mfl"
+build "$T/selb.mfl" "$T/selb"
+rec "$T/selb" "$T/tsl" >/dev/null
+hdr=$(sed -n 2p "$T/tsl"); chk "$hdr" "boundary faithful" "select program -> faithful trace (gated, not best-effort)"
 
 # ---- fixture 8: `machin replay <trace>` command (program path embedded) ----
 R=$($N $M run --record "$T/rc.tr" "$T/race.mfl" 2>/dev/null)   # records with a `program` line
@@ -215,6 +216,56 @@ rm -f "$T/in.txt"
 chk "$(rep "$T/file" "$T/tfile")" "$Rf" "file replay reproduces recorded bytes after the file is deleted"
 chk "$(plain "$T/file")" "read:" "plain run reads empty once the file is gone (control)"
 Vf=$(MFL_RR_REPLAY="$T/tfile" MFL_RR_VERIFY=1 "$T/file" 2>&1 >/dev/null); case "$Vf" in *FAITHFUL*) pass=$((pass+1)); echo "ok   deleted-file replay certifies FAITHFUL";; *) fail=$((fail+1)); echo "FAIL file verify: $Vf";; esac
+
+# ---- fixture 14: select recv is GATED — a select-using program replays FAITHFULLY ----
+# two feeders race into a select (plain runs vary in a/b interleaving), but replay
+# reproduces the recorded choice sequence and --verify certifies FAITHFUL. The chosen
+# case index is recorded + forced on replay, so select is no longer best-effort.
+cat > "$T/sel.mfl" <<'EOF'
+func feed(ch, base, dly) { i := 0  for i < 5 { sleep(dly)  ch <- base + i  i = i + 1 } }
+func main() {
+  a := make(chan int)  b := make(chan int)
+  go feed(a, 100, 2)  go feed(b, 200, 3)
+  got := 0  order := ""
+  for got < 10 {
+    select {
+    case x := <-a: order = order + "a" + str(x) + " "  got = got + 1
+    case y := <-b: order = order + "b" + str(y) + " "  got = got + 1
+    }
+  }
+  println(order)
+}
+EOF
+build "$T/sel.mfl" "$T/sel"
+Rs=$(rec "$T/sel" "$T/tsel")
+allsame=$(for i in $(seq 1 8); do rep "$T/sel" "$T/tsel"; done | sort -u | wc -l)
+chk "$allsame" "1" "select recv replays identically"
+chk "$(rep "$T/sel" "$T/tsel")" "$Rs" "select replay reproduces the recorded interleaving"
+chk "$(grep '^boundary' "$T/tsel")" "boundary faithful" "select trace boundary is faithful (not best-effort)"
+Vs=$(MFL_RR_REPLAY="$T/tsel" MFL_RR_VERIFY=1 "$T/sel" 2>&1 >/dev/null); case "$Vs" in *FAITHFUL*) pass=$((pass+1)); echo "ok   select replay certifies FAITHFUL";; *) fail=$((fail+1)); echo "FAIL select verify: $Vs";; esac
+echo "  plain select orderings (distinct): $(for i in $(seq 1 8); do plain "$T/sel"; done | sort -u | wc -l)"
+
+# ---- fixture 15: select DEFAULT firing is gated — exact miss count reproduces ----
+# how many times default fires depends on timing (plain runs vary); replay reproduces
+# the recorded count exactly.
+cat > "$T/seld.mfl" <<'EOF'
+func feed(ch) { i := 0  for i < 5 { sleep(2)  ch <- i  i = i + 1 } }
+func main() {
+  a := make(chan int)
+  go feed(a)
+  got := 0  misses := 0
+  for got < 5 {
+    select { case x := <-a: got = got + 1 + x - x  default: misses = misses + 1 }
+    sleep(1)
+  }
+  println("misses:" + str(misses))
+}
+EOF
+build "$T/seld.mfl" "$T/seld"
+Rd=$(rec "$T/seld" "$T/tseld")
+allsame=$(for i in $(seq 1 8); do rep "$T/seld" "$T/tseld"; done | sort -u | wc -l)
+chk "$allsame" "1" "select-default miss count replays identically"
+chk "$(rep "$T/seld" "$T/tseld")" "$Rd" "select-default replay reproduces the recorded miss count"
 
 echo
 echo "record/replay gate: $pass pass, $fail fail"
