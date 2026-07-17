@@ -36,14 +36,16 @@ jobs:
       # that lands in the always-on cRuntime compiles fine natively but breaks
       # `--target wasm` under a strict zig (wasi-libc has no mmap). This smoke build
       # fails CI if that regresses again. See issue #463.
+      # Install zig straight from ziglang.org, not mlugg/setup-zig: that action fetches
+      # only from community mirrors, which lag the canonical site and were 404/503-ing for
+      # every version. `zig cc` is clang-based and version-stable for the C->wasm smoke
+      # build, so pin a widely-available stable (0.15.2).
       - name: Install zig (the C -> wasm compiler)
-        uses: mlugg/setup-zig@v1
-        with:
-          # 0.15.2 (not the newest 0.16.0): setup-zig fetches from community mirrors that
-          # lag the latest release by days, so a brand-new version 404s in CI. `zig cc` is
-          # clang-based and version-stable for the C->wasm smoke build, so an older stable
-          # is equivalent here and reliably fetchable.
-          version: 0.15.2
+        run: |
+          ZIG_VER=0.15.2
+          curl -fsSL "https://ziglang.org/download/${ZIG_VER}/zig-x86_64-linux-${ZIG_VER}.tar.xz" -o /tmp/zig.tar.xz
+          mkdir -p /tmp/zig && tar -xf /tmp/zig.tar.xz -C /tmp/zig --strip-components=1
+          echo "/tmp/zig" >> "$GITHUB_PATH"
 
       - name: wasm smoke build (guards POSIX-only code out of cRuntime — #463)
         run: |
