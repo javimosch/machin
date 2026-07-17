@@ -135,12 +135,12 @@ const cRuntime = `#define _GNU_SOURCE
 #include <netdb.h>
 #include <dirent.h>
 #include <sys/stat.h>
-#include <sys/mman.h>
 #include <fcntl.h>
 #include <errno.h>
 #include <termios.h>
 #include <sys/select.h>
 #ifndef __wasm__
+#include <sys/mman.h>   /* mmap_file / madvise_free — POSIX-only; wasi-libc has no mmap (issue #463) */
 #include <sys/wait.h>
 #include <signal.h>
 #endif
@@ -696,6 +696,10 @@ static char* mfl_dup(const char* s) { size_t n = strlen(s); char* r = mfl_alloc(
    filling C buffers (vertex arrays) and structs to hand to a C API. */
 static int64_t mfl_raw_alloc(int64_t n) { return (int64_t)(intptr_t)calloc(1, (size_t)(n > 0 ? n : 0)); }
 static void mfl_raw_free(int64_t p) { free((void*)(intptr_t)p); }
+/* mmap_file / madvise_free are POSIX file-mapping helpers — native-only. wasi-libc
+   has no mmap/madvise, so guard them out of the wasm build (a frontend that calls
+   neither then emits no sys/mman.h reference). Matches the mfl_system guard. #463 */
+#ifndef __wasm__
 /* madvise_free: hint the kernel to drop the resident pages of an mmap'd region
    (MADV_DONTNEED) — RSS falls, pages re-fault lazily on next access. For idle
    release of large mmap_file mappings without unmapping. */
@@ -719,6 +723,7 @@ static mfl_mmap_result mfl_mmap_file(const char* path) {
     R.ptr = (int64_t)(intptr_t)p; R.len = (int64_t)st.st_size;
     return R;
 }
+#endif   /* __wasm__ — mmap_file / madvise_free */
 /* read a NUL-terminated string from a raw pointer into an MFL (arena) string — the
    host->wasm direction: the JS host writes UTF-8 + a NUL into wasm memory at a
    pointer the program alloc'd, then passes it here. */
