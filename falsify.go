@@ -482,9 +482,19 @@ func (ip *interp) callUser(fn *FuncDecl, argExprs []Expr) fval {
 		ip.env[r] = vint(0) // named returns: zero-init (scalar common case)
 	}
 	ip.depth++
+	savedRVS := ip.retValSet // callee's return state must not leak into the caller's ensures check
 	ip.retVal = fval{}
+	ip.retValSet = false
 	ip.evalStmts(fn.Body)
+	// The callee's value: an explicit `return <e>` sets retVal; a named-return
+	// function that falls off the end yields its named return local (env). Without
+	// this, any call to a named-return helper evaluated to zero — a silent
+	// mis-evaluation that could skew the falsifier's verdict on the caller.
 	ret := ip.retVal
+	if !ip.retValSet && len(fn.Returns) == 1 {
+		ret = ip.env[fn.Returns[0]]
+	}
+	ip.retValSet = savedRVS
 	ip.depth--
 	ip.env = savedEnv
 	return ret

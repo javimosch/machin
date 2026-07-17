@@ -295,9 +295,16 @@ func f_call_user(fnroot, argnodes) (rv) {
     g_fbreak = 0
     g_fcontinue = 0
     g_fretval = fv_int(0)
+    saved_rvs := g_fretvalset   // callee's return state must not leak into the caller's ensures check
+    g_fretvalset = 0
     g_fdepth = g_fdepth + 1
     f_eval_stmts(fn.kids)
+    // an explicit `return <e>` sets g_fretval; a named-return function that falls off
+    // the end yields its named return local (env). Without this, a call to a named-return
+    // helper folded to 0 — silently mis-evaluating the caller. Matches falsify.go callUser.
     rv = g_fretval
+    if g_fretvalset == 0 && len(rets) == 1 { rv = f_env_get(rets[0]) }
+    g_fretvalset = saved_rvs
     g_fdepth = g_fdepth - 1
 
     g_env_names = saved_names
