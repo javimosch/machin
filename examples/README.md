@@ -70,6 +70,7 @@ machin build examples/complex/primes.mfl --emit-c   # see the generated C
 | `router_api`      | HTTP router — dispatch by method+path, extract path params |
 | `sqlite_crud`     | SQLite: `sqlite_open`/`sqlite_exec`/`sqlite_query`/`sqlite_close` — in-memory CRUD with parameterized queries, `parse()` row decode, and `json_get` single-field access |
 | `arena`           | scoped `arena{}` allocation |
+| `quant_matmul`    | Q8_0 quantized matrix-vector product (the LLM matmul kernel): `alloc`/`poke_u8`/`poke_f32` build int8 codes + per-group fp32 scales, `dot_q8` fuses the grouped, dual-scaled inner product; contiguous row-major weights addressed by pointer arithmetic |
 | `counter`         | closure/state counter |
 | `ffi_math`        | C FFI — calling external C functions (scalars) |
 | `ffi_ptr`         | C FFI — opaque `ptr` handles |
