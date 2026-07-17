@@ -753,6 +753,36 @@ static double mfl_dot_q8(int64_t xq, int64_t xs, int64_t wq, int64_t ws, int64_t
     }
     return val;
 }
+/* batched q8 matmul: for output rows i in [lo,hi) and positions b in [0,B):
+   out[b*ostride + i] = dot_q8(xq + b*n, xs + b*n/gs, w + i*n, ws + i*n/gs). The
+   weight row is loaded once and reused across all B positions (the prefill GEMM)
+   -- one call replaces B*(hi-lo) MFL-level dot_q8 calls, so the compiler keeps
+   the row hot and vectorizes the inner product. */
+static void mfl_matmul_q8_batch(int64_t ob, int64_t ostride, int64_t xqb, int64_t xsb, int64_t wq, int64_t ws, int64_t n, int64_t gs, int64_t B, int64_t lo, int64_t hi) {
+    float* out = (float*)(intptr_t)ob;
+    const int8_t* xbase = (const int8_t*)(intptr_t)xqb;
+    const float* xsbase = (const float*)(intptr_t)xsb;
+    const int8_t* wbase = (const int8_t*)(intptr_t)wq;
+    const float* wsbase = (const float*)(intptr_t)ws;
+    int64_t ng = gs > 0 ? n / gs : 0;
+    for (int64_t i = lo; i < hi; i++) {
+        const int8_t* wrow = wbase + i * n;
+        const float* wsc = wsbase + i * ng;
+        for (int64_t b = 0; b < B; b++) {
+            const int8_t* x = xbase + b * n;
+            const float* xsc = xsbase + b * ng;
+            double val = 0.0;
+            for (int64_t g = 0; g < ng; g++) {
+                const int8_t* xg = x + g * gs;
+                const int8_t* wg = wrow + g * gs;
+                int32_t acc = 0;
+                for (int64_t k = 0; k < gs; k++) acc += (int32_t)xg[k] * (int32_t)wg[k];
+                val += (double)acc * (double)xsc[g] * (double)wsc[g];
+            }
+            out[b * ostride + i] = (float)val;
+        }
+    }
+}
 /* grouped, dual-scaled int4 dot: like dot_q8 but the weights are split-nibble
  * int4 (a group of gs weights packed into gs/2 bytes; byte k holds w[k] in the
  * low nibble and w[k+gs/2] in the high nibble, each stored as value+8 in 0..15).
@@ -5277,6 +5307,8 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("mfl_dot_i8(%s, %s, %s)", args[0], args[1], args[2]), nil
 	case "dot_q8":
 		return fmt.Sprintf("mfl_dot_q8(%s, %s, %s, %s, %s, %s)", args[0], args[1], args[2], args[3], args[4], args[5]), nil
+	case "matmul_q8_batch":
+		return fmt.Sprintf("mfl_matmul_q8_batch(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)", args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8], args[9], args[10]), nil
 	case "dot_q4":
 		return fmt.Sprintf("mfl_dot_q4(%s, %s, %s, %s, %s, %s)", args[0], args[1], args[2], args[3], args[4], args[5]), nil
 	case "dot_f32":
