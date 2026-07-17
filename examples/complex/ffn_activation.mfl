@@ -1,0 +1,20 @@
+func r3(x){return round(x*1000.0)/1000.0}
+
+func sigmoid(x){return 1.0/(1.0+exp(0.0-x))}
+
+func silu(x){return x*sigmoid(x)}
+
+func tanhf(x){return 2.0*sigmoid(2.0*x)-1.0}
+
+func gelu(x){c:=0.7978845608 inner:=c*(x+0.044715*x*x*x)return 0.5*x*(1.0+tanhf(inner))}
+
+func hadamard(a,b)(out){out=[]float{}i:=0 for i<len(a){out=append(out,a[i]*b[i])i=i+1}}
+
+func applySilu(xs)(out){out=[]float{}i:=0 for i<len(xs){out=append(out,silu(xs[i]))i=i+1}}
+
+func swiglu(gate,up){return hadamard(applySilu(gate),up)}
+
+func printvec(label,xs){print(label)i:=0 for i<len(xs){print(" ",r3(xs[i]))i=i+1}println("")}
+
+func main(){println("silu(-2):",r3(silu(0.0-2.0)))println("silu(-1):",r3(silu(0.0-1.0)))println("silu(0):",r3(silu(0.0)))println("silu(1):",r3(silu(1.0)))println("silu(2):",r3(silu(2.0)))println("gelu(-1):",r3(gelu(0.0-1.0)))println("gelu(0):",r3(gelu(0.0)))println("gelu(1):",r3(gelu(1.0)))println("gelu(2):",r3(gelu(2.0)))gate:=[]float{1.0,2.0,0.0,0.0-1.0}up:=[]float{2.0,0.5,3.0,4.0}printvec("swiglu:",swiglu(gate,up))}
+
