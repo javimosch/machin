@@ -414,7 +414,11 @@ static void mfl_rr_init(void) {
                         mfl_rr_trace[mfl_rr_n++] = strdup(p);
                     }
                 } else if (line[0] == 'I') {
-                    char p[256], h[16000]; if (sscanf(line, "I %255s %15999s", p, h) == 2) mfl_io_push(p, h);
+                    /* an I-value can be empty hex ("I 0 " for an empty read / http err ""),
+                       which sscanf reports as 1 field -- still a real recorded value, so
+                       push it (h left ""), or record and replay disagree on the queue depth. */
+                    char p[256], h[16000]; h[0] = 0;
+                    if (sscanf(line, "I %255s %15999s", p, h) >= 1) mfl_io_push(p, h);
                 }
             }
             fclose(f);
@@ -1875,12 +1879,16 @@ static int64_t mfl_tls_server_ctx(const char* certfile, const char* keyfile) {
     return (int64_t)(intptr_t)ctx;
 }
 static int64_t mfl_tls_accept(int64_t ctxHandle, int64_t fd) {
+    /* replay: recorded handle sentinel, no real TLS handshake (reads come from the log). */
+    if (mfl_rr_mode == 2) return mfl_rr_io_pop_i64();
     SSL_CTX* ctx = (SSL_CTX*)(intptr_t)ctxHandle;
-    if (!ctx) return 0;
+    if (!ctx) { if (mfl_rr_mode == 1) mfl_rr_io_log_i64(0); return 0; }
     SSL* ssl = SSL_new(ctx);
     SSL_set_fd(ssl, (int)fd);
-    if (SSL_accept(ssl) != 1) { SSL_free(ssl); return 0; }
-    return (int64_t)(intptr_t)ssl;
+    if (SSL_accept(ssl) != 1) { SSL_free(ssl); if (mfl_rr_mode == 1) mfl_rr_io_log_i64(0); return 0; }
+    int64_t r = (int64_t)(intptr_t)ssl;
+    if (mfl_rr_mode == 1) mfl_rr_io_log_i64(r);
+    return r;
 }
 
 /* generic read/write/close over a tls handle (an SSL*, from tls_accept or
@@ -1888,37 +1896,54 @@ static int64_t mfl_tls_accept(int64_t ctxHandle, int64_t fd) {
    chunk semantics (one SSL_read's worth, up to 64K; a full-write loop) exactly,
    just over SSL_read/SSL_write instead of read(2)/write(2). */
 static char* mfl_tls_read_str(int64_t h) {
+    /* a TLS read is external input: record the plaintext chunk so replay reproduces it
+       with no handshake, like mfl_read for raw sockets. */
+    if (mfl_rr_mode == 2) { size_t L; char* s = mfl_hexdec(mfl_io_pop(), &L); char* a = mfl_dup_arena(s, L); free(s); return a; }
     SSL* ssl = (SSL*)(intptr_t)h;
     char* buf = mfl_alloc(65536);
     int n = ssl ? SSL_read(ssl, buf, 65535) : 0;
     if (n < 0) n = 0;
     buf[n] = 0;
+    if (mfl_rr_mode == 1) mfl_rr_io_log_bytes(buf, (size_t)n);
     return buf;
 }
 static mfl_bytes mfl_tls_read_bytes_h(int64_t h) {
+    if (mfl_rr_mode == 2) {
+        size_t L; char* s = mfl_hexdec(mfl_io_pop(), &L);
+        mfl_bytes b; b.data = (uint8_t*)mfl_alloc(L ? L : 1); b.len = (int64_t)L;
+        if (L) memcpy(b.data, s, L); free(s); return b;
+    }
     SSL* ssl = (SSL*)(intptr_t)h;
     mfl_bytes b; b.data = (uint8_t*)mfl_alloc(65536);
     int n = ssl ? SSL_read(ssl, b.data, 65536) : 0;
     if (n < 0) n = 0;
     b.len = (int64_t)n;
+    if (mfl_rr_mode == 1) mfl_rr_io_log_bytes((char*)b.data, (size_t)n);
     return b;
 }
 static int64_t mfl_tls_write_str(int64_t h, const char* s) {
+    if (mfl_rr_mode == 2) return mfl_rr_io_pop_i64();
     SSL* ssl = (SSL*)(intptr_t)h;
-    return ssl ? (int64_t)SSL_write(ssl, s, (int)strlen(s)) : -1;
+    int64_t r = ssl ? (int64_t)SSL_write(ssl, s, (int)strlen(s)) : -1;
+    if (mfl_rr_mode == 1) mfl_rr_io_log_i64(r);
+    return r;
 }
 static int64_t mfl_tls_write_bytes_h(int64_t h, mfl_bytes b) {
+    if (mfl_rr_mode == 2) return mfl_rr_io_pop_i64();
     SSL* ssl = (SSL*)(intptr_t)h;
-    if (!ssl) return -1;
+    if (!ssl) { if (mfl_rr_mode == 1) mfl_rr_io_log_i64(-1); return -1; }
     size_t off = 0;
     while (off < (size_t)b.len) {
         int w = SSL_write(ssl, b.data + off, (int)((size_t)b.len - off));
         if (w <= 0) break;
         off += (size_t)w;
     }
+    if (mfl_rr_mode == 1) mfl_rr_io_log_i64((int64_t)off);
     return (int64_t)off;
 }
-static int64_t mfl_tls_close_h(int64_t h) { mfl_tls_hangup((SSL*)(intptr_t)h); return 0; }
+/* close is a side-effect with a constant return; on replay just skip the real hangup (the
+   handle is a recorded sentinel). No I/O-queue entry either way, so the queue stays balanced. */
+static int64_t mfl_tls_close_h(int64_t h) { if (mfl_rr_mode == 2) return 0; mfl_tls_hangup((SSL*)(intptr_t)h); return 0; }
 `
 
 // tlsRuntime is a minimal HTTPS/1.1 client built on tlsCoreRuntime. Emitted only
@@ -1968,6 +1993,23 @@ static char* mfl_chunk_decode(const char* body, size_t blen, size_t* outlen) {
 /* (status, body, err) — err is "" on an HTTP response (status is the code), or a
    transport-failure reason ("dns"/"connect"/"tls"/"scheme") with status 0. */
 typedef struct { int64_t status; char* body; char* err; } mfl_http_result;
+
+/* record/replay for the HTTP result: an HTTP round-trip is external input, so the whole
+   result (status + body + err) is logged and popped — a program that crashes processing an
+   API response replays with the exact response baked in, no network. Instrumented at the
+   public wrappers (not mfl_http_do) so redirects log exactly once per logical call. */
+static void mfl_rr_log_http(mfl_http_result R) {
+    mfl_rr_io_log_i64(R.status);
+    mfl_rr_io_log_bytes(R.body ? R.body : "", R.body ? strlen(R.body) : 0);
+    mfl_rr_io_log_bytes(R.err ? R.err : "", R.err ? strlen(R.err) : 0);
+}
+static mfl_http_result mfl_rr_pop_http(void) {
+    mfl_http_result R;
+    R.status = mfl_rr_io_pop_i64();
+    { size_t L; char* s = mfl_hexdec(mfl_io_pop(), &L); R.body = mfl_dup_arena(s, L); free(s); }
+    { size_t L; char* s = mfl_hexdec(mfl_io_pop(), &L); R.err = mfl_dup_arena(s, L); free(s); }
+    return R;
+}
 
 static mfl_http_result mfl_http_do(const char* method, const char* url, const char* reqbody, const char* ctype, const char* extra, int redirects);
 
@@ -2118,13 +2160,29 @@ static mfl_http_result mfl_http_do(const char* method, const char* url, const ch
     return R;
 }
 
-static char* mfl_https_get(const char* url) { return mfl_http_do("GET", url, NULL, NULL, "", 5).body; }
-static char* mfl_https_post(const char* url, const char* body) { return mfl_http_do("POST", url, body, "application/json", "", 5).body; }
-static mfl_http_result mfl_http_get(const char* url) { return mfl_http_do("GET", url, NULL, NULL, "", 5); }
+static char* mfl_https_get(const char* url) {
+    if (mfl_rr_mode == 2) { size_t L; char* s = mfl_hexdec(mfl_io_pop(), &L); char* a = mfl_dup_arena(s, L); free(s); return a; }
+    char* b = mfl_http_do("GET", url, NULL, NULL, "", 5).body;
+    if (mfl_rr_mode == 1) mfl_rr_io_log_bytes(b ? b : "", b ? strlen(b) : 0);
+    return b;
+}
+static char* mfl_https_post(const char* url, const char* body) {
+    if (mfl_rr_mode == 2) { size_t L; char* s = mfl_hexdec(mfl_io_pop(), &L); char* a = mfl_dup_arena(s, L); free(s); return a; }
+    char* b = mfl_http_do("POST", url, body, "application/json", "", 5).body;
+    if (mfl_rr_mode == 1) mfl_rr_io_log_bytes(b ? b : "", b ? strlen(b) : 0);
+    return b;
+}
+static mfl_http_result mfl_http_get(const char* url) {
+    if (mfl_rr_mode == 2) return mfl_rr_pop_http();
+    mfl_http_result R = mfl_http_do("GET", url, NULL, NULL, "", 5);
+    if (mfl_rr_mode == 1) mfl_rr_log_http(R);
+    return R;
+}
 /* general authenticated request: caller supplies the method, any extra header
    lines (e.g. "Authorization: Bearer x", "Content-Type: application/json") as a
    []string, and a body. Returns (status, body, err) like http_get. */
 static mfl_http_result mfl_http_request(const char* method, const char* url, mfl_slice headers, const char* body) {
+    if (mfl_rr_mode == 2) return mfl_rr_pop_http();
     size_t tot = 1;
     for (int64_t i = 0; i < headers.len; i++) { char* h = ((char**)headers.data)[i]; if (h) tot += strlen(h) + 2; }
     char* hb = (char*)malloc(tot);
@@ -2135,6 +2193,7 @@ static mfl_http_result mfl_http_request(const char* method, const char* url, mfl
     }
     hb[o] = 0;
     mfl_http_result R = mfl_http_do(method, url, body, NULL, hb, 5);
+    if (mfl_rr_mode == 1) mfl_rr_log_http(R);
     free(hb);
     return R;
 }
@@ -2200,7 +2259,7 @@ static void mfl_ws_frame(mfl_ws* w, int opcode, const unsigned char* payload, si
     free(buf);
 }
 
-static int64_t mfl_wss_open(const char* url) {
+static int64_t mfl_wss_open_real(const char* url) {
     char host[256] = {0}, path[2048] = {0};
     int port = 443;
     const char* p = url;
@@ -2244,12 +2303,22 @@ static int64_t mfl_wss_open(const char* url) {
     w->ssl = ssl;
     return (int64_t)(intptr_t)w;
 }
+/* record/replay: the handshake is external I/O — replay returns the recorded handle
+   sentinel (no real connect); record logs whatever the real open returned. */
+static int64_t mfl_wss_open(const char* url) {
+    if (mfl_rr_mode == 2) return mfl_rr_io_pop_i64();
+    int64_t r = mfl_wss_open_real(url);
+    if (mfl_rr_mode == 1) mfl_rr_io_log_i64(r);
+    return r;
+}
 
 static int64_t mfl_wss_send(int64_t h, const char* msg) {
+    if (mfl_rr_mode == 2) return mfl_rr_io_pop_i64();
     mfl_ws* w = (mfl_ws*)(intptr_t)h;
-    if (!w) return -1;
-    mfl_ws_frame(w, 0x1, (const unsigned char*)msg, strlen(msg));
-    return 0;
+    int64_t r = w ? 0 : -1;
+    if (w) mfl_ws_frame(w, 0x1, (const unsigned char*)msg, strlen(msg));
+    if (mfl_rr_mode == 1) mfl_rr_io_log_i64(r);
+    return r;
 }
 
 /* core: block until a full message; returns a malloc'd buffer (caller frees) and
@@ -2298,32 +2367,44 @@ static unsigned char* mfl_ws_recv_raw(mfl_ws* w, size_t* outlen) {
 
 /* text recv: "" on close/error (truncates at an embedded NUL — for binary use wss_recv_bin) */
 static char* mfl_wss_recv(int64_t h) {
+    if (mfl_rr_mode == 2) { size_t L; char* s = mfl_hexdec(mfl_io_pop(), &L); char* a = mfl_dup_arena(s, L); free(s); return a; }
     size_t n;
     unsigned char* m = mfl_ws_recv_raw((mfl_ws*)(intptr_t)h, &n);
-    if (!m) return mfl_dup_arena("", 0);
-    char* r = mfl_dup_arena((char*)m, n);
+    char* r = m ? mfl_dup_arena((char*)m, n) : mfl_dup_arena("", 0);
+    if (mfl_rr_mode == 1) mfl_rr_io_log_bytes(m ? (char*)m : "", m ? n : 0);
     free(m);
     return r;
 }
 
 /* binary recv: a NUL-safe bytes message; empty bytes on close/error */
 static mfl_bytes mfl_wss_recv_bin(int64_t h) {
+    if (mfl_rr_mode == 2) {
+        size_t L; char* s = mfl_hexdec(mfl_io_pop(), &L);
+        mfl_bytes b; b.data = (uint8_t*)mfl_alloc(L ? L : 1); b.len = (int64_t)L;
+        if (L) memcpy(b.data, s, L); free(s); return b;
+    }
     size_t n = 0;
     unsigned char* m = mfl_ws_recv_raw((mfl_ws*)(intptr_t)h, &n);
     mfl_bytes b; b.len = m ? (int64_t)n : 0; b.data = (uint8_t*)mfl_alloc(b.len ? b.len : 1);
     if (m) { memcpy(b.data, m, n); free(m); }
+    if (mfl_rr_mode == 1) mfl_rr_io_log_bytes((char*)b.data, (size_t)b.len);
     return b;
 }
 
 /* binary send: one masked binary frame (opcode 0x2) carrying the bytes payload */
 static int64_t mfl_wss_send_bin(int64_t h, mfl_bytes b) {
+    if (mfl_rr_mode == 2) return mfl_rr_io_pop_i64();
     mfl_ws* w = (mfl_ws*)(intptr_t)h;
-    if (!w) return -1;
-    mfl_ws_frame(w, 0x2, b.data, (size_t)b.len);
-    return 0;
+    int64_t r = w ? 0 : -1;
+    if (w) mfl_ws_frame(w, 0x2, b.data, (size_t)b.len);
+    if (mfl_rr_mode == 1) mfl_rr_io_log_i64(r);
+    return r;
 }
 
+/* close: side-effect with a constant return; on replay skip the real hangup (sentinel
+   handle). No I/O-queue entry either way, so the queue stays balanced. */
 static int64_t mfl_wss_close(int64_t h) {
+    if (mfl_rr_mode == 2) return 0;
     mfl_ws* w = (mfl_ws*)(intptr_t)h;
     if (!w) return -1;
     mfl_ws_frame(w, 0x8, NULL, 0);
@@ -3436,16 +3517,14 @@ func (g *cgen) program(p *Program) (string, error) {
 	if g.wasm() {
 		out.WriteString("__attribute__((constructor)) static void mfl_wasm_stdio_init(void) { setvbuf(stdout, NULL, _IONBF, 0); setvbuf(stderr, NULL, _IONBF, 0); }\n")
 	}
-	// record/replay determinism boundary: 1 if the program leaves the boundary machin
-	// can control, so its trace is best-effort. Triggers: FFI (extern) — the call's
-	// result is uncaptured; and the high-level HTTP/TLS/WebSocket reads (http/https/
-	// wss/tls) whose response bytes this slice does not yet record. Raw fd sockets
-	// (dial/listen/accept/read/write) ARE captured, so usesNet stays faithful; `select`
-	// is gated too. (http_get/http_request set usesTLS too, so usesTLS||usesWSS covers
-	// every uncaptured high-level read.) Program-dependent, so emitted here (body region,
-	// compared by cgentest) rather than the fixed prelude; the rr runtime forward-declares it.
+	// record/replay determinism boundary: 1 if the program uses FFI (extern) — the call's
+	// result is uncaptured, so it leaves the boundary machin controls. Everything else
+	// nondeterministic is now captured: channel schedule + concurrent prints, time, stdin,
+	// rand, file reads, raw fd sockets, and (this slice) the high-level HTTP/TLS/WebSocket
+	// reads; `select` is gated. Program-dependent, so emitted here (body region, compared
+	// by cgentest) rather than the fixed prelude; the rr runtime forward-declares it.
 	rrBoundary := 0
-	if len(p.Externs) > 0 || g.usesTLS || g.usesWSS {
+	if len(p.Externs) > 0 {
 		rrBoundary = 1
 	}
 	fmt.Fprintf(&out, "static int mfl_rr_prog_boundary(void) { return %d; }\n", rrBoundary)

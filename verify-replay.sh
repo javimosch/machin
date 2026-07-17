@@ -292,12 +292,41 @@ chk "$allsame" "1" "socket exchange replays identically (no network)"
 chk "$(rep "$T/sock" "$T/tsock")" "$Rk" "socket replay reproduces the recorded exchange"
 Vk=$(MFL_RR_REPLAY="$T/tsock" MFL_RR_VERIFY=1 "$T/sock" 2>&1 >/dev/null); case "$Vk" in *FAITHFUL*) pass=$((pass+1)); echo "ok   socket replay certifies FAITHFUL";; *) fail=$((fail+1)); echo "FAIL socket verify: $Vk";; esac
 
-# ---- fixture 17: high-level HTTP is honestly flagged best-effort (response not yet captured) ----
-# (points at a fast-refusing local port; the boundary is written at init, no external network.)
-printf 'func main() { s, b, e := http_get("http://127.0.0.1:1")  b=b  e=e  println(str(s)) }\n' > "$T/http.mfl"
+# ---- fixture 17: HTTP result is captured — even a transport FAILURE replays faithfully ----
+# (points at a fast-refusing local port; the recorded (status 0, err "connect") reproduces.)
+printf 'func main() { s, b, e := http_get("http://127.0.0.1:1")  b=b  println(str(s) + ":" + e) }\n' > "$T/http.mfl"
 build "$T/http.mfl" "$T/http"
-rec "$T/http" "$T/thttp" >/dev/null 2>&1
-chk "$(grep '^boundary' "$T/thttp")" "boundary best-effort" "http_get trace is honestly best-effort (uncaptured)"
+Rf=$(rec "$T/http" "$T/thttp")
+chk "$(grep '^boundary' "$T/thttp")" "boundary faithful" "http_get trace is now faithful (result captured)"
+chk "$(rep "$T/http" "$T/thttp")" "$Rf" "failed http_get replays the recorded failure"
+
+# ---- fixture 18: HTTP response capture — faithful OFFLINE replay ("the API crash you can mail") ----
+# serve a fixed body from a local server, record an http_get, KILL the server, replay offline.
+python3 - "$T" <<'PY' &
+import http.server, sys
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(s): s.send_response(200); s.end_headers(); s.wfile.write(b'PAYLOAD-18')
+    def log_message(s,*a): pass
+http.server.HTTPServer(('127.0.0.1', 18234), H).serve_forever()
+PY
+HPID=$!
+sleep 0.8
+printf 'func main() { s, b, e := http_get("http://127.0.0.1:18234/")  e=e  println(str(s) + ":" + b) }\n' > "$T/hget.mfl"
+build "$T/hget.mfl" "$T/hget"
+Rh=$(rec "$T/hget" "$T/thget")
+kill "$HPID" 2>/dev/null   # server gone — replay must not need it
+chk "$Rh" "200:PAYLOAD-18" "http_get records the live response"
+chk "$(rep "$T/hget" "$T/thget")" "$Rh" "http replay reproduces the response with the server gone"
+Vh=$(MFL_RR_REPLAY="$T/thget" MFL_RR_VERIFY=1 "$T/hget" 2>&1 >/dev/null); case "$Vh" in *FAITHFUL*) pass=$((pass+1)); echo "ok   http offline replay certifies FAITHFUL";; *) fail=$((fail+1)); echo "FAIL http verify: $Vh";; esac
+
+# ---- fixture 19: an EMPTY recorded read no longer underruns replay (I-line parser regression) ----
+# an empty file read logs "I 0 " (empty hex); the trace loader must still queue it, or replay
+# pops a value that was dropped and --verify wrongly reports DIVERGED.
+: > "$T/empty.txt"
+printf 'func main() { s := read_file("%s/empty.txt")  println("len:" + str(len(s))) }\n' "$T" > "$T/empty.mfl"
+build "$T/empty.mfl" "$T/empty"
+rec "$T/empty" "$T/tempty" >/dev/null
+Ve=$(MFL_RR_REPLAY="$T/tempty" MFL_RR_VERIFY=1 "$T/empty" 2>&1 >/dev/null); case "$Ve" in *FAITHFUL*) pass=$((pass+1)); echo "ok   empty read replays FAITHFUL (no underrun)";; *) fail=$((fail+1)); echo "FAIL empty-read underrun: $Ve";; esac
 
 echo
 echo "record/replay gate: $pass pass, $fail fail"
