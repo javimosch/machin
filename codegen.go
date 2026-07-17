@@ -614,13 +614,17 @@ static void mfl_dl_deadlock(void) {
     pthread_mutex_lock(&mfl_dl_mu);
     if (mfl_rr_json) {
         fprintf(stderr, "{\"deadlock\":true,\"goroutines\":%d,\"blocked\":[", mfl_dl_live);
-        for (int i = 0; i < mfl_dl_nw; i++)
-            fprintf(stderr, "%s{\"goroutine\":\"%s\",\"recvOnChannel\":%lld}", i ? "," : "", mfl_dl_w[i].gid, (long long)mfl_dl_w[i].chan);
+        for (int i = 0; i < mfl_dl_nw; i++) {
+            if (mfl_dl_w[i].chan < 0) fprintf(stderr, "%s{\"goroutine\":\"%s\",\"blockedInSelect\":true}", i ? "," : "", mfl_dl_w[i].gid);
+            else fprintf(stderr, "%s{\"goroutine\":\"%s\",\"recvOnChannel\":%lld}", i ? "," : "", mfl_dl_w[i].gid, (long long)mfl_dl_w[i].chan);
+        }
         fputs("]}\n", stderr);
     } else {
-        fprintf(stderr, "fatal: deadlock — all %d goroutine(s) blocked on a channel receive, none can send:\n", mfl_dl_live);
-        for (int i = 0; i < mfl_dl_nw; i++)
-            fprintf(stderr, "  goroutine %-5s waiting to receive on channel #%lld\n", mfl_dl_w[i].gid, (long long)mfl_dl_w[i].chan);
+        fprintf(stderr, "fatal: deadlock — all %d goroutine(s) blocked, none can make progress:\n", mfl_dl_live);
+        for (int i = 0; i < mfl_dl_nw; i++) {
+            if (mfl_dl_w[i].chan < 0) fprintf(stderr, "  goroutine %-5s waiting in a select (no case can ever fire)\n", mfl_dl_w[i].gid);
+            else fprintf(stderr, "  goroutine %-5s waiting to receive on channel #%lld\n", mfl_dl_w[i].gid, (long long)mfl_dl_w[i].chan);
+        }
     }
     fflush(stderr);
     _exit(2);
@@ -4047,6 +4051,14 @@ func (g *cgen) selectStmt(st *SelectStmt, depth int) error {
 	}
 	indentC(&g.buf, depth+1)
 	g.buf.WriteString("} else {\n")
+	// deadlock detection: a select with no default that finds no ready case busy-polls
+	// (tryrecv + sleep). That is a parked goroutine — count it (channel id -1 = "in a
+	// select"), once, while it spins, so the quiescence watchdog can see an all-parked
+	// program. A select with a default (or a send case) never spins, so it never parks.
+	if !st.HasDefault {
+		indentC(&g.buf, depth+2)
+		fmt.Fprintf(&g.buf, "int _selpk%d = 0;\n", id)
+	}
 	indentC(&g.buf, depth+2)
 	g.buf.WriteString("for (;;) {\n")
 	for i := range st.Cases {
@@ -4062,10 +4074,14 @@ func (g *cgen) selectStmt(st *SelectStmt, depth int) error {
 	if st.HasDefault {
 		fmt.Fprintf(&g.buf, "{ _sel%d = %d; break; }\n", id, len(st.Cases))
 	} else {
-		g.buf.WriteString("mfl_sleep(1);\n")
+		fmt.Fprintf(&g.buf, "if (!_selpk%d) { _selpk%d = 1; mfl_dl_block(-1); } mfl_sleep(1);\n", id, id)
 	}
 	indentC(&g.buf, depth+2)
 	g.buf.WriteString("}\n")
+	if !st.HasDefault {
+		indentC(&g.buf, depth+2)
+		fmt.Fprintf(&g.buf, "if (_selpk%d) mfl_dl_unblock();\n", id)
+	}
 	// record the chosen case index so replay can force it (I/O queue, per goroutine).
 	indentC(&g.buf, depth+2)
 	fmt.Fprintf(&g.buf, "if (mfl_rr_mode == 1) mfl_rr_io_log_i64(_sel%d);\n", id)

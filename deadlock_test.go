@@ -98,3 +98,20 @@ func TestDeadlockCausalReport(t *testing.T) {
 		}
 	}
 }
+
+// TestDeadlockSelectSpin: a select whose cases can never fire busy-polls forever; the
+// detector must report it as a deadlock (parked in a select), not let it spin. A select
+// with a live feeder, or with a default, must not be flagged.
+func TestDeadlockSelectSpin(t *testing.T) {
+	out, code := buildRunExit(t, 15,
+		`func main() { a := make(chan int) b := make(chan int) for { select { case x := <-a: println(str(x)) case y := <-b: println(str(y)) } } }`)
+	if code != 2 || !strings.Contains(out, "select") {
+		t.Fatalf("expected a select-spin deadlock (exit 2, mentions select); got code=%d out=%q", code, out)
+	}
+	// a select with a default never spins → completes.
+	out, code = buildRunExit(t, 15,
+		`func main() { a := make(chan int) n := 0 for n < 3 { select { case x := <-a: println(str(x)) default: n = n + 1 } } println("done") }`)
+	if code != 0 || !strings.Contains(out, "done") {
+		t.Fatalf("select-with-default should complete; got code=%d out=%q", code, out)
+	}
+}
