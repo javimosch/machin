@@ -1,5 +1,7 @@
 package main
 
+import "sort"
+
 // deadlock_check.go — a compile-time, sound-but-partial deadlock finder. machin channels
 // are unbounded (a send never blocks), so a receive on a channel that NOTHING ever sends to
 // or closes blocks forever in EVERY schedule — a guaranteed deadlock, detectable statically,
@@ -59,6 +61,13 @@ func detectDeadlocks(prog *Program, c *Checker) []dlFinding {
 			}
 		}
 	}
+	// deterministic order (per-function channel set is a map): sort by function, then channel.
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Decl != out[j].Decl {
+			return out[i].Decl < out[j].Decl
+		}
+		return out[i].Chan < out[j].Chan
+	})
 	return out
 }
 
