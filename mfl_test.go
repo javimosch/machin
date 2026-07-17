@@ -1373,6 +1373,40 @@ func TestRawMemoryU16AndPtr(t *testing.T) {
 // madvise_free(ptr, len): MADV_DONTNEED hint to drop resident pages of an mmap
 // region (idle release). On a misaligned/anonymous pointer it's a safe no-op;
 // the point is that it compiles, runs, and never crashes the program.
+func TestMatmulQ8Batch(t *testing.T) {
+	// matmul_q8_batch(ob,ostride,xq,xs,wq,ws,n,gs,B,lo,hi) must equal per-position dot_q8.
+	main := `func main() {
+	n := 64  gs := 64  B := 2  out := 3
+	xq := alloc(B*n)  xs := alloc(B*(n/gs)*4)  wq := alloc(out*n)  ws := alloc(out*(n/gs)*4)
+	i := 0
+	while i < B*n { poke_u8(xq, i, (i%7) & 255)  i = i + 1 }
+	i = 0
+	while i < out*n { poke_u8(wq, i, (i%5) & 255)  i = i + 1 }
+	i = 0
+	while i < B { poke_f32(xs, i*4, 0.5)  i = i + 1 }
+	i = 0
+	while i < out { poke_f32(ws, i*4, 0.25)  i = i + 1 }
+	ob := alloc(B*out*4)
+	matmul_q8_batch(ob, out, xq, xs, wq, ws, n, gs, B, 0, out)
+	ok := 1
+	b := 0
+	while b < B {
+		o := 0
+		while o < out {
+			ref := dot_q8(xq + b*n, xs + b*(n/gs)*4, wq + o*n, ws + o*(n/gs)*4, n, gs)
+			if peek_f32(ob, (b*out + o)*4) != ref { ok = 0 }
+			o = o + 1
+		}
+		b = b + 1
+	}
+	if ok == 1 { println("match") } else { println("MISMATCH") }
+}`
+	out, _ := buildRun(t, main)
+	if out != "match\n" {
+		t.Fatalf("matmul_q8_batch: got %q, want %q", out, "match\n")
+	}
+}
+
 func TestMadviseFree(t *testing.T) {
 	main := `func main() {
 	p := alloc(8192)
