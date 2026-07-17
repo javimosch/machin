@@ -32,44 +32,32 @@ type equivResult struct {
 	GVal string `json:"gValue,omitempty"`
 }
 
-// checkEquiv enumerates fName's bounded input domain and compares fName vs gName on every
-// tuple (both evaluated by the interpreter). Same param types ⇒ the same domain applies to
-// both, so one enumeration drives the comparison.
-func checkEquiv(prog *Program, c *Checker, fName, gName string) equivResult {
-	res := equivResult{F: fName, G: gName, Verdict: "inconclusive"}
-	funcs := map[string]*FuncDecl{}
-	for _, f := range prog.Funcs {
-		funcs[f.Name] = f
-	}
-	structs := c.structs
-
-	var fInst string
-	var fFn *FuncDecl
-	for _, inst := range c.reps {
-		if fn := c.instFn[inst]; fn != nil && fn.Name == fName {
-			fInst, fFn = inst, fn
-			break
-		}
-	}
-	gFn := funcs[gName]
-	if fFn == nil || gFn == nil || len(fFn.Params) != len(gFn.Params) {
-		return res // arity mismatch or not instantiated → inconclusive
-	}
-
+// paramDomains gathers the bounded input domain for the instantiated function fInst: one
+// []fval per parameter plus the weakest provability (2 = finite/total, less = bounded). Returns
+// ok=false if any parameter's domain is unbounded (can't enumerate).
+func paramDomains(c *Checker, fInst string, nparams int) (domains [][]fval, prov int, ok bool) {
 	slots := c.funcParam[fInst]
-	domains := make([][]fval, len(fFn.Params))
-	prov := 2
+	domains = make([][]fval, nparams)
+	prov = 2
 	for i, slot := range slots {
-		d, ok := c.domain(slot)
-		if !ok {
-			return res // an unbounded param domain — can't enumerate
+		d, dok := c.domain(slot)
+		if !dok {
+			return nil, 0, false
 		}
 		domains[i] = d
 		if p := c.provability(slot); p < prov {
 			prov = p
 		}
 	}
+	return domains, prov, true
+}
 
+// equivOverDomains runs fFn and gFn (which must share the parameter shape the domains were
+// built for) through the interpreter on every tuple of the bounded domain and reports whether
+// they agree, diverge (with the exact input), or can't be conclusively compared. This is the
+// shared core of `machin equiv` and the optimizer's rewrite gate.
+func equivOverDomains(fName, gName string, fFn, gFn *FuncDecl, domains [][]fval, prov int, funcs map[string]*FuncDecl, structs map[string]*TypeDecl) equivResult {
+	res := equivResult{F: fName, G: gName, Verdict: "inconclusive"}
 	idx := make([]int, len(domains))
 	tried, compared, anyUnknown, completed := 0, 0, false, false
 	for {
@@ -125,6 +113,36 @@ func checkEquiv(prog *Program, c *Checker, fName, gName string) equivResult {
 		res.Verdict = "equivalent-bounded" // agreed, but over a bounded int/slice domain
 	}
 	return res
+}
+
+// checkEquiv enumerates fName's bounded input domain and compares fName vs gName on every
+// tuple (both evaluated by the interpreter). Same param types ⇒ the same domain applies to
+// both, so one enumeration drives the comparison.
+func checkEquiv(prog *Program, c *Checker, fName, gName string) equivResult {
+	res := equivResult{F: fName, G: gName, Verdict: "inconclusive"}
+	funcs := map[string]*FuncDecl{}
+	for _, f := range prog.Funcs {
+		funcs[f.Name] = f
+	}
+
+	var fInst string
+	var fFn *FuncDecl
+	for _, inst := range c.reps {
+		if fn := c.instFn[inst]; fn != nil && fn.Name == fName {
+			fInst, fFn = inst, fn
+			break
+		}
+	}
+	gFn := funcs[gName]
+	if fFn == nil || gFn == nil || len(fFn.Params) != len(gFn.Params) {
+		return res // arity mismatch or not instantiated → inconclusive
+	}
+
+	domains, prov, ok := paramDomains(c, fInst, len(fFn.Params))
+	if !ok {
+		return res // an unbounded param domain — can't enumerate
+	}
+	return equivOverDomains(fName, gName, fFn, gFn, domains, prov, funcs, c.structs)
 }
 
 // cmdEquiv implements `machin equiv <f> <g> <file...>`.
