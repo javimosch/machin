@@ -1,6 +1,11 @@
 package main
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
 
 // dlCheck parses + typechecks a program and returns the compile-time deadlock findings.
 func dlCheck(t *testing.T, decls ...string) []dlFinding {
@@ -122,4 +127,72 @@ func TestDeadlockFinderScanCoverage(t *testing.T) {
 	if d.Phase != "deadlock" || d.Code != "DL001" || d.Severity != "warning" {
 		t.Fatalf("diagnostic = phase %q code %q sev %q", d.Phase, d.Code, d.Severity)
 	}
+}
+
+// TestDeadlockTestCommand exercises the `machin deadlocktest` oracle command (the
+// self-hosting oracle): it dumps DL001 findings in the canonical hex form, and handles
+// the no-arg / missing-file / parse-error / check-error paths.
+func TestDeadlockTestCommand(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	// a program with a DL001 finding — capture stdout to confirm a canonical line is dumped.
+	dl := write("dl.mfl", "func main() { ch := make(chan int) v := <-ch println(str(v)) }\n")
+	out := captureStdoutDL(t, func() {
+		if err := cmdDeadlockTest([]string{"--program", dl}); err != nil {
+			t.Fatalf("deadlocktest: %v", err)
+		}
+	})
+	if !strings.Contains(out, "|444c303031|") { // hex("DL001")
+		t.Fatalf("expected a DL001 hex line, got %q", out)
+	}
+
+	// clean program — no findings, empty output.
+	clean := write("clean.mfl", "func s(c) { c <- 1 }\nfunc main() { ch := make(chan int) go s(ch) v := <-ch println(str(v)) }\n")
+	if out := captureStdoutDL(t, func() { _ = cmdDeadlockTest([]string{"--program", clean}) }); strings.TrimSpace(out) != "" {
+		t.Fatalf("clean program should dump nothing, got %q", out)
+	}
+
+	// error / edge paths.
+	if err := cmdDeadlockTest(nil); err == nil {
+		t.Fatal("expected usage error with no --program")
+	}
+	if err := cmdDeadlockTest([]string{"--program", filepath.Join(dir, "nope.mfl")}); err == nil {
+		t.Fatal("expected error for a missing file")
+	}
+	perr := write("perr.mfl", "func main() { x := }\n")
+	if out := captureStdoutDL(t, func() { _ = cmdDeadlockTest([]string{"--program", perr}) }); !strings.Contains(out, "(parse-error)") && !strings.Contains(out, "(check-error)") {
+		t.Fatalf("malformed source should report parse/check-error, got %q", out)
+	}
+}
+
+// captureStdoutDL runs fn with os.Stdout redirected to a pipe and returns what it wrote.
+func captureStdoutDL(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := os.Stdout
+	os.Stdout = w
+	fn()
+	w.Close()
+	os.Stdout = saved
+	var b strings.Builder
+	buf := make([]byte, 4096)
+	for {
+		n, err := r.Read(buf)
+		if n > 0 {
+			b.Write(buf[:n])
+		}
+		if err != nil {
+			break
+		}
+	}
+	return b.String()
 }
