@@ -580,7 +580,11 @@ func normalize(src string) string {
 
 // tightRe matches the whitespace around an operator/punctuation token, which the
 // lexer does not need. The captured token is kept; the surrounding spaces drop.
-var tightRe = regexp.MustCompile(` *([(){}\[\],+\-*/%<>=!&|;:]) *`)
+// `^` (bitwise XOR / unary complement) is included: like the other single-char
+// operators it never begins or ends a two-char token, so dropping the space
+// around it is lossless — omitting it left `a ^ b` un-tightened, inconsistent
+// with `a & b` / `a | b` and contrary to this form being the minimal one.
+var tightRe = regexp.MustCompile(` *([(){}\[\],+\-*/%<>=!&|^;:]) *`)
 
 // tighten removes insignificant whitespace from a normalized declaration: any
 // space adjacent to an operator or punctuation token is dropped (the lexer only
