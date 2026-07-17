@@ -328,6 +328,28 @@ build "$T/empty.mfl" "$T/empty"
 rec "$T/empty" "$T/tempty" >/dev/null
 Ve=$(MFL_RR_REPLAY="$T/tempty" MFL_RR_VERIFY=1 "$T/empty" 2>&1 >/dev/null); case "$Ve" in *FAITHFUL*) pass=$((pass+1)); echo "ok   empty read replays FAITHFUL (no underrun)";; *) fail=$((fail+1)); echo "FAIL empty-read underrun: $Ve";; esac
 
+# ---- fixture 20: value-query replay debugger (--print) — deterministic value history ----
+# `machin replay <trace> --print <var>` rebuilds with a probe after each assignment to <var>;
+# because replay is deterministic the value sequence is identical every time and ends at the
+# recorded final value. A normal build emits no probes (zero overhead).
+cat > "$T/dbg.mfl" <<'EOF'
+func w(ch, id) { ch <- id * 10 }
+func main() {
+  ch := make(chan int)
+  go w(ch, 1)  go w(ch, 2)  go w(ch, 3)
+  bal := 0  i := 0
+  for i < 3 { v := <-ch  bal = bal + v  i = i + 1 }
+  println("final:" + str(bal))
+}
+EOF
+$N $M run --record "$T/dbg.tr" "$T/dbg.mfl" >/dev/null 2>&1
+# compare the probe VALUE sequence (strip the @op schedule tag, which is a correlation hint).
+P1=$($N $M replay "$T/dbg.tr" --print bal 2>&1 | grep '^probe' | sed 's/ @op[0-9]*//')
+P2=$($N $M replay "$T/dbg.tr" --print bal 2>&1 | grep '^probe' | sed 's/ @op[0-9]*//')
+chk "$P1" "$P2" "--print value history is deterministic across replays"
+chk "$(echo "$P1" | tail -1)" "probe 0 bal = 60" "--print bal ends at the recorded final value"
+chk "$($N $M run "$T/dbg.mfl" 2>&1 | grep -c '^probe')" "0" "a normal run emits no probes (zero overhead)"
+
 echo
 echo "record/replay gate: $pass pass, $fail fail"
 rm -rf "$T"

@@ -28,7 +28,7 @@ func CompileToCTarget(p *Program, safe bool, target string) (string, []string, e
 	if err != nil {
 		return "", nil, err
 	}
-	g := &cgen{c: c, safe: safe, target: target, jsonMemo: map[string]string{}, parseMemo: map[string]string{}, chanJSONMemo: map[string][2]string{}}
+	g := &cgen{c: c, safe: safe, target: target, probeVars: debugProbeVars, jsonMemo: map[string]string{}, parseMemo: map[string]string{}, chanJSONMemo: map[string][2]string{}}
 	src, err := g.program(p)
 	if err != nil {
 		return "", nil, err
@@ -92,6 +92,22 @@ type cgen struct {
 	target       string          // "" or "native" (default) -> cc; "wasm" -> zig cc, lean runtime, FFI as imports, exports
 	globals      map[string]bool // package-global names (emitted as C statics, mfl_g_<name>)
 	bodyOnly     bool            // oracle mode: emit only the program-specific C (skip the static runtime blocks)
+	probeVars    []string        // `machin replay --print <var>`: emit a probe after each assignment to these vars
+}
+
+// debugProbeVars is set by `machin replay --print` just before it (re)builds the recorded
+// program, so codegen instruments the named variables. It is empty for every normal build,
+// so `machin run`/`build` and the cgentest oracle-diff emit no probes and pay nothing.
+var debugProbeVars []string
+
+// wantsProbe reports whether `name` is being watched by `machin replay --print`.
+func (g *cgen) wantsProbe(name string) bool {
+	for _, v := range g.probeVars {
+		if v == name {
+			return true
+		}
+	}
+	return false
 }
 
 // build targets.
@@ -382,11 +398,24 @@ static int mfl_rr_prog_boundary(void);
 static int mfl_rr_besteffort = 0;   /* trace was recorded from a boundary-unsafe program */
 static int mfl_rr_verify = 0;       /* MFL_RR_VERIFY: report a faithfulness self-check */
 static int mfl_rr_json = 0;         /* MFL_RR_JSON: emit a crash as a JSON causal report */
+static int mfl_rr_probe_on = 0;     /* MFL_RR_PROBE: machin replay --print value-history mode */
+
+/* value-query debugger: codegen emits mfl_rr_probe("<var>", <value>) after each assignment
+   to a --print-watched variable. Because replay is deterministic, the printed sequence is the
+   exact history that variable took in the recorded run; the last line before a panic is its
+   value at the crash. Tagged with the goroutine path + schedule position for ordering. */
+static void mfl_rr_probe(const char* name, const char* val) {
+    if (!mfl_rr_probe_on) return;
+    pthread_mutex_lock(&mfl_rr_mu);
+    fprintf(stderr, "probe %s %s = %s @op%d\n", mfl_gid_path ? mfl_gid_path : "0", name, val, mfl_rr_pos);
+    pthread_mutex_unlock(&mfl_rr_mu);
+}
 
 static void mfl_rr_init(void) {
     mfl_gid_path = strdup("0");           /* main goroutine */
     if (getenv("MFL_RR_VERIFY")) mfl_rr_verify = 1;
     if (getenv("MFL_RR_JSON")) mfl_rr_json = 1;
+    if (getenv("MFL_RR_PROBE")) mfl_rr_probe_on = 1;
     const char* rec = getenv("MFL_RR_RECORD");
     const char* rep = getenv("MFL_RR_REPLAY");
     if (rec) {
@@ -3663,6 +3692,33 @@ func indentC(b *strings.Builder, n int) {
 	}
 }
 
+// emitProbe instruments an assignment for `machin replay --print <name>`: after the store,
+// print the variable's current value. Because replay is deterministic, this is a faithful
+// value history — the last line before a panic is the variable's state at the crash. Emitted
+// only when the var is watched, so a normal build (and the cgentest oracle-diff) carry
+// nothing. Scalars + strings only; slice/map/struct/chan are skipped (no cheap str form).
+func (g *cgen) emitProbe(name string, kind Kind, depth int) {
+	if !g.wantsProbe(name) {
+		return
+	}
+	ref := g.varRef(name)
+	var val string
+	switch kind {
+	case KFloat:
+		val = fmt.Sprintf("mfl_str_d(%s)", ref)
+	case KBool:
+		val = fmt.Sprintf("mfl_str_b(%s)", ref)
+	case KString:
+		val = ref
+	case KInt:
+		val = fmt.Sprintf("mfl_str_i(%s)", ref)
+	default:
+		return
+	}
+	indentC(&g.buf, depth)
+	fmt.Fprintf(&g.buf, "mfl_rr_probe(%q, %s);\n", name, val)
+}
+
 func (g *cgen) stmt(s Stmt, depth int) error {
 	indentC(&g.buf, depth)
 	switch st := s.(type) {
@@ -3681,6 +3737,7 @@ func (g *cgen) stmt(s Stmt, depth int) error {
 			return err
 		}
 		fmt.Fprintf(&g.buf, "%s = %s;\n", g.varRef(st.Name), e)
+		g.emitProbe(st.Name, g.c.NodeKind(g.curFn, st.Val), depth)
 	case *ReturnStmt:
 		if len(st.Vals) == 0 {
 			// a bare return yields the named return locals (or nothing for void)

@@ -86,12 +86,34 @@ When the recorded run panicked, `machin replay --json` reproduces it and emits:
 story an agent reads: goroutine `0.2` acted first, then `0.1`, then `0` (main),
 which panicked.
 
+## Value-query debugger (`--print`)
+
+`machin replay <trace> --print <var>` rebuilds the recorded program with a probe
+after each assignment to `<var>` and re-runs the exact recorded execution, printing
+that variable's value history to stderr:
+
+```
+$ machin replay crash.mflrr --print idx
+probe 0 idx = 0 @op0
+probe 0 idx = 5 @op3
+probe 0 idx = 12 @op4
+panic: index out of range [12] with length 2
+  (replay: goroutine 0, schedule op 4/4)
+```
+
+Because replay is deterministic, the sequence is exactly what the variable did in
+the recorded run — the last line before a panic is its value at the crash, and
+`@op<n>` correlates with the causal report's `scheduleOp`. Watch several with
+`--print a,b,c`. Scalars and strings only; a normal `build`/`run` emits no probes
+and pays nothing (the instrumentation exists only in a `--print` rebuild).
+
 ## Scope
 
 In-process determinism only. Cross-process coordination between goroutines is out
 of scope. The trace format is versioned (`MFLRR 1`). Rand, file reads, raw sockets,
 and the HTTP/TLS/WebSocket layer are all captured, and `select` is gated, so those
 programs replay faithfully and self-contained; FFI is the only best-effort boundary.
-Not yet covered: interactive TTY input (`read_key`/`raw_mode`, polled not logged),
-and a value-query replay debugger (`--at <site> --print <var>`). The runtime is
-self-hosted (the self-hosted compiler emits byte-identical instrumentation).
+Not yet covered: interactive TTY input (`read_key`/`raw_mode`, polled not logged).
+The value-query debugger (`--print <var>`, above) watches scalar/string variables.
+The runtime is self-hosted (the self-hosted compiler emits byte-identical
+instrumentation).
