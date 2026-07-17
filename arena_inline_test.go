@@ -30,11 +30,16 @@ func TestScopedArenaReclaimsInlineAllocations(t *testing.T) {
 	if scopedOut != unscopedOut {
 		t.Fatalf("arena changed program output: scoped %q vs unscoped %q", scopedOut, unscopedOut)
 	}
-	// The unscoped loop retains ~all inline allocations; the scoped one frees
-	// each iteration. Require at least a 5x reduction (the real gap is ~65x).
-	// If inline allocations ever stop being reclaimed (#426), this regresses to
-	// roughly parity and trips the guard.
-	if scopedRSS*5 >= unscopedRSS {
-		t.Fatalf("arena did not reclaim inline allocations: scoped RSS %d KB vs unscoped %d KB", scopedRSS, unscopedRSS)
+	// The unscoped loop retains ~all inline allocations; the scoped one frees each
+	// iteration. The true reduction is ~65x, but the floor is 3x, not 5x: ru_maxrss
+	// carries a large, environment-dependent fixed base that does not shrink with the
+	// arena — for the identical scoped binary it reads ~1.4 MB on a dev box but ~19 MB on
+	// a CI runner (glibc arena / overcommit accounting), which drags the ratio down even
+	// though reclamation works. 3x still collapses toward 1x on a real regression (inline
+	// allocations not reclaimed, #426) while tolerating that base-RSS inflation. Mirrors
+	// the same floor in TestScopedArenaBoundsMemory.
+	if scopedRSS*3 >= unscopedRSS {
+		t.Fatalf("arena did not reclaim inline allocations: scoped RSS %d KB vs unscoped %d KB (ratio %.1fx, want >3x)",
+			scopedRSS, unscopedRSS, float64(unscopedRSS)/float64(scopedRSS))
 	}
 }
