@@ -44,6 +44,8 @@ func main() {
 		err = cmdCertify(os.Args[2:]) // translation validation: prove the compiler matched the source (within bounds)
 	case "equiv":
 		err = cmdEquiv(os.Args[2:]) // bounded equivalence oracle: prove two functions agree, or return the diverging input
+	case "optimize":
+		err = cmdOptimize(os.Args[2:]) // provable superoptimization: propose faster rewrites, keep only the oracle-proven ones
 	case "test":
 		err = cmdTest(os.Args[2:]) // native MFL test runner (framework/test.src assert helpers)
 	case "pack":
