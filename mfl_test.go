@@ -1373,6 +1373,22 @@ func TestRawMemoryU16AndPtr(t *testing.T) {
 // madvise_free(ptr, len): MADV_DONTNEED hint to drop resident pages of an mmap
 // region (idle release). On a misaligned/anonymous pointer it's a safe no-op;
 // the point is that it compiles, runs, and never crashes the program.
+func TestFileRawRoundtrip(t *testing.T) {
+	main := `func main() {
+	p := alloc(32)
+	poke_i32(p, 0, 12345)  poke_i32(p, 8, 67890)  poke_f32(p, 16, 3.5)
+	n := write_file_raw("/tmp/mfl_raw_test.bin", p, 32)
+	q := alloc(32)
+	m := read_file_raw("/tmp/mfl_raw_test.bin", q, 32)
+	remove("/tmp/mfl_raw_test.bin")
+	println(str(n) + " " + str(m) + " " + str(peek_i32(q,0)) + " " + str(peek_i32(q,8)) + " " + str(peek_f32(q,16)))
+}`
+	out, _ := buildRun(t, main)
+	if out != "32 32 12345 67890 3.5\n" {
+		t.Fatalf("write/read_file_raw: got %q", out)
+	}
+}
+
 func TestMatmulQ8Batch(t *testing.T) {
 	// matmul_q8_batch(ob,ostride,xq,xs,wq,ws,n,gs,B,lo,hi) must equal per-position dot_q8.
 	main := `func main() {

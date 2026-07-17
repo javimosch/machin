@@ -154,6 +154,8 @@ func builtin_cfn(name) (s) {
     if name == "write_bytes" { s = "mfl_write_bytes"  return s }
     if name == "write_file" { s = "mfl_write_file"  return s }
     if name == "write_file_bytes" { s = "mfl_write_file_bytes"  return s }
+    if name == "write_file_raw" { s = "mfl_write_file_raw"  return s }
+    if name == "read_file_raw" { s = "mfl_read_file_raw"  return s }
     if name == "remove" { s = "mfl_remove_file"  return s }
     if name == "list_dir" { s = "mfl_list_dir"  return s }
     if name == "system" { s = "mfl_system"  return s }

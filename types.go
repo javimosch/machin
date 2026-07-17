@@ -2327,6 +2327,14 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		c.addPair(argSlots[0], c.cString)
 		c.addPair(argSlots[1], c.cBytes)
 		return c.cInt, nil
+	case "write_file_raw", "read_file_raw":
+		if len(argSlots) != 3 {
+			return 0, fmt.Errorf("%s: 3 args (path, ptr, nbytes)", ex.Callee)
+		}
+		c.addPair(argSlots[0], c.cString)
+		c.addPair(argSlots[1], c.cInt)
+		c.addPair(argSlots[2], c.cInt)
+		return c.cInt, nil
 	case "remove":
 		if len(argSlots) != 1 {
 			return 0, fmt.Errorf("remove: 1 arg (path)")
