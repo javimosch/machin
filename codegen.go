@@ -128,6 +128,26 @@ const cRuntime = `#define _GNU_SOURCE
 #include <sys/wait.h>
 #include <signal.h>
 #endif
+#if defined(__x86_64__) && !defined(__wasm__)
+#include <immintrin.h>
+#if defined(__AVX512VNNI__) && defined(__AVX512VL__)
+#define MFL_VNNI 1
+#define MFL_DPBUSD(acc,a,b) _mm256_dpbusd_epi32((acc),(a),(b))
+#elif defined(__AVXVNNI__)
+#define MFL_VNNI 1
+#define MFL_DPBUSD(acc,a,b) _mm256_dpbusd_avx_epi32((acc),(a),(b))
+#endif
+#if defined(MFL_VNNI)
+/* horizontal sum of 8 int32 lanes */
+static inline int32_t mfl_hsum256_i32(__m256i v) {
+    __m128i lo = _mm256_castsi256_si128(v), hi = _mm256_extracti128_si256(v, 1);
+    __m128i s = _mm_add_epi32(lo, hi);
+    s = _mm_add_epi32(s, _mm_shuffle_epi32(s, 0x4E));
+    s = _mm_add_epi32(s, _mm_shuffle_epi32(s, 0xB1));
+    return _mm_cvtsi128_si32(s);
+}
+#endif
+#endif
 
 /* slices: a Go-style header over an unboxed backing array */
 typedef struct { void* data; int64_t len; int64_t cap; } mfl_slice;
@@ -741,13 +761,36 @@ static void mfl_axpy_f32(int64_t y, double s, int64_t x, int64_t n) {
     float sf = (float)s;
     for (int64_t k = 0; k < n; k++) yy[k] += sf * xx[k];
 }
-static double mfl_dot_q8(int64_t xq, int64_t xs, int64_t wq, int64_t ws, int64_t n, int64_t gs) {
-    const int8_t* x = (const int8_t*)(intptr_t)xq;
-    const float* xsc = (const float*)(intptr_t)xs;
-    const int8_t* w = (const int8_t*)(intptr_t)wq;
-    const float* wsc = (const float*)(intptr_t)ws;
+/* grouped, dual-scaled int8 inner product (Q8_0). Both operands are signed int8.
+   On AVX-VNNI the per-group int32 dot uses vpdpbusd, which needs unsigned*signed;
+   so x is offset to unsigned via XOR 0x80 (== +128) and the +128*sum(w) bias is
+   subtracted back (sum(w) via vpdpbusd against a ones vector). Scalar fallback
+   otherwise. gs must be a multiple of 32 for the vector path. */
+static inline double mfl_q8_dot(const int8_t* x, const float* xsc, const int8_t* w, const float* wsc, int64_t n, int64_t gs) {
     double val = 0.0;
     int64_t ng = gs > 0 ? n / gs : 0;
+#if defined(MFL_VNNI)
+    if (gs >= 32 && (gs & 31) == 0) {
+        const __m256i off = _mm256_set1_epi8((char)0x80);
+        const __m256i ones = _mm256_set1_epi8(1);
+        for (int64_t g = 0; g < ng; g++) {
+            const int8_t* xg = x + g * gs;
+            const int8_t* wg = w + g * gs;
+            __m256i acc = _mm256_setzero_si256();   /* sum (x+128)*w */
+            __m256i wsm = _mm256_setzero_si256();    /* sum w */
+            for (int64_t k = 0; k < gs; k += 32) {
+                __m256i xv = _mm256_loadu_si256((const __m256i*)(xg + k));
+                __m256i wv = _mm256_loadu_si256((const __m256i*)(wg + k));
+                __m256i xu = _mm256_xor_si256(xv, off);
+                acc = MFL_DPBUSD(acc, xu, wv);
+                wsm = MFL_DPBUSD(wsm, ones, wv);
+            }
+            int32_t dot = mfl_hsum256_i32(acc) - 128 * mfl_hsum256_i32(wsm);
+            val += (double)dot * (double)xsc[g] * (double)wsc[g];
+        }
+        return val;
+    }
+#endif
     for (int64_t g = 0; g < ng; g++) {
         const int8_t* xg = x + g * gs;
         const int8_t* wg = w + g * gs;
@@ -756,6 +799,10 @@ static double mfl_dot_q8(int64_t xq, int64_t xs, int64_t wq, int64_t ws, int64_t
         val += (double)acc * (double)xsc[g] * (double)wsc[g];
     }
     return val;
+}
+static double mfl_dot_q8(int64_t xq, int64_t xs, int64_t wq, int64_t ws, int64_t n, int64_t gs) {
+    return mfl_q8_dot((const int8_t*)(intptr_t)xq, (const float*)(intptr_t)xs,
+                      (const int8_t*)(intptr_t)wq, (const float*)(intptr_t)ws, n, gs);
 }
 /* batched q8 matmul: for output rows i in [lo,hi) and positions b in [0,B):
    out[b*ostride + i] = dot_q8(xq + b*n, xs + b*n/gs, w + i*n, ws + i*n/gs). The
@@ -775,15 +822,7 @@ static void mfl_matmul_q8_batch(int64_t ob, int64_t ostride, int64_t xqb, int64_
         for (int64_t b = 0; b < B; b++) {
             const int8_t* x = xbase + b * n;
             const float* xsc = xsbase + b * ng;
-            double val = 0.0;
-            for (int64_t g = 0; g < ng; g++) {
-                const int8_t* xg = x + g * gs;
-                const int8_t* wg = wrow + g * gs;
-                int32_t acc = 0;
-                for (int64_t k = 0; k < gs; k++) acc += (int32_t)xg[k] * (int32_t)wg[k];
-                val += (double)acc * (double)xsc[g] * (double)wsc[g];
-            }
-            out[b * ostride + i] = (float)val;
+            out[b * ostride + i] = (float)mfl_q8_dot(x, xsc, wrow, wsc, n, gs);
         }
     }
 }
