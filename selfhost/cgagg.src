@@ -193,7 +193,11 @@ func json_parser(t) (name) {
     if body == "" {
         di := struct_def_idx(t)
         d := g_structdefs[di]
+        // Omitted string fields must default to "" not NULL (a NULL char* crashes
+        // len()/concat) — seed them recursively, like the struct-literal codegen. #449.
         b := ct + " out = {0};\n"
+        szi := string_zero_inits(t)
+        if len(szi) > 0 { b = ct + " out = {" + join(szi, ", ") + "};\n" }
         b = b + "    mfl_js_ws(p);\n    if (**p == '{') {\n        (*p)++; mfl_js_ws(p);\n        if (**p != '}') {\n            while (1) {\n                char* _k = mfl_js_str(p); mfl_js_ws(p); if (**p == ':') (*p)++;\n"
         j := 0
         for j < len(d.fnames) {

@@ -40,6 +40,16 @@
   verified byte-for-byte against the Go reference via `machin falsifytest`, so the
   machin-in-machin compiler both compiles *and* falsifies *and* proves, provably
   identically.
+- **Fixed a segfault when `parse()` filled a struct whose string fields were
+  absent from the JSON.** The generated JSON parser initialized the result with
+  `{0}`, so any string field not present in the payload stayed a NULL `char*`
+  instead of `""`. Touching such a field — `len()`, concatenation, printing —
+  dereferenced NULL and crashed (e.g. `strlen(NULL)`), which surfaced as an
+  exit-255/segfault when the unset field flowed through a helper back into a
+  range loop. The parser now seeds omitted string fields (recursively, through
+  nested structs) to `""` via the same `stringZeroInits` path the struct-literal
+  codegen already uses. See #449.
+
 - **Fixed `&&` / `||` not short-circuiting: the right operand was evaluated
   even when the left already decided the result.** When either operand had a
   side effect (a call or channel receive), codegen hoisted *both* operands
