@@ -400,6 +400,18 @@ func (ip *interp) eval(e Expr) fval {
 			return base.sl[idx.i]
 		}
 		return vstr(string(base.s[idx.i]))
+	case *SliceLit:
+		// int-element slices only — matches the interpreter's []int slice model (shared
+		// with the self-hosted falsifier); a non-int element makes the value inconclusive.
+		elems := make([]fval, len(x.Elems))
+		for i, e := range x.Elems {
+			el := ip.eval(e)
+			if el.k != KInt {
+				ip.unknown("non-int slice literal element")
+			}
+			elems[i] = el
+		}
+		return fval{k: KSlice, sl: elems}
 	case *StructLit:
 		return ip.evalStructLit(x)
 	case *FieldAccess:
@@ -441,6 +453,23 @@ func (ip *interp) evalCall(x *Call) fval {
 			if v.k == KFloat {
 				return vfloat(absF(v.f))
 			}
+		}
+	case "append":
+		if len(x.Args) >= 1 {
+			base := ip.eval(x.Args[0])
+			if base.k == KSlice {
+				ns := make([]fval, len(base.sl), len(base.sl)+len(x.Args)-1)
+				copy(ns, base.sl)
+				for _, a := range x.Args[1:] {
+					el := ip.eval(a)
+					if el.k != KInt {
+						ip.unknown("non-int append element")
+					}
+					ns = append(ns, el)
+				}
+				return fval{k: KSlice, sl: ns}
+			}
+			ip.unknown("append to " + kindName(base.k))
 		}
 	}
 	// user function: inline it (interprocedural). Anything else -> inconclusive.

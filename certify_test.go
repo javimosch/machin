@@ -96,18 +96,23 @@ func TestCertifyDetectsMiscompilation(t *testing.T) {
 	}
 }
 
-// TestCertifyNonScalarIsUnknown: a function returning a slice/string isn't validated
-// in this slice — it must be reported unknown, never falsely certified.
-func TestCertifyNonScalarIsUnknown(t *testing.T) {
+// TestCertifyNonScalarReturns: string, slice, and struct returns are validated via the
+// json() canonical form — they certify when the compiler matches the source.
+func TestCertifyNonScalarReturns(t *testing.T) {
 	rep := certifyProg(t,
-		`func mk(n) (r) { r = []int{n, n} }`,
-		`func main() { xs := mk(3)  println(str(len(xs))) }`,
+		`type P struct { x int  y int }`,
+		`func mkslice(n) (r) { r = []int{n, n + 1} }`,
+		`func mkstruct(a, b) (r) { r = P{a, b} }`,
+		`func tag(a) (r) { r = "neg"  if a >= 0 { r = "pos" } }`,
+		`func main() { println(str(len(mkslice(3))))  println(str(mkstruct(1,2).x))  println(tag(5)) }`,
 	)
-	if v := verdictOf(rep, "mk"); v != "unknown" && v != "partial" {
-		t.Errorf("slice-returning mk: verdict %q, want unknown/partial (not certified)", v)
-	}
 	if !rep.OK {
-		t.Errorf("a non-scalar return is unvalidatable, not a miscompilation")
+		t.Fatalf("expected clean non-scalar returns to certify; got %+v", rep.Verdicts)
+	}
+	for _, fn := range []string{"mkslice", "mkstruct", "tag"} {
+		if v := verdictOf(rep, fn); v != "certified" && v != "certified-bounded" {
+			t.Errorf("%s: verdict %q, want certified[-bounded]", fn, v)
+		}
 	}
 }
 
@@ -168,23 +173,69 @@ func TestCertifyReportRendering(t *testing.T) {
 	}
 }
 
-// TestCertifyRenderLikeStr covers the scalar renderings and the deferred (non-scalar) case.
-func TestCertifyRenderLikeStr(t *testing.T) {
+// TestCertifyRenderCanonical covers the json-canonical rendering across every kind,
+// matching machin's json() builtin exactly (int, float %.6g, bool, escaped string,
+// nested slice, and struct in declared field order).
+func TestCertifyRenderCanonical(t *testing.T) {
 	cases := []struct {
 		v    fval
 		want string
-		ok   bool
 	}{
-		{vint(-7), "-7", true},
-		{vfloat(1.5), "1.5", true},
-		{vbool(true), "true", true},
-		{vbool(false), "false", true},
-		{vstr("hi"), "", false},
+		{vint(-7), "-7"},
+		{vfloat(1.5), "1.5"},
+		{vfloat(1.0), "1"},
+		{vbool(true), "true"},
+		{vbool(false), "false"},
+		{vstr("hi\"x\ny"), `"hi\"x\ny"`},
+		{fval{k: KSlice, sl: []fval{vint(1), vint(-2)}}, "[1,-2]"},
+		{fval{k: KStruct, fieldOrder: []string{"x", "y"}, fields: map[string]fval{"x": vint(4), "y": vstr("z")}}, `{"x":4,"y":"z"}`},
 	}
 	for _, c := range cases {
-		got, ok := renderLikeStr(c.v)
-		if ok != c.ok || got != c.want {
-			t.Errorf("renderLikeStr(%v) = %q,%v want %q,%v", c.v, got, ok, c.want, c.ok)
+		got, ok := renderCanonical(c.v)
+		if !ok || got != c.want {
+			t.Errorf("renderCanonical(%v) = %q,%v want %q,true", c.v, got, ok, c.want)
+		}
+	}
+	// a map/closure return isn't json-serializable here → not renderable.
+	if _, ok := renderCanonical(fval{k: KMap}); ok {
+		t.Error("a map value should not be canonically renderable in this pass")
+	}
+}
+
+// TestCertifySliceConstruction: functions that BUILD slices (literal + append) now
+// certify — the interpreter models []int construction (matched in the self-hosted
+// falsifier), so json() comparison covers them.
+func TestCertifySliceConstruction(t *testing.T) {
+	rep := certifyProg(t,
+		`func pair(a, b) (r) { r = []int{a, b, a + b} }`,
+		`func upto(n) (r) { r = []int{}  i := 0  for i < n { r = append(r, i)  i = i + 1 } }`,
+		`func main() { println(str(len(pair(1,2)) + len(upto(3)))) }`,
+	)
+	if !rep.OK {
+		t.Fatalf("slice-constructing functions should certify; got %+v", rep.Verdicts)
+	}
+	for _, fn := range []string{"pair", "upto"} {
+		if v := verdictOf(rep, fn); v != "certified" && v != "certified-bounded" {
+			t.Errorf("%s: verdict %q, want certified[-bounded]", fn, v)
+		}
+	}
+}
+
+// TestCertifyNoFalsePositiveOnCorpus: certify must run over real example programs
+// without crashing and without ever reporting a (false) miscompilation. This is the
+// continuous-self-certification gate — it would fire if a codegen regression ever made
+// a validatable function diverge from the source.
+func TestCertifyNoFalsePositiveOnCorpus(t *testing.T) {
+	for _, f := range []string{
+		"examples/collatz.mfl",
+		"examples/fast_power.mfl",
+		"examples/complex/named_returns.mfl",
+	} {
+		if _, err := os.Stat(f); err != nil {
+			continue
+		}
+		if err := cmdCertify([]string{f}); err != nil {
+			t.Errorf("certify %s: %v", f, err)
 		}
 	}
 }

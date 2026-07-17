@@ -176,12 +176,42 @@ func f_eval(ni) (v) {
             if a.k == 2 { v = fv_float(f_absf(a.f))  return v }
             g_fstatus = 2  return v
         }
+        if n.s == "append" && len(n.kids) >= 1 {
+            base := f_eval(n.kids[0])
+            if g_fstatus != 0 { return v }
+            if base.k != 1 { g_fstatus = 2  return v }   // int-slice only (matches falsify.go)
+            xs := []int{}
+            j := 0
+            for j < len(base.sl) { xs = append(xs, base.sl[j])  j = j + 1 }
+            j = 1
+            for j < len(n.kids) {
+                el := f_eval(n.kids[j])
+                if g_fstatus != 0 { return v }
+                if el.k != 0 { g_fstatus = 2  return v }   // non-int element -> inconclusive
+                xs = append(xs, el.i)
+                j = j + 1
+            }
+            v = fv_slice(xs)  return v
+        }
         // user function: inline it (interprocedural). Spread calls + non-user
         // callees (str/println/other builtins) are inconclusive — and, crucially,
         // their args are NOT evaluated (matches falsify.go evalCall).
         fr := func_root(n.s)
         if fr >= 0 && n.ival == 0 { v = f_call_user(fr, n.kids)  return v }
         g_fstatus = 2  return v
+    }
+    if n.kind == K_SLICE {
+        // int-element slice literal only (matches falsify.go SliceLit + the []int FV model).
+        xs := []int{}
+        j := 0
+        for j < len(n.kids) {
+            el := f_eval(n.kids[j])
+            if g_fstatus != 0 { return v }
+            if el.k != 0 { g_fstatus = 2  return v }   // non-int element -> inconclusive
+            xs = append(xs, el.i)
+            j = j + 1
+        }
+        v = fv_slice(xs)  return v
     }
     if n.kind == K_STRUCT { v = f_eval_struct(ni)  return v }
     if n.kind == K_FIELD {

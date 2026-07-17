@@ -166,22 +166,83 @@ func certEval(fn *FuncDecl, args []fval, funcs map[string]*FuncDecl, structs map
 	return fval{}, false
 }
 
-// renderLikeStr renders a scalar value exactly as MFL's str() builtin prints it, so
-// the interpreter's value and the compiled `str(...)` output can be compared as text.
-// Scalars only (Slice 1.1); other kinds report ok=false and are not validated here.
-func renderLikeStr(v fval) (string, bool) {
+// renderCanonical renders a value EXACTLY as machin's json() builtin serializes it, so
+// the interpreter's value and the compiled `json(...)` output compare as text across all
+// data types (scalars, strings, slices, structs). Reports ok=false only for kinds json()
+// can't serialize (closures/channels/maps) — those functions stay unknown, never certified.
+//
+// Float uses %.6g to match C's %g (mfl_str_d), NOT Go's default %g (shortest form) — a
+// mismatch there would be a false miscompilation blamed on the compiler.
+func renderCanonical(v fval) (string, bool) {
 	switch v.k {
 	case KInt:
 		return fmt.Sprintf("%d", v.i), true
 	case KFloat:
-		return fmt.Sprintf("%g", v.f), true
+		return fmt.Sprintf("%.6g", v.f), true
 	case KBool:
 		if v.b {
 			return "true", true
 		}
 		return "false", true
+	case KString:
+		return jsonEscape(v.s), true
+	case KSlice:
+		var b strings.Builder
+		b.WriteByte('[')
+		for i, e := range v.sl {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			s, ok := renderCanonical(e)
+			if !ok {
+				return "", false
+			}
+			b.WriteString(s)
+		}
+		b.WriteByte(']')
+		return b.String(), true
+	case KStruct:
+		var b strings.Builder
+		b.WriteByte('{')
+		for i, f := range v.fieldOrder {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			b.WriteString(jsonEscape(f))
+			b.WriteByte(':')
+			s, ok := renderCanonical(v.fields[f])
+			if !ok {
+				return "", false
+			}
+			b.WriteString(s)
+		}
+		b.WriteByte('}')
+		return b.String(), true
 	}
-	return "", false // string / slice / struct returns: deferred to a later slice
+	return "", false // closure / channel / map return — not json-serializable here
+}
+
+// jsonEscape quotes + escapes a string exactly like the runtime's mfl_json_str.
+func jsonEscape(s string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; c {
+		case '"', '\\':
+			b.WriteByte('\\')
+			b.WriteByte(c)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\t':
+			b.WriteString(`\t`)
+		case '\r':
+			b.WriteString(`\r`)
+		default:
+			b.WriteByte(c)
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
 }
 
 // certifyProgram runs translation validation over every representative function.
@@ -242,7 +303,7 @@ func certifyProgram(prog *Program, c *Checker, decls []string) (certReport, erro
 		// enumerate the bounded input space (mixed-radix over the per-param domains).
 		idx := make([]int, len(domains))
 		tried, conclusive := 0, 0
-		anyUnknown, completed, nonScalar := false, false, false
+		anyUnknown, completed, unrenderable := false, false, false
 		for {
 			if tried >= falsInputCap {
 				break
@@ -255,8 +316,8 @@ func certifyProgram(prog *Program, c *Checker, decls []string) (certReport, erro
 			val, ok := certEval(fn, args, funcs, structs)
 			if !ok {
 				anyUnknown = true
-			} else if s, sok := renderLikeStr(val); !sok {
-				nonScalar = true // a validatable input, but a non-scalar return — defer
+			} else if s, sok := renderCanonical(val); !sok {
+				unrenderable = true // a return json() can't serialize (closure/chan/map)
 			} else {
 				conclusive++
 				probes = append(probes, certProbe{
@@ -281,11 +342,9 @@ func certifyProgram(prog *Program, c *Checker, decls []string) (certReport, erro
 		}
 
 		switch {
-		case nonScalar && conclusive == 0:
-			record(fn.Name, "unknown", tried) // non-scalar return, nothing to compare yet
 		case conclusive == 0:
-			record(fn.Name, "unknown", tried) // never conclusively evaluated
-		case anyUnknown || nonScalar || !completed:
+			record(fn.Name, "unknown", tried) // never conclusively evaluated / unserializable
+		case anyUnknown || unrenderable || !completed:
 			record(fn.Name, "partial", tried) // validated the conclusive inputs only
 		case prov == 2:
 			record(fn.Name, "certified", tried) // finite domain, whole space covered
@@ -381,9 +440,11 @@ func runCertHarness(decls []string, probes []certProbe) ([]string, error) {
 		b.WriteString(d)
 		b.WriteString("\n")
 	}
+	// json() gives one canonical serialization for every type (scalars, strings, slices,
+	// structs), matched exactly by renderCanonical on the interpreter side.
 	b.WriteString("func main() {\n")
 	for _, p := range probes {
-		fmt.Fprintf(&b, "\tprintln(str(%s))\n", p.call)
+		fmt.Fprintf(&b, "\tprintln(json(%s))\n", p.call)
 	}
 	b.WriteString("}\n")
 
