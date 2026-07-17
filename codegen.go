@@ -172,6 +172,7 @@ static void* mfl_realloc(void* old, size_t sz) {
 static _Thread_local const char* mfl_strlen_cache_s = NULL;
 static _Thread_local int64_t mfl_strlen_cache_n = 0;
 static inline int64_t mfl_strlen_cached(const char* s) {
+    if (s == NULL) return 0; /* NULL string (e.g. parse() missing field) is length 0, not a crash */
     if (s == mfl_strlen_cache_s) return mfl_strlen_cache_n;
     int64_t n = (int64_t)strlen(s);
     mfl_strlen_cache_s = s; mfl_strlen_cache_n = n;
@@ -1151,7 +1152,7 @@ static int64_t mfl_index(const char* s, const char* sub) { const char* f = strst
 static int mfl_contains(const char* s, const char* sub) { return strstr(s, sub) != NULL; }
 static int mfl_has_prefix(const char* s, const char* p) { return strncmp(s, p, strlen(p)) == 0; }
 static int mfl_has_suffix(const char* s, const char* p) { size_t ls = strlen(s), lp = strlen(p); return lp <= ls && strcmp(s + ls - lp, p) == 0; }
-static char* mfl_charat(const char* s, int64_t i) { int64_t n = strlen(s); if (i < 0 || i >= n) return mfl_dup(""); char* r = mfl_alloc(2); r[0] = s[i]; r[1] = 0; return r; }
+static char* mfl_charat(const char* s, int64_t i) { int64_t n = mfl_strlen_cached(s); if (i < 0 || i >= n) return mfl_dup(""); char* r = mfl_alloc(2); r[0] = s[i]; r[1] = 0; return r; }
 static char* mfl_to_upper(const char* s) { size_t n = strlen(s); char* r = mfl_alloc(n + 1); for (size_t i = 0; i < n; i++) r[i] = toupper((unsigned char)s[i]); r[n] = 0; return r; }
 static char* mfl_to_lower(const char* s) { size_t n = strlen(s); char* r = mfl_alloc(n + 1); for (size_t i = 0; i < n; i++) r[i] = tolower((unsigned char)s[i]); r[n] = 0; return r; }
 static char* mfl_trim(const char* s) {
@@ -4963,7 +4964,7 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		case KMap:
 			return fmt.Sprintf("mfl_map_len(%s)", args[0]), nil
 		}
-		return fmt.Sprintf("((int64_t)strlen(%s))", args[0]), nil
+		return fmt.Sprintf("((int64_t)strlen(mfl_s(%s)))", args[0]), nil
 	case "bytes":
 		return fmt.Sprintf("mfl_bytes_from_str(%s)", args[0]), nil
 	case "bytes_str":
