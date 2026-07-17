@@ -59,3 +59,42 @@ func TestDeadlockNoFalsePositive(t *testing.T) {
 		t.Fatalf("producer/consumer should complete cleanly; got code=%d out=%q", code, out)
 	}
 }
+
+// TestDeadlockCausalReport: the deadlock report must name each parked goroutine (by its
+// stable gid path) and the channel it can never receive from — the wait-cycle — and offer
+// a JSON form for agents. Two goroutines waiting on each other's channel form a 2-cycle.
+func TestDeadlockCausalReport(t *testing.T) {
+	srcs := []string{
+		`func a(x, y) { v := <-x y <- v }`,
+		`func main() { p := make(chan int) q := make(chan int) go a(p, q) r := <-q p <- r println("done") }`,
+	}
+	// text report: names both goroutines and mentions "channel".
+	out, code := buildRunExit(t, 15, srcs...)
+	if code != 2 {
+		t.Fatalf("expected deadlock exit 2, got %d: %q", code, out)
+	}
+	for _, want := range []string{"goroutine 0", "goroutine 0.1", "channel #"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("text report missing %q; got:\n%s", want, out)
+		}
+	}
+	// JSON report (MFL_RR_JSON): structured wait-cycle.
+	bin, err := os.CreateTemp("", "mfl-dlj-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin.Close()
+	defer os.Remove(bin.Name())
+	if err := BuildBinary(&Program{Funcs: parseFuncs(t, srcs...)}, bin.Name(), false); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("timeout", "15", bin.Name())
+	cmd.Env = append(os.Environ(), "MFL_RR_JSON=1")
+	jout, _ := cmd.CombinedOutput()
+	js := string(jout)
+	for _, want := range []string{`"deadlock":true`, `"goroutine":"0"`, `"goroutine":"0.1"`, `"recvOnChannel":`} {
+		if !strings.Contains(js, want) {
+			t.Errorf("JSON report missing %q; got: %s", want, js)
+		}
+	}
+}
