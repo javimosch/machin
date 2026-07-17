@@ -700,11 +700,12 @@ func cg_go(iid, idx) {
         rline = rline + "s->a" + str(i)
         i = i + 1
     }
-    tramp_emit(rline + "); free(s); mfl_arena_free(&_a); return NULL; }\n")
+    tramp_emit(rline + "); free(s); mfl_arena_free(&_a); mfl_dl_finish(); return NULL; }\n")
     // call site: populate every field from the SPAWNING goroutine's (current)
     // arena, then freeze it against that arena being freed before the new
     // goroutine gets a chance to thaw it back out.
     cemit("{\n")
+    cemit("        mfl_dl_spawn(); /* count the goroutine live from its spawn site (deadlock detector) */\n")
     cemit("        struct mfl_go_" + ids + "* s = malloc(sizeof(*s));\n")
     cemit("        s->_cidx = ++mfl_spawn_ctr; s->_ppath = strdup(mfl_gid_path ? mfl_gid_path : \"0\");\n")
     i = 0

@@ -306,6 +306,7 @@ static void mfl_rr_enter(void); static void mfl_rr_mark(void); static void mfl_r
    blocked receiver so range/recv stop instead of hanging forever. close is an
    observable, ordered channel op -- it takes a turn so replay reproduces its
    position relative to receivers (a recv after close gets "not ok"). */
+static void mfl_dl_note(void); /* deadlock detector: a channel send/close is progress (defined below) */
 static void mfl_chan_close(mfl_chan* c) {
     mfl_rr_enter();
     pthread_mutex_lock(&c->mu);
@@ -313,6 +314,7 @@ static void mfl_chan_close(mfl_chan* c) {
     pthread_cond_broadcast(&c->cnd);
     mfl_rr_mark();
     pthread_mutex_unlock(&c->mu);
+    mfl_dl_note(); /* a close lets parked receivers drain — channel progress */
     mfl_rr_exit();
 }
 /* ---- record/replay (Phase 0 spike) ------------------------------------------
@@ -533,6 +535,57 @@ static void mfl_panic(const char* msg) {
     exit(1);
 }
 
+/* runtime deadlock detector. machin channels are unbounded, so send never blocks — the
+   only blocking op is recv on an empty, open channel. A deadlock is every live goroutine
+   parked in such a recv, with no one left to send. Track live vs. blocked goroutines and,
+   the moment they meet, report + exit(2) instead of hanging forever. main is one live
+   goroutine; a spawned goroutine is counted from its spawn site until its body returns. */
+static pthread_mutex_t mfl_dl_mu = PTHREAD_MUTEX_INITIALIZER;
+static int mfl_dl_live = 1;         /* main */
+static int mfl_dl_blocked = 0;      /* goroutines parked in a receive */
+static unsigned long mfl_dl_gen = 0;/* bumped on every channel send/close (progress) */
+static int mfl_dl_wd = 0;           /* watchdog started? */
+static void mfl_dl_deadlock(void);
+static void mfl_dl_note(void)    { pthread_mutex_lock(&mfl_dl_mu); mfl_dl_gen++;  pthread_mutex_unlock(&mfl_dl_mu); }
+static void mfl_dl_spawn(void)   { pthread_mutex_lock(&mfl_dl_mu); mfl_dl_live++; pthread_mutex_unlock(&mfl_dl_mu); }
+static void mfl_dl_finish(void)  { pthread_mutex_lock(&mfl_dl_mu); mfl_dl_live--; pthread_mutex_unlock(&mfl_dl_mu); }
+static void mfl_dl_unblock(void) { pthread_mutex_lock(&mfl_dl_mu); mfl_dl_blocked--; pthread_mutex_unlock(&mfl_dl_mu); }
+/* quiescence-based detection: a deadlock is only declared when every live goroutine is
+   parked in a receive AND no channel send/close has happened across a short window. A
+   plain "blocked == live" snapshot is racy — a receiver just signaled by a send/close is
+   momentarily still counted blocked — so we require the (blocked>=live, gen) state to hold
+   stable for two polls before calling it. Any real send/close bumps gen and resets it. */
+static void* mfl_dl_watchdog(void* _p) {
+    (void)_p;
+    unsigned long last = 0; int stable = 0;
+    for (;;) {
+        usleep(20000); /* 20ms poll */
+        int dead = 0;
+        pthread_mutex_lock(&mfl_dl_mu);
+        if (mfl_dl_live > 0 && mfl_dl_blocked >= mfl_dl_live) {
+            if (mfl_dl_gen == last) { if (++stable >= 2) dead = 1; }
+            else { stable = 0; last = mfl_dl_gen; }
+        } else { stable = 0; last = mfl_dl_gen; }
+        pthread_mutex_unlock(&mfl_dl_mu);
+        if (dead) mfl_dl_deadlock();
+    }
+    return NULL;
+}
+static void mfl_dl_block(void) {
+    /* lazily start the watchdog on the first receive that parks — a program that never
+       blocks on a channel pays nothing. */
+    pthread_mutex_lock(&mfl_dl_mu);
+    mfl_dl_blocked++;
+    int start = !mfl_dl_wd; mfl_dl_wd = 1;
+    pthread_mutex_unlock(&mfl_dl_mu);
+    if (start) { pthread_t t; pthread_create(&t, NULL, mfl_dl_watchdog, NULL); pthread_detach(t); }
+}
+static void mfl_dl_deadlock(void) {
+    fprintf(stderr, "fatal: deadlock — all %d goroutine(s) are blocked on a channel receive, none can send\n", mfl_dl_live);
+    fflush(stderr);
+    _exit(2);
+}
+
 static void mfl_chan_send(mfl_chan* c, const void* v) {
     mfl_rr_enter();
     mfl_cnode* n = malloc(sizeof(mfl_cnode));
@@ -551,6 +604,7 @@ static void mfl_chan_send(mfl_chan* c, const void* v) {
     pthread_cond_signal(&c->cnd);
     mfl_rr_mark();
     pthread_mutex_unlock(&c->mu);
+    mfl_dl_note(); /* a send is channel progress — resets the deadlock watchdog */
     mfl_rr_exit();
 }
 /* deliver node n's payload into out (receiver arena), then free the node. */
@@ -569,7 +623,11 @@ static void mfl_chan_deliver(mfl_chan* c, mfl_cnode* n, void* out) {
 static int mfl_chan_recv2(mfl_chan* c, void* out) {
     mfl_rr_enter();
     pthread_mutex_lock(&c->mu);
-    while (!c->head && !c->closed) pthread_cond_wait(&c->cnd, &c->mu);
+    if (!c->head && !c->closed) {
+        mfl_dl_block(); /* about to park on an empty open channel */
+        while (!c->head && !c->closed) pthread_cond_wait(&c->cnd, &c->mu);
+        mfl_dl_unblock();
+    }
     mfl_cnode* n = c->head;
     /* draining a closed+empty channel (returns "not ok") is still an observable,
        ordered op — it must record/gate a turn like a real receive, or record and
@@ -4364,12 +4422,13 @@ func (g *cgen) goStmt(st *GoStmt) error {
 		}
 		fmt.Fprintf(&g.tramp, "s->a%d", i)
 	}
-	g.tramp.WriteString("); free(s); mfl_arena_free(&_a); return NULL; }\n")
+	g.tramp.WriteString("); free(s); mfl_arena_free(&_a); mfl_dl_finish(); return NULL; }\n")
 
 	// call site: populate every field from the SPAWNING goroutine's (current)
 	// arena, then freeze it against that arena being freed before the new
 	// goroutine gets a chance to thaw it back out.
 	g.buf.WriteString("{\n")
+	g.buf.WriteString("        mfl_dl_spawn(); /* count the goroutine live from its spawn site (deadlock detector) */\n")
 	fmt.Fprintf(&g.buf, "        struct mfl_go_%d* s = malloc(sizeof(*s));\n", id)
 	// record/replay: assign a stable parent-relative goroutine path in the
 	// SPAWNING goroutine's program order (not in the new thread, whose start
