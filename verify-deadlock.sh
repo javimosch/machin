@@ -81,6 +81,29 @@ for cf in examples/complex/channels.mfl examples/complex/goroutines.mfl; do
   [ "$rc" -eq 0 ] && { pass=$((pass+1)); echo "ok   corpus $(basename "$cf") -> no false deadlock"; } || { fail=$((fail+1)); echo "FAIL corpus $(basename "$cf"): rc=$rc"; }
 done
 
+# --- select-spin deadlocks (a select whose cases can never fire busy-polls forever) ---
+cat > "$T/dl_select.mfl" <<'EOF'
+func main() { a := make(chan int)  b := make(chan int)  for { select { case x := <-a: println(str(x))  case y := <-b: println(str(y)) } } }
+EOF
+build "$T/dl_select.mfl" "$T/dl_select"; expect_deadlock "$T/dl_select" "select over never-fed channels"
+
+cat > "$T/ok_select.mfl" <<'EOF'
+func feed(a, b) { i := 0  for i < 6 { if i % 2 == 0 { a <- i } else { b <- i }  i = i + 1 } }
+func main() {
+  a := make(chan int)  b := make(chan int)
+  go feed(a, b)
+  got := 0  sum := 0
+  for got < 6 { select { case x := <-a: sum = sum + x  got = got + 1  case y := <-b: sum = sum + y  got = got + 1 } }
+  println("sum:" + str(sum))
+}
+EOF
+build "$T/ok_select.mfl" "$T/ok_select"; expect_ok "$T/ok_select" "select with a feeder (no false deadlock)" "sum:15"
+
+cat > "$T/ok_seldef.mfl" <<'EOF'
+func main() { a := make(chan int)  n := 0  for n < 3 { select { case x := <-a: println(str(x))  default: n = n + 1 } }  println("done") }
+EOF
+build "$T/ok_seldef.mfl" "$T/ok_seldef"; expect_ok "$T/ok_seldef" "select with default never spins" "done"
+
 echo
 echo "deadlock gate: $pass pass, $fail fail"
 rm -rf "$T"

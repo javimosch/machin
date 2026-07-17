@@ -582,6 +582,9 @@ func cg_select(iid, idx, depth) {
         i = i + 1
     }
     indent(depth + 1)  cemit("} else {\n")
+    // deadlock detection: a no-default select that finds no ready case busy-polls, which is
+    // a parked goroutine — count it (channel id -1 = "in a select") once while it spins.
+    if n.ival == 0 { indent(depth + 2)  cemit("int _selpk" + ids + " = 0;\n") }
     indent(depth + 2)  cemit("for (;;) {\n")
     i = 0
     for i < len(n.kids) {
@@ -599,9 +602,10 @@ func cg_select(iid, idx, depth) {
     if n.ival == 1 {
         cemit("{ _sel" + ids + " = " + str(len(n.kids)) + "; break; }\n")
     } else {
-        cemit("mfl_sleep(1);\n")
+        cemit("if (!_selpk" + ids + ") { _selpk" + ids + " = 1; mfl_dl_block(-1); } mfl_sleep(1);\n")
     }
     indent(depth + 2)  cemit("}\n")
+    if n.ival == 0 { indent(depth + 2)  cemit("if (_selpk" + ids + ") mfl_dl_unblock();\n") }
     indent(depth + 2)  cemit("if (mfl_rr_mode == 1) mfl_rr_io_log_i64(_sel" + ids + ");\n")
     indent(depth + 1)  cemit("}\n")
     // dispatch the winning case
