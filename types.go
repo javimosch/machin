@@ -2150,6 +2150,14 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 			c.addPair(s, c.cInt)
 		}
 		return c.cFloat, nil
+	case "matmul_q8_batch":
+		if len(argSlots) != 11 {
+			return 0, fmt.Errorf("matmul_q8_batch: 11 args (ob, ostride, xq, xs, wq, ws, n, gs, B, lo, hi)")
+		}
+		for _, s := range argSlots {
+			c.addPair(s, c.cInt)
+		}
+		return c.cVoid, nil
 	case "dot_f32":
 		if len(argSlots) != 3 {
 			return 0, fmt.Errorf("dot_f32: 3 args (ptr a, ptr b, count)")
@@ -2318,6 +2326,14 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		}
 		c.addPair(argSlots[0], c.cString)
 		c.addPair(argSlots[1], c.cBytes)
+		return c.cInt, nil
+	case "write_file_raw", "read_file_raw":
+		if len(argSlots) != 3 {
+			return 0, fmt.Errorf("%s: 3 args (path, ptr, nbytes)", ex.Callee)
+		}
+		c.addPair(argSlots[0], c.cString)
+		c.addPair(argSlots[1], c.cInt)
+		c.addPair(argSlots[2], c.cInt)
 		return c.cInt, nil
 	case "remove":
 		if len(argSlots) != 1 {

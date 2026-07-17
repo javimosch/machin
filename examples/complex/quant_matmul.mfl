@@ -1,0 +1,3 @@
+func poke4(p,off,a,b,c,d){poke_u8(p,off+0,a)poke_u8(p,off+1,b)poke_u8(p,off+2,c)poke_u8(p,off+3,d)}
+
+func main(){n:=4 gs:=2 rows:=3 groups:=n/gs xq:=alloc(n)xs:=alloc(groups*4)poke4(xq,0,2,3,1,254)poke_f32(xs,0,0.5)poke_f32(xs,4,0.25)wq:=alloc(rows*n)ws:=alloc(rows*groups*4)poke4(wq,0,4,5,3,1)poke_f32(ws,0,2.0)poke_f32(ws,4,4.0)poke4(wq,4,4,5,3,1)poke_f32(ws,8,4.0)poke_f32(ws,12,8.0)poke4(wq,8,1,0,0,0)poke_f32(ws,16,2.0)poke_f32(ws,20,2.0)total:=0.0 r:=0 for r<rows{y:=dot_q8(xq,xs,wq+r*n,ws+r*groups*4,n,gs)println("y["+str(r)+"] = "+str(y))total=total+y r=r+1}println("sum = "+str(total))}

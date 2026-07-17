@@ -564,12 +564,33 @@ func cg_select(iid, idx, depth) {
         i = i + 1
     }
     indent(depth + 1)  cemit("int _sel" + ids + " = -1;\n")
-    indent(depth + 1)  cemit("for (;;) {\n")
+    // record/replay gating: on replay pop the recorded case index and force it with a
+    // BLOCKING op (waits its turn in the replayed schedule); on record, run the poll and
+    // log the chosen index. Makes a select faithful, not best-effort.
+    indent(depth + 1)  cemit("if (mfl_rr_mode == 2) {\n")
+    indent(depth + 2)  cemit("_sel" + ids + " = (int)mfl_rr_io_pop_i64();\n")
     i = 0
     for i < len(n.kids) {
         scn := nodes[n.kids[i]]
         cis := str(i)
         indent(depth + 2)
+        if scn.ival == 0 {
+            cemit("if (_sel" + ids + " == " + cis + ") { if (!(_sok" + ids + "_" + cis + " = mfl_chan_recv2(_sc" + ids + "_" + cis + ", &_sv" + ids + "_" + cis + "))) memset(&_sv" + ids + "_" + cis + ", 0, sizeof(_sv" + ids + "_" + cis + ")); }\n")
+        } else {
+            cemit("if (_sel" + ids + " == " + cis + ") { mfl_chan_send(_sc" + ids + "_" + cis + ", &_sv" + ids + "_" + cis + "); }\n")
+        }
+        i = i + 1
+    }
+    indent(depth + 1)  cemit("} else {\n")
+    // deadlock detection: a no-default select that finds no ready case busy-polls, which is
+    // a parked goroutine — count it (channel id -1 = "in a select") once while it spins.
+    if n.ival == 0 { indent(depth + 2)  cemit("int _selpk" + ids + " = 0;\n") }
+    indent(depth + 2)  cemit("for (;;) {\n")
+    i = 0
+    for i < len(n.kids) {
+        scn := nodes[n.kids[i]]
+        cis := str(i)
+        indent(depth + 3)
         if scn.ival == 0 {
             cemit("if (mfl_chan_tryrecv2(_sc" + ids + "_" + cis + ", &_sv" + ids + "_" + cis + ", &_sok" + ids + "_" + cis + ")) { _sel" + ids + " = " + cis + "; break; }\n")
         } else {
@@ -577,12 +598,15 @@ func cg_select(iid, idx, depth) {
         }
         i = i + 1
     }
-    indent(depth + 2)
+    indent(depth + 3)
     if n.ival == 1 {
         cemit("{ _sel" + ids + " = " + str(len(n.kids)) + "; break; }\n")
     } else {
-        cemit("mfl_sleep(1);\n")
+        cemit("if (!_selpk" + ids + ") { _selpk" + ids + " = 1; mfl_dl_block(-1); } mfl_sleep(1);\n")
     }
+    indent(depth + 2)  cemit("}\n")
+    if n.ival == 0 { indent(depth + 2)  cemit("if (_selpk" + ids + ") mfl_dl_unblock();\n") }
+    indent(depth + 2)  cemit("if (mfl_rr_mode == 1) mfl_rr_io_log_i64(_sel" + ids + ");\n")
     indent(depth + 1)  cemit("}\n")
     // dispatch the winning case
     i = 0
@@ -680,11 +704,12 @@ func cg_go(iid, idx) {
         rline = rline + "s->a" + str(i)
         i = i + 1
     }
-    tramp_emit(rline + "); free(s); mfl_arena_free(&_a); return NULL; }\n")
+    tramp_emit(rline + "); free(s); mfl_arena_free(&_a); mfl_dl_finish(); return NULL; }\n")
     // call site: populate every field from the SPAWNING goroutine's (current)
     // arena, then freeze it against that arena being freed before the new
     // goroutine gets a chance to thaw it back out.
     cemit("{\n")
+    cemit("        mfl_dl_spawn(); /* count the goroutine live from its spawn site (deadlock detector) */\n")
     cemit("        struct mfl_go_" + ids + "* s = malloc(sizeof(*s));\n")
     cemit("        s->_cidx = ++mfl_spawn_ctr; s->_ppath = strdup(mfl_gid_path ? mfl_gid_path : \"0\");\n")
     i = 0

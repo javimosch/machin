@@ -170,6 +170,14 @@ func analyzeSource(combined string, srcNames []string) CheckResult {
 				d.Line = declLine[ff.Decl]
 				warns = append(warns, d)
 			}
+
+			// deadlock phase: compile-time deadlocks (a receive on a channel nothing ever
+			// feeds). Advisory, false-positive-free — reported as Warnings.
+			for _, df := range detectDeadlocks(prog, c) {
+				d := df.toDiagnostic()
+				d.Line = declLine[df.Decl]
+				warns = append(warns, d)
+			}
 		}
 	}
 

@@ -5,5 +5,5 @@
 # coverage reports (make cover)
 coverage.out
 coverage.html
-selfhost/mfl-lex
-selfhost/mfl-parse
+# self-hosted oracle binaries (built by the verify-*.sh gates)
+selfhost/mfl-*

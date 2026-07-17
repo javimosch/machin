@@ -1049,6 +1049,7 @@ func bspec(name) (s) {
     if name == "peek_i32" || name == "peek_i8" || name == "peek_u8" { s = "ii>i"  return s }
     if name == "dot_i8" { s = "iii>i"  return s }
     if name == "dot_q8" { s = "iiiiii>f"  return s }
+    if name == "matmul_q8_batch" { s = "iiiiiiiiiii>v"  return s }
     if name == "dot_q4" { s = "iiiiii>f"  return s }
     if name == "dot_f32" { s = "iii>f"  return s }
     if name == "axpy_f32" { s = "inii>v"  return s }
@@ -1074,6 +1075,7 @@ func bspec(name) (s) {
     if name == "write_bytes" { s = "iy>i"  return s }
     if name == "write_file" { s = "ss>i"  return s }
     if name == "write_file_bytes" { s = "sy>i"  return s }
+    if name == "write_file_raw" || name == "read_file_raw" { s = "sii>i"  return s }
     if name == "remove" || name == "mkdir" || name == "system" { s = "s>i"  return s }
     if name == "list_dir" { s = "s>S"  return s }
     if name == "https_get" { s = "s>s"  return s }

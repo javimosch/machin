@@ -122,11 +122,12 @@ hdr=$(sed -n 2p "$T/tf"); chk "$hdr" "boundary best-effort" "FFI program -> best
 W=$(MFL_RR_REPLAY="$T/tf" "$T/ffi" 2>&1 >/dev/null); case "$W" in *best-effort*) pass=$((pass+1)); echo "ok   replay warns on a best-effort trace";; *) fail=$((fail+1)); echo "FAIL no best-effort warning: $W";; esac
 V=$(MFL_RR_REPLAY="$T/tf" MFL_RR_VERIFY=1 "$T/ffi" 2>&1 >/dev/null); case "$V" in *DIVERGED*) pass=$((pass+1)); echo "ok   --verify refuses to certify a best-effort trace (DIVERGED)";; *) fail=$((fail+1)); echo "FAIL best-effort should not certify: $V";; esac
 
-# a select program is flagged best-effort too.
-printf 'func send(ch) { ch <- 7 }\nfunc main() { ch := make(chan int)  go send(ch)  select { case v := <-ch: println(str(v)) } }\n' > "$T/sel.mfl"
-build "$T/sel.mfl" "$T/sel"
-rec "$T/sel" "$T/tsl" >/dev/null
-hdr=$(sed -n 2p "$T/tsl"); chk "$hdr" "boundary best-effort" "select program -> best-effort trace"
+# a select program is now GATED (see fixtures 14/15), so its trace is faithful, not
+# best-effort — FFI is the only remaining best-effort boundary.
+printf 'func send(ch) { ch <- 7 }\nfunc main() { ch := make(chan int)  go send(ch)  select { case v := <-ch: println(str(v)) } }\n' > "$T/selb.mfl"
+build "$T/selb.mfl" "$T/selb"
+rec "$T/selb" "$T/tsl" >/dev/null
+hdr=$(sed -n 2p "$T/tsl"); chk "$hdr" "boundary faithful" "select program -> faithful trace (gated, not best-effort)"
 
 # ---- fixture 8: `machin replay <trace>` command (program path embedded) ----
 R=$($N $M run --record "$T/rc.tr" "$T/race.mfl" 2>/dev/null)   # records with a `program` line
@@ -215,6 +216,139 @@ rm -f "$T/in.txt"
 chk "$(rep "$T/file" "$T/tfile")" "$Rf" "file replay reproduces recorded bytes after the file is deleted"
 chk "$(plain "$T/file")" "read:" "plain run reads empty once the file is gone (control)"
 Vf=$(MFL_RR_REPLAY="$T/tfile" MFL_RR_VERIFY=1 "$T/file" 2>&1 >/dev/null); case "$Vf" in *FAITHFUL*) pass=$((pass+1)); echo "ok   deleted-file replay certifies FAITHFUL";; *) fail=$((fail+1)); echo "FAIL file verify: $Vf";; esac
+
+# ---- fixture 14: select recv is GATED — a select-using program replays FAITHFULLY ----
+# two feeders race into a select (plain runs vary in a/b interleaving), but replay
+# reproduces the recorded choice sequence and --verify certifies FAITHFUL. The chosen
+# case index is recorded + forced on replay, so select is no longer best-effort.
+cat > "$T/sel.mfl" <<'EOF'
+func feed(ch, base, dly) { i := 0  for i < 5 { sleep(dly)  ch <- base + i  i = i + 1 } }
+func main() {
+  a := make(chan int)  b := make(chan int)
+  go feed(a, 100, 2)  go feed(b, 200, 3)
+  got := 0  order := ""
+  for got < 10 {
+    select {
+    case x := <-a: order = order + "a" + str(x) + " "  got = got + 1
+    case y := <-b: order = order + "b" + str(y) + " "  got = got + 1
+    }
+  }
+  println(order)
+}
+EOF
+build "$T/sel.mfl" "$T/sel"
+Rs=$(rec "$T/sel" "$T/tsel")
+allsame=$(for i in $(seq 1 8); do rep "$T/sel" "$T/tsel"; done | sort -u | wc -l)
+chk "$allsame" "1" "select recv replays identically"
+chk "$(rep "$T/sel" "$T/tsel")" "$Rs" "select replay reproduces the recorded interleaving"
+chk "$(grep '^boundary' "$T/tsel")" "boundary faithful" "select trace boundary is faithful (not best-effort)"
+Vs=$(MFL_RR_REPLAY="$T/tsel" MFL_RR_VERIFY=1 "$T/sel" 2>&1 >/dev/null); case "$Vs" in *FAITHFUL*) pass=$((pass+1)); echo "ok   select replay certifies FAITHFUL";; *) fail=$((fail+1)); echo "FAIL select verify: $Vs";; esac
+echo "  plain select orderings (distinct): $(for i in $(seq 1 8); do plain "$T/sel"; done | sort -u | wc -l)"
+
+# ---- fixture 15: select DEFAULT firing is gated — exact miss count reproduces ----
+# how many times default fires depends on timing (plain runs vary); replay reproduces
+# the recorded count exactly.
+cat > "$T/seld.mfl" <<'EOF'
+func feed(ch) { i := 0  for i < 5 { sleep(2)  ch <- i  i = i + 1 } }
+func main() {
+  a := make(chan int)
+  go feed(a)
+  got := 0  misses := 0
+  for got < 5 {
+    select { case x := <-a: got = got + 1 + x - x  default: misses = misses + 1 }
+    sleep(1)
+  }
+  println("misses:" + str(misses))
+}
+EOF
+build "$T/seld.mfl" "$T/seld"
+Rd=$(rec "$T/seld" "$T/tseld")
+allsame=$(for i in $(seq 1 8); do rep "$T/seld" "$T/tseld"; done | sort -u | wc -l)
+chk "$allsame" "1" "select-default miss count replays identically"
+chk "$(rep "$T/seld" "$T/tseld")" "$Rd" "select-default replay reproduces the recorded miss count"
+
+# ---- fixture 16: raw fd socket I/O is captured — self-contained replay (no network) ----
+# a loopback server+client exchange whose message carries now_ms()%1000 (varies each run);
+# replay reproduces it with NO real sockets (listen/accept/dial/read/write all served from
+# the I/O log), even while another process holds the port.
+cat > "$T/sock.mfl" <<'EOF'
+func serve(l) { fd := accept(l)  msg := read(fd)  n := write(fd, "echo:" + msg)  n = n + 0  close(fd) }
+func main() {
+  l := listen(18197)
+  go serve(l)
+  sleep(50)
+  c := dial("127.0.0.1", 18197)
+  w := write(c, "hi-" + str(now_ms() % 1000))  w = w + 0
+  resp := read(c)
+  println(resp)
+  close(c)
+}
+EOF
+build "$T/sock.mfl" "$T/sock"
+Rk=$(rec "$T/sock" "$T/tsock")
+chk "$(grep '^boundary' "$T/tsock")" "boundary faithful" "raw-socket trace boundary is faithful"
+allsame=$(for i in $(seq 1 5); do rep "$T/sock" "$T/tsock"; done | sort -u | wc -l)
+chk "$allsame" "1" "socket exchange replays identically (no network)"
+chk "$(rep "$T/sock" "$T/tsock")" "$Rk" "socket replay reproduces the recorded exchange"
+Vk=$(MFL_RR_REPLAY="$T/tsock" MFL_RR_VERIFY=1 "$T/sock" 2>&1 >/dev/null); case "$Vk" in *FAITHFUL*) pass=$((pass+1)); echo "ok   socket replay certifies FAITHFUL";; *) fail=$((fail+1)); echo "FAIL socket verify: $Vk";; esac
+
+# ---- fixture 17: HTTP result is captured — even a transport FAILURE replays faithfully ----
+# (points at a fast-refusing local port; the recorded (status 0, err "connect") reproduces.)
+printf 'func main() { s, b, e := http_get("http://127.0.0.1:1")  b=b  println(str(s) + ":" + e) }\n' > "$T/http.mfl"
+build "$T/http.mfl" "$T/http"
+Rf=$(rec "$T/http" "$T/thttp")
+chk "$(grep '^boundary' "$T/thttp")" "boundary faithful" "http_get trace is now faithful (result captured)"
+chk "$(rep "$T/http" "$T/thttp")" "$Rf" "failed http_get replays the recorded failure"
+
+# ---- fixture 18: HTTP response capture — faithful OFFLINE replay ("the API crash you can mail") ----
+# serve a fixed body from a local server, record an http_get, KILL the server, replay offline.
+python3 - "$T" <<'PY' &
+import http.server, sys
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(s): s.send_response(200); s.end_headers(); s.wfile.write(b'PAYLOAD-18')
+    def log_message(s,*a): pass
+http.server.HTTPServer(('127.0.0.1', 18234), H).serve_forever()
+PY
+HPID=$!
+sleep 0.8
+printf 'func main() { s, b, e := http_get("http://127.0.0.1:18234/")  e=e  println(str(s) + ":" + b) }\n' > "$T/hget.mfl"
+build "$T/hget.mfl" "$T/hget"
+Rh=$(rec "$T/hget" "$T/thget")
+kill "$HPID" 2>/dev/null   # server gone — replay must not need it
+chk "$Rh" "200:PAYLOAD-18" "http_get records the live response"
+chk "$(rep "$T/hget" "$T/thget")" "$Rh" "http replay reproduces the response with the server gone"
+Vh=$(MFL_RR_REPLAY="$T/thget" MFL_RR_VERIFY=1 "$T/hget" 2>&1 >/dev/null); case "$Vh" in *FAITHFUL*) pass=$((pass+1)); echo "ok   http offline replay certifies FAITHFUL";; *) fail=$((fail+1)); echo "FAIL http verify: $Vh";; esac
+
+# ---- fixture 19: an EMPTY recorded read no longer underruns replay (I-line parser regression) ----
+# an empty file read logs "I 0 " (empty hex); the trace loader must still queue it, or replay
+# pops a value that was dropped and --verify wrongly reports DIVERGED.
+: > "$T/empty.txt"
+printf 'func main() { s := read_file("%s/empty.txt")  println("len:" + str(len(s))) }\n' "$T" > "$T/empty.mfl"
+build "$T/empty.mfl" "$T/empty"
+rec "$T/empty" "$T/tempty" >/dev/null
+Ve=$(MFL_RR_REPLAY="$T/tempty" MFL_RR_VERIFY=1 "$T/empty" 2>&1 >/dev/null); case "$Ve" in *FAITHFUL*) pass=$((pass+1)); echo "ok   empty read replays FAITHFUL (no underrun)";; *) fail=$((fail+1)); echo "FAIL empty-read underrun: $Ve";; esac
+
+# ---- fixture 20: value-query replay debugger (--print) — deterministic value history ----
+# `machin replay <trace> --print <var>` rebuilds with a probe after each assignment to <var>;
+# because replay is deterministic the value sequence is identical every time and ends at the
+# recorded final value. A normal build emits no probes (zero overhead).
+cat > "$T/dbg.mfl" <<'EOF'
+func w(ch, id) { ch <- id * 10 }
+func main() {
+  ch := make(chan int)
+  go w(ch, 1)  go w(ch, 2)  go w(ch, 3)
+  bal := 0  i := 0
+  for i < 3 { v := <-ch  bal = bal + v  i = i + 1 }
+  println("final:" + str(bal))
+}
+EOF
+$N $M run --record "$T/dbg.tr" "$T/dbg.mfl" >/dev/null 2>&1
+# compare the probe VALUE sequence (strip the @op schedule tag, which is a correlation hint).
+P1=$($N $M replay "$T/dbg.tr" --print bal 2>&1 | grep '^probe' | sed 's/ @op[0-9]*//')
+P2=$($N $M replay "$T/dbg.tr" --print bal 2>&1 | grep '^probe' | sed 's/ @op[0-9]*//')
+chk "$P1" "$P2" "--print value history is deterministic across replays"
+chk "$(echo "$P1" | tail -1)" "probe 0 bal = 60" "--print bal ends at the recorded final value"
+chk "$($N $M run "$T/dbg.mfl" 2>&1 | grep -c '^probe')" "0" "a normal run emits no probes (zero overhead)"
 
 echo
 echo "record/replay gate: $pass pass, $fail fail"

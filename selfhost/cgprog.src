@@ -224,10 +224,11 @@ func cg_program() {
         }
         cemit("}\n")
     }
-    // record/replay determinism boundary: 1 if the program uses FFI or select.
+    // record/replay determinism boundary: 1 if the program uses FFI (extern) — its result
+    // is uncaptured. HTTP/TLS/WebSocket reads are now recorded (like raw sockets), so they
+    // no longer flag best-effort; `select` is gated too.
     rr_boundary := 0
     if len(g_extblocks) > 0 { rr_boundary = 1 }
-    if g_uses_select == 1 { rr_boundary = 1 }
     cemit("static int mfl_rr_prog_boundary(void) { return " + str(rr_boundary) + "; }\n")
     // 7. native entry point (only when the program defines main)
     if func_root("main") >= 0 {

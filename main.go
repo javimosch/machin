@@ -40,6 +40,10 @@ func main() {
 		err = cmdCheck(os.Args[2:]) // agent-native diagnostics (lex/parse/typecheck + advisory falsify, JSON)
 	case "falsify":
 		err = cmdFalsify(os.Args[2:]) // bounded counterexamples: the exact input that breaks a function
+	case "certify":
+		err = cmdCertify(os.Args[2:]) // translation validation: prove the compiler matched the source (within bounds)
+	case "equiv":
+		err = cmdEquiv(os.Args[2:]) // bounded equivalence oracle: prove two functions agree, or return the diverging input
 	case "test":
 		err = cmdTest(os.Args[2:]) // native MFL test runner (framework/test.src assert helpers)
 	case "pack":
@@ -62,6 +66,12 @@ func main() {
 		return
 	case "falsifytest":
 		if err := cmdFalsifyTest(os.Args[2:]); err != nil { // self-hosting oracle: dump falsify findings canonically
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	case "deadlocktest":
+		if err := cmdDeadlockTest(os.Args[2:]); err != nil { // self-hosting oracle: dump DL001 findings canonically
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
@@ -240,6 +250,8 @@ func raceGate(prog *Program) error {
 func cmdRun(args []string) error {
 	safe, raceSafe, verify := false, false, false
 	var src, recordTrace, replayTrace string
+	jsonReport := false
+	deadlockStrict := false
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--safe":
@@ -248,6 +260,10 @@ func cmdRun(args []string) error {
 			raceSafe = true
 		case "--verify":
 			verify = true
+		case "--json":
+			jsonReport = true
+		case "--deadlock-strict":
+			deadlockStrict = true
 		case "--record":
 			if i+1 >= len(args) {
 				return fmt.Errorf("run: --record needs a trace file")
@@ -304,6 +320,12 @@ func cmdRun(args []string) error {
 	if verify {
 		cmd.Env = append(cmd.Env, "MFL_RR_VERIFY=1")
 	}
+	if jsonReport {
+		cmd.Env = append(cmd.Env, "MFL_RR_JSON=1") // deadlock / crash reported as a JSON causal artifact
+	}
+	if deadlockStrict {
+		cmd.Env = append(cmd.Env, "MFL_DL_STRICT=1") // also treat a blocking read as a park (opt-in)
+	}
 	if err := cmd.Run(); err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
 			os.Exit(ee.ExitCode())
@@ -319,12 +341,26 @@ func cmdRun(args []string) error {
 func cmdReplay(args []string) error {
 	jsonOut, verify := false, false
 	var trace string
-	for _, a := range args {
+	var printVars []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
 		switch a {
 		case "--json":
 			jsonOut = true
 		case "--verify":
 			verify = true
+		case "--print":
+			// value-query debugger: --print <var>[,<var>...] emits a probe after each
+			// assignment to those variables, so replay shows their deterministic history.
+			if i+1 >= len(args) {
+				return fmt.Errorf("replay: --print needs a variable name (e.g. --print balance)")
+			}
+			i++
+			for _, v := range strings.Split(args[i], ",") {
+				if v = strings.TrimSpace(v); v != "" {
+					printVars = append(printVars, v)
+				}
+			}
 		default:
 			trace = a
 		}
@@ -358,7 +394,12 @@ func cmdReplay(args []string) error {
 	}
 	bin.Close()
 	defer os.Remove(bin.Name())
-	if err := BuildBinary(prog, bin.Name(), safe); err != nil {
+	// --print watches variables: instrument the rebuild for probes, then reset the global
+	// so it never leaks into any other build in this process.
+	debugProbeVars = printVars
+	err = BuildBinary(prog, bin.Name(), safe)
+	debugProbeVars = nil
+	if err != nil {
 		return err
 	}
 	traceAbs, _ := filepath.Abs(trace)
@@ -370,6 +411,9 @@ func cmdReplay(args []string) error {
 	}
 	if verify {
 		cmd.Env = append(cmd.Env, "MFL_RR_VERIFY=1")
+	}
+	if len(printVars) > 0 {
+		cmd.Env = append(cmd.Env, "MFL_RR_PROBE=1")
 	}
 	if err := cmd.Run(); err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
@@ -558,7 +602,11 @@ func normalize(src string) string {
 
 // tightRe matches the whitespace around an operator/punctuation token, which the
 // lexer does not need. The captured token is kept; the surrounding spaces drop.
-var tightRe = regexp.MustCompile(` *([(){}\[\],+\-*/%<>=!&|;:]) *`)
+// `^` (bitwise XOR / unary complement) is included: like the other single-char
+// operators it never begins or ends a two-char token, so dropping the space
+// around it is lossless — omitting it left `a ^ b` un-tightened, inconsistent
+// with `a & b` / `a | b` and contrary to this form being the minimal one.
+var tightRe = regexp.MustCompile(` *([(){}\[\],+\-*/%<>=!&|^;:]) *`)
 
 // tighten removes insignificant whitespace from a normalized declaration: any
 // space adjacent to an operator or punctuation token is dropped (the lexer only

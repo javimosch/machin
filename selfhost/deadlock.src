@@ -1,0 +1,325 @@
+// selfhost/deadlock.src — compile-time deadlock finder (DL001), MFL port of
+// deadlock_check.go, byte-diffed against `machin deadlocktest --program`. Reports a
+// receive on a channel that nothing ever sends to or closes — a guaranteed deadlock
+// (machin channels are unbounded, so such a receive blocks in every schedule).
+// False-positive-free: a channel is treated as fed unless the analysis PROVES it never
+// is; any use it can't account for conservatively counts as a feed.
+//
+// Node kinds used: K_MAKECHAN(15) s=elem; K_RECV(17) a=chan; K_SEND(30) a=chan b=val;
+// K_GO(31) a=call; K_CALL(9) s=callee kids=args; K_RANGE(27) a=X kids=body;
+// K_ASSIGN(20) s=name s2=op a=val; K_IF(25) a=cond kids=then kids2=else;
+// K_WHILE(26) a=cond kids=body; K_ARENA(32) kids=body; K_MULTI(21) kids=rhs;
+// K_RETURN(22) kids=vals; K_EXPRSTMT(19) a=expr; K_SELECT(33) kids=cases kids2=deflt;
+// K_SELCASE ival=is_send a=chan b=val kids=body; K_ID(6) s=name; K_BIN(8) a=L b=R;
+// K_UNARY(7) a=X; K_INDEX(11) a=X b=idx; K_FIELD(12) a=X; K_SLICE(13)/K_STRUCT(14) kids.
+
+// findings, in discovery order: (function, channel var).
+var g_dl_fn = []string{}
+var g_dl_ch = []string{}
+
+// dl_sidx: index of v in a string slice, or -1.
+func dl_sidx(arr, v) (r) {
+    r = -1
+    i := 0
+    for i < len(arr) { if arr[i] == v { r = i  return r }  i = i + 1 }
+}
+
+// ---- feed fixpoint: which channel params does each function send to / close? ----
+// stored as parallel (function name, param index) pairs.
+var g_feed_fn = []string{}
+var g_feed_p = []int{}
+var g_feed_changed = 0
+
+func dl_feeds(fnname, p) (b) {
+    b = 0
+    i := 0
+    for i < len(g_feed_fn) {
+        if g_feed_fn[i] == fnname && g_feed_p[i] == p { b = 1  return b }
+        i = i + 1
+    }
+}
+func dl_add_feed(fnname, p) {
+    if p < 0 { return }
+    if dl_feeds(fnname, p) == 1 { return }
+    g_feed_fn = append(g_feed_fn, fnname)
+    g_feed_p = append(g_feed_p, p)
+    g_feed_changed = 1
+}
+// dl_param_idx: index of param `name` in function root fr, or -1.
+func dl_param_idx(fr, name) (idx) {
+    idx = -1
+    ps := nodes[fr].names
+    i := 0
+    for i < len(ps) { if ps[i] == name { idx = i  return idx }  i = i + 1 }
+}
+
+// dl_feed_call: mark feeds induced by a call node (close, or a user callee feeding a param).
+func dl_feed_call(fnname, fr, callidx) {
+    c := nodes[callidx]
+    if c.kind != K_CALL { return }
+    if c.s == "close" {
+        if len(c.kids) == 1 {
+            an := nodes[c.kids[0]]
+            if an.kind == K_ID { dl_add_feed(fnname, dl_param_idx(fr, an.s)) }
+        }
+        return
+    }
+    gr := func_root(c.s)
+    if gr < 0 { return }   // unknown/builtin callee
+    j := 0
+    for j < len(c.kids) {
+        an := nodes[c.kids[j]]
+        if an.kind == K_ID { if dl_feeds(c.s, j) == 1 { dl_add_feed(fnname, dl_param_idx(fr, an.s)) } }
+        j = j + 1
+    }
+}
+
+// dl_feed_stmts: accumulate feeds over a statement body (recurses into nested blocks).
+func dl_feed_stmts(fnname, fr, kids) {
+    for _, si := range kids {
+        n := nodes[si]
+        k := n.kind
+        if k == K_SEND {
+            chn := nodes[n.a]
+            if chn.kind == K_ID { dl_add_feed(fnname, dl_param_idx(fr, chn.s)) }
+        } else { if k == K_GO {
+            dl_feed_call(fnname, fr, n.a)
+        } else { if k == K_EXPRSTMT {
+            if nodes[n.a].kind == K_CALL { dl_feed_call(fnname, fr, n.a) }
+        } else { if k == K_ASSIGN {
+            if nodes[n.a].kind == K_CALL { dl_feed_call(fnname, fr, n.a) }
+        } else { if k == K_IF {
+            dl_feed_stmts(fnname, fr, n.kids)
+            dl_feed_stmts(fnname, fr, n.kids2)
+        } else { if k == K_WHILE {
+            dl_feed_stmts(fnname, fr, n.kids)
+        } else { if k == K_RANGE {
+            dl_feed_stmts(fnname, fr, n.kids)
+        } else { if k == K_ARENA {
+            dl_feed_stmts(fnname, fr, n.kids)
+        } else { if k == K_SELECT {
+            for _, ci := range n.kids { dl_feed_stmts(fnname, fr, nodes[ci].kids) }
+            dl_feed_stmts(fnname, fr, n.kids2)
+        }}}}}}}}}
+    }
+}
+
+func dl_compute_feeds() {
+    g_feed_changed = 1
+    for g_feed_changed == 1 {
+        g_feed_changed = 0
+        fi := 0
+        for fi < len(g_func_names) {
+            fr := g_func_roots[fi]
+            dl_feed_stmts(g_func_names[fi], fr, nodes[fr].kids)
+            fi = fi + 1
+        }
+    }
+}
+
+// ---- per-function scan: classify each channel-var use as received / fed ----
+var g_scan_chans = []string{}   // make(chan) locals in the current function
+var g_scan_recv = []string{}    // received-from
+var g_scan_fed = []string{}     // sent-to / closed / escaped (conservatively fed)
+
+func dl_is_chan(name) (b) { b = 0  if dl_sidx(g_scan_chans, name) >= 0 { b = 1 } }
+func dl_mark_recv(name) { if dl_sidx(g_scan_recv, name) < 0 { g_scan_recv = append(g_scan_recv, name) } }
+func dl_mark_fed(name)  { if dl_sidx(g_scan_fed, name)  < 0 { g_scan_fed  = append(g_scan_fed,  name) } }
+
+// dl_collect_chans: find `x := make(chan ...)` locals in a body (recurses).
+func dl_collect_chans(kids) {
+    for _, si := range kids {
+        n := nodes[si]
+        k := n.kind
+        if k == K_ASSIGN {
+            if n.s2 == ":=" { if nodes[n.a].kind == K_MAKECHAN { if dl_sidx(g_scan_chans, n.s) < 0 { g_scan_chans = append(g_scan_chans, n.s) } } }
+        } else { if k == K_IF {
+            dl_collect_chans(n.kids)  dl_collect_chans(n.kids2)
+        } else { if k == K_WHILE {
+            dl_collect_chans(n.kids)
+        } else { if k == K_RANGE {
+            dl_collect_chans(n.kids)
+        } else { if k == K_ARENA {
+            dl_collect_chans(n.kids)
+        } else { if k == K_SELECT {
+            for _, ci := range n.kids { dl_collect_chans(nodes[ci].kids) }
+            dl_collect_chans(n.kids2)
+        }}}}}}
+    }
+}
+
+// dl_scan_call: classify a call's channel args (close feeds; a callee feeds a param;
+// an unknown callee conservatively feeds).
+func dl_scan_call(callidx) {
+    c := nodes[callidx]
+    if c.s == "close" {
+        if len(c.kids) == 1 {
+            an := nodes[c.kids[0]]
+            if an.kind == K_ID { if dl_is_chan(an.s) == 1 { dl_mark_fed(an.s)  return } }
+        }
+    }
+    known := 0
+    if func_root(c.s) >= 0 { known = 1 }
+    j := 0
+    for j < len(c.kids) {
+        an := nodes[c.kids[j]]
+        if an.kind == K_ID && dl_is_chan(an.s) == 1 {
+            if known == 0 { dl_mark_fed(an.s) } else { if dl_feeds(c.s, j) == 1 { dl_mark_fed(an.s) } }
+        } else {
+            dl_scan_expr(c.kids[j])
+        }
+        j = j + 1
+    }
+}
+
+// dl_scan_expr: escape-aware — a bare channel Ident here escaped into an unanalyzed
+// position, so (to stay sound) it counts as a possible feed.
+func dl_scan_expr(idx) {
+    if idx < 0 { return }
+    n := nodes[idx]
+    k := n.kind
+    if k == K_ID {
+        if dl_is_chan(n.s) == 1 { dl_mark_fed(n.s) }
+    } else { if k == K_RECV {
+        cn := nodes[n.a]
+        if cn.kind == K_ID && dl_is_chan(cn.s) == 1 { dl_mark_recv(cn.s) } else { dl_scan_expr(n.a) }
+    } else { if k == K_CALL {
+        dl_scan_call(idx)
+    } else { if k == K_BIN {
+        dl_scan_expr(n.a)  dl_scan_expr(n.b)
+    } else { if k == K_UNARY {
+        dl_scan_expr(n.a)
+    } else { if k == K_INDEX {
+        dl_scan_expr(n.a)  dl_scan_expr(n.b)
+    } else { if k == K_FIELD {
+        dl_scan_expr(n.a)
+    } else { if k == K_SLICE {
+        for _, e := range n.kids { dl_scan_expr(e) }
+    } else { if k == K_STRUCT {
+        for _, e := range n.kids { dl_scan_expr(e) }
+    }}}}}}}}}
+}
+
+// dl_scan_stmts: classify uses of the tracked channel vars over a body.
+func dl_scan_stmts(kids) {
+    for _, si := range kids {
+        n := nodes[si]
+        k := n.kind
+        if k == K_SEND {
+            cn := nodes[n.a]
+            if cn.kind == K_ID && dl_is_chan(cn.s) == 1 { dl_mark_fed(cn.s) } else { dl_scan_expr(n.a) }
+            dl_scan_expr(n.b)
+        } else { if k == K_EXPRSTMT {
+            if nodes[n.a].kind == K_CALL { dl_scan_call(n.a) } else { dl_scan_expr(n.a) }
+        } else { if k == K_GO {
+            dl_scan_call(n.a)
+        } else { if k == K_ASSIGN {
+            if nodes[n.a].kind == K_MAKECHAN {
+                // the declaration itself — no channel use
+            } else { if nodes[n.a].kind == K_ID && dl_is_chan(nodes[n.a].s) == 1 {
+                dl_mark_fed(nodes[n.a].s)   // aliased into another var — an escape
+            } else { if nodes[n.a].kind == K_CALL {
+                dl_scan_call(n.a)
+            } else {
+                dl_scan_expr(n.a)
+            }}}
+        } else { if k == K_MULTI {
+            for _, r := range n.kids {
+                rn := nodes[r]
+                if rn.kind == K_RECV && nodes[rn.a].kind == K_ID && dl_is_chan(nodes[rn.a].s) == 1 { dl_mark_recv(nodes[rn.a].s) } else { dl_scan_expr(r) }
+            }
+        } else { if k == K_RETURN {
+            for _, v := range n.kids { dl_scan_expr(v) }
+        } else { if k == K_IF {
+            dl_scan_expr(n.a)  dl_scan_stmts(n.kids)  dl_scan_stmts(n.kids2)
+        } else { if k == K_WHILE {
+            dl_scan_expr(n.a)  dl_scan_stmts(n.kids)
+        } else { if k == K_RANGE {
+            xn := nodes[n.a]
+            if xn.kind == K_ID && dl_is_chan(xn.s) == 1 { dl_mark_recv(xn.s) } else { dl_scan_expr(n.a) }
+            dl_scan_stmts(n.kids)
+        } else { if k == K_ARENA {
+            dl_scan_stmts(n.kids)
+        } else { if k == K_SELECT {
+            for _, ci := range n.kids {
+                sc := nodes[ci]
+                cn := nodes[sc.a]
+                if sc.ival == 0 {
+                    if cn.kind == K_ID && dl_is_chan(cn.s) == 1 { dl_mark_recv(cn.s) } else { dl_scan_expr(sc.a) }
+                } else {
+                    if cn.kind == K_ID && dl_is_chan(cn.s) == 1 { dl_mark_fed(cn.s) } else { dl_scan_expr(sc.a) }
+                    dl_scan_expr(sc.b)
+                }
+                dl_scan_stmts(sc.kids)
+            }
+            dl_scan_stmts(n.kids2)
+        }}}}}}}}}}}
+    }
+}
+
+// detect_deadlocks: fill g_dl_fn / g_dl_ch with DL001 findings.
+func detect_deadlocks() {
+    dl_compute_feeds()
+    fi := 0
+    for fi < len(g_func_names) {
+        fr := g_func_roots[fi]
+        g_scan_chans = []string{}
+        dl_collect_chans(nodes[fr].kids)
+        if len(g_scan_chans) > 0 {
+            g_scan_recv = []string{}
+            g_scan_fed = []string{}
+            dl_scan_stmts(nodes[fr].kids)
+            ci := 0
+            for ci < len(g_scan_chans) {
+                v := g_scan_chans[ci]
+                if dl_sidx(g_scan_recv, v) >= 0 && dl_sidx(g_scan_fed, v) < 0 {
+                    g_dl_fn = append(g_dl_fn, g_func_names[fi])
+                    g_dl_ch = append(g_dl_ch, v)
+                }
+                ci = ci + 1
+            }
+        }
+        fi = fi + 1
+    }
+}
+
+// dl_insert_at: insert v into an int slice at position pos.
+func dl_insert_at(arr, pos, v) (out) {
+    out = []int{}
+    i := 0
+    for i < len(arr) {
+        if i == pos { out = append(out, v) }
+        out = append(out, arr[i])
+        i = i + 1
+    }
+    if pos >= len(arr) { out = append(out, v) }
+}
+
+// dl_dump: findings sorted by (fn, chan), one hex line `fn|DL001|chan|prop` — the oracle
+// format `machin deadlocktest --program` emits (byte-diffed by verify-deadlock-selfhost.sh).
+func dl_dump() (out) {
+    order := []int{}
+    k := 0
+    for k < len(g_dl_fn) {
+        pos := len(order)
+        j := 0
+        for j < len(order) {
+            oj := order[j]
+            less := 0
+            if g_dl_fn[k] < g_dl_fn[oj] { less = 1 }
+            if g_dl_fn[k] == g_dl_fn[oj] { if g_dl_ch[k] < g_dl_ch[oj] { less = 1 } }
+            if less == 1 { pos = j  break }
+            j = j + 1
+        }
+        order = dl_insert_at(order, pos, k)
+        k = k + 1
+    }
+    out = ""
+    m := 0
+    for m < len(order) {
+        e := order[m]
+        prop := "receive on channel `" + g_dl_ch[e] + "` that is never sent to or closed — a guaranteed deadlock"
+        out = out + to_hex(bytes(g_dl_fn[e])) + "|" + to_hex(bytes("DL001")) + "|" + to_hex(bytes(g_dl_ch[e])) + "|" + to_hex(bytes(prop)) + "\n"
+        m = m + 1
+    }
+}

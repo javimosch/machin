@@ -18,6 +18,9 @@ func TestTighten(t *testing.T) {
 		{"else if i % 3 == 0", "else if i%3==0"},     // keyword spaces kept; operator spaces dropped
 		{`println("a, b  c")`, `println("a, b  c")`}, // spaces inside a string are preserved
 		{`x := "hi" + "  y"`, `x:="hi"+"  y"`},       // tighten around +, keep string interiors
+		{"h := a ^ b", "h:=a^b"},                     // XOR is an operator too — space drops like &/|
+		{"m := ^x", "m:=^x"},                         // unary complement: no stray space
+		{"r := a & b | c ^ d", "r:=a&b|c^d"},         // all bitwise operators tighten uniformly
 	}
 	for _, c := range cases {
 		if got := tighten(c.in); got != c.want {

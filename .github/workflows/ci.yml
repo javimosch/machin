@@ -31,3 +31,25 @@ jobs:
 
       - name: Run every example (integration smoke test)
         run: ./examples/run.sh
+
+      # Guard the wasm target: a POSIX-only helper (mmap, madvise, a <sys/*> include)
+      # that lands in the always-on cRuntime compiles fine natively but breaks
+      # `--target wasm` under a strict zig (wasi-libc has no mmap). This smoke build
+      # fails CI if that regresses again. See issue #463.
+      # Install zig straight from ziglang.org, not mlugg/setup-zig: that action fetches
+      # only from community mirrors, which lag the canonical site and were 404/503-ing for
+      # every version. `zig cc` is clang-based and version-stable for the C->wasm smoke
+      # build, so pin a widely-available stable (0.15.2).
+      - name: Install zig (the C -> wasm compiler)
+        run: |
+          ZIG_VER=0.15.2
+          curl -fsSL "https://ziglang.org/download/${ZIG_VER}/zig-x86_64-linux-${ZIG_VER}.tar.xz" -o /tmp/zig.tar.xz
+          mkdir -p /tmp/zig && tar -xf /tmp/zig.tar.xz -C /tmp/zig --strip-components=1
+          echo "/tmp/zig" >> "$GITHUB_PATH"
+
+      - name: wasm smoke build (guards POSIX-only code out of cRuntime — #463)
+        run: |
+          go build -o /tmp/machin .
+          printf 'export func ping() (n) { n = 1 }\n' > /tmp/wasm_smoke.mfl
+          /tmp/machin build /tmp/wasm_smoke.mfl --target wasm -o /tmp/wasm_smoke.wasm
+          test -s /tmp/wasm_smoke.wasm && echo "wasm smoke build OK ($(wc -c < /tmp/wasm_smoke.wasm) bytes)"

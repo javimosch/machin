@@ -28,7 +28,7 @@ func CompileToCTarget(p *Program, safe bool, target string) (string, []string, e
 	if err != nil {
 		return "", nil, err
 	}
-	g := &cgen{c: c, safe: safe, target: target, jsonMemo: map[string]string{}, parseMemo: map[string]string{}, chanJSONMemo: map[string][2]string{}}
+	g := &cgen{c: c, safe: safe, target: target, probeVars: debugProbeVars, jsonMemo: map[string]string{}, parseMemo: map[string]string{}, chanJSONMemo: map[string][2]string{}}
 	src, err := g.program(p)
 	if err != nil {
 		return "", nil, err
@@ -83,7 +83,7 @@ type cgen struct {
 	usesRegex    bool            // program calls regex_* -> emit POSIX regex runtime
 	usesSQLite   bool            // program calls sqlite_* -> emit SQLite runtime + link -lsqlite3
 	usesCrypto   bool            // program calls crypto builtins -> emit crypto runtime + link -lcrypto
-	usesSelect   bool            // program uses `select` -> record/replay is best-effort (not yet gated)
+	usesSelect   bool            // program uses `select` (now record/replay-gated; kept for diagnostics)
 	usesXEdDSA   bool            // program calls xeddsa_* -> emit XEdDSA runtime + link -lsodium -lcrypto
 	usesMath     bool            // program calls math builtins (sin/cos/sqrt/...) -> emit math runtime + link -lm
 	usesNoise    bool            // program calls noise2/noise3 -> emit Perlin noise runtime + link -lm
@@ -92,6 +92,22 @@ type cgen struct {
 	target       string          // "" or "native" (default) -> cc; "wasm" -> zig cc, lean runtime, FFI as imports, exports
 	globals      map[string]bool // package-global names (emitted as C statics, mfl_g_<name>)
 	bodyOnly     bool            // oracle mode: emit only the program-specific C (skip the static runtime blocks)
+	probeVars    []string        // `machin replay --print <var>`: emit a probe after each assignment to these vars
+}
+
+// debugProbeVars is set by `machin replay --print` just before it (re)builds the recorded
+// program, so codegen instruments the named variables. It is empty for every normal build,
+// so `machin run`/`build` and the cgentest oracle-diff emit no probes and pay nothing.
+var debugProbeVars []string
+
+// wantsProbe reports whether `name` is being watched by `machin replay --print`.
+func (g *cgen) wantsProbe(name string) bool {
+	for _, v := range g.probeVars {
+		if v == name {
+			return true
+		}
+	}
+	return false
 }
 
 // build targets.
@@ -119,12 +135,12 @@ const cRuntime = `#define _GNU_SOURCE
 #include <netdb.h>
 #include <dirent.h>
 #include <sys/stat.h>
-#include <sys/mman.h>
 #include <fcntl.h>
 #include <errno.h>
 #include <termios.h>
 #include <sys/select.h>
 #ifndef __wasm__
+#include <sys/mman.h>   /* mmap_file / madvise_free — POSIX-only; wasi-libc has no mmap (issue #463) */
 #include <sys/wait.h>
 #include <signal.h>
 #endif
@@ -249,12 +265,15 @@ typedef struct {
     int nstr; int* stroff;
     char* (*ser)(const void*);          /* json mode: element -> arena JSON */
     void (*des)(const char*, void*);    /* json mode: JSON -> *out (arena) */
+    int64_t id;                         /* sequential channel id, for the deadlock wait-cycle report */
 } mfl_chan;
+static int64_t mfl_chan_id_ctr = 0;
 static mfl_chan* mfl_make_chan(int64_t es, char* (*ser)(const void*), void (*des)(const char*, void*), int nstr, ...) {
     mfl_chan* c = malloc(sizeof(mfl_chan));
     pthread_mutex_init(&c->mu, NULL); pthread_cond_init(&c->cnd, NULL);
     c->head = c->tail = NULL; c->es = es; c->closed = 0;
     c->ser = ser; c->des = des;
+    c->id = __atomic_fetch_add(&mfl_chan_id_ctr, 1, __ATOMIC_RELAXED);
     c->nstr = nstr; c->stroff = NULL;
     if (nstr > 0) {
         c->stroff = (int*)malloc((size_t)nstr * sizeof(int));
@@ -291,6 +310,7 @@ static void mfl_rr_enter(void); static void mfl_rr_mark(void); static void mfl_r
    blocked receiver so range/recv stop instead of hanging forever. close is an
    observable, ordered channel op -- it takes a turn so replay reproduces its
    position relative to receivers (a recv after close gets "not ok"). */
+static void mfl_dl_note(void); /* deadlock detector: a channel send/close is progress (defined below) */
 static void mfl_chan_close(mfl_chan* c) {
     mfl_rr_enter();
     pthread_mutex_lock(&c->mu);
@@ -298,6 +318,7 @@ static void mfl_chan_close(mfl_chan* c) {
     pthread_cond_broadcast(&c->cnd);
     mfl_rr_mark();
     pthread_mutex_unlock(&c->mu);
+    mfl_dl_note(); /* a close lets parked receivers drain — channel progress */
     mfl_rr_exit();
 }
 /* ---- record/replay (Phase 0 spike) ------------------------------------------
@@ -383,11 +404,24 @@ static int mfl_rr_prog_boundary(void);
 static int mfl_rr_besteffort = 0;   /* trace was recorded from a boundary-unsafe program */
 static int mfl_rr_verify = 0;       /* MFL_RR_VERIFY: report a faithfulness self-check */
 static int mfl_rr_json = 0;         /* MFL_RR_JSON: emit a crash as a JSON causal report */
+static int mfl_rr_probe_on = 0;     /* MFL_RR_PROBE: machin replay --print value-history mode */
+
+/* value-query debugger: codegen emits mfl_rr_probe("<var>", <value>) after each assignment
+   to a --print-watched variable. Because replay is deterministic, the printed sequence is the
+   exact history that variable took in the recorded run; the last line before a panic is its
+   value at the crash. Tagged with the goroutine path + schedule position for ordering. */
+static void mfl_rr_probe(const char* name, const char* val) {
+    if (!mfl_rr_probe_on) return;
+    pthread_mutex_lock(&mfl_rr_mu);
+    fprintf(stderr, "probe %s %s = %s @op%d\n", mfl_gid_path ? mfl_gid_path : "0", name, val, mfl_rr_pos);
+    pthread_mutex_unlock(&mfl_rr_mu);
+}
 
 static void mfl_rr_init(void) {
     mfl_gid_path = strdup("0");           /* main goroutine */
     if (getenv("MFL_RR_VERIFY")) mfl_rr_verify = 1;
     if (getenv("MFL_RR_JSON")) mfl_rr_json = 1;
+    if (getenv("MFL_RR_PROBE")) mfl_rr_probe_on = 1;
     const char* rec = getenv("MFL_RR_RECORD");
     const char* rep = getenv("MFL_RR_REPLAY");
     if (rec) {
@@ -415,13 +449,17 @@ static void mfl_rr_init(void) {
                         mfl_rr_trace[mfl_rr_n++] = strdup(p);
                     }
                 } else if (line[0] == 'I') {
-                    char p[256], h[16000]; if (sscanf(line, "I %255s %15999s", p, h) == 2) mfl_io_push(p, h);
+                    /* an I-value can be empty hex ("I 0 " for an empty read / http err ""),
+                       which sscanf reports as 1 field -- still a real recorded value, so
+                       push it (h left ""), or record and replay disagree on the queue depth. */
+                    char p[256], h[16000]; h[0] = 0;
+                    if (sscanf(line, "I %255s %15999s", p, h) >= 1) mfl_io_push(p, h);
                 }
             }
             fclose(f);
         }
         if (mfl_rr_besteffort)
-            fprintf(stderr, "warning: best-effort trace (the program uses FFI/select) -- replay may diverge from the recorded run\n");
+            fprintf(stderr, "warning: best-effort trace (the program uses FFI) -- replay may diverge from the recorded run\n");
     }
 }
 /* replay: block until it is this goroutine's turn to complete a channel op.
@@ -501,6 +539,125 @@ static void mfl_panic(const char* msg) {
     exit(1);
 }
 
+/* runtime deadlock detector. machin channels are unbounded, so send never blocks — the
+   only blocking op is recv on an empty, open channel. A deadlock is every live goroutine
+   parked in such a recv, with no one left to send. Track live vs. blocked goroutines and,
+   the moment they meet, report + exit(2) instead of hanging forever. main is one live
+   goroutine; a spawned goroutine is counted from its spawn site until its body returns. */
+static pthread_mutex_t mfl_dl_mu = PTHREAD_MUTEX_INITIALIZER;
+static int mfl_dl_live = 1;         /* main */
+static int mfl_dl_blocked = 0;      /* goroutines parked in a channel receive / select */
+static int mfl_dl_io = 0;           /* goroutines parked in a blocking read (strict mode only) */
+static int mfl_dl_strict = 0;       /* MFL_DL_STRICT: also treat a blocking read as parked */
+static unsigned long mfl_dl_gen = 0;/* bumped on every channel send/close (progress) */
+static int mfl_dl_wd = 0;           /* watchdog started? */
+static void mfl_dl_deadlock(void);
+static void* mfl_dl_watchdog(void* _p);
+__attribute__((constructor)) static void mfl_dl_init(void) { if (getenv("MFL_DL_STRICT")) mfl_dl_strict = 1; }
+static void mfl_dl_note(void)    { pthread_mutex_lock(&mfl_dl_mu); mfl_dl_gen++;  pthread_mutex_unlock(&mfl_dl_mu); }
+static void mfl_dl_spawn(void)   { pthread_mutex_lock(&mfl_dl_mu); mfl_dl_live++; pthread_mutex_unlock(&mfl_dl_mu); }
+static void mfl_dl_finish(void)  { pthread_mutex_lock(&mfl_dl_mu); mfl_dl_live--; pthread_mutex_unlock(&mfl_dl_mu); }
+
+/* wait table: which goroutine (its stable gid path) is parked receiving on which channel
+   id. Populated as goroutines block, so a declared deadlock can print the exact wait-cycle
+   an agent reads — the same causal-artifact idea as the replay crash report. */
+typedef struct { char* gid; int64_t chan; } mfl_dl_waiter;
+static mfl_dl_waiter* mfl_dl_w = NULL;
+static int mfl_dl_nw = 0, mfl_dl_capw = 0;
+static void mfl_dl_wait_add(const char* gid, int64_t chan) { /* caller holds mfl_dl_mu */
+    if (mfl_dl_nw == mfl_dl_capw) { mfl_dl_capw = mfl_dl_capw ? mfl_dl_capw * 2 : 8; mfl_dl_w = realloc(mfl_dl_w, (size_t)mfl_dl_capw * sizeof(mfl_dl_waiter)); }
+    mfl_dl_w[mfl_dl_nw].gid = strdup(gid ? gid : "0");
+    mfl_dl_w[mfl_dl_nw].chan = chan;
+    mfl_dl_nw++;
+}
+static void mfl_dl_wait_del(const char* gid) { /* caller holds mfl_dl_mu */
+    const char* g = gid ? gid : "0";
+    for (int i = 0; i < mfl_dl_nw; i++) {
+        if (strcmp(mfl_dl_w[i].gid, g) == 0) { free(mfl_dl_w[i].gid); mfl_dl_w[i] = mfl_dl_w[--mfl_dl_nw]; return; }
+    }
+}
+static void mfl_dl_unblock(void) {
+    pthread_mutex_lock(&mfl_dl_mu);
+    mfl_dl_blocked--;
+    mfl_dl_wait_del(mfl_gid_path);
+    pthread_mutex_unlock(&mfl_dl_mu);
+}
+/* strict mode (MFL_DL_STRICT): a blocking read (socket/stdin) that may never arrive is a
+   park too. Off by default — flagging I/O waits would falsely fire on every idle server, so
+   this is opt-in for batch jobs/tests/tools that must not hang on I/O. A no-op otherwise, so
+   the default path (and replay, which serves reads from the log) pays nothing. */
+static void mfl_dl_io_park(int enter) {
+    if (!mfl_dl_strict || mfl_rr_mode == 2) return;
+    pthread_mutex_lock(&mfl_dl_mu);
+    if (enter) {
+        mfl_dl_io++;
+        mfl_dl_wait_add(mfl_gid_path, -2); /* -2 = blocking external I/O */
+        int start = !mfl_dl_wd; mfl_dl_wd = 1;
+        pthread_mutex_unlock(&mfl_dl_mu);
+        if (start) { pthread_t t; pthread_create(&t, NULL, mfl_dl_watchdog, NULL); pthread_detach(t); }
+        return;
+    }
+    mfl_dl_io--;
+    mfl_dl_wait_del(mfl_gid_path);
+    pthread_mutex_unlock(&mfl_dl_mu);
+}
+/* quiescence-based detection: a deadlock is only declared when every live goroutine is
+   parked in a receive AND no channel send/close has happened across a short window. A
+   plain "blocked == live" snapshot is racy — a receiver just signaled by a send/close is
+   momentarily still counted blocked — so we require the (blocked>=live, gen) state to hold
+   stable for two polls before calling it. Any real send/close bumps gen and resets it. */
+static void* mfl_dl_watchdog(void* _p) {
+    (void)_p;
+    unsigned long last = 0; int stable = 0;
+    for (;;) {
+        usleep(20000); /* 20ms poll */
+        int dead = 0;
+        pthread_mutex_lock(&mfl_dl_mu);
+        /* io is 0 unless strict mode (mfl_dl_io_park is a no-op otherwise), so by default
+           this is purely the channel-parked condition — blocking I/O is not counted. */
+        if (mfl_dl_live > 0 && mfl_dl_blocked + mfl_dl_io >= mfl_dl_live) {
+            if (mfl_dl_gen == last) { if (++stable >= 2) dead = 1; }
+            else { stable = 0; last = mfl_dl_gen; }
+        } else { stable = 0; last = mfl_dl_gen; }
+        pthread_mutex_unlock(&mfl_dl_mu);
+        if (dead) mfl_dl_deadlock();
+    }
+    return NULL;
+}
+static void mfl_dl_block(int64_t chan) {
+    /* lazily start the watchdog on the first receive that parks — a program that never
+       blocks on a channel pays nothing. */
+    pthread_mutex_lock(&mfl_dl_mu);
+    mfl_dl_blocked++;
+    mfl_dl_wait_add(mfl_gid_path, chan);
+    int start = !mfl_dl_wd; mfl_dl_wd = 1;
+    pthread_mutex_unlock(&mfl_dl_mu);
+    if (start) { pthread_t t; pthread_create(&t, NULL, mfl_dl_watchdog, NULL); pthread_detach(t); }
+}
+/* report the wait-cycle: every parked goroutine and the channel it can never receive from.
+   Under MFL_RR_JSON, a structured artifact an agent reads instead of a hang. */
+static void mfl_dl_deadlock(void) {
+    pthread_mutex_lock(&mfl_dl_mu);
+    if (mfl_rr_json) {
+        fprintf(stderr, "{\"deadlock\":true,\"goroutines\":%d,\"blocked\":[", mfl_dl_live);
+        for (int i = 0; i < mfl_dl_nw; i++) {
+            if (mfl_dl_w[i].chan == -1) fprintf(stderr, "%s{\"goroutine\":\"%s\",\"blockedInSelect\":true}", i ? "," : "", mfl_dl_w[i].gid);
+            else if (mfl_dl_w[i].chan == -2) fprintf(stderr, "%s{\"goroutine\":\"%s\",\"blockedOnIO\":true}", i ? "," : "", mfl_dl_w[i].gid);
+            else fprintf(stderr, "%s{\"goroutine\":\"%s\",\"recvOnChannel\":%lld}", i ? "," : "", mfl_dl_w[i].gid, (long long)mfl_dl_w[i].chan);
+        }
+        fputs("]}\n", stderr);
+    } else {
+        fprintf(stderr, "fatal: deadlock — all %d goroutine(s) blocked, none can make progress:\n", mfl_dl_live);
+        for (int i = 0; i < mfl_dl_nw; i++) {
+            if (mfl_dl_w[i].chan == -1) fprintf(stderr, "  goroutine %-5s waiting in a select (no case can ever fire)\n", mfl_dl_w[i].gid);
+            else if (mfl_dl_w[i].chan == -2) fprintf(stderr, "  goroutine %-5s waiting on a blocking read that may never arrive (--deadlock-strict)\n", mfl_dl_w[i].gid);
+            else fprintf(stderr, "  goroutine %-5s waiting to receive on channel #%lld\n", mfl_dl_w[i].gid, (long long)mfl_dl_w[i].chan);
+        }
+    }
+    fflush(stderr);
+    _exit(2);
+}
+
 static void mfl_chan_send(mfl_chan* c, const void* v) {
     mfl_rr_enter();
     mfl_cnode* n = malloc(sizeof(mfl_cnode));
@@ -519,6 +676,7 @@ static void mfl_chan_send(mfl_chan* c, const void* v) {
     pthread_cond_signal(&c->cnd);
     mfl_rr_mark();
     pthread_mutex_unlock(&c->mu);
+    mfl_dl_note(); /* a send is channel progress — resets the deadlock watchdog */
     mfl_rr_exit();
 }
 /* deliver node n's payload into out (receiver arena), then free the node. */
@@ -537,7 +695,11 @@ static void mfl_chan_deliver(mfl_chan* c, mfl_cnode* n, void* out) {
 static int mfl_chan_recv2(mfl_chan* c, void* out) {
     mfl_rr_enter();
     pthread_mutex_lock(&c->mu);
-    while (!c->head && !c->closed) pthread_cond_wait(&c->cnd, &c->mu);
+    if (!c->head && !c->closed) {
+        mfl_dl_block(c->id); /* about to park on an empty open channel */
+        while (!c->head && !c->closed) pthread_cond_wait(&c->cnd, &c->mu);
+        mfl_dl_unblock();
+    }
     mfl_cnode* n = c->head;
     /* draining a closed+empty channel (returns "not ok") is still an observable,
        ordered op — it must record/gate a turn like a real receive, or record and
@@ -562,6 +724,11 @@ static int mfl_chan_tryrecv2(mfl_chan* c, void* out, int* ok) {
     mfl_cnode* n = c->head;
     if (n) { c->head = n->next; if (!c->head) c->tail = NULL; }
     int closed = c->closed;
+    /* a select recv that fires IS an ordered channel effect — mark it in schedule
+       order (under c->mu, like mfl_chan_recv2) so a select-using program records a
+       faithful, not best-effort, trace. Only fires in record mode; replay never
+       polls (it forces the recorded case with a blocking recv). */
+    if ((n || closed) && mfl_rr_mode == 1) mfl_rr_mark();
     pthread_mutex_unlock(&c->mu);
     if (n) { mfl_chan_deliver(c, n, out); *ok = 1; return 1; }
     if (closed) { memset(out, 0, c->es); *ok = 0; return 1; }
@@ -659,6 +826,10 @@ static char* mfl_dup(const char* s) { size_t n = strlen(s); char* r = mfl_alloc(
    filling C buffers (vertex arrays) and structs to hand to a C API. */
 static int64_t mfl_raw_alloc(int64_t n) { return (int64_t)(intptr_t)calloc(1, (size_t)(n > 0 ? n : 0)); }
 static void mfl_raw_free(int64_t p) { free((void*)(intptr_t)p); }
+/* mmap_file / madvise_free are POSIX file-mapping helpers — native-only. wasi-libc
+   has no mmap/madvise, so guard them out of the wasm build (a frontend that calls
+   neither then emits no sys/mman.h reference). Matches the mfl_system guard. #463 */
+#ifndef __wasm__
 /* madvise_free: hint the kernel to drop the resident pages of an mmap'd region
    (MADV_DONTNEED) — RSS falls, pages re-fault lazily on next access. For idle
    release of large mmap_file mappings without unmapping. */
@@ -682,6 +853,7 @@ static mfl_mmap_result mfl_mmap_file(const char* path) {
     R.ptr = (int64_t)(intptr_t)p; R.len = (int64_t)st.st_size;
     return R;
 }
+#endif   /* __wasm__ — mmap_file / madvise_free */
 /* read a NUL-terminated string from a raw pointer into an MFL (arena) string — the
    host->wasm direction: the JS host writes UTF-8 + a NUL into wasm memory at a
    pointer the program alloc'd, then passes it here. */
@@ -748,6 +920,36 @@ static double mfl_dot_q8(int64_t xq, int64_t xs, int64_t wq, int64_t ws, int64_t
         val += (double)acc * (double)xsc[g] * (double)wsc[g];
     }
     return val;
+}
+/* batched q8 matmul: for output rows i in [lo,hi) and positions b in [0,B):
+   out[b*ostride + i] = dot_q8(xq + b*n, xs + b*n/gs, w + i*n, ws + i*n/gs). The
+   weight row is loaded once and reused across all B positions (the prefill GEMM)
+   -- one call replaces B*(hi-lo) MFL-level dot_q8 calls, so the compiler keeps
+   the row hot and vectorizes the inner product. */
+static void mfl_matmul_q8_batch(int64_t ob, int64_t ostride, int64_t xqb, int64_t xsb, int64_t wq, int64_t ws, int64_t n, int64_t gs, int64_t B, int64_t lo, int64_t hi) {
+    float* out = (float*)(intptr_t)ob;
+    const int8_t* xbase = (const int8_t*)(intptr_t)xqb;
+    const float* xsbase = (const float*)(intptr_t)xsb;
+    const int8_t* wbase = (const int8_t*)(intptr_t)wq;
+    const float* wsbase = (const float*)(intptr_t)ws;
+    int64_t ng = gs > 0 ? n / gs : 0;
+    for (int64_t i = lo; i < hi; i++) {
+        const int8_t* wrow = wbase + i * n;
+        const float* wsc = wsbase + i * ng;
+        for (int64_t b = 0; b < B; b++) {
+            const int8_t* x = xbase + b * n;
+            const float* xsc = xsbase + b * ng;
+            double val = 0.0;
+            for (int64_t g = 0; g < ng; g++) {
+                const int8_t* xg = x + g * gs;
+                const int8_t* wg = wrow + g * gs;
+                int32_t acc = 0;
+                for (int64_t k = 0; k < gs; k++) acc += (int32_t)xg[k] * (int32_t)wg[k];
+                val += (double)acc * (double)xsc[g] * (double)wsc[g];
+            }
+            out[b * ostride + i] = (float)val;
+        }
+    }
 }
 /* grouped, dual-scaled int4 dot: like dot_q8 but the weights are split-nibble
  * int4 (a group of gs weights packed into gs/2 bytes; byte k holds w[k] in the
@@ -1221,8 +1423,14 @@ static char* mfl_read_stdin(void) {
     if (mfl_rr_mode == 2) { size_t L; char* s = mfl_hexdec(mfl_io_pop(), &L); char* a = mfl_dup_arena(s, L); free(s); return a; }
     size_t cap = 65536, len = 0;
     char* buf = (char*)malloc(cap);
-    size_t n;
-    while ((n = fread(buf + len, 1, cap - len - 1, stdin)) > 0) {
+    for (;;) {
+        size_t want = cap - len - 1;
+        if (want > 65536) want = 65536; /* bounded per-read so an active reader signals progress often */
+        mfl_dl_io_park(1);
+        size_t n = fread(buf + len, 1, want, stdin);
+        mfl_dl_io_park(0);
+        if (n == 0) break;
+        mfl_dl_note(); /* got data = progress; only a stalled read parks with no progress */
         len += n;
         if (len + 1 >= cap) { cap *= 2; buf = (char*)realloc(buf, cap); }
     }
@@ -1349,6 +1557,23 @@ static int64_t mfl_write_file_bytes(const char* path, mfl_bytes b) {
     if (!f) return -1;
     size_t w = b.len ? fwrite(b.data, 1, (size_t)b.len, f) : 0;
     fclose(f); return (int64_t)w;
+}
+/* raw region file I/O: dump/restore a memory region (ptr,nbytes) to/from a file
+   with a single fwrite/fread. For large buffers that a bytes value cannot hold
+   cheaply (e.g. a serialized KV cache). Returns bytes transferred, -1 on open. */
+static int64_t mfl_write_file_raw(const char* path, int64_t ptr, int64_t nbytes) {
+    FILE* f = fopen(path, "wb");
+    if (!f) return -1;
+    size_t w = nbytes > 0 ? fwrite((const void*)(intptr_t)ptr, 1, (size_t)nbytes, f) : 0;
+    fclose(f);
+    return (int64_t)w;
+}
+static int64_t mfl_read_file_raw(const char* path, int64_t ptr, int64_t nbytes) {
+    FILE* f = fopen(path, "rb");
+    if (!f) return -1;
+    size_t r = nbytes > 0 ? fread((void*)(intptr_t)ptr, 1, (size_t)nbytes, f) : 0;
+    fclose(f);
+    return (int64_t)r;
 }
 /* delete a file (0 on success, -1 on error) — e.g. removing a stored upload. */
 static int64_t mfl_remove_file(const char* path) { return remove(path) == 0 ? 0 : -1; }
@@ -1557,40 +1782,60 @@ static mfl_json_result mfl_json_get(const char* json, const char* path) {
 // then references no POSIX networking symbols at all).
 const netRuntime = `/* networking: the low-level shape of Go's net package */
 static int64_t mfl_listen(int64_t port) {
+    /* replay: return the recorded fd without binding a real port (it may be taken, and
+       no bytes flow through it on replay anyway — reads are served from the I/O log). */
+    if (mfl_rr_mode == 2) return mfl_rr_io_pop_i64();
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     int opt = 1; setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
     struct sockaddr_in a; memset(&a, 0, sizeof(a));
     a.sin_family = AF_INET; a.sin_addr.s_addr = INADDR_ANY; a.sin_port = htons((uint16_t)port);
     if (bind(fd, (struct sockaddr*)&a, sizeof(a)) < 0) { perror("bind"); exit(1); }
     if (listen(fd, 64) < 0) { perror("listen"); exit(1); }
+    if (mfl_rr_mode == 1) mfl_rr_io_log_i64(fd);
     return fd;
 }
-static int64_t mfl_accept(int64_t fd) { return accept((int)fd, NULL, NULL); }
+static int64_t mfl_accept(int64_t fd) {
+    /* replay: recorded fd, and crucially DON'T block on a real accept (no client exists). */
+    if (mfl_rr_mode == 2) return mfl_rr_io_pop_i64();
+    int64_t r = accept((int)fd, NULL, NULL);
+    if (mfl_rr_mode == 1) mfl_rr_io_log_i64(r);
+    return r;
+}
 /* peer_addr: the remote IP of a connected socket (getpeername), "" on error — the real
    client IP when not behind a proxy (behind one, prefer X-Forwarded-For). */
 static const char* mfl_peer_addr(int64_t fd) {
+    if (mfl_rr_mode == 2) { size_t L; char* s = mfl_hexdec(mfl_io_pop(), &L); char* a = mfl_dup_arena(s, L); free(s); return a; }
+    const char* out = "";
     struct sockaddr_storage ss; socklen_t sl = sizeof(ss);
-    if (getpeername((int)fd, (struct sockaddr*)&ss, &sl) != 0) return "";
     char host[64] = {0};
-    if (getnameinfo((struct sockaddr*)&ss, sl, host, sizeof(host), NULL, 0, NI_NUMERICHOST) != 0) return "";
-    char* r = (char*)mfl_alloc(strlen(host) + 1); strcpy(r, host); return r;
+    if (getpeername((int)fd, (struct sockaddr*)&ss, &sl) == 0 &&
+        getnameinfo((struct sockaddr*)&ss, sl, host, sizeof(host), NULL, 0, NI_NUMERICHOST) == 0) {
+        char* r = (char*)mfl_alloc(strlen(host) + 1); strcpy(r, host); out = r;
+    }
+    if (mfl_rr_mode == 1) mfl_rr_io_log_bytes(out, strlen(out));
+    return out;
 }
 /* socket_timeout: cap blocking recv/send on a socket to ms milliseconds (0 = none), so a
    slow client can't park a connection forever. Returns 0 on success, -1 on error. */
 static int64_t mfl_socket_timeout(int64_t fd, int64_t ms) {
+    if (mfl_rr_mode == 2) return mfl_rr_io_pop_i64();
     struct timeval tv; tv.tv_sec = ms / 1000; tv.tv_usec = (ms % 1000) * 1000;
     int a = setsockopt((int)fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     int b = setsockopt((int)fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-    return (a == 0 && b == 0) ? 0 : -1;
+    int64_t r = (a == 0 && b == 0) ? 0 : -1;
+    if (mfl_rr_mode == 1) mfl_rr_io_log_i64(r);
+    return r;
 }
 /* dial: connect a TCP socket to host:port, returning an fd (-1 on failure).
    The fd is used with the same read/write/close as an accepted connection. */
 static int64_t mfl_dial(const char* host, int64_t port) {
+    /* replay: recorded fd, no real connect (the peer's bytes come from the I/O log). */
+    if (mfl_rr_mode == 2) return mfl_rr_io_pop_i64();
     struct addrinfo hints, *res, *rp;
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_UNSPEC; hints.ai_socktype = SOCK_STREAM;
     char ps[16]; snprintf(ps, sizeof(ps), "%lld", (long long)port);
-    if (getaddrinfo(host, ps, &hints, &res) != 0) return -1;
+    if (getaddrinfo(host, ps, &hints, &res) != 0) { if (mfl_rr_mode == 1) mfl_rr_io_log_i64(-1); return -1; }
     int fd = -1;
     for (rp = res; rp; rp = rp->ai_next) {
         fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
@@ -1599,34 +1844,60 @@ static int64_t mfl_dial(const char* host, int64_t port) {
         close(fd); fd = -1;
     }
     freeaddrinfo(res);
+    if (mfl_rr_mode == 1) mfl_rr_io_log_i64(fd);
     return fd;
 }
 static char* mfl_read(int64_t fd) {
+    /* a socket read is external input, like read_file/read_stdin — record the bytes so
+       replay reproduces the exchange with no network (the trace is self-contained). */
+    if (mfl_rr_mode == 2) { size_t L; char* s = mfl_hexdec(mfl_io_pop(), &L); char* a = mfl_dup_arena(s, L); free(s); return a; }
     char* buf = mfl_alloc(65536);
+    mfl_dl_io_park(1);
     ssize_t n = read((int)fd, buf, 65535);
+    mfl_dl_io_park(0);
+    if (n > 0) mfl_dl_note(); /* got data = progress, so an active reader isn't "parked" */
     if (n < 0) n = 0;
     buf[n] = 0;
+    if (mfl_rr_mode == 1) mfl_rr_io_log_bytes(buf, (size_t)n);
     return buf;
 }
 // mfl_read_bytes is the NUL-safe socket read: returns the raw bytes of one chunk
 // (empty at EOF / on error). For binary wire protocols where read() (a C string)
 // would truncate at the first 0 byte.
 static mfl_bytes mfl_read_bytes(int64_t fd) {
+    if (mfl_rr_mode == 2) {
+        size_t L; char* s = mfl_hexdec(mfl_io_pop(), &L);
+        mfl_bytes b; b.data = (uint8_t*)mfl_alloc(L ? L : 1); b.len = (int64_t)L;
+        if (L) memcpy(b.data, s, L); free(s); return b;
+    }
     mfl_bytes b; b.data = (uint8_t*)mfl_alloc(65536);
+    mfl_dl_io_park(1);
     ssize_t n = read((int)fd, b.data, 65536);
+    mfl_dl_io_park(0);
+    if (n > 0) mfl_dl_note(); /* got data = progress */
     if (n < 0) n = 0;
     b.len = (int64_t)n;
+    if (mfl_rr_mode == 1) mfl_rr_io_log_bytes((char*)b.data, (size_t)n);
     return b;
 }
-static int64_t mfl_write(int64_t fd, const char* s) { return (int64_t)write((int)fd, s, strlen(s)); }
+/* a write is an output side-effect: replay records/returns the byte count but performs
+   no real send (the fd is a recorded sentinel, so writing would EPIPE). */
+static int64_t mfl_write(int64_t fd, const char* s) {
+    if (mfl_rr_mode == 2) return mfl_rr_io_pop_i64();
+    int64_t r = (int64_t)write((int)fd, s, strlen(s));
+    if (mfl_rr_mode == 1) mfl_rr_io_log_i64(r);
+    return r;
+}
 /* write the exact bytes of a buffer to an fd (NUL-safe, for binary responses). */
 static int64_t mfl_write_bytes(int64_t fd, mfl_bytes b) {
+    if (mfl_rr_mode == 2) return mfl_rr_io_pop_i64();
     size_t off = 0;
     while (off < (size_t)b.len) {
         ssize_t w = write((int)fd, b.data + off, (size_t)b.len - off);
         if (w <= 0) break;
         off += (size_t)w;
     }
+    if (mfl_rr_mode == 1) mfl_rr_io_log_i64((int64_t)off);
     return (int64_t)off;
 }
 static void mfl_close(int64_t fd) { close((int)fd); }
@@ -1801,12 +2072,16 @@ static int64_t mfl_tls_server_ctx(const char* certfile, const char* keyfile) {
     return (int64_t)(intptr_t)ctx;
 }
 static int64_t mfl_tls_accept(int64_t ctxHandle, int64_t fd) {
+    /* replay: recorded handle sentinel, no real TLS handshake (reads come from the log). */
+    if (mfl_rr_mode == 2) return mfl_rr_io_pop_i64();
     SSL_CTX* ctx = (SSL_CTX*)(intptr_t)ctxHandle;
-    if (!ctx) return 0;
+    if (!ctx) { if (mfl_rr_mode == 1) mfl_rr_io_log_i64(0); return 0; }
     SSL* ssl = SSL_new(ctx);
     SSL_set_fd(ssl, (int)fd);
-    if (SSL_accept(ssl) != 1) { SSL_free(ssl); return 0; }
-    return (int64_t)(intptr_t)ssl;
+    if (SSL_accept(ssl) != 1) { SSL_free(ssl); if (mfl_rr_mode == 1) mfl_rr_io_log_i64(0); return 0; }
+    int64_t r = (int64_t)(intptr_t)ssl;
+    if (mfl_rr_mode == 1) mfl_rr_io_log_i64(r);
+    return r;
 }
 
 /* generic read/write/close over a tls handle (an SSL*, from tls_accept or
@@ -1814,37 +2089,54 @@ static int64_t mfl_tls_accept(int64_t ctxHandle, int64_t fd) {
    chunk semantics (one SSL_read's worth, up to 64K; a full-write loop) exactly,
    just over SSL_read/SSL_write instead of read(2)/write(2). */
 static char* mfl_tls_read_str(int64_t h) {
+    /* a TLS read is external input: record the plaintext chunk so replay reproduces it
+       with no handshake, like mfl_read for raw sockets. */
+    if (mfl_rr_mode == 2) { size_t L; char* s = mfl_hexdec(mfl_io_pop(), &L); char* a = mfl_dup_arena(s, L); free(s); return a; }
     SSL* ssl = (SSL*)(intptr_t)h;
     char* buf = mfl_alloc(65536);
     int n = ssl ? SSL_read(ssl, buf, 65535) : 0;
     if (n < 0) n = 0;
     buf[n] = 0;
+    if (mfl_rr_mode == 1) mfl_rr_io_log_bytes(buf, (size_t)n);
     return buf;
 }
 static mfl_bytes mfl_tls_read_bytes_h(int64_t h) {
+    if (mfl_rr_mode == 2) {
+        size_t L; char* s = mfl_hexdec(mfl_io_pop(), &L);
+        mfl_bytes b; b.data = (uint8_t*)mfl_alloc(L ? L : 1); b.len = (int64_t)L;
+        if (L) memcpy(b.data, s, L); free(s); return b;
+    }
     SSL* ssl = (SSL*)(intptr_t)h;
     mfl_bytes b; b.data = (uint8_t*)mfl_alloc(65536);
     int n = ssl ? SSL_read(ssl, b.data, 65536) : 0;
     if (n < 0) n = 0;
     b.len = (int64_t)n;
+    if (mfl_rr_mode == 1) mfl_rr_io_log_bytes((char*)b.data, (size_t)n);
     return b;
 }
 static int64_t mfl_tls_write_str(int64_t h, const char* s) {
+    if (mfl_rr_mode == 2) return mfl_rr_io_pop_i64();
     SSL* ssl = (SSL*)(intptr_t)h;
-    return ssl ? (int64_t)SSL_write(ssl, s, (int)strlen(s)) : -1;
+    int64_t r = ssl ? (int64_t)SSL_write(ssl, s, (int)strlen(s)) : -1;
+    if (mfl_rr_mode == 1) mfl_rr_io_log_i64(r);
+    return r;
 }
 static int64_t mfl_tls_write_bytes_h(int64_t h, mfl_bytes b) {
+    if (mfl_rr_mode == 2) return mfl_rr_io_pop_i64();
     SSL* ssl = (SSL*)(intptr_t)h;
-    if (!ssl) return -1;
+    if (!ssl) { if (mfl_rr_mode == 1) mfl_rr_io_log_i64(-1); return -1; }
     size_t off = 0;
     while (off < (size_t)b.len) {
         int w = SSL_write(ssl, b.data + off, (int)((size_t)b.len - off));
         if (w <= 0) break;
         off += (size_t)w;
     }
+    if (mfl_rr_mode == 1) mfl_rr_io_log_i64((int64_t)off);
     return (int64_t)off;
 }
-static int64_t mfl_tls_close_h(int64_t h) { mfl_tls_hangup((SSL*)(intptr_t)h); return 0; }
+/* close is a side-effect with a constant return; on replay just skip the real hangup (the
+   handle is a recorded sentinel). No I/O-queue entry either way, so the queue stays balanced. */
+static int64_t mfl_tls_close_h(int64_t h) { if (mfl_rr_mode == 2) return 0; mfl_tls_hangup((SSL*)(intptr_t)h); return 0; }
 `
 
 // tlsRuntime is a minimal HTTPS/1.1 client built on tlsCoreRuntime. Emitted only
@@ -1894,6 +2186,23 @@ static char* mfl_chunk_decode(const char* body, size_t blen, size_t* outlen) {
 /* (status, body, err) — err is "" on an HTTP response (status is the code), or a
    transport-failure reason ("dns"/"connect"/"tls"/"scheme") with status 0. */
 typedef struct { int64_t status; char* body; char* err; } mfl_http_result;
+
+/* record/replay for the HTTP result: an HTTP round-trip is external input, so the whole
+   result (status + body + err) is logged and popped — a program that crashes processing an
+   API response replays with the exact response baked in, no network. Instrumented at the
+   public wrappers (not mfl_http_do) so redirects log exactly once per logical call. */
+static void mfl_rr_log_http(mfl_http_result R) {
+    mfl_rr_io_log_i64(R.status);
+    mfl_rr_io_log_bytes(R.body ? R.body : "", R.body ? strlen(R.body) : 0);
+    mfl_rr_io_log_bytes(R.err ? R.err : "", R.err ? strlen(R.err) : 0);
+}
+static mfl_http_result mfl_rr_pop_http(void) {
+    mfl_http_result R;
+    R.status = mfl_rr_io_pop_i64();
+    { size_t L; char* s = mfl_hexdec(mfl_io_pop(), &L); R.body = mfl_dup_arena(s, L); free(s); }
+    { size_t L; char* s = mfl_hexdec(mfl_io_pop(), &L); R.err = mfl_dup_arena(s, L); free(s); }
+    return R;
+}
 
 static mfl_http_result mfl_http_do(const char* method, const char* url, const char* reqbody, const char* ctype, const char* extra, int redirects);
 
@@ -2044,13 +2353,29 @@ static mfl_http_result mfl_http_do(const char* method, const char* url, const ch
     return R;
 }
 
-static char* mfl_https_get(const char* url) { return mfl_http_do("GET", url, NULL, NULL, "", 5).body; }
-static char* mfl_https_post(const char* url, const char* body) { return mfl_http_do("POST", url, body, "application/json", "", 5).body; }
-static mfl_http_result mfl_http_get(const char* url) { return mfl_http_do("GET", url, NULL, NULL, "", 5); }
+static char* mfl_https_get(const char* url) {
+    if (mfl_rr_mode == 2) { size_t L; char* s = mfl_hexdec(mfl_io_pop(), &L); char* a = mfl_dup_arena(s, L); free(s); return a; }
+    char* b = mfl_http_do("GET", url, NULL, NULL, "", 5).body;
+    if (mfl_rr_mode == 1) mfl_rr_io_log_bytes(b ? b : "", b ? strlen(b) : 0);
+    return b;
+}
+static char* mfl_https_post(const char* url, const char* body) {
+    if (mfl_rr_mode == 2) { size_t L; char* s = mfl_hexdec(mfl_io_pop(), &L); char* a = mfl_dup_arena(s, L); free(s); return a; }
+    char* b = mfl_http_do("POST", url, body, "application/json", "", 5).body;
+    if (mfl_rr_mode == 1) mfl_rr_io_log_bytes(b ? b : "", b ? strlen(b) : 0);
+    return b;
+}
+static mfl_http_result mfl_http_get(const char* url) {
+    if (mfl_rr_mode == 2) return mfl_rr_pop_http();
+    mfl_http_result R = mfl_http_do("GET", url, NULL, NULL, "", 5);
+    if (mfl_rr_mode == 1) mfl_rr_log_http(R);
+    return R;
+}
 /* general authenticated request: caller supplies the method, any extra header
    lines (e.g. "Authorization: Bearer x", "Content-Type: application/json") as a
    []string, and a body. Returns (status, body, err) like http_get. */
 static mfl_http_result mfl_http_request(const char* method, const char* url, mfl_slice headers, const char* body) {
+    if (mfl_rr_mode == 2) return mfl_rr_pop_http();
     size_t tot = 1;
     for (int64_t i = 0; i < headers.len; i++) { char* h = ((char**)headers.data)[i]; if (h) tot += strlen(h) + 2; }
     char* hb = (char*)malloc(tot);
@@ -2061,6 +2386,7 @@ static mfl_http_result mfl_http_request(const char* method, const char* url, mfl
     }
     hb[o] = 0;
     mfl_http_result R = mfl_http_do(method, url, body, NULL, hb, 5);
+    if (mfl_rr_mode == 1) mfl_rr_log_http(R);
     free(hb);
     return R;
 }
@@ -2126,7 +2452,7 @@ static void mfl_ws_frame(mfl_ws* w, int opcode, const unsigned char* payload, si
     free(buf);
 }
 
-static int64_t mfl_wss_open(const char* url) {
+static int64_t mfl_wss_open_real(const char* url) {
     char host[256] = {0}, path[2048] = {0};
     int port = 443;
     const char* p = url;
@@ -2170,12 +2496,22 @@ static int64_t mfl_wss_open(const char* url) {
     w->ssl = ssl;
     return (int64_t)(intptr_t)w;
 }
+/* record/replay: the handshake is external I/O — replay returns the recorded handle
+   sentinel (no real connect); record logs whatever the real open returned. */
+static int64_t mfl_wss_open(const char* url) {
+    if (mfl_rr_mode == 2) return mfl_rr_io_pop_i64();
+    int64_t r = mfl_wss_open_real(url);
+    if (mfl_rr_mode == 1) mfl_rr_io_log_i64(r);
+    return r;
+}
 
 static int64_t mfl_wss_send(int64_t h, const char* msg) {
+    if (mfl_rr_mode == 2) return mfl_rr_io_pop_i64();
     mfl_ws* w = (mfl_ws*)(intptr_t)h;
-    if (!w) return -1;
-    mfl_ws_frame(w, 0x1, (const unsigned char*)msg, strlen(msg));
-    return 0;
+    int64_t r = w ? 0 : -1;
+    if (w) mfl_ws_frame(w, 0x1, (const unsigned char*)msg, strlen(msg));
+    if (mfl_rr_mode == 1) mfl_rr_io_log_i64(r);
+    return r;
 }
 
 /* core: block until a full message; returns a malloc'd buffer (caller frees) and
@@ -2224,32 +2560,44 @@ static unsigned char* mfl_ws_recv_raw(mfl_ws* w, size_t* outlen) {
 
 /* text recv: "" on close/error (truncates at an embedded NUL — for binary use wss_recv_bin) */
 static char* mfl_wss_recv(int64_t h) {
+    if (mfl_rr_mode == 2) { size_t L; char* s = mfl_hexdec(mfl_io_pop(), &L); char* a = mfl_dup_arena(s, L); free(s); return a; }
     size_t n;
     unsigned char* m = mfl_ws_recv_raw((mfl_ws*)(intptr_t)h, &n);
-    if (!m) return mfl_dup_arena("", 0);
-    char* r = mfl_dup_arena((char*)m, n);
+    char* r = m ? mfl_dup_arena((char*)m, n) : mfl_dup_arena("", 0);
+    if (mfl_rr_mode == 1) mfl_rr_io_log_bytes(m ? (char*)m : "", m ? n : 0);
     free(m);
     return r;
 }
 
 /* binary recv: a NUL-safe bytes message; empty bytes on close/error */
 static mfl_bytes mfl_wss_recv_bin(int64_t h) {
+    if (mfl_rr_mode == 2) {
+        size_t L; char* s = mfl_hexdec(mfl_io_pop(), &L);
+        mfl_bytes b; b.data = (uint8_t*)mfl_alloc(L ? L : 1); b.len = (int64_t)L;
+        if (L) memcpy(b.data, s, L); free(s); return b;
+    }
     size_t n = 0;
     unsigned char* m = mfl_ws_recv_raw((mfl_ws*)(intptr_t)h, &n);
     mfl_bytes b; b.len = m ? (int64_t)n : 0; b.data = (uint8_t*)mfl_alloc(b.len ? b.len : 1);
     if (m) { memcpy(b.data, m, n); free(m); }
+    if (mfl_rr_mode == 1) mfl_rr_io_log_bytes((char*)b.data, (size_t)b.len);
     return b;
 }
 
 /* binary send: one masked binary frame (opcode 0x2) carrying the bytes payload */
 static int64_t mfl_wss_send_bin(int64_t h, mfl_bytes b) {
+    if (mfl_rr_mode == 2) return mfl_rr_io_pop_i64();
     mfl_ws* w = (mfl_ws*)(intptr_t)h;
-    if (!w) return -1;
-    mfl_ws_frame(w, 0x2, b.data, (size_t)b.len);
-    return 0;
+    int64_t r = w ? 0 : -1;
+    if (w) mfl_ws_frame(w, 0x2, b.data, (size_t)b.len);
+    if (mfl_rr_mode == 1) mfl_rr_io_log_i64(r);
+    return r;
 }
 
+/* close: side-effect with a constant return; on replay skip the real hangup (sentinel
+   handle). No I/O-queue entry either way, so the queue stays balanced. */
 static int64_t mfl_wss_close(int64_t h) {
+    if (mfl_rr_mode == 2) return 0;
     mfl_ws* w = (mfl_ws*)(intptr_t)h;
     if (!w) return -1;
     mfl_ws_frame(w, 0x8, NULL, 0);
@@ -3362,12 +3710,14 @@ func (g *cgen) program(p *Program) (string, error) {
 	if g.wasm() {
 		out.WriteString("__attribute__((constructor)) static void mfl_wasm_stdio_init(void) { setvbuf(stdout, NULL, _IONBF, 0); setvbuf(stderr, NULL, _IONBF, 0); }\n")
 	}
-	// record/replay determinism boundary: 1 if the program uses FFI (extern) or
-	// `select` — it leaves the boundary machin can control, so its trace is
-	// best-effort. Program-dependent, so emitted here (in the body region, compared
+	// record/replay determinism boundary: 1 if the program uses FFI (extern) — the call's
+	// result is uncaptured, so it leaves the boundary machin controls. Everything else
+	// nondeterministic is now captured: channel schedule + concurrent prints, time, stdin,
+	// rand, file reads, raw fd sockets, and (this slice) the high-level HTTP/TLS/WebSocket
+	// reads; `select` is gated. Program-dependent, so emitted here (body region, compared
 	// by cgentest) rather than the fixed prelude; the rr runtime forward-declares it.
 	rrBoundary := 0
-	if len(p.Externs) > 0 || g.usesSelect {
+	if len(p.Externs) > 0 {
 		rrBoundary = 1
 	}
 	fmt.Fprintf(&out, "static int mfl_rr_prog_boundary(void) { return %d; }\n", rrBoundary)
@@ -3489,6 +3839,33 @@ func indentC(b *strings.Builder, n int) {
 	}
 }
 
+// emitProbe instruments an assignment for `machin replay --print <name>`: after the store,
+// print the variable's current value. Because replay is deterministic, this is a faithful
+// value history — the last line before a panic is the variable's state at the crash. Emitted
+// only when the var is watched, so a normal build (and the cgentest oracle-diff) carry
+// nothing. Scalars + strings only; slice/map/struct/chan are skipped (no cheap str form).
+func (g *cgen) emitProbe(name string, kind Kind, depth int) {
+	if !g.wantsProbe(name) {
+		return
+	}
+	ref := g.varRef(name)
+	var val string
+	switch kind {
+	case KFloat:
+		val = fmt.Sprintf("mfl_str_d(%s)", ref)
+	case KBool:
+		val = fmt.Sprintf("mfl_str_b(%s)", ref)
+	case KString:
+		val = ref
+	case KInt:
+		val = fmt.Sprintf("mfl_str_i(%s)", ref)
+	default:
+		return
+	}
+	indentC(&g.buf, depth)
+	fmt.Fprintf(&g.buf, "mfl_rr_probe(%q, %s);\n", name, val)
+}
+
 func (g *cgen) stmt(s Stmt, depth int) error {
 	indentC(&g.buf, depth)
 	switch st := s.(type) {
@@ -3507,6 +3884,7 @@ func (g *cgen) stmt(s Stmt, depth int) error {
 			return err
 		}
 		fmt.Fprintf(&g.buf, "%s = %s;\n", g.varRef(st.Name), e)
+		g.emitProbe(st.Name, g.c.NodeKind(g.curFn, st.Val), depth)
 	case *ReturnStmt:
 		if len(st.Vals) == 0 {
 			// a bare return yields the named return locals (or nothing for void)
@@ -3665,7 +4043,7 @@ func multiRetBuiltinC(name string) (cfn, ctype string, fields []string, needsTLS
 // and no default, it polls (1ms). The chosen body runs OUTSIDE the poll loop, so
 // break/continue/return inside a case affect the enclosing loop/function.
 func (g *cgen) selectStmt(st *SelectStmt, depth int) error {
-	g.usesSelect = true // select's poll-loop isn't gated yet -> record/replay best-effort
+	g.usesSelect = true // record/replay gates the select (chosen case recorded + replayed)
 	id := g.tmpID
 	g.tmpID++
 	g.buf.WriteString("{\n")
@@ -3694,23 +4072,59 @@ func (g *cgen) selectStmt(st *SelectStmt, depth int) error {
 	}
 	indentC(&g.buf, depth+1)
 	fmt.Fprintf(&g.buf, "int _sel%d = -1;\n", id)
+	// record/replay gating: on replay we do NOT poll — we pop the recorded case index
+	// and force exactly that case with a BLOCKING op (recv2/send), which waits its turn
+	// in the replayed schedule so the value & ordering match the recording byte-for-byte.
+	// A recorded select is therefore faithful, not best-effort.
 	indentC(&g.buf, depth+1)
-	g.buf.WriteString("for (;;) {\n")
+	fmt.Fprintf(&g.buf, "if (mfl_rr_mode == 2) {\n")
+	indentC(&g.buf, depth+2)
+	fmt.Fprintf(&g.buf, "_sel%d = (int)mfl_rr_io_pop_i64();\n", id)
 	for i := range st.Cases {
 		sc := &st.Cases[i]
 		indentC(&g.buf, depth+2)
+		if sc.RecvCh != nil {
+			fmt.Fprintf(&g.buf, "if (_sel%d == %d) { if (!(_sok%d_%d = mfl_chan_recv2(_sc%d_%d, &_sv%d_%d))) memset(&_sv%d_%d, 0, sizeof(_sv%d_%d)); }\n", id, i, id, i, id, i, id, i, id, i, id, i)
+		} else {
+			fmt.Fprintf(&g.buf, "if (_sel%d == %d) { mfl_chan_send(_sc%d_%d, &_sv%d_%d); }\n", id, i, id, i, id, i)
+		}
+	}
+	indentC(&g.buf, depth+1)
+	g.buf.WriteString("} else {\n")
+	// deadlock detection: a select with no default that finds no ready case busy-polls
+	// (tryrecv + sleep). That is a parked goroutine — count it (channel id -1 = "in a
+	// select"), once, while it spins, so the quiescence watchdog can see an all-parked
+	// program. A select with a default (or a send case) never spins, so it never parks.
+	if !st.HasDefault {
+		indentC(&g.buf, depth+2)
+		fmt.Fprintf(&g.buf, "int _selpk%d = 0;\n", id)
+	}
+	indentC(&g.buf, depth+2)
+	g.buf.WriteString("for (;;) {\n")
+	for i := range st.Cases {
+		sc := &st.Cases[i]
+		indentC(&g.buf, depth+3)
 		if sc.RecvCh != nil {
 			fmt.Fprintf(&g.buf, "if (mfl_chan_tryrecv2(_sc%d_%d, &_sv%d_%d, &_sok%d_%d)) { _sel%d = %d; break; }\n", id, i, id, i, id, i, id, i)
 		} else {
 			fmt.Fprintf(&g.buf, "{ mfl_chan_send(_sc%d_%d, &_sv%d_%d); _sel%d = %d; break; }\n", id, i, id, i, id, i)
 		}
 	}
-	indentC(&g.buf, depth+2)
+	indentC(&g.buf, depth+3)
 	if st.HasDefault {
 		fmt.Fprintf(&g.buf, "{ _sel%d = %d; break; }\n", id, len(st.Cases))
 	} else {
-		g.buf.WriteString("mfl_sleep(1);\n")
+		fmt.Fprintf(&g.buf, "if (!_selpk%d) { _selpk%d = 1; mfl_dl_block(-1); } mfl_sleep(1);\n", id, id)
 	}
+	indentC(&g.buf, depth+2)
+	g.buf.WriteString("}\n")
+	if !st.HasDefault {
+		indentC(&g.buf, depth+2)
+		fmt.Fprintf(&g.buf, "if (_selpk%d) mfl_dl_unblock();\n", id)
+	}
+	// record the chosen case index so replay can force it (I/O queue, per goroutine).
+	indentC(&g.buf, depth+2)
+	fmt.Fprintf(&g.buf, "if (mfl_rr_mode == 1) mfl_rr_io_log_i64(_sel%d);\n", id)
 	indentC(&g.buf, depth+1)
 	g.buf.WriteString("}\n")
 	for i := range st.Cases {
@@ -4104,12 +4518,13 @@ func (g *cgen) goStmt(st *GoStmt) error {
 		}
 		fmt.Fprintf(&g.tramp, "s->a%d", i)
 	}
-	g.tramp.WriteString("); free(s); mfl_arena_free(&_a); return NULL; }\n")
+	g.tramp.WriteString("); free(s); mfl_arena_free(&_a); mfl_dl_finish(); return NULL; }\n")
 
 	// call site: populate every field from the SPAWNING goroutine's (current)
 	// arena, then freeze it against that arena being freed before the new
 	// goroutine gets a chance to thaw it back out.
 	g.buf.WriteString("{\n")
+	g.buf.WriteString("        mfl_dl_spawn(); /* count the goroutine live from its spawn site (deadlock detector) */\n")
 	fmt.Fprintf(&g.buf, "        struct mfl_go_%d* s = malloc(sizeof(*s));\n", id)
 	// record/replay: assign a stable parent-relative goroutine path in the
 	// SPAWNING goroutine's program order (not in the new thread, whose start
@@ -4822,7 +5237,14 @@ func (g *cgen) jsonParser(typeStr string) (string, error) {
 			return "", fmt.Errorf("parse: cannot parse into type %q", typeStr)
 		}
 		var b strings.Builder
-		fmt.Fprintf(&b, "%s out = {0};\n", ct)
+		// Omitted string fields must default to "" not NULL — an absent JSON key
+		// leaves the field C-zeroed (NULL char*), which crashes len()/concat. Seed
+		// them (recursively) exactly like a struct literal does. See stringZeroInits.
+		if inits := g.stringZeroInits(typeStr); len(inits) > 0 {
+			fmt.Fprintf(&b, "%s out = {%s};\n", ct, strings.Join(inits, ", "))
+		} else {
+			fmt.Fprintf(&b, "%s out = {0};\n", ct)
+		}
 		b.WriteString(`    mfl_js_ws(p);
     if (**p == '{') {
         (*p)++; mfl_js_ws(p);
@@ -5205,6 +5627,8 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("mfl_dot_i8(%s, %s, %s)", args[0], args[1], args[2]), nil
 	case "dot_q8":
 		return fmt.Sprintf("mfl_dot_q8(%s, %s, %s, %s, %s, %s)", args[0], args[1], args[2], args[3], args[4], args[5]), nil
+	case "matmul_q8_batch":
+		return fmt.Sprintf("mfl_matmul_q8_batch(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)", args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8], args[9], args[10]), nil
 	case "dot_q4":
 		return fmt.Sprintf("mfl_dot_q4(%s, %s, %s, %s, %s, %s)", args[0], args[1], args[2], args[3], args[4], args[5]), nil
 	case "dot_f32":
@@ -5278,6 +5702,10 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("mfl_write_file(%s, %s)", args[0], args[1]), nil
 	case "write_file_bytes":
 		return fmt.Sprintf("mfl_write_file_bytes(%s, %s)", args[0], args[1]), nil
+	case "write_file_raw":
+		return fmt.Sprintf("mfl_write_file_raw(%s, %s, %s)", args[0], args[1], args[2]), nil
+	case "read_file_raw":
+		return fmt.Sprintf("mfl_read_file_raw(%s, %s, %s)", args[0], args[1], args[2]), nil
 	case "remove":
 		return fmt.Sprintf("mfl_remove_file(%s)", args[0]), nil
 	case "list_dir":

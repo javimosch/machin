@@ -1,0 +1,10 @@
+func rmsnorm(dst,x,w,n,eps){ss:=0.0 i:=0 while i<n{v:=peek_f32(x,i*4)ss=ss+v*v i=i+1}inv:=1.0/sqrt(ss/float(n)+eps)i=0 while i<n{poke_f32(dst,i*4,peek_f32(x,i*4)*inv*peek_f32(w,i*4))i=i+1}}
+
+func softmax(x,n){m:=peek_f32(x,0)i:=1 while i<n{v:=peek_f32(x,i*4)if v>m{m=v}i=i+1}sum:=0.0 i=0 while i<n{e:=exp(peek_f32(x,i*4)-m)poke_f32(x,i*4,e)sum=sum+e i=i+1}i=0 while i<n{poke_f32(x,i*4,peek_f32(x,i*4)/sum)i=i+1}}
+
+func argmax(x,n)(best){best=0 bv:=peek_f32(x,0)i:=1 while i<n{v:=peek_f32(x,i*4)if v>bv{bv=v  best=i}i=i+1}return}
+
+func to_buf(vals,n)(p){p=alloc(n*4)i:=0 while i<n{poke_f32(p,i*4,vals[i])i=i+1}return}
+
+func main(){n:=4 h:=to_buf([]float{1.0,2.0,3.0,4.0},n)w:=to_buf([]float{1.0,1.0,1.0,1.0},n)rmsnorm(h,h,w,n,0.00001)line:="rmsnorm:" i:=0 while i<n{line=line+" "+str(peek_f32(h,i*4))i=i+1}println(line)logits:=to_buf([]float{1.0,3.0,2.0,0.0},n)tok:=argmax(logits,n)softmax(logits,n)println("greedy token:",tok,"p:",peek_f32(logits,tok*4))line="probs:" i=0 while i<n{line=line+" "+str(peek_f32(logits,i*4))i=i+1}println(line)free(h)free(w)free(logits)}
+

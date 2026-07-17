@@ -176,12 +176,42 @@ func f_eval(ni) (v) {
             if a.k == 2 { v = fv_float(f_absf(a.f))  return v }
             g_fstatus = 2  return v
         }
+        if n.s == "append" && len(n.kids) >= 1 {
+            base := f_eval(n.kids[0])
+            if g_fstatus != 0 { return v }
+            if base.k != 1 { g_fstatus = 2  return v }   // int-slice only (matches falsify.go)
+            xs := []int{}
+            j := 0
+            for j < len(base.sl) { xs = append(xs, base.sl[j])  j = j + 1 }
+            j = 1
+            for j < len(n.kids) {
+                el := f_eval(n.kids[j])
+                if g_fstatus != 0 { return v }
+                if el.k != 0 { g_fstatus = 2  return v }   // non-int element -> inconclusive
+                xs = append(xs, el.i)
+                j = j + 1
+            }
+            v = fv_slice(xs)  return v
+        }
         // user function: inline it (interprocedural). Spread calls + non-user
         // callees (str/println/other builtins) are inconclusive — and, crucially,
         // their args are NOT evaluated (matches falsify.go evalCall).
         fr := func_root(n.s)
         if fr >= 0 && n.ival == 0 { v = f_call_user(fr, n.kids)  return v }
         g_fstatus = 2  return v
+    }
+    if n.kind == K_SLICE {
+        // int-element slice literal only (matches falsify.go SliceLit + the []int FV model).
+        xs := []int{}
+        j := 0
+        for j < len(n.kids) {
+            el := f_eval(n.kids[j])
+            if g_fstatus != 0 { return v }
+            if el.k != 0 { g_fstatus = 2  return v }   // non-int element -> inconclusive
+            xs = append(xs, el.i)
+            j = j + 1
+        }
+        v = fv_slice(xs)  return v
     }
     if n.kind == K_STRUCT { v = f_eval_struct(ni)  return v }
     if n.kind == K_FIELD {
@@ -295,9 +325,16 @@ func f_call_user(fnroot, argnodes) (rv) {
     g_fbreak = 0
     g_fcontinue = 0
     g_fretval = fv_int(0)
+    saved_rvs := g_fretvalset   // callee's return state must not leak into the caller's ensures check
+    g_fretvalset = 0
     g_fdepth = g_fdepth + 1
     f_eval_stmts(fn.kids)
+    // an explicit `return <e>` sets g_fretval; a named-return function that falls off
+    // the end yields its named return local (env). Without this, a call to a named-return
+    // helper folded to 0 — silently mis-evaluating the caller. Matches falsify.go callUser.
     rv = g_fretval
+    if g_fretvalset == 0 && len(rets) == 1 { rv = f_env_get(rets[0]) }
+    g_fretvalset = saved_rvs
     g_fdepth = g_fdepth - 1
 
     g_env_names = saved_names
