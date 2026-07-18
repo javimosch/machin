@@ -80,6 +80,12 @@ func main() {
 			os.Exit(1)
 		}
 		return
+	case "arenatest":
+		if err := cmdArenaTest(os.Args[2:]); err != nil { // self-hosting oracle: dump ARENA00x findings canonically
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
 	case "uftest":
 		if err := cmdUFTest(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
