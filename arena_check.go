@@ -60,6 +60,16 @@ func arenaHeapKind(c *Checker, slot int) bool {
 
 // detectArenaEscapes returns one finding per arena block from which an allocated value escapes.
 func detectArenaEscapes(prog *Program, c *Checker) []arenaFinding {
+	// Nothing to do (and no summary to compute) unless the program uses an arena.
+	hasArena := false
+	for _, f := range prog.Funcs {
+		arenaFindEach(f.Body, func(*ArenaStmt) { hasArena = true })
+	}
+	if !hasArena {
+		return nil
+	}
+	retProv := computeRetProv(prog, c) // interprocedural return-provenance summary
+
 	var out []arenaFinding
 	seen := map[string]bool{} // dedup per (function, detail)
 	for _, inst := range c.reps {
@@ -83,7 +93,21 @@ func detectArenaEscapes(prog *Program, c *Checker) []arenaFinding {
 				case *Binary:
 					return true // a heap-kind binary is a string concatenation — allocated here
 				case *Call:
-					return true // a heap-returning call allocates in this arena (conservative)
+					// interprocedural: the call carries arena memory only if the callee allocates
+					// fresh heap, or passes through an argument that is itself arena-tainted
+					cs := retProv[t.Callee]
+					if cs == nil {
+						return true // builtin / unknown callee: conservatively a fresh allocation
+					}
+					if cs.fresh {
+						return true
+					}
+					for i := range cs.pass {
+						if i < len(t.Args) && carriesArena(t.Args[i]) {
+							return true
+						}
+					}
+					return false
 				case *SliceLit:
 					return true
 				case *StructLit:
