@@ -332,6 +332,10 @@ func machinGuide() guideCatalog {
 			{"secp256k1_pubkey", "(bytes) -> bytes", "secp256k1 public key from a 32-byte private key -> 65-byte uncompressed point (0x04||X||Y); an Ethereum address is the last 20 bytes of keccak256(pub[1:])", "crypto"},
 			{"secp256k1_sign_recoverable", "(bytes, bytes) -> bytes", "secp256k1 ECDSA sign (priv32, hash32) -> 65-byte r||s||v (EIP-2 canonical low-S; v is 27/28) — the primitive behind eth_sign/EIP-712/raw tx signing", "crypto"},
 			{"secp256k1_recover", "(bytes, bytes) -> bytes", "secp256k1 ECDSA recover (hash32, sig65 r||s||v) -> the 65-byte uncompressed public key (empty bytes if invalid) — same math Solidity's ecrecover uses, for self-checking a signature before broadcasting it", "crypto"},
+			{"rsa_generate", "(int) -> (bytes, bytes)", "generate an RSA keypair of `bits` (>=512, default 2048) -> (private PEM, public PEM). MULTI-ASSIGN ONLY: priv, pub := rsa_generate(2048). For SAML SP keys / minting an RS256 signing key. Keygen uses the CSPRNG and is NOT captured by record/replay (generate at setup, not on a replayed path)", "crypto"},
+			{"rsa_sign_pkcs1_sha256", "(bytes, bytes) -> bytes", "RSA PKCS#1 v1.5 sign (private PEM, msg) -> signature over SHA-256 (RS256; empty bytes on failure)", "crypto"},
+			{"rsa_verify_pkcs1_sha256", "(bytes, bytes, bytes) -> bool", "RSA PKCS#1 v1.5 verify (public PEM SubjectPublicKeyInfo, msg, sig) over SHA-256 (RS256)", "crypto"},
+			{"rsa_verify_jwk_sha256", "(bytes, bytes, bytes, bytes) -> bool", "RS256 JWT verify straight from a JWKS: (n, e, msg, sig) where n and e are the base64url-decoded modulus & exponent bytes from the IdP's JWKS. Builds the RSA public key from n/e (no PEM/X.509 needed) and verifies PKCS#1 v1.5 over SHA-256 — the OIDC id_token verification path (issue #484)", "crypto"},
 			// sqlite (libsqlite3, linked only when used)
 			{"sqlite_open", "(string) -> int", "open/create a SQLite db file -> handle (0 on fail); \":memory:\" for in-memory", "db"},
 			{"sqlite_exec", "(int, string[, []string]) -> int", "run SQL with no result; optional []string binds the ? params (injection-safe); 0 ok", "db"},

@@ -2854,6 +2854,9 @@ const cryptoRuntime = `#include <openssl/evp.h>
 #include <openssl/ec.h>
 #include <openssl/ecdsa.h>
 #include <openssl/obj_mac.h>
+#include <openssl/rsa.h>
+#include <openssl/pem.h>
+#include <openssl/bn.h>
 #include <string.h>
 
 static mfl_bytes mfl_crypto_buf(int64_t n) {
@@ -2956,6 +2959,111 @@ static int mfl_crypto_ed25519_verify(mfl_bytes pub, mfl_bytes msg, mfl_bytes sig
         if (c) EVP_MD_CTX_free(c);
         EVP_PKEY_free(pk);
     }
+    return ok;
+}
+
+/* RSA PKCS#1 v1.5 signatures over SHA-256 (RS256). Unblocks local RS256 JWT
+   verification (verify an IdP's id_token against its JWKS n/e) and SAML SP keys
+   — the gap identified in issue #484. PEM keys are parsed via a memory BIO; the
+   JWKS path builds the public key straight from the raw big-endian modulus (n)
+   and exponent (e) bytes a JWKS exposes as base64url. */
+typedef struct { mfl_bytes priv; mfl_bytes pub; } mfl_crypto_rsa_keypair;
+
+/* Generate an RSA keypair; returns PEM (PKCS#8 private, SubjectPublicKeyInfo
+   public), both empty on failure. Keygen draws from the CSPRNG internally and —
+   like the ECDSA nonce in secp256k1_sign_recoverable — is NOT captured by
+   record/replay, so a program that mints a key at runtime is best-effort for
+   replay (generate once at setup, not on a hot replayed path). */
+static mfl_crypto_rsa_keypair mfl_crypto_rsa_generate(int64_t bits) {
+    mfl_crypto_rsa_keypair kp;
+    kp.priv = mfl_crypto_buf(1); kp.priv.len = 0;
+    kp.pub  = mfl_crypto_buf(1); kp.pub.len  = 0;
+    int nbits = (int)(bits >= 512 ? bits : 2048);
+    EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, NULL);
+    EVP_PKEY* pk = NULL;
+    if (ctx && EVP_PKEY_keygen_init(ctx) > 0 &&
+        EVP_PKEY_CTX_set_rsa_keygen_bits(ctx, nbits) > 0 &&
+        EVP_PKEY_keygen(ctx, &pk) > 0) {
+        BIO* b1 = BIO_new(BIO_s_mem());
+        if (b1 && PEM_write_bio_PrivateKey(b1, pk, NULL, NULL, 0, NULL, NULL)) {
+            char* p = NULL; long n = BIO_get_mem_data(b1, &p);
+            if (n > 0) { mfl_bytes o = mfl_crypto_buf(n); memcpy(o.data, p, (size_t)n); o.len = n; kp.priv = o; }
+        }
+        if (b1) BIO_free(b1);
+        BIO* b2 = BIO_new(BIO_s_mem());
+        if (b2 && PEM_write_bio_PUBKEY(b2, pk)) {
+            char* p = NULL; long n = BIO_get_mem_data(b2, &p);
+            if (n > 0) { mfl_bytes o = mfl_crypto_buf(n); memcpy(o.data, p, (size_t)n); o.len = n; kp.pub = o; }
+        }
+        if (b2) BIO_free(b2);
+    }
+    if (pk) EVP_PKEY_free(pk);
+    if (ctx) EVP_PKEY_CTX_free(ctx);
+    return kp;
+}
+static int mfl_crypto_rsa_verify_evp(EVP_PKEY* pk, mfl_bytes msg, mfl_bytes sig) {
+    int ok = 0;
+    EVP_MD_CTX* c = EVP_MD_CTX_new();
+    if (c && EVP_DigestVerifyInit(c, NULL, EVP_sha256(), NULL, pk) > 0)
+        ok = EVP_DigestVerify(c, sig.data, (size_t)sig.len, msg.data, (size_t)msg.len) == 1;
+    if (c) EVP_MD_CTX_free(c);
+    return ok;
+}
+/* Sign msg with a PEM private key -> PKCS#1 v1.5 signature (empty on failure). */
+static mfl_bytes mfl_crypto_rsa_sign_pkcs1_sha256(mfl_bytes priv_pem, mfl_bytes msg) {
+    mfl_bytes out = mfl_crypto_buf(1); out.len = 0;
+    BIO* bio = BIO_new_mem_buf(priv_pem.data, (int)priv_pem.len);
+    if (!bio) return out;
+    EVP_PKEY* pk = PEM_read_bio_PrivateKey(bio, NULL, NULL, NULL);
+    BIO_free(bio);
+    if (!pk) return out;
+    EVP_MD_CTX* c = EVP_MD_CTX_new();
+    if (c && EVP_DigestSignInit(c, NULL, EVP_sha256(), NULL, pk) > 0) {
+        size_t l = 0;
+        if (EVP_DigestSign(c, NULL, &l, msg.data, (size_t)msg.len) > 0 && l > 0) {
+            mfl_bytes sig = mfl_crypto_buf((int64_t)l);
+            if (EVP_DigestSign(c, sig.data, &l, msg.data, (size_t)msg.len) > 0) { sig.len = (int64_t)l; out = sig; }
+        }
+    }
+    if (c) EVP_MD_CTX_free(c);
+    EVP_PKEY_free(pk);
+    return out;
+}
+/* Verify sig over msg with a PEM public key (SubjectPublicKeyInfo). */
+static int mfl_crypto_rsa_verify_pkcs1_sha256(mfl_bytes pub_pem, mfl_bytes msg, mfl_bytes sig) {
+    BIO* bio = BIO_new_mem_buf(pub_pem.data, (int)pub_pem.len);
+    if (!bio) return 0;
+    EVP_PKEY* pk = PEM_read_bio_PUBKEY(bio, NULL, NULL, NULL);
+    BIO_free(bio);
+    if (!pk) return 0;
+    int ok = mfl_crypto_rsa_verify_evp(pk, msg, sig);
+    EVP_PKEY_free(pk);
+    return ok;
+}
+/* Build an RSA public key straight from raw modulus/exponent bytes (a JWKS's
+   base64url-decoded n and e), then verify. This is the RS256 JWT path: no PEM,
+   no X.509 — just the two JWKS numbers. */
+static int mfl_crypto_rsa_verify_jwk_sha256(mfl_bytes n, mfl_bytes e, mfl_bytes msg, mfl_bytes sig) {
+    BIGNUM* bn = BN_bin2bn(n.data, (int)n.len, NULL);
+    BIGNUM* be = BN_bin2bn(e.data, (int)e.len, NULL);
+    int ok = 0;
+    if (bn && be) {
+        RSA* rsa = RSA_new();
+        if (rsa && RSA_set0_key(rsa, bn, be, NULL) == 1) {
+            bn = NULL; be = NULL; /* ownership moved into rsa */
+            EVP_PKEY* pk = EVP_PKEY_new();
+            if (pk && EVP_PKEY_assign_RSA(pk, rsa) == 1) {
+                ok = mfl_crypto_rsa_verify_evp(pk, msg, sig);
+                EVP_PKEY_free(pk); /* frees rsa too */
+                rsa = NULL;
+            } else {
+                if (pk) EVP_PKEY_free(pk);
+            }
+        }
+        if (rsa) RSA_free(rsa);
+    }
+    if (bn) BN_free(bn);
+    if (be) BN_free(be);
     return ok;
 }
 static mfl_bytes mfl_crypto_aes_gcm_enc(mfl_bytes key, mfl_bytes iv, mfl_bytes pt, mfl_bytes aad) {
@@ -4031,6 +4139,8 @@ func multiRetBuiltinC(name string) (cfn, ctype string, fields []string, needsTLS
 		return "mfl_exec", "mfl_exec_result", []string{"code", "out", "err"}, false, true
 	case "mmap_file":
 		return "mfl_mmap_file", "mfl_mmap_result", []string{"ptr", "len"}, false, true
+	case "rsa_generate":
+		return "mfl_crypto_rsa_generate", "mfl_crypto_rsa_keypair", []string{"priv", "pub"}, false, true
 	}
 	return "", "", nil, false, false
 }
@@ -4198,6 +4308,9 @@ func (g *cgen) multiAssign(st *MultiAssign, depth int) error {
 			if cfn, ctype, fields, needsTLS, ok := multiRetBuiltinC(call.Callee); ok {
 				if needsTLS {
 					g.usesTLS = true
+				}
+				if strings.HasPrefix(cfn, "mfl_crypto_") {
+					g.usesCrypto = true
 				}
 				args := make([]string, len(call.Args))
 				for i, a := range call.Args {
@@ -5465,6 +5578,15 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 	case "secp256k1_recover":
 		g.usesCrypto = true
 		return fmt.Sprintf("mfl_crypto_secp256k1_recover(%s, %s)", args[0], args[1]), nil
+	case "rsa_sign_pkcs1_sha256":
+		g.usesCrypto = true
+		return fmt.Sprintf("mfl_crypto_rsa_sign_pkcs1_sha256(%s, %s)", args[0], args[1]), nil
+	case "rsa_verify_pkcs1_sha256":
+		g.usesCrypto = true
+		return fmt.Sprintf("mfl_crypto_rsa_verify_pkcs1_sha256(%s, %s, %s)", args[0], args[1], args[2]), nil
+	case "rsa_verify_jwk_sha256":
+		g.usesCrypto = true
+		return fmt.Sprintf("mfl_crypto_rsa_verify_jwk_sha256(%s, %s, %s, %s)", args[0], args[1], args[2], args[3]), nil
 	case "has":
 		ik, sk := g.mapKeyArgs(ex.Args[0], args[1])
 		return fmt.Sprintf("mfl_map_has(%s, %s, %s)", args[0], ik, sk), nil
