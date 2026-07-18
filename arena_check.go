@@ -126,13 +126,13 @@ func detectArenaEscapes(prog *Program, c *Checker) []arenaFinding {
 				}
 				return false
 			}
-			flag := func(detail string) {
-				key := f.Name + "\x00" + detail
+			flag := func(code, detail string) {
+				key := f.Name + "\x00" + code + "\x00" + detail
 				if seen[key] {
 					return
 				}
 				seen[key] = true
-				out = append(out, arenaFinding{Decl: f.Name, Code: "ARENA001", Detail: detail})
+				out = append(out, arenaFinding{Decl: f.Name, Code: code, Detail: detail})
 			}
 			var scan func(body []Stmt)
 			scan = func(body []Stmt) {
@@ -143,7 +143,7 @@ func detectArenaEscapes(prog *Program, c *Checker) []arenaFinding {
 						if inner[st.Name] {
 							tainted[st.Name] = tv // propagate within the block
 						} else if tv {
-							flag("`" + st.Name + "` outlives this arena block but is assigned a value allocated inside it — it dangles after the block's memory is reclaimed")
+							flag("ARENA001", "`"+st.Name+"` outlives this arena block but is assigned a value allocated inside it — it dangles after the block's memory is reclaimed")
 						}
 					case *MultiAssign:
 						for i, n := range st.Names {
@@ -157,22 +157,23 @@ func detectArenaEscapes(prog *Program, c *Checker) []arenaFinding {
 							if inner[n] {
 								tainted[n] = tv
 							} else if tv {
-								flag("`" + n + "` outlives this arena block but is assigned a value allocated inside it — it dangles after the block's memory is reclaimed")
+								flag("ARENA001", "`"+n+"` outlives this arena block but is assigned a value allocated inside it — it dangles after the block's memory is reclaimed")
 							}
 						}
 					case *ReturnStmt:
-						for _, v := range st.Vals {
-							if carriesArena(v) {
-								flag("a value allocated inside this arena block is returned — it dangles once the block's memory is reclaimed")
-							}
-						}
+						// ARENA002: ANY return inside an arena block is a control-flow bug — the
+						// generated code returns before the block's `mfl_arena_cur = _sp; arena_free`
+						// cleanup, so it leaks the block's allocations AND leaves the current-arena
+						// pointer dangling into the freed stack frame (later allocations are UB).
+						// Independent of the returned value; false-positive-free.
+						flag("ARENA002", "a `return` inside this arena block skips the block's cleanup — the block's memory is leaked and the current-arena pointer is left dangling (later allocations corrupt); move the `return` after the arena block")
 					case *IndexAssign:
 						if r, _, ok := placeOf(st.Target); ok && !inner[r] && carriesArena(st.Val) {
-							flag("`" + r + "` outlives this arena block but is stored an element allocated inside it — it dangles after the block's memory is reclaimed")
+							flag("ARENA001", "`"+r+"` outlives this arena block but is stored an element allocated inside it — it dangles after the block's memory is reclaimed")
 						}
 					case *FieldAssign:
 						if r, _, ok := placeOf(st.Target); ok && !inner[r] && carriesArena(st.Val) {
-							flag("`" + r + "` outlives this arena block but is stored a field allocated inside it — it dangles after the block's memory is reclaimed")
+							flag("ARENA001", "`"+r+"` outlives this arena block but is stored a field allocated inside it — it dangles after the block's memory is reclaimed")
 						}
 					case *IfStmt:
 						scan(st.Then)

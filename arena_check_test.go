@@ -151,3 +151,66 @@ func TestArenaDiagnosticWiring(t *testing.T) {
 		t.Errorf("expected an ARENA001 warning, got %+v", res.Warnings)
 	}
 }
+
+// hasCodeIn reports whether any finding for fn has the given code.
+func hasCodeIn(fs []arenaFinding, fn, code string) bool {
+	for _, f := range fs {
+		if f.Decl == fn && f.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
+// TestArenaReturnInside: ANY return inside an arena block is ARENA002 — the generated code
+// returns before the block's cleanup, leaking it and dangling the current-arena pointer. This
+// fires regardless of the returned value (a case the ARENA001 value-escape scan missed).
+func TestArenaReturnInside(t *testing.T) {
+	// return of a freshly-allocated value
+	fs := arenaEscapes(t,
+		`func f(n) (r) { arena { return "e" + str(n) }  r = "x" }`,
+		`func main() { println(f(1)) }`,
+	)
+	if !hasCodeIn(fs, "f", "ARENA002") {
+		t.Errorf("return of an allocated value inside arena should be ARENA002, got %+v", fs)
+	}
+	// bare return of nothing — still corrupts the current-arena pointer, so still ARENA002
+	fs = arenaEscapes(t,
+		`func f(n) (r) { r = 0  arena { if n > 0 { return }  r = 5 } }`,
+		`func main() { println(str(f(1))) }`,
+	)
+	if !hasCodeIn(fs, "f", "ARENA002") {
+		t.Errorf("a bare return inside arena should be ARENA002, got %+v", fs)
+	}
+	// return of a scalar — still skips cleanup, still ARENA002
+	fs = arenaEscapes(t,
+		`func f(n) (r) { arena { return n * 2 }  r = 0 }`,
+		`func main() { println(str(f(3))) }`,
+	)
+	if !hasCodeIn(fs, "f", "ARENA002") {
+		t.Errorf("a scalar return inside arena should be ARENA002, got %+v", fs)
+	}
+}
+
+// TestArenaReturnAfterIsClean: returning AFTER the arena block is fine (cleanup already ran).
+func TestArenaReturnAfterIsClean(t *testing.T) {
+	fs := arenaEscapes(t,
+		`func f(n) (r) { arena { s := "e" + str(n)  println(s) }  r = "done" }`,
+		`func main() { println(f(1)) }`,
+	)
+	if hasCodeIn(fs, "f", "ARENA002") {
+		t.Errorf("a return after the arena block must not be ARENA002, got %+v", fs)
+	}
+}
+
+// TestArenaReturnInClosureNotFlagged: a return in a closure declared inside an arena belongs to
+// the closure, not the arena's function — it must not be ARENA002.
+func TestArenaReturnInClosureNotFlagged(t *testing.T) {
+	fs := arenaEscapes(t,
+		`func f() (r) { g := func() { return 1 }  arena { println(str(g())) }  r = 0 }`,
+		`func main() { println(str(f())) }`,
+	)
+	if hasCodeIn(fs, "f", "ARENA002") {
+		t.Errorf("a closure's own return must not be ARENA002, got %+v", fs)
+	}
+}
