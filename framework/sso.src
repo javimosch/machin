@@ -104,3 +104,73 @@ func sso_complete(p, secret, req) (profile, ok) {
     if tok == 0 { return }
     profile, ok = sso_userinfo(p, token)
 }
+
+// --- RS256 id_token verification (issue #484) -------------------------------
+// The flow above trusts the TLS token endpoint, so it needs no JWT signature
+// check. When you DO hold an RS256-signed JWT (an OIDC id_token, or an API token
+// from an IdP that publishes a JWKS), sso_verify_rs256 checks it in pure MFL on
+// top of the rsa_verify_jwk_sha256 builtin — no PEM/X.509, just the JWKS n/e.
+
+// JWK is one RSA key from a provider's JWKS ("keys":[...]). Unknown members
+// (use, x5c, x5t, …) are ignored by parse. n and e are base64url big-endian.
+type JWK struct {
+    kty string
+    kid string
+    alg string
+    n   string   // modulus  (base64url)
+    e   string   // exponent (base64url)
+}
+
+type JWKS struct {
+    keys []JWK
+}
+
+// sso_verify_rs256 verifies an RS256-signed JWT against a provider's JWKS JSON.
+// Returns (claims_json, ok). ok is 0 unless the signature is valid AND the header
+// alg is exactly "RS256" — an alg of "none" or "HS256" is rejected outright, so a
+// forged unsigned/symmetric token can never pass (the classic JWT alg-confusion
+// bug). If the header carries a "kid", only the matching JWKS key is trusted;
+// otherwise the sole RSA key is used. On ok the caller MUST still validate the
+// claims it cares about (exp, iss, aud) via json_get(claims, ".exp") etc.
+func sso_verify_rs256(token, jwks_json) (claims, ok) {
+    claims = ""
+    ok = 0
+    parts := split(token, ".")
+    if len(parts) != 3 { return }                  // not header.payload.signature
+
+    // Header: pin alg to RS256 before touching any key material.
+    hdr := base64_decode(parts[0])
+    alg, ae := json_get(hdr, ".alg")
+    if ae != "" { return }
+    if alg != "\"RS256\"" { return }               // reject none / HS256 confusion
+    kidq, _ := json_get(hdr, ".kid")
+    kid := json_unq(kidq)                           // "" if the header omits kid
+
+    // Select the signing key from the JWKS.
+    keys_json, ke := json_get(jwks_json, ".keys")
+    if ke != "" { return }
+    ks := parse(keys_json, []JWK{})
+    n64 := ""
+    e64 := ""
+    for _, k := range ks {
+        if k.kty == "RSA" {
+            if kid == "" || k.kid == kid {
+                if n64 == "" {                      // first match wins
+                    n64 = k.n
+                    e64 = k.e
+                }
+            }
+        }
+    }
+    if n64 == "" { return }                         // no key (wrong/absent kid)
+
+    // Verify PKCS#1 v1.5 over SHA-256 of the "header.payload" signing input.
+    signing_input := bytes(parts[0] + "." + parts[1])
+    sig := base64_decode_bytes(parts[2])
+    n := base64_decode_bytes(n64)
+    e := base64_decode_bytes(e64)
+    if rsa_verify_jwk_sha256(n, e, signing_input, sig) {
+        claims = base64_decode(parts[1])            // decoded payload JSON
+        ok = 1
+    }
+}
