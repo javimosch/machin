@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+## v0.109.0 — Evidence: certify, deadlock-freedom, superoptimization, arena safety
+
+The **evidence** release — the binary now comes with machine-checkable proof across
+correctness, concurrency, and memory, plus the crypto/replay/diagnostics work.
+
+- **Self-certifying compiler — `machin certify` (translation validation).** Per
+  build, prove the emitted binary matches the source semantics within bounds, or
+  hand back the exact miscompiling input. Slice 1.1 + 1.2 (validates ints, strings,
+  structs, and `[]int` via `json()`), with a continuous codegen-path gate.
+- **Deadlock-freedom — the concurrency capstone.** A runtime detector reports and
+  exits instead of hanging (`fatal: deadlock — all N goroutine(s) blocked…`) with a
+  causal wait-cycle report (which goroutine waits on which channel); a compile-time
+  finder **DL001** (a receive on a channel nothing ever sends to or closes — a
+  guaranteed deadlock, found statically, false-positive-free); self-hosted
+  oracle-identical to the Go pass; plus select-spin detection and opt-in
+  `--deadlock-strict` for I/O-wait hangs.
+- **Provable superoptimization — propose → prove → quantify → discover.**
+  `machin equiv f g <file>` (bounded equivalence oracle), `machin optimize <file>`
+  (oracle-gated peephole rewrites — unsound ones refuted with a counterexample),
+  a static latency cost model quantifying each rewrite, and `machin superopt <fn>`
+  (enumerative synthesis that discovers cheaper equivalents the fixed rules can't,
+  with overfit guards), now with a richer shift/constant grammar + cost-ordered search.
+- **Arena escape analysis — memory safety without a borrow checker.** `machin check`
+  proves nothing allocated in an `arena { }` block outlives it (bulk reclamation is
+  sound), reporting `ARENA001` (a value escaping the block) and `ARENA002` (a
+  `return` inside the block). Interprocedural provenance, closure-capture coverage,
+  per-place (struct-field/element) granularity, and a self-hosted oracle-identical port.
+- **RSA crypto** — PKCS#1 SHA-256 sign/verify + JWK RS256 verify (toward pure-MFL
+  RS256 JWT / SAML).
+- **Record/replay Phase 3e** — `machin replay --print <var>`, a value-query replay
+  debugger over a captured run.
+- **Sharper typecheck diagnostics** — a type mismatch now names the offending
+  identifier + its enclosing function and line, and explains that `:=` is
+  function-scoped (does not shadow) when disjoint branches collide.
+- **codegen fixes** — escape `?` in emitted C string literals to defeat trigraph
+  corruption (`??'`→`^`); emit 64-bit (`LL`) integer literals so large products no
+  longer overflow a 32-bit `int`; copy map `keys()` into arena storage to fix a
+  use-after-free on a retained result after `delete`.
+
 ## v0.108.0
 
 - **The Falsifier — a compile-time bounded bug-finder and bounded prover, new
