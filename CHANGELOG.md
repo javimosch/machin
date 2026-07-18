@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## v0.110.0
+
+- **codegen: NULL-string segfault fix.** `parse()` zero-initializes structs with
+  `{0}`, so a missing string field is `NULL` (`char*`), not `""`. `len()` / `charat`
+  called `strlen(s)` directly, and `strlen(NULL)` is undefined behavior (segfault).
+  `len()` on a string now routes through `mfl_s()` (which normalizes `NULL`→`""`),
+  and `mfl_charat` uses the NULL-guarded `mfl_strlen_cached`, so `len()` /
+  indexing a missing parsed field is `0` / `""` instead of a crash. (Surfaced
+  building grange, where a missing JSON field crashed on `len()`.)
+
 ## v0.109.0 — Evidence: certify, deadlock-freedom, superoptimization, arena safety
 
 The **evidence** release — the binary now comes with machine-checkable proof across
