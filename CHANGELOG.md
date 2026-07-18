@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## v0.111.0
+
+- **Pure-MFL RS256 id_token / JWT verification** (`sso_verify_rs256` in
+  `framework/sso.src`, part of issue #484). Verifies an RS256-signed JWT against a
+  provider's JWKS in pure MFL on top of the `rsa_verify_jwk_sha256` builtin — no
+  PEM/X.509, just the JWKS `n`/`e`. Pins the header `alg` to exactly `RS256`
+  **before** touching any key material, so a forged `none`/`HS256` token is
+  rejected outright (the classic alg-confusion attack); selects the signing key by
+  `kid`; and returns the decoded claims only when the signature verifies. The
+  caller still validates `exp`/`iss`/`aud`. Tested end-to-end against genuine
+  `crypto/rsa`-minted tokens (valid, tampered, alg-confusion, wrong-kid).
+
 ## v0.110.0
 
 - **codegen: NULL-string segfault fix.** `parse()` zero-initializes structs with
