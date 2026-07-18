@@ -980,6 +980,98 @@ static double mfl_dot_q4(int64_t xq, int64_t xs, int64_t wq, int64_t ws, int64_t
     }
     return val;
 }
+/* grouped, dual-scaled ternary/Q2_0 dot: weights packed 4×2-bit codes per byte
+ * (low bits first), dequant w = (q-1)*scale with q in {0,1,2} (ternary {-1,0,+1};
+ * q=3 unused). Activations stay int8. n multiple of gs; wq has n/4 packed bytes. */
+static double mfl_dot_q2(int64_t xq, int64_t xs, int64_t wq, int64_t ws, int64_t n, int64_t gs) {
+    const int8_t* x = (const int8_t*)(intptr_t)xq;
+    const float* xsc = (const float*)(intptr_t)xs;
+    const uint8_t* w = (const uint8_t*)(intptr_t)wq;
+    const float* wsc = (const float*)(intptr_t)ws;
+    double val = 0.0;
+    int64_t ng = gs > 0 ? n / gs : 0;
+    int64_t nb = gs / 4;
+    for (int64_t g = 0; g < ng; g++) {
+        const int8_t* xg = x + g * gs;
+        const uint8_t* wg = w + g * nb;
+        int32_t acc = 0;
+        for (int64_t i = 0; i < nb; i++) {
+            uint8_t b = wg[i];
+            int64_t base = i * 4;
+            acc += (int32_t)xg[base]     * ((int32_t)(b & 3) - 1);
+            acc += (int32_t)xg[base + 1] * ((int32_t)((b >> 2) & 3) - 1);
+            acc += (int32_t)xg[base + 2] * ((int32_t)((b >> 4) & 3) - 1);
+            acc += (int32_t)xg[base + 3] * ((int32_t)((b >> 6) & 3) - 1);
+        }
+        val += (double)acc * (double)xsc[g] * (double)wsc[g];
+    }
+    return val;
+}
+/* batched q4 matmul (same contract as matmul_q8_batch; weight row is n/2 bytes). */
+static void mfl_matmul_q4_batch(int64_t ob, int64_t ostride, int64_t xqb, int64_t xsb, int64_t wq, int64_t ws, int64_t n, int64_t gs, int64_t B, int64_t lo, int64_t hi) {
+    float* out = (float*)(intptr_t)ob;
+    const int8_t* xbase = (const int8_t*)(intptr_t)xqb;
+    const float* xsbase = (const float*)(intptr_t)xsb;
+    const uint8_t* wbase = (const uint8_t*)(intptr_t)wq;
+    const float* wsbase = (const float*)(intptr_t)ws;
+    int64_t ng = gs > 0 ? n / gs : 0;
+    int64_t half = gs / 2;
+    for (int64_t i = lo; i < hi; i++) {
+        const uint8_t* wrow = wbase + i * (n / 2);
+        const float* wsc = wsbase + i * ng;
+        for (int64_t b = 0; b < B; b++) {
+            const int8_t* x = xbase + b * n;
+            const float* xsc = xsbase + b * ng;
+            double val = 0.0;
+            for (int64_t g = 0; g < ng; g++) {
+                const int8_t* xg = x + g * gs;
+                const uint8_t* wg = wrow + g * half;
+                int32_t acc = 0;
+                for (int64_t k = 0; k < half; k++) {
+                    uint8_t bb = wg[k];
+                    acc += (int32_t)xg[k]        * ((int32_t)(bb & 15) - 8);
+                    acc += (int32_t)xg[k + half] * ((int32_t)(bb >> 4) - 8);
+                }
+                val += (double)acc * (double)xsc[g] * (double)wsc[g];
+            }
+            out[b * ostride + i] = (float)val;
+        }
+    }
+}
+/* batched q2/ternary matmul (weight row is n/4 bytes). */
+static void mfl_matmul_q2_batch(int64_t ob, int64_t ostride, int64_t xqb, int64_t xsb, int64_t wq, int64_t ws, int64_t n, int64_t gs, int64_t B, int64_t lo, int64_t hi) {
+    float* out = (float*)(intptr_t)ob;
+    const int8_t* xbase = (const int8_t*)(intptr_t)xqb;
+    const float* xsbase = (const float*)(intptr_t)xsb;
+    const uint8_t* wbase = (const uint8_t*)(intptr_t)wq;
+    const float* wsbase = (const float*)(intptr_t)ws;
+    int64_t ng = gs > 0 ? n / gs : 0;
+    int64_t nb = gs / 4;
+    for (int64_t i = lo; i < hi; i++) {
+        const uint8_t* wrow = wbase + i * (n / 4);
+        const float* wsc = wsbase + i * ng;
+        for (int64_t b = 0; b < B; b++) {
+            const int8_t* x = xbase + b * n;
+            const float* xsc = xsbase + b * ng;
+            double val = 0.0;
+            for (int64_t g = 0; g < ng; g++) {
+                const int8_t* xg = x + g * gs;
+                const uint8_t* wg = wrow + g * nb;
+                int32_t acc = 0;
+                for (int64_t k = 0; k < nb; k++) {
+                    uint8_t bb = wg[k];
+                    int64_t base = k * 4;
+                    acc += (int32_t)xg[base]     * ((int32_t)(bb & 3) - 1);
+                    acc += (int32_t)xg[base + 1] * ((int32_t)((bb >> 2) & 3) - 1);
+                    acc += (int32_t)xg[base + 2] * ((int32_t)((bb >> 4) & 3) - 1);
+                    acc += (int32_t)xg[base + 3] * ((int32_t)((bb >> 6) & 3) - 1);
+                }
+                val += (double)acc * (double)xsc[g] * (double)wsc[g];
+            }
+            out[b * ostride + i] = (float)val;
+        }
+    }
+}
 /* base64 (standard alphabet, padded) over text. */
 static char* mfl_base64_encode(const char* s) {
     static const char t[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -5773,6 +5865,12 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("mfl_matmul_q8_batch(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)", args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8], args[9], args[10]), nil
 	case "dot_q4":
 		return fmt.Sprintf("mfl_dot_q4(%s, %s, %s, %s, %s, %s)", args[0], args[1], args[2], args[3], args[4], args[5]), nil
+	case "dot_q2":
+		return fmt.Sprintf("mfl_dot_q2(%s, %s, %s, %s, %s, %s)", args[0], args[1], args[2], args[3], args[4], args[5]), nil
+	case "matmul_q4_batch":
+		return fmt.Sprintf("mfl_matmul_q4_batch(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)", args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8], args[9], args[10]), nil
+	case "matmul_q2_batch":
+		return fmt.Sprintf("mfl_matmul_q2_batch(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)", args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8], args[9], args[10]), nil
 	case "dot_f32":
 		return fmt.Sprintf("mfl_dot_f32(%s, %s, %s)", args[0], args[1], args[2]), nil
 	case "axpy_f32":

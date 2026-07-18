@@ -2233,7 +2233,7 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		c.addPair(argSlots[1], c.cInt)
 		c.addPair(argSlots[2], c.cInt)
 		return c.cInt, nil
-	case "dot_q8", "dot_q4":
+	case "dot_q8", "dot_q4", "dot_q2":
 		if len(argSlots) != 6 {
 			return 0, fmt.Errorf("%s: 6 args (xq, xs, wq, ws, n, gs)", ex.Callee)
 		}
@@ -2241,9 +2241,9 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 			c.addPair(s, c.cInt)
 		}
 		return c.cFloat, nil
-	case "matmul_q8_batch":
+	case "matmul_q8_batch", "matmul_q4_batch", "matmul_q2_batch":
 		if len(argSlots) != 11 {
-			return 0, fmt.Errorf("matmul_q8_batch: 11 args (ob, ostride, xq, xs, wq, ws, n, gs, B, lo, hi)")
+			return 0, fmt.Errorf("%s: 11 args (ob, ostride, xq, xs, wq, ws, n, gs, B, lo, hi)", ex.Callee)
 		}
 		for _, s := range argSlots {
 			c.addPair(s, c.cInt)
