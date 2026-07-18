@@ -42,7 +42,7 @@ func TestFalsifyCmdJSON(t *testing.T) {
 	if err := os.WriteFile(src, []byte(buggyProg), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out := captureStdout(t, func() {
+	out := captureFalsifyStdout(t, func() {
 		if err := cmdFalsify([]string{"--json", src}); err != nil {
 			t.Fatalf("cmdFalsify: %v", err)
 		}
@@ -146,7 +146,7 @@ func TestFalsifyCmdErrors(t *testing.T) {
 	}
 }
 
-func captureStdout(t *testing.T, fn func()) string {
+func captureFalsifyStdout(t *testing.T, fn func()) string {
 	t.Helper()
 	r, w, err := os.Pipe()
 	if err != nil {

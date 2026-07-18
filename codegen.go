@@ -795,7 +795,11 @@ static mfl_slice mfl_map_keys(mfl_map* m) {
     int64_t idx = 0;
     for (int64_t b = 0; b < m->nb; b++)
         for (mfl_ment* e = m->buckets[b]; e; e = e->next) {
-            if (m->sk) ((char**)s.data)[idx] = e->sk; else ((int64_t*)s.data)[idx] = e->ik;
+            /* COPY string keys into arena storage: handing out e->sk aliases
+               the entry's malloc'd key, which mfl_map_del frees — a retained
+               keys() result then reads freed memory (found by grange: a WAL
+               tombstone id turned to garbage mid-iteration). */
+            if (m->sk) { char* cp = mfl_alloc(strlen(e->sk)+1); strcpy(cp, e->sk); ((char**)s.data)[idx] = cp; } else ((int64_t*)s.data)[idx] = e->ik;
             idx++;
         }
     return s;
@@ -4617,7 +4621,10 @@ func (g *cgen) printCall(call *Call, depth int) error {
 func (g *cgen) expr(e Expr) (string, error) {
 	switch ex := e.(type) {
 	case *IntLit:
-		return strconv.FormatInt(ex.Val, 10), nil
+		// Emit with the LL suffix: a bare literal like 86400000 is a C `int`,
+		// so `30 * 86400000` overflows in 32-bit before widening to int64_t
+		// (found by grange's billing math: 30 days in ms went negative).
+		return strconv.FormatInt(ex.Val, 10) + "LL", nil
 	case *FloatLit:
 		s := strconv.FormatFloat(ex.Val, 'g', -1, 64)
 		if !strings.ContainsAny(s, ".eE") {
