@@ -33,6 +33,51 @@ func hasEscapeIn(fs []arenaFinding, fn string) bool {
 	return false
 }
 
+// TestArenaClosureCaptureEscape: a closure that captures an arena-tainted variable and then
+// escapes the block dangles — the capture is read inside the block but stored in the closure's
+// block-outliving environment, so calling it after reclamation reads freed memory. Both a direct
+// escape and one propagated through an inner closure-valued local must fire.
+func TestArenaClosureCaptureEscape(t *testing.T) {
+	// direct: the escaping named return IS the capturing closure.
+	direct := arenaEscapes(t,
+		`func f() (r) { arena { s := "x" + str(1)  r = func() { println(s) } } }`,
+		`func main() { g := f()  g() }`)
+	if !hasEscapeIn(direct, "f") {
+		t.Errorf("direct closure-capture escape: expected ARENA001, got %+v", direct)
+	}
+	// propagated: closure bound to an inner local, which then escapes.
+	prop := arenaEscapes(t,
+		`func f() (r) { arena { s := "x" + str(1)  g := func() { println(s) }  r = g } }`,
+		`func main() { h := f()  h() }`)
+	if !hasEscapeIn(prop, "f") {
+		t.Errorf("propagated closure-capture escape: expected ARENA001, got %+v", prop)
+	}
+}
+
+// TestArenaClosureCaptureClean: closures that cannot dangle must NOT fire — one capturing
+// nothing, one capturing only a pre-existing parameter, and one that never leaves the block.
+func TestArenaClosureCaptureClean(t *testing.T) {
+	cases := []struct {
+		name  string
+		decls []string
+	}{
+		{"captureless", []string{
+			`func f() (r) { arena { println("hi")  r = func() { println("static") } } }`,
+			`func main() { g := f()  g() }`}},
+		{"captures-only-param", []string{
+			`func f(p) (r) { arena { r = func() { println(p) } } }`,
+			`func main() { g := f("hi")  g() }`}},
+		{"closure-stays-inner", []string{
+			`func f() (r) { arena { s := "x" + str(1)  g := func() { println(s) }  g() }  r = "done" }`,
+			`func main() { println(f()) }`}},
+	}
+	for _, tc := range cases {
+		if fs := arenaEscapes(t, tc.decls...); hasEscapeIn(fs, "f") {
+			t.Errorf("%s: expected NO escape, got %+v", tc.name, fs)
+		}
+	}
+}
+
 // TestArenaEscapeVectors: every way an arena-allocated value can outlive its block must fire.
 func TestArenaEscapeVectors(t *testing.T) {
 	cases := []struct {
