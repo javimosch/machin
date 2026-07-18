@@ -46,6 +46,8 @@ func main() {
 		err = cmdEquiv(os.Args[2:]) // bounded equivalence oracle: prove two functions agree, or return the diverging input
 	case "optimize":
 		err = cmdOptimize(os.Args[2:]) // provable superoptimization: propose faster rewrites, keep only the oracle-proven ones
+	case "superopt":
+		err = cmdSuperopt(os.Args[2:]) // search-driven rewrite discovery: synthesize a cheaper equivalent, certified by the oracle
 	case "test":
 		err = cmdTest(os.Args[2:]) // native MFL test runner (framework/test.src assert helpers)
 	case "pack":
