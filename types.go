@@ -197,6 +197,17 @@ func newSlot(c *Checker, k Kind) int {
 	return len(c.parent) - 1
 }
 
+// newLocal makes a fresh slot for a named local of instance inst, registering it
+// in the variable environment and declaration order. It folds the repeated
+// newSlot + env-bind + localOrder-append pattern into one call so the binding
+// sites (`:=`, range, select-recv, multi-assign) stay in lockstep.
+func (c *Checker) newLocal(inst, name string) int {
+	slot := newSlot(c, KVar)
+	c.vars[inst][name] = slot
+	c.localOrder[inst] = append(c.localOrder[inst], name)
+	return slot
+}
+
 // newFuncSlot makes a KFunc slot with the given signature.
 func newFuncSlot(c *Checker, sig *funcSig) int {
 	s := newSlot(c, KFunc)
@@ -1042,13 +1053,68 @@ func (c *Checker) tryIndex(iu indexUse) (bool, error) {
 	return false, nil
 }
 
+// slotVar names the source identifier (if any) whose inferred type currently
+// resolves to slot — used to turn a bare "string vs slice" into a diagnostic
+// that names the offending variable. Returns "" for anonymous/expression slots.
+// Iteration is in stable declaration order so the chosen name is deterministic
+// when several identifiers share a resolved type.
+func (c *Checker) slotVar(slot int) string {
+	root := c.find(slot)
+	for _, name := range c.globalOrder {
+		if c.find(c.globalSlot[name]) == root {
+			return fmt.Sprintf("'%s'", name)
+		}
+	}
+	for _, inst := range c.instOrder {
+		env := c.vars[inst]
+		src := inst
+		if fn := c.instFn[inst]; fn != nil {
+			src = fn.Name
+		}
+		// parameters first (declaration order), then locals/named returns
+		var names []string
+		if fn := c.instFn[inst]; fn != nil {
+			names = append(names, fn.Params...)
+		}
+		names = append(names, c.localOrder[inst]...)
+		for _, name := range names {
+			if s, ok := env[name]; ok && c.find(s) == root {
+				return fmt.Sprintf("'%s' in %q", name, src)
+			}
+		}
+	}
+	return ""
+}
+
+// annotateMismatch enriches a bare `type mismatch: A vs B` from union() with the
+// identifier whose types collided (e.g. a variable used as a string in one branch
+// and a slice in another). The issue this addresses: the message named neither the
+// line nor the variable, forcing a manual bisect to find the offender. Naming the
+// identifier — and, via the enclosing function, the declaration `check` maps to a
+// line — removes the guesswork. Non-mismatch errors and anonymous slots pass
+// through unchanged.
+func (c *Checker) annotateMismatch(err error, a, b int) error {
+	msg := err.Error()
+	if !strings.HasPrefix(msg, "type mismatch: ") {
+		return err
+	}
+	who := c.slotVar(a)
+	if who == "" {
+		who = c.slotVar(b)
+	}
+	if who == "" {
+		return err
+	}
+	return fmt.Errorf("type mismatch for %s: %s", who, strings.TrimPrefix(msg, "type mismatch: "))
+}
+
 func (c *Checker) solve() error {
 	for {
 		changed := false
 		for i := 0; i+1 < len(c.pairs); i += 2 {
 			ch, err := c.union(c.pairs[i], c.pairs[i+1])
 			if err != nil {
-				return err
+				return c.annotateMismatch(err, c.pairs[i], c.pairs[i+1])
 			}
 			changed = changed || ch
 		}
@@ -1064,11 +1130,11 @@ func (c *Checker) solve() error {
 			}
 			ch1, err := c.union(a, b)
 			if err != nil {
-				return err
+				return c.annotateMismatch(err, a, b)
 			}
 			ch2, err := c.union(p.res, p.l)
 			if err != nil {
-				return err
+				return c.annotateMismatch(err, p.res, p.l)
 			}
 			changed = changed || ch1 || ch2
 		}
@@ -1106,9 +1172,7 @@ func (c *Checker) genStmt(fn *FuncDecl, s Stmt) error {
 			if st.Op == "=" {
 				return fmt.Errorf("assignment to undefined variable %q", st.Name)
 			}
-			slot = newSlot(c, KVar)
-			env[st.Name] = slot
-			c.localOrder[fn.Name] = append(c.localOrder[fn.Name], st.Name)
+			slot = c.newLocal(fn.Name, st.Name)
 		}
 		c.addPair(slot, vs)
 		return nil
@@ -1224,18 +1288,14 @@ func (c *Checker) genStmt(fn *FuncDecl, s Stmt) error {
 				if sc.Name != "" && sc.Name != "_" {
 					slot, ok := env[sc.Name]
 					if !ok {
-						slot = newSlot(c, KVar)
-						env[sc.Name] = slot
-						c.localOrder[fn.Name] = append(c.localOrder[fn.Name], sc.Name)
+						slot = c.newLocal(fn.Name, sc.Name)
 					}
 					c.addPair(slot, eslot)
 				}
 				if sc.OkName != "" && sc.OkName != "_" {
 					slot, ok := env[sc.OkName]
 					if !ok {
-						slot = newSlot(c, KVar)
-						env[sc.OkName] = slot
-						c.localOrder[fn.Name] = append(c.localOrder[fn.Name], sc.OkName)
+						slot = c.newLocal(fn.Name, sc.OkName)
 					}
 					c.addPair(slot, c.cBool)
 				}
@@ -1279,10 +1339,7 @@ func (c *Checker) genStmt(fn *FuncDecl, s Stmt) error {
 			if slot, ok := env[name]; ok {
 				return slot // reuse an existing local (flat function scope)
 			}
-			slot := newSlot(c, KVar)
-			env[name] = slot
-			c.localOrder[fn.Name] = append(c.localOrder[fn.Name], name)
-			return slot
+			return c.newLocal(fn.Name, name)
 		}
 		keySlot := bind(st.Key)
 		valSlot := bind(st.Val)
@@ -1539,9 +1596,7 @@ func (c *Checker) genMultiAssign(fn *FuncDecl, st *MultiAssign) error {
 			if st.Op == "=" {
 				return fmt.Errorf("assignment to undefined variable %q", n)
 			}
-			slot = newSlot(c, KVar)
-			env[n] = slot
-			c.localOrder[fn.Name] = append(c.localOrder[fn.Name], n)
+			slot = c.newLocal(fn.Name, n)
 		}
 		nameSlots[i] = slot
 	}
@@ -2735,9 +2790,9 @@ func (c *Checker) ctypeSlot(slot int) string {
 	return "int64_t"
 }
 
-func (c *Checker) RetCTypeAt(fn string, i int) string   { return c.ctypeSlot(c.funcRets[fn][i]) }
-func (c *Checker) ParamCType(fn string, i int) string   { return c.ctypeSlot(c.funcParam[fn][i]) }
-func (c *Checker) VarCType(fn, name string) string      { return c.ctypeSlot(c.vars[fn][name]) }
+func (c *Checker) RetCTypeAt(fn string, i int) string { return c.ctypeSlot(c.funcRets[fn][i]) }
+func (c *Checker) ParamCType(fn string, i int) string { return c.ctypeSlot(c.funcParam[fn][i]) }
+func (c *Checker) VarCType(fn, name string) string    { return c.ctypeSlot(c.vars[fn][name]) }
 
 // VarTypeString is the MFL type string of a named variable in an instance —
 // used by goStmt to classify a closure's captured variables for the arena-
