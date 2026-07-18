@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## v0.112.0
+
+- **Ternary / Q2_0 quantized matmul kernels** (`dot_q2`, `matmul_q2_batch`) for
+  Prism/anvil Ternary-Bonsai inference: 2-bit packed weights (4×2-bit codes per
+  byte, low bits first) with `w=(q-1)*scale` dequant (`q ∈ {0,1,2}`), activations
+  int8, group scales fp32. Also adds the missing `matmul_q4_batch` (split-nibble
+  int4 weights) referenced by existing Q4 engines — same batched shape as
+  `matmul_q8_batch` (B activations × one weight-row range, weight read once).
+
 ## v0.111.0
 
 - **Pure-MFL RS256 id_token / JWT verification** (`sso_verify_rs256` in
