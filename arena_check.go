@@ -61,6 +61,42 @@ func arenaHeapKind(c *Checker, slot int) bool {
 	return false
 }
 
+// arenaPlaceString encodes an assignable place as a path string: a bare variable is its name,
+// a field access appends ".field", an index appends "#" (all indices of a container share one
+// key). ok=false for a place not rooted in a plain variable. This is the taint key: tracking
+// taint per place (not per whole variable) lets a field-assign of arena memory into an inner
+// struct taint just that field, so escaping the struct is caught while extracting a different,
+// clean field is not.
+func arenaPlaceString(e Expr) (string, bool) {
+	switch t := e.(type) {
+	case *Ident:
+		return t.Name, true
+	case *FieldAccess:
+		if p, ok := arenaPlaceString(t.X); ok {
+			return p + "." + t.Name, true
+		}
+	case *Index:
+		if p, ok := arenaPlaceString(t.X); ok {
+			return p + "#", true
+		}
+	}
+	return "", false
+}
+
+// arenaIsPrefixPath reports whether path a is an ancestor-or-equal of path b — a == b, or b
+// continues a at a place boundary (a ".field" or "#" step). Delimiter-aware so "p" is an
+// ancestor of "p.items" and "p#" but not of "ptr".
+func arenaIsPrefixPath(a, b string) bool {
+	if len(a) > len(b) || b[:len(a)] != a {
+		return false
+	}
+	if len(a) == len(b) {
+		return true
+	}
+	c := b[len(a)]
+	return c == '.' || c == '#'
+}
+
 // detectArenaEscapes returns one finding per arena block from which an allocated value escapes.
 func detectArenaEscapes(prog *Program, c *Checker) []arenaFinding {
 	// Nothing to do (and no summary to compute) unless the program uses an arena.
@@ -82,7 +118,33 @@ func detectArenaEscapes(prog *Program, c *Checker) []arenaFinding {
 		}
 		arenaFindEach(f.Body, func(a *ArenaStmt) {
 			inner := arenaInnerDeclared(a.Body)
+			// taint is keyed by PLACE path ("p", "p.items", "p#"), not by whole variable, so a
+			// field/element holding arena memory is tracked at that granularity.
 			tainted := map[string]bool{}
+			// placeCarries: does any tainted place lie on the same chain as `path`? A tainted
+			// ancestor means the whole value is arena (reading a sub-part carries); a tainted
+			// descendant means some part is arena (reading the whole value carries).
+			placeCarries := func(path string) bool {
+				for k := range tainted {
+					if arenaIsPrefixPath(k, path) || arenaIsPrefixPath(path, k) {
+						return true
+					}
+				}
+				return false
+			}
+			// setPlace assigns `path` wholesale: drop `path` and every descendant (they are
+			// replaced), then re-taint `path` if the new value carries arena memory. Ancestors and
+			// siblings are untouched (assigning p.a says nothing about p.b or p as a whole).
+			setPlace := func(path string, tv bool) {
+				for k := range tainted {
+					if arenaIsPrefixPath(path, k) {
+						delete(tainted, k)
+					}
+				}
+				if tv {
+					tainted[path] = true
+				}
+			}
 
 			var carriesArena func(e Expr) bool
 			carriesArena = func(e Expr) bool {
@@ -92,7 +154,7 @@ func detectArenaEscapes(prog *Program, c *Checker) []arenaFinding {
 				}
 				switch t := e.(type) {
 				case *Ident:
-					return tainted[t.Name] // params/outer/globals are pre-existing, never tainted
+					return placeCarries(t.Name) // params/outer/globals are pre-existing, never tainted
 				case *Binary:
 					return true // a heap-kind binary is a string concatenation — allocated here
 				case *Call:
@@ -120,7 +182,7 @@ func detectArenaEscapes(prog *Program, c *Checker) []arenaFinding {
 					// so calling the closure after the block reads freed arena memory. (The
 					// closure's own env is stable; it is the captured VALUE that dangles.)
 					for _, cap := range t.Captures {
-						if tainted[cap] {
+						if placeCarries(cap) {
 							return true
 						}
 					}
@@ -133,8 +195,14 @@ func detectArenaEscapes(prog *Program, c *Checker) []arenaFinding {
 					}
 					return false
 				case *Index:
+					if p, ok := arenaPlaceString(t); ok {
+						return placeCarries(p)
+					}
 					return carriesArena(t.X)
 				case *FieldAccess:
+					if p, ok := arenaPlaceString(t); ok {
+						return placeCarries(p)
+					}
 					return carriesArena(t.X)
 				case *Unary:
 					return carriesArena(t.X)
@@ -156,7 +224,7 @@ func detectArenaEscapes(prog *Program, c *Checker) []arenaFinding {
 					case *AssignStmt:
 						tv := carriesArena(st.Val)
 						if inner[st.Name] {
-							tainted[st.Name] = tv // propagate within the block
+							setPlace(st.Name, tv) // propagate within the block
 						} else if tv {
 							flag("ARENA001", "`"+st.Name+"` outlives this arena block but is assigned a value allocated inside it — it dangles after the block's memory is reclaimed")
 						}
@@ -170,7 +238,7 @@ func detectArenaEscapes(prog *Program, c *Checker) []arenaFinding {
 							}
 							tv := v != nil && carriesArena(v)
 							if inner[n] {
-								tainted[n] = tv
+								setPlace(n, tv)
 							} else if tv {
 								flag("ARENA001", "`"+n+"` outlives this arena block but is assigned a value allocated inside it — it dangles after the block's memory is reclaimed")
 							}
@@ -183,12 +251,26 @@ func detectArenaEscapes(prog *Program, c *Checker) []arenaFinding {
 						// Independent of the returned value; false-positive-free.
 						flag("ARENA002", "a `return` inside this arena block skips the block's cleanup — the block's memory is leaked and the current-arena pointer is left dangling (later allocations corrupt); move the `return` after the arena block")
 					case *IndexAssign:
-						if r, _, ok := placeOf(st.Target); ok && !inner[r] && carriesArena(st.Val) {
-							flag("ARENA001", "`"+r+"` outlives this arena block but is stored an element allocated inside it — it dangles after the block's memory is reclaimed")
+						if r, _, ok := placeOf(st.Target); ok {
+							if inner[r] {
+								// an inner container gains arena memory at this element — taint that
+								// place so escaping the whole container later is caught.
+								if p, ok2 := arenaPlaceString(st.Target); ok2 {
+									setPlace(p, carriesArena(st.Val))
+								}
+							} else if carriesArena(st.Val) {
+								flag("ARENA001", "`"+r+"` outlives this arena block but is stored an element allocated inside it — it dangles after the block's memory is reclaimed")
+							}
 						}
 					case *FieldAssign:
-						if r, _, ok := placeOf(st.Target); ok && !inner[r] && carriesArena(st.Val) {
-							flag("ARENA001", "`"+r+"` outlives this arena block but is stored a field allocated inside it — it dangles after the block's memory is reclaimed")
+						if r, _, ok := placeOf(st.Target); ok {
+							if inner[r] {
+								if p, ok2 := arenaPlaceString(st.Target); ok2 {
+									setPlace(p, carriesArena(st.Val))
+								}
+							} else if carriesArena(st.Val) {
+								flag("ARENA001", "`"+r+"` outlives this arena block but is stored a field allocated inside it — it dangles after the block's memory is reclaimed")
+							}
 						}
 					case *IfStmt:
 						scan(st.Then)

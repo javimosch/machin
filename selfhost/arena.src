@@ -314,7 +314,7 @@ var g_af_code = []string{}
 var g_af_detail = []string{}
 var g_af_seen = []string{}   // dedup keys: decl \x00 code \x00 detail
 var g_inner = []string{}     // names declared inside the current arena block
-var g_taint = []string{}     // currently-tainted variable names in the current block
+var g_taint = []string{}     // currently-tainted PLACE paths in the current block ("p", "p.f", "p#")
 
 func arena_flag(decl, code, detail) {
     key := decl + "\x00" + code + "\x00" + detail
@@ -324,18 +324,61 @@ func arena_flag(decl, code, detail) {
     g_af_code = append(g_af_code, code)
     g_af_detail = append(g_af_detail, detail)
 }
-func arena_taint_put(name, tv) {
-    at := arena_sidx(g_taint, name)
-    if tv == 1 { if at < 0 { g_taint = append(g_taint, name) } } else {
-        if at >= 0 {
-            nt := []string{}
-            i := 0
-            for i < len(g_taint) { if g_taint[i] != name { nt = append(nt, g_taint[i]) }  i = i + 1 }
-            g_taint = nt
-        }
+// arena_place_string: encode an assignable place as a path — a variable is its name, a field
+// appends ".field", an index appends "#" (all indices share one key). ok=0 if not var-rooted.
+func arena_place_string(idx) (path, ok) {
+    n := nodes[idx]
+    ok = 0
+    path = ""
+    if n.kind == K_ID { path = n.s  ok = 1  return path, ok }
+    if n.kind == K_FIELD {
+        px, pok := arena_place_string(n.a)
+        if pok == 1 { path = px + "." + n.s  ok = 1 }
+        return path, ok
+    }
+    if n.kind == K_INDEX {
+        px, pok := arena_place_string(n.a)
+        if pok == 1 { path = px + "#"  ok = 1 }
+        return path, ok
     }
 }
-func arena_taint_has(name) (b) { b = 0  if arena_sidx(g_taint, name) >= 0 { b = 1 } }
+// arena_is_prefix_path: is path a an ancestor-or-equal of b (b continues a at a "." or "#" step)?
+func arena_is_prefix_path(a, b) (r) {
+    r = 0
+    la := len(a)
+    lb := len(b)
+    if la > lb { return r }
+    ba := bytes(a)
+    bb := bytes(b)
+    i := 0
+    for i < la { if byte_at(ba, i) != byte_at(bb, i) { return r }  i = i + 1 }
+    if la == lb { r = 1  return r }
+    c := byte_at(bb, la)
+    if c == 46 { r = 1  return r }   // '.'
+    if c == 35 { r = 1 }             // '#'
+}
+// arena_place_carries: does any tainted place share a chain with `path` (an ancestor means the
+// whole value is arena; a descendant means some part is)?
+func arena_place_carries(path) (r) {
+    r = 0
+    i := 0
+    for i < len(g_taint) {
+        if arena_is_prefix_path(g_taint[i], path) == 1 { r = 1  return r }
+        if arena_is_prefix_path(path, g_taint[i]) == 1 { r = 1  return r }
+        i = i + 1
+    }
+}
+// arena_set_place: assign `path` wholesale — drop it and every descendant, then re-taint if tv.
+func arena_set_place(path, tv) {
+    nt := []string{}
+    i := 0
+    for i < len(g_taint) {
+        if arena_is_prefix_path(path, g_taint[i]) == 0 { nt = append(nt, g_taint[i]) }
+        i = i + 1
+    }
+    g_taint = nt
+    if tv == 1 { g_taint = append(g_taint, path) }
+}
 
 // arena_carries: does expression node idx evaluate to a value allocated in this arena block?
 func arena_carries(iid, idx) (r) {
@@ -344,15 +387,23 @@ func arena_carries(iid, idx) (r) {
     if slot >= 0 { if arena_heap_slot(slot) == 0 { return r } }
     n := nodes[idx]
     k := n.kind
-    if k == K_ID { if arena_taint_has(n.s) == 1 { r = 1 }  return r }
+    if k == K_ID { if arena_place_carries(n.s) == 1 { r = 1 }  return r }
     if k == K_BIN { r = 1  return r }
     if k == K_SLICE { r = 1  return r }
     if k == K_STRUCT {
         for _, v := range n.kids { if arena_carries(iid, v) == 1 { r = 1  return r } }
         return r
     }
-    if k == K_INDEX { r = arena_carries(iid, n.a)  return r }
-    if k == K_FIELD { r = arena_carries(iid, n.a)  return r }
+    if k == K_INDEX {
+        px, pok := arena_place_string(idx)
+        if pok == 1 { if arena_place_carries(px) == 1 { r = 1 }  return r }
+        r = arena_carries(iid, n.a)  return r
+    }
+    if k == K_FIELD {
+        px, pok := arena_place_string(idx)
+        if pok == 1 { if arena_place_carries(px) == 1 { r = 1 }  return r }
+        r = arena_carries(iid, n.a)  return r
+    }
     if k == K_UNARY { r = arena_carries(iid, n.a)  return r }
     if k == K_CALL {
         callee := n.s
@@ -403,7 +454,7 @@ func arena_scan(iid, decl, kids) {
         if k == K_ASSIGN {
             tv := arena_carries(iid, n.a)
             if arena_sidx(g_inner, n.s) >= 0 {
-                arena_taint_put(n.s, tv)
+                arena_set_place(n.s, tv)
             } else {
                 if tv == 1 { arena_flag(decl, "ARENA001", "`" + n.s + "` outlives this arena block but is assigned a value allocated inside it — it dangles after the block's memory is reclaimed") }
             }
@@ -416,7 +467,7 @@ func arena_scan(iid, decl, kids) {
                 if vidx >= 0 { tv = arena_carries(iid, vidx) }
                 nm := n.names[ni]
                 if arena_sidx(g_inner, nm) >= 0 {
-                    arena_taint_put(nm, tv)
+                    arena_set_place(nm, tv)
                 } else {
                     if tv == 1 { arena_flag(decl, "ARENA001", "`" + nm + "` outlives this arena block but is assigned a value allocated inside it — it dangles after the block's memory is reclaimed") }
                 }
@@ -426,10 +477,24 @@ func arena_scan(iid, decl, kids) {
             arena_flag(decl, "ARENA002", "a `return` inside this arena block skips the block's cleanup — the block's memory is leaked and the current-arena pointer is left dangling (later allocations corrupt); move the `return` after the arena block")
         } else { if k == K_IDXASSIGN {
             root, ok := arena_place_root(n.a)
-            if ok == 1 { if arena_sidx(g_inner, root) < 0 { if arena_carries(iid, n.b) == 1 { arena_flag(decl, "ARENA001", "`" + root + "` outlives this arena block but is stored an element allocated inside it — it dangles after the block's memory is reclaimed") } } }
+            if ok == 1 {
+                if arena_sidx(g_inner, root) >= 0 {
+                    px, pok := arena_place_string(n.a)
+                    if pok == 1 { arena_set_place(px, arena_carries(iid, n.b)) }
+                } else {
+                    if arena_carries(iid, n.b) == 1 { arena_flag(decl, "ARENA001", "`" + root + "` outlives this arena block but is stored an element allocated inside it — it dangles after the block's memory is reclaimed") }
+                }
+            }
         } else { if k == K_FLDASSIGN {
             root, ok := arena_place_root(n.a)
-            if ok == 1 { if arena_sidx(g_inner, root) < 0 { if arena_carries(iid, n.b) == 1 { arena_flag(decl, "ARENA001", "`" + root + "` outlives this arena block but is stored a field allocated inside it — it dangles after the block's memory is reclaimed") } } }
+            if ok == 1 {
+                if arena_sidx(g_inner, root) >= 0 {
+                    px, pok := arena_place_string(n.a)
+                    if pok == 1 { arena_set_place(px, arena_carries(iid, n.b)) }
+                } else {
+                    if arena_carries(iid, n.b) == 1 { arena_flag(decl, "ARENA001", "`" + root + "` outlives this arena block but is stored a field allocated inside it — it dangles after the block's memory is reclaimed") }
+                }
+            }
         } else { if k == K_IF {
             arena_scan(iid, decl, n.kids)  arena_scan(iid, decl, n.kids2)
         } else { if k == K_WHILE {
