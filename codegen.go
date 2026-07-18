@@ -3573,6 +3573,20 @@ func cZero(k Kind) string {
 	}
 }
 
+// cStringLit renders an MFL string value as a C string literal. Beyond the
+// standard Go quoting, each '?' is escaped as '\?' so that adjacent question
+// marks cannot form ANSI C trigraphs (e.g. "??'" -> '^'), which some C
+// toolchains still honor and would otherwise silently corrupt the string (#508).
+func cStringLit(s string) string {
+	q := strconv.Quote(s)
+	if !strings.Contains(q, "?") {
+		return q
+	}
+	// strconv.Quote never emits '?' as part of an escape sequence, so every
+	// '?' in the output is a literal question mark from the source string.
+	return strings.ReplaceAll(q, "?", "\\?")
+}
+
 func (g *cgen) program(p *Program) (string, error) {
 	// record package-global names so varRef renders them as mfl_g_<name> (this must
 	// be set before any function body is emitted, since bodies may reference them).
@@ -4737,7 +4751,7 @@ func (g *cgen) expr(e Expr) (string, error) {
 		}
 		return s, nil
 	case *StringLit:
-		return strconv.Quote(ex.Val), nil
+		return cStringLit(ex.Val), nil
 	case *BoolLit:
 		if ex.Val {
 			return "1", nil
