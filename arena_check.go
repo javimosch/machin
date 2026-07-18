@@ -47,10 +47,13 @@ func (af arenaFinding) toDiagnostic() Diagnostic {
 }
 
 // arenaHeapKind reports whether a slot's kind carries a pointer into an arena (so a value of
-// that kind, freshly allocated, would dangle after the block's reclamation).
+// that kind, freshly allocated, would dangle after the block's reclamation). KFunc is included
+// because a closure value can hold arena memory through a captured variable (see the
+// *MakeClosure case in carriesArena): its captures are read at the make site (inside the block)
+// and stored in the closure's block-outliving environment.
 func arenaHeapKind(c *Checker, slot int) bool {
 	switch c.kindOf(slot) {
-	case KString, KSlice, KBytes, KMap:
+	case KString, KSlice, KBytes, KMap, KFunc:
 		return true
 	case KStruct:
 		return typeSharesHeap(c, c.sname[c.find(slot)], 0)
@@ -110,6 +113,18 @@ func detectArenaEscapes(prog *Program, c *Checker) []arenaFinding {
 					return false
 				case *SliceLit:
 					return true
+				case *MakeClosure:
+					// a closure created here dangles if it captures a variable that currently
+					// holds arena memory: the capture is read at this make site (inside the
+					// block) but lives on in the closure's malloc'd, block-outliving environment,
+					// so calling the closure after the block reads freed arena memory. (The
+					// closure's own env is stable; it is the captured VALUE that dangles.)
+					for _, cap := range t.Captures {
+						if tainted[cap] {
+							return true
+						}
+					}
+					return false
 				case *StructLit:
 					for _, v := range t.Vals {
 						if carriesArena(v) {
