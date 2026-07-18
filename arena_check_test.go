@@ -1,0 +1,153 @@
+package main
+
+import (
+	"strings"
+	"testing"
+)
+
+// arenaEscapes parses + checks a full program and returns the ARENA001 findings. Each fixture
+// must include a `main` that reaches `f`, since the analysis runs over instantiated functions.
+func arenaEscapes(t *testing.T, decls ...string) []arenaFinding {
+	t.Helper()
+	nd := make([]string, len(decls))
+	for i, d := range decls {
+		nd[i] = normalize(d)
+	}
+	prog, err := ParseProgram(nd)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	c, err := Check(prog)
+	if err != nil {
+		t.Fatalf("check: %v", err)
+	}
+	return detectArenaEscapes(prog, c)
+}
+
+func hasEscapeIn(fs []arenaFinding, fn string) bool {
+	for _, f := range fs {
+		if f.Decl == fn {
+			return true
+		}
+	}
+	return false
+}
+
+// TestArenaEscapeVectors: every way an arena-allocated value can outlive its block must fire.
+func TestArenaEscapeVectors(t *testing.T) {
+	cases := []struct {
+		name  string
+		decls []string
+	}{
+		{"named-return", []string{
+			`func f() (r) { arena { s := "x" + str(1)  r = s } }`,
+			`func main() { println(f()) }`}},
+		{"outer-var", []string{
+			`func f() (r) { x := ""  arena { x = "a" + str(2) }  r = x }`,
+			`func main() { println(f()) }`}},
+		{"bare-return", []string{
+			`func f(n) (r) { arena { return "v" + str(n) }  r = "" }`,
+			`func main() { println(f(1)) }`}},
+		{"append-outer-slice", []string{
+			`func f() (r) { xs := []int{}  arena { xs = append(xs, len("q")) }  r = str(len(xs)) }`,
+			`func main() { println(f()) }`}},
+		{"outer-slice-index", []string{
+			`func f() (r) { xs := []string{"a"}  arena { xs[0] = "b" + str(3) }  r = xs[0] }`,
+			`func main() { println(f()) }`}},
+	}
+	for _, tc := range cases {
+		fs := arenaEscapes(t, tc.decls...)
+		if !hasEscapeIn(fs, "f") {
+			t.Errorf("%s: expected an ARENA001 escape, got none", tc.name)
+		}
+	}
+}
+
+// TestArenaEscapeStructField: storing an arena string into a field of a struct that outlives
+// the block escapes.
+func TestArenaEscapeStructField(t *testing.T) {
+	fs := arenaEscapes(t,
+		`type P struct { name string }`,
+		`func f() (r) { p := P{"init"}  arena { p.name = "n" + str(1) }  r = p.name }`,
+		`func main() { println(f()) }`,
+	)
+	if !hasEscapeIn(fs, "f") {
+		t.Errorf("expected a struct-field escape, got %+v", fs)
+	}
+}
+
+// TestArenaClean: legitimate arena patterns must not fire (no false positives — a clean result
+// is the memory-safety proof, so over-reporting would break real programs).
+func TestArenaClean(t *testing.T) {
+	cases := []struct {
+		name  string
+		decls []string
+	}{
+		{"accumulator", []string{
+			`func f(n) (r) { total := 0  arena { s := "i" + str(n)  total = total + len(s) }  r = total }`,
+			`func main() { println(str(f(3))) }`}},
+		{"param-out", []string{
+			`func f(p) (r) { arena { r = p } }`,
+			`func main() { println(f("hi")) }`}},
+		{"all-inner", []string{
+			`func f(n) (r) { arena { s := "x" + str(n)  t := s + "!"  println(t) }  r = "done" }`,
+			`func main() { println(f(2)) }`}},
+		{"scalar-field-out", []string{
+			`type C struct { k int }`,
+			`func f() (r) { total := 0  arena { c := C{5}  total = total + c.k }  r = total }`,
+			`func main() { println(str(f())) }`}},
+		{"inner-slice-reduce", []string{
+			`func f(n) (r) { sum := 0  arena { xs := []int{n, n + 1}  for _, v := range xs { sum = sum + v } }  r = sum }`,
+			`func main() { println(str(f(4))) }`}},
+	}
+	for _, tc := range cases {
+		fs := arenaEscapes(t, tc.decls...)
+		if hasEscapeIn(fs, "f") {
+			t.Errorf("%s: expected NO escape, got %+v", tc.name, fs)
+		}
+	}
+}
+
+// TestArenaSendIsSafe: sending an arena value on a channel is NOT an escape — the runtime
+// deep-copies values crossing a channel, so the receiver never sees the arena buffer.
+func TestArenaSendIsSafe(t *testing.T) {
+	fs := arenaEscapes(t,
+		`func f(ch) { arena { ch <- "msg" + str(1) } }`,
+		`func main() { ch := make(chan string)  go f(ch)  println(<-ch) }`,
+	)
+	if hasEscapeIn(fs, "f") {
+		t.Errorf("a channel send must not be flagged (runtime copies), got %+v", fs)
+	}
+}
+
+// TestArenaNoArenaNoFindings: a program with no arena block produces nothing.
+func TestArenaNoArenaNoFindings(t *testing.T) {
+	fs := arenaEscapes(t,
+		`func f(a) (r) { r = a + 1 }`,
+		`func main() { println(str(f(2))) }`,
+	)
+	if len(fs) != 0 {
+		t.Errorf("no arena block should mean no findings, got %+v", fs)
+	}
+}
+
+// TestArenaDiagnosticWiring: ARENA001 surfaces through the checker as an advisory warning
+// (phase "arena"), never as an error.
+func TestArenaDiagnosticWiring(t *testing.T) {
+	res := analyzeSource("func f() (r) { arena { s := \"x\" + str(1)  r = s } }\nfunc main() { println(f()) }\n", []string{"t.mfl"})
+	if !res.OK {
+		t.Error("an arena escape is advisory; it must not make the check fail")
+	}
+	found := false
+	for _, w := range res.Warnings {
+		if w.Code == "ARENA001" && w.Phase == "arena" {
+			found = true
+			if !strings.Contains(w.Message, "dangles") {
+				t.Errorf("message should explain the danger: %q", w.Message)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected an ARENA001 warning, got %+v", res.Warnings)
+	}
+}

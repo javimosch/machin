@@ -178,6 +178,15 @@ func analyzeSource(combined string, srcNames []string) CheckResult {
 				d.Line = declLine[df.Decl]
 				warns = append(warns, d)
 			}
+
+			// arena phase: a value allocated inside an `arena { }` block that escapes to a
+			// location outliving the block (so it dangles after bulk reclamation). Sound +
+			// conservative — a clean result proves the block's reclamation is safe. Advisory.
+			for _, af := range detectArenaEscapes(prog, c) {
+				d := af.toDiagnostic()
+				d.Line = declLine[af.Decl]
+				warns = append(warns, d)
+			}
 		}
 	}
 
