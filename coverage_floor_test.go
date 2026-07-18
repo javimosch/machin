@@ -34,12 +34,30 @@ const typesCoverageFloor = 87.0
 // recursively only.
 const coverageReentryEnv = "COVERAGE_FLOOR_REENTRY"
 
+// coverageSkip is a -skip regex for the coverage subprocess: slow runtime
+// INTEGRATION tests that do not drive the front-end (Phase 1-6) coverage this
+// floor guards, so excluding them from the measurement costs ~0.1pp of package
+// total (measured) while cutting the subprocess ~40% (73s -> 45s). Two of them
+// (the ru_maxrss arena-ratio tests) are additionally env-dependent and can flake
+// under the parallel, coverage-instrumented subprocess; dropping them here removes
+// that flake at its source. These tests still run — and gate pass/fail — in the
+// normal `go test .` invocation; only this coverage-MEASUREMENT reentry skips them.
+const coverageSkip = "TestStaticBuildBundlesSqlite|" +
+	"TestDeadlockStrictIO|" +
+	"TestReadBytesLoopReassemblesLargePayload|" +
+	"TestScopedArenaReclaimsInlineAllocations|" +
+	"TestScopedArenaBoundsMemory"
+
 // TestTypesCoverageFloor is the regression guard for the Phase 1-6
-// coverage push. It spawns `go test -short -coverprofile=X .` as a
-// subprocess so the coverage profile includes all of Phase 1-6 +
-// whatever else is in the suite, parses X for the package-total
-// statement coverage via `go tool cover -func`, and asserts that
-// ≥ typesCoverageFloor.
+// coverage push. It spawns `go test -short -skip=<slow-integration>
+// -coverprofile=X .` as a subprocess so the coverage profile includes
+// all of Phase 1-6 + whatever else is in the suite, parses X for the
+// package-total statement coverage via `go tool cover -func`, and
+// asserts that ≥ typesCoverageFloor. The -skip drops a handful of slow
+// runtime integration tests (see coverageSkip) that don't drive this
+// floor — ~40% faster subprocess — and coverage is read from the
+// profile even if a test fails (see coverageOutcome), so a flaky
+// integration test can't turn the floor red.
 //
 // Fires inside the standard `go test ./...` invocation (and so inside
 // the existing CI step) — no separate CI step required. Skips under
@@ -66,18 +84,33 @@ func TestTypesCoverageFloor(t *testing.T) {
 	profilePath := filepath.Join(t.TempDir(), "coverage.out")
 	cmd := exec.Command("go", "test",
 		"-count=1", "-short",
+		"-skip="+coverageSkip,
 		"-coverprofile="+profilePath,
 		".")
 	cmd.Env = append(os.Environ(), coverageReentryEnv+"=1")
-	raw, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("subprocess `go test` failed: %v\n%s", err, raw)
-	}
+	raw, runErr := cmd.CombinedOutput()
 
-	got, err := coverPkgTotal(profilePath)
-	if err != nil {
-		t.Fatalf("coverPkgTotal: %v\nsubprocess tail:\n%s",
-			err, tailLines(string(raw), 15))
+	// Measure coverage from the profile, which `go test` writes even when a test
+	// fails. This test's job is to guard the coverage NUMBER, not to re-adjudicate
+	// the suite's pass/fail — the outer `go test` run already does that. So a flaky
+	// integration test (e.g. an env-dependent ru_maxrss ratio) must not turn the
+	// coverage floor red. Only fail here if the profile is unusable, which means the
+	// subprocess never got far enough to measure coverage (a build error or a panic
+	// that crashed the binary before the profile was written).
+	got, covErr := coverPkgTotal(profilePath)
+	fatal, note := coverageOutcome(covErr == nil, runErr != nil)
+	if fatal {
+		if runErr != nil {
+			t.Fatalf("coverage subprocess produced no usable profile (build error or crash, not a coverage regression): %v\n%s",
+				runErr, tailLines(string(raw), 20))
+		}
+		t.Fatalf("coverPkgTotal: %v\nsubprocess tail:\n%s", covErr, tailLines(string(raw), 15))
+	}
+	if note {
+		// The profile is valid, so coverage is measurable; a test failed but that is
+		// the outer run's concern, not the floor guard's. Surface it as a note.
+		t.Logf("note: a test failed in the coverage subprocess (coverage still measured from the written profile; the main `go test` run is the pass/fail gate):\n%s",
+			tailLines(string(raw), 8))
 	}
 	t.Logf("package total: %.2f%% (floor %.2f%%) — Phase 1-6 fixtures %s",
 		got, floor, fixtureStatus(got, floor))
@@ -96,6 +129,20 @@ func TestTypesCoverageFloor(t *testing.T) {
 			"restore / strengthen the fixture (or, deliberately, bump the floor).",
 			got, floor, got, floor-got)
 	}
+}
+
+// coverageOutcome is the decision table for the coverage subprocess. `haveProfile` is whether a
+// parseable coverage profile was produced; `runFailed` is whether the subprocess `go test`
+// exited non-zero. A missing profile means the subprocess never got far enough to measure
+// coverage (a build error or a crash before the profile flush) → fatal. A valid profile with a
+// run failure means a test failed but coverage is still measurable → not fatal (the outer
+// `go test` is the pass/fail gate); surface it as a note so a flaky integration test can't turn
+// the coverage floor red.
+func coverageOutcome(haveProfile bool, runFailed bool) (fatal, note bool) {
+	if !haveProfile {
+		return true, false
+	}
+	return false, runFailed
 }
 
 // coverPkgTotal parses the canonical `total: (statements) NN.N%` line
