@@ -1,0 +1,526 @@
+// selfhost/arena.src — compile-time arena escape analysis (ARENA001 + ARENA002), MFL
+// port of arena_check.go + arena_prov.go, byte-diffed against `machin arenatest --program`.
+//
+// An `arena { }` block reclaims everything allocated inside it in bulk when it ends. That is
+// sound ONLY if nothing allocated inside outlives the block. This proves it: SOUND and
+// conservative (a clean result is a real guarantee — memory safety with no borrow checker,
+// all inferred). ARENA001 = an arena-allocated value assigned to a location that outlives the
+// block (dangles after reclamation). ARENA002 = ANY `return` inside an arena block (the
+// generated code returns before the block's cleanup, leaking + leaving the arena pointer
+// dangling into the freed frame). Advisory warnings; never fail the build.
+//
+// Taint tracks PROVENANCE: a value carries arena memory only if it was ALLOCATED INSIDE the
+// block (string concat / a fresh-allocating call / a slice literal), propagated var->var.
+// Params, outer vars, and globals are pre-existing and never tainted. The precision crux is a
+// RESULT-KIND gate: a value can carry arena memory only if its own result kind is heap, so
+// `len(s)` (an int) never escapes even though it consumes an arena string — keeping the
+// canonical accumulator `total = total + len(s)` clean. Interprocedural (Slice 2): a call is
+// tainted only if the callee allocates fresh heap or passes through a tainted argument.
+//
+// Heap slot kinds: 5=string 7=slice 8=struct 10=map 12=bytes. Node kinds as in deadlock.src.
+
+// ---- small helpers ----
+func arena_sidx(arr, v) (r) {
+    r = -1
+    i := 0
+    for i < len(arr) { if arr[i] == v { r = i  return r }  i = i + 1 }
+}
+func arena_param_index(fnroot, name) (pi) {
+    pi = -1
+    ps := nodes[fnroot].names
+    i := 0
+    for i < len(ps) { if ps[i] == name { pi = i  return pi }  i = i + 1 }
+}
+func arena_int_has(arr, v) (b) {
+    b = 0
+    i := 0
+    for i < len(arr) { if arr[i] == v { b = 1  return b }  i = i + 1 }
+}
+func arena_int_union(a, b) (out) {
+    out = a
+    i := 0
+    for i < len(b) { if arena_int_has(out, b[i]) == 0 { out = append(out, b[i]) }  i = i + 1 }
+}
+// arena_str_lt: byte-order less-than (matches Go string <), for the canonical output sort.
+func arena_str_lt(a, b) (r) {
+    r = 0
+    i := 0
+    na := len(a)
+    nb := len(b)
+    for i < na {
+        if i >= nb { return r }
+        ca := byte_at(bytes(a), i)
+        cb := byte_at(bytes(b), i)
+        if ca < cb { r = 1  return r }
+        if ca > cb { return r }
+        i = i + 1
+    }
+    if nb > na { r = 1 }
+}
+// arena_place_root: the base variable name of an index/field place, or ok=0.
+func arena_place_root(idx) (root, ok) {
+    n := nodes[idx]
+    if n.kind == K_ID { root = n.s  ok = 1  return root, ok }
+    if n.kind == K_INDEX { root, ok = arena_place_root(n.a)  return root, ok }
+    if n.kind == K_FIELD { root, ok = arena_place_root(n.a)  return root, ok }
+    ok = 0
+}
+
+// ---- heap-kind gate ----
+// arena_type_heap: port of typeSharesHeap — a type shares heap iff it is (or nests, via struct
+// fields) a slice or map. A plain string/bytes field does NOT count (matches the Go oracle).
+func arena_type_heap(tname, depth) (b) {
+    b = 0
+    if depth > 8 { return b }
+    if has_prefix(tname, "[]") { b = 1  return b }
+    if has_prefix(tname, "map[") { b = 1  return b }
+    di := struct_def_idx(tname)
+    if di >= 0 {
+        d := g_structdefs[di]
+        i := 0
+        for i < len(d.ftypes) {
+            if arena_type_heap(d.ftypes[i], depth + 1) == 1 { b = 1  return b }
+            i = i + 1
+        }
+    }
+}
+// arena_heap_slot: does this slot's kind carry a pointer into an arena?
+func arena_heap_slot(slot) (b) {
+    b = 0
+    r := find(slot)
+    k := g_kind[r]
+    if k == 5 { b = 1  return b }
+    if k == 7 { b = 1  return b }
+    if k == 12 { b = 1  return b }
+    if k == 10 { b = 1  return b }
+    if k == 8 { b = arena_type_heap(g_sname[r], 0)  return b }
+}
+
+// ---- interprocedural return-provenance summary ----
+// parallel: (g_ps_fn -> g_ps_fresh) and (g_pspass_fn, g_pspass_p) pass-through param indices.
+var g_ps_fn = []string{}
+var g_ps_fresh = []int{}
+var g_pspass_fn = []string{}
+var g_pspass_p = []int{}
+
+func arena_ps_known(fn) (b) { b = 0  if arena_sidx(g_ps_fn, fn) >= 0 { b = 1 } }
+func arena_ps_is_fresh(fn) (b) {
+    b = 0
+    i := arena_sidx(g_ps_fn, fn)
+    if i >= 0 { b = g_ps_fresh[i] }
+}
+func arena_ps_set_fresh(fn) (changed) {
+    changed = 0
+    i := arena_sidx(g_ps_fn, fn)
+    if i >= 0 { if g_ps_fresh[i] == 0 { g_ps_fresh[i] = 1  changed = 1 } }
+}
+func arena_ps_has_pass(fn, p) (b) {
+    b = 0
+    i := 0
+    for i < len(g_pspass_fn) { if g_pspass_fn[i] == fn && g_pspass_p[i] == p { b = 1  return b }  i = i + 1 }
+}
+func arena_ps_add_pass(fn, p) (changed) {
+    changed = 0
+    if arena_ps_has_pass(fn, p) == 1 { return changed }
+    g_pspass_fn = append(g_pspass_fn, fn)
+    g_pspass_p = append(g_pspass_p, p)
+    changed = 1
+}
+
+// ---- per-instance local provenance (reset each instance) ----
+var g_lf = []string{}         // local names whose value can be freshly-allocated heap
+var g_lp_name = []string{}    // (name -> pass-through param idx) pairs
+var g_lp_p = []int{}
+var g_cur_fnroot = 0
+var g_lchg = 0
+
+func arena_lf_has(name) (b) { b = 0  if arena_sidx(g_lf, name) >= 0 { b = 1 } }
+func arena_lf_add(name) {
+    if arena_sidx(g_lf, name) < 0 { g_lf = append(g_lf, name)  g_lchg = 1 }
+}
+func arena_lp_has(name, p) (b) {
+    b = 0
+    i := 0
+    for i < len(g_lp_name) { if g_lp_name[i] == name && g_lp_p[i] == p { b = 1  return b }  i = i + 1 }
+}
+func arena_lp_add(name, p) {
+    if arena_lp_has(name, p) == 0 { g_lp_name = append(g_lp_name, name)  g_lp_p = append(g_lp_p, p)  g_lchg = 1 }
+}
+func arena_lp_get(name) (out) {
+    out = []int{}
+    i := 0
+    for i < len(g_lp_name) { if g_lp_name[i] == name { out = append(out, g_lp_p[i]) }  i = i + 1 }
+}
+
+// arena_prov: provenance of expression node idx in the active instance — (fresh, passList).
+func arena_prov(iid, idx) (fr, ps) {
+    fr = 0
+    ps = []int{}
+    slot := node_slot_of(iid, idx)
+    if slot >= 0 { if arena_heap_slot(slot) == 0 { return fr, ps } }
+    n := nodes[idx]
+    k := n.kind
+    if k == K_ID {
+        pi := arena_param_index(g_cur_fnroot, n.s)
+        if pi >= 0 { ps = append(ps, pi)  return fr, ps }
+        if arena_lf_has(n.s) == 1 { fr = 1 }
+        ps = arena_lp_get(n.s)
+        return fr, ps
+    }
+    if k == K_BIN { fr = 1  return fr, ps }
+    if k == K_SLICE { fr = 1  return fr, ps }
+    if k == K_UNARY { fr, ps = arena_prov(iid, n.a)  return fr, ps }
+    if k == K_INDEX { fr, ps = arena_prov(iid, n.a)  return fr, ps }
+    if k == K_FIELD { fr, ps = arena_prov(iid, n.a)  return fr, ps }
+    if k == K_STRUCT {
+        for _, v := range n.kids {
+            f2, p2 := arena_prov(iid, v)
+            if f2 == 1 { fr = 1 }
+            ps = arena_int_union(ps, p2)
+        }
+        return fr, ps
+    }
+    if k == K_CALL {
+        callee := n.s
+        if arena_ps_known(callee) == 0 { fr = 1  return fr, ps }
+        if arena_ps_is_fresh(callee) == 1 { fr = 1 }
+        i := 0
+        for i < len(g_pspass_fn) {
+            if g_pspass_fn[i] == callee {
+                p := g_pspass_p[i]
+                if p < len(n.kids) {
+                    f2, p2 := arena_prov(iid, n.kids[p])
+                    if f2 == 1 { fr = 1 }
+                    ps = arena_int_union(ps, p2)
+                }
+            }
+            i = i + 1
+        }
+        return fr, ps
+    }
+}
+
+// arena_join_one: fold node validx's provenance into local name's summary.
+func arena_join_one(iid, name, validx) {
+    fr, ps := arena_prov(iid, validx)
+    if fr == 1 { arena_lf_add(name) }
+    pi := 0
+    for pi < len(ps) { arena_lp_add(name, ps[pi])  pi = pi + 1 }
+}
+// arena_join_assigns: one pass of the inner (local) fixpoint over all assignments.
+func arena_join_assigns(iid, kids) {
+    for _, s := range kids {
+        n := nodes[s]
+        k := n.kind
+        if k == K_ASSIGN {
+            arena_join_one(iid, n.s, n.a)
+        } else { if k == K_MULTI {
+            if len(n.kids) == len(n.names) {
+                i := 0
+                for i < len(n.names) { arena_join_one(iid, n.names[i], n.kids[i])  i = i + 1 }
+            }
+        } else { if k == K_IF {
+            arena_join_assigns(iid, n.kids)  arena_join_assigns(iid, n.kids2)
+        } else { if k == K_WHILE {
+            arena_join_assigns(iid, n.kids)
+        } else { if k == K_RANGE {
+            arena_join_assigns(iid, n.kids)
+        } else { if k == K_ARENA {
+            arena_join_assigns(iid, n.kids)
+        }}}}}}
+    }
+}
+
+// return-provenance accumulators for the current function.
+var g_rp_fresh = 0
+var g_rp_pass = []int{}
+func arena_walk_returns(iid, kids) {
+    for _, s := range kids {
+        n := nodes[s]
+        k := n.kind
+        if k == K_RETURN {
+            if len(n.kids) > 0 {
+                for _, v := range n.kids {
+                    fr, ps := arena_prov(iid, v)
+                    if fr == 1 { g_rp_fresh = 1 }
+                    g_rp_pass = arena_int_union(g_rp_pass, ps)
+                }
+            }
+        } else { if k == K_IF {
+            arena_walk_returns(iid, n.kids)  arena_walk_returns(iid, n.kids2)
+        } else { if k == K_WHILE {
+            arena_walk_returns(iid, n.kids)
+        } else { if k == K_RANGE {
+            arena_walk_returns(iid, n.kids)
+        } else { if k == K_ARENA {
+            arena_walk_returns(iid, n.kids)
+        }}}}}
+    }
+}
+
+// arena_compute_prov: fixpoint over the call graph building each function's return summary.
+func arena_compute_prov() {
+    fi := 0
+    for fi < len(g_func_names) {
+        g_ps_fn = append(g_ps_fn, g_func_names[fi])
+        g_ps_fresh = append(g_ps_fresh, 0)
+        fi = fi + 1
+    }
+    iter := 0
+    for iter < 40 {
+        changed := 0
+        ri := 0
+        for ri < len(g_insts) {
+            ins := g_insts[ri]
+            fr := func_root(ins.src)
+            if fr < 0 { ri = ri + 1  continue }
+            activate_inst(ri)
+            g_cur_fnroot = fr
+            g_lf = []string{}
+            g_lp_name = []string{}
+            g_lp_p = []int{}
+            li := 0
+            for li < 30 {
+                g_lchg = 0
+                arena_join_assigns(ri, nodes[fr].kids)
+                if g_lchg == 0 { li = 30 } else { li = li + 1 }
+            }
+            g_rp_fresh = 0
+            g_rp_pass = []int{}
+            arena_walk_returns(ri, nodes[fr].kids)
+            retFresh := g_rp_fresh
+            retPass := g_rp_pass
+            ki := 0
+            for ki < len(ins.rnames) {
+                rn := ins.rnames[ki]
+                if rn != "" {
+                    if arena_lf_has(rn) == 1 { retFresh = 1 }
+                    retPass = arena_int_union(retPass, arena_lp_get(rn))
+                }
+                ki = ki + 1
+            }
+            if retFresh == 1 { if arena_ps_set_fresh(ins.src) == 1 { changed = 1 } }
+            pi := 0
+            for pi < len(retPass) { if arena_ps_add_pass(ins.src, retPass[pi]) == 1 { changed = 1 }  pi = pi + 1 }
+            ri = ri + 1
+        }
+        if changed == 0 { iter = 40 } else { iter = iter + 1 }
+    }
+}
+
+// ---- escape detection ----
+var g_af_decl = []string{}
+var g_af_code = []string{}
+var g_af_detail = []string{}
+var g_af_seen = []string{}   // dedup keys: decl \x00 code \x00 detail
+var g_inner = []string{}     // names declared inside the current arena block
+var g_taint = []string{}     // currently-tainted variable names in the current block
+
+func arena_flag(decl, code, detail) {
+    key := decl + "\x00" + code + "\x00" + detail
+    if arena_sidx(g_af_seen, key) >= 0 { return }
+    g_af_seen = append(g_af_seen, key)
+    g_af_decl = append(g_af_decl, decl)
+    g_af_code = append(g_af_code, code)
+    g_af_detail = append(g_af_detail, detail)
+}
+func arena_taint_put(name, tv) {
+    at := arena_sidx(g_taint, name)
+    if tv == 1 { if at < 0 { g_taint = append(g_taint, name) } } else {
+        if at >= 0 {
+            nt := []string{}
+            i := 0
+            for i < len(g_taint) { if g_taint[i] != name { nt = append(nt, g_taint[i]) }  i = i + 1 }
+            g_taint = nt
+        }
+    }
+}
+func arena_taint_has(name) (b) { b = 0  if arena_sidx(g_taint, name) >= 0 { b = 1 } }
+
+// arena_carries: does expression node idx evaluate to a value allocated in this arena block?
+func arena_carries(iid, idx) (r) {
+    r = 0
+    slot := node_slot_of(iid, idx)
+    if slot >= 0 { if arena_heap_slot(slot) == 0 { return r } }
+    n := nodes[idx]
+    k := n.kind
+    if k == K_ID { if arena_taint_has(n.s) == 1 { r = 1 }  return r }
+    if k == K_BIN { r = 1  return r }
+    if k == K_SLICE { r = 1  return r }
+    if k == K_STRUCT {
+        for _, v := range n.kids { if arena_carries(iid, v) == 1 { r = 1  return r } }
+        return r
+    }
+    if k == K_INDEX { r = arena_carries(iid, n.a)  return r }
+    if k == K_FIELD { r = arena_carries(iid, n.a)  return r }
+    if k == K_UNARY { r = arena_carries(iid, n.a)  return r }
+    if k == K_CALL {
+        callee := n.s
+        if arena_ps_known(callee) == 0 { r = 1  return r }
+        if arena_ps_is_fresh(callee) == 1 { r = 1  return r }
+        i := 0
+        for i < len(g_pspass_fn) {
+            if g_pspass_fn[i] == callee {
+                p := g_pspass_p[i]
+                if p < len(n.kids) { if arena_carries(iid, n.kids[p]) == 1 { r = 1  return r } }
+            }
+            i = i + 1
+        }
+        return r
+    }
+}
+
+// arena_inner_collect: names bound (:=, multi :=, range key/val) lexically inside a block.
+func arena_inner_collect(kids) {
+    for _, s := range kids {
+        n := nodes[s]
+        k := n.kind
+        if k == K_ASSIGN {
+            if n.s2 == ":=" { if arena_sidx(g_inner, n.s) < 0 { g_inner = append(g_inner, n.s) } }
+        } else { if k == K_MULTI {
+            if n.s2 == ":=" {
+                for _, nm := range n.names { if arena_sidx(g_inner, nm) < 0 { g_inner = append(g_inner, nm) } }
+            }
+        } else { if k == K_RANGE {
+            if n.s != "" && n.s != "_" { if arena_sidx(g_inner, n.s) < 0 { g_inner = append(g_inner, n.s) } }
+            if n.s2 != "" && n.s2 != "_" { if arena_sidx(g_inner, n.s2) < 0 { g_inner = append(g_inner, n.s2) } }
+            arena_inner_collect(n.kids)
+        } else { if k == K_IF {
+            arena_inner_collect(n.kids)  arena_inner_collect(n.kids2)
+        } else { if k == K_WHILE {
+            arena_inner_collect(n.kids)
+        } else { if k == K_ARENA {
+            arena_inner_collect(n.kids)
+        }}}}}}
+    }
+}
+
+// arena_scan: taint-track the arena body, flagging escapes to outer-scoped locations.
+func arena_scan(iid, decl, kids) {
+    for _, s := range kids {
+        n := nodes[s]
+        k := n.kind
+        if k == K_ASSIGN {
+            tv := arena_carries(iid, n.a)
+            if arena_sidx(g_inner, n.s) >= 0 {
+                arena_taint_put(n.s, tv)
+            } else {
+                if tv == 1 { arena_flag(decl, "ARENA001", "`" + n.s + "` outlives this arena block but is assigned a value allocated inside it — it dangles after the block's memory is reclaimed") }
+            }
+        } else { if k == K_MULTI {
+            ni := 0
+            for ni < len(n.names) {
+                vidx := -1
+                if len(n.kids) == len(n.names) { vidx = n.kids[ni] } else { if len(n.kids) == 1 { vidx = n.kids[0] } }
+                tv := 0
+                if vidx >= 0 { tv = arena_carries(iid, vidx) }
+                nm := n.names[ni]
+                if arena_sidx(g_inner, nm) >= 0 {
+                    arena_taint_put(nm, tv)
+                } else {
+                    if tv == 1 { arena_flag(decl, "ARENA001", "`" + nm + "` outlives this arena block but is assigned a value allocated inside it — it dangles after the block's memory is reclaimed") }
+                }
+                ni = ni + 1
+            }
+        } else { if k == K_RETURN {
+            arena_flag(decl, "ARENA002", "a `return` inside this arena block skips the block's cleanup — the block's memory is leaked and the current-arena pointer is left dangling (later allocations corrupt); move the `return` after the arena block")
+        } else { if k == K_IDXASSIGN {
+            root, ok := arena_place_root(n.a)
+            if ok == 1 { if arena_sidx(g_inner, root) < 0 { if arena_carries(iid, n.b) == 1 { arena_flag(decl, "ARENA001", "`" + root + "` outlives this arena block but is stored an element allocated inside it — it dangles after the block's memory is reclaimed") } } }
+        } else { if k == K_FLDASSIGN {
+            root, ok := arena_place_root(n.a)
+            if ok == 1 { if arena_sidx(g_inner, root) < 0 { if arena_carries(iid, n.b) == 1 { arena_flag(decl, "ARENA001", "`" + root + "` outlives this arena block but is stored a field allocated inside it — it dangles after the block's memory is reclaimed") } } }
+        } else { if k == K_IF {
+            arena_scan(iid, decl, n.kids)  arena_scan(iid, decl, n.kids2)
+        } else { if k == K_WHILE {
+            arena_scan(iid, decl, n.kids)
+        } else { if k == K_RANGE {
+            arena_scan(iid, decl, n.kids)
+        } else { if k == K_ARENA {
+            arena_scan(iid, decl, n.kids)
+        }}}}}}}}}
+    }
+}
+
+// arena_find_blocks: locate each arena block in a body, then taint-scan it.
+func arena_find_blocks(iid, decl, kids) {
+    for _, s := range kids {
+        n := nodes[s]
+        k := n.kind
+        if k == K_ARENA {
+            g_inner = []string{}
+            arena_inner_collect(n.kids)
+            g_taint = []string{}
+            arena_scan(iid, decl, n.kids)
+            arena_find_blocks(iid, decl, n.kids)
+        } else { if k == K_IF {
+            arena_find_blocks(iid, decl, n.kids)  arena_find_blocks(iid, decl, n.kids2)
+        } else { if k == K_WHILE {
+            arena_find_blocks(iid, decl, n.kids)
+        } else { if k == K_RANGE {
+            arena_find_blocks(iid, decl, n.kids)
+        }}}}
+    }
+}
+
+// arena_body_has_arena: does a body contain any arena block (recursively)?
+func arena_body_has_arena(kids) (b) {
+    b = 0
+    for _, s := range kids {
+        n := nodes[s]
+        k := n.kind
+        if k == K_ARENA { b = 1  return b }
+        if k == K_IF { if arena_body_has_arena(n.kids) == 1 { b = 1  return b }  if arena_body_has_arena(n.kids2) == 1 { b = 1  return b } }
+        if k == K_WHILE { if arena_body_has_arena(n.kids) == 1 { b = 1  return b } }
+        if k == K_RANGE { if arena_body_has_arena(n.kids) == 1 { b = 1  return b } }
+    }
+}
+
+// detect_arena_escapes: fill g_af_* with ARENA001/ARENA002 findings.
+func detect_arena_escapes() {
+    hasArena := 0
+    fi := 0
+    for fi < len(g_func_roots) {
+        if arena_body_has_arena(nodes[g_func_roots[fi]].kids) == 1 { hasArena = 1  fi = len(g_func_roots) } else { fi = fi + 1 }
+    }
+    if hasArena == 0 { return }
+    arena_compute_prov()
+    ri := 0
+    for ri < len(g_insts) {
+        ins := g_insts[ri]
+        fr := func_root(ins.src)
+        if fr < 0 { ri = ri + 1  continue }
+        activate_inst(ri)
+        g_cur_fnroot = fr
+        arena_find_blocks(ri, ins.src, nodes[fr].kids)
+        ri = ri + 1
+    }
+}
+
+// arena_dump: findings sorted by (decl, detail), one hex line `decl|code|detail` — the exact
+// form `machin arenatest --program` emits (byte-diffed by verify-arena-selfhost.sh).
+func arena_dump() (out) {
+    keys := []string{}
+    lines := []string{}
+    k := 0
+    for k < len(g_af_decl) {
+        keys = append(keys, g_af_decl[k] + "\x00" + g_af_detail[k])
+        lines = append(lines, to_hex(bytes(g_af_decl[k])) + "|" + to_hex(bytes(g_af_code[k])) + "|" + to_hex(bytes(g_af_detail[k])) + "\n")
+        k = k + 1
+    }
+    i := 1
+    for i < len(lines) {
+        j := i
+        for j > 0 {
+            if arena_str_lt(keys[j], keys[j - 1]) == 1 {
+                tk := keys[j]  keys[j] = keys[j - 1]  keys[j - 1] = tk
+                tl := lines[j]  lines[j] = lines[j - 1]  lines[j - 1] = tl
+                j = j - 1
+            } else { j = 0 }
+        }
+        i = i + 1
+    }
+    out = ""
+    i = 0
+    for i < len(lines) { out = out + lines[i]  i = i + 1 }
+}
