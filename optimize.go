@@ -31,18 +31,22 @@ type optPassResult struct {
 }
 
 type optFuncResult struct {
-	Fn        string          `json:"fn"`
-	Passes    []optPassResult `json:"passes,omitempty"`
-	Optimized string          `json:"optimized,omitempty"` // rendered optimized function (if any pass applied)
-	Note      string          `json:"note,omitempty"`      // e.g. "unbounded domain"
-	applied   int
-	rejected  int
+	Fn         string          `json:"fn"`
+	Passes     []optPassResult `json:"passes,omitempty"`
+	Optimized  string          `json:"optimized,omitempty"` // rendered optimized function (if any pass applied)
+	Note       string          `json:"note,omitempty"`      // e.g. "unbounded domain"
+	CostBefore int             `json:"costBefore,omitempty"`
+	CostAfter  int             `json:"costAfter,omitempty"`
+	applied    int
+	rejected   int
 }
 
 type optReport struct {
-	Funcs    []optFuncResult `json:"funcs"`
-	Applied  int             `json:"applied"`  // total accepted rewrites
-	Rejected int             `json:"rejected"` // total oracle-refuted rewrites
+	Funcs      []optFuncResult `json:"funcs"`
+	Applied    int             `json:"applied"`    // total accepted rewrites
+	Rejected   int             `json:"rejected"`   // total oracle-refuted rewrites
+	CostBefore int             `json:"costBefore"` // summed static cost across optimized functions
+	CostAfter  int             `json:"costAfter"`
 }
 
 // the rewrite catalog, applied in order and cumulatively (each builds on the last accepted).
@@ -342,6 +346,8 @@ func optimizeFunc(orig *FuncDecl, verify func(cand *FuncDecl) equivResult) optFu
 		if src, complete := renderFuncSrc(work); complete {
 			r.Optimized = src
 		}
+		r.CostBefore = funcCost(orig)
+		r.CostAfter = funcCost(work)
 	}
 	return r
 }
@@ -372,6 +378,8 @@ func optimizeProgram(prog *Program, c *Checker) optReport {
 		res := optimizeFunc(orig, verify)
 		rep.Applied += res.applied
 		rep.Rejected += res.rejected
+		rep.CostBefore += res.CostBefore
+		rep.CostAfter += res.CostAfter
 		if len(res.Passes) > 0 || res.Note != "" {
 			rep.Funcs = append(rep.Funcs, res)
 		}
@@ -451,9 +459,19 @@ func printOptReport(rep optReport) {
 		if f.Optimized != "" {
 			fmt.Printf("    optimized: %s\n", f.Optimized)
 		}
+		if f.applied > 0 && f.CostBefore > 0 {
+			fmt.Printf("    cost: %d → %d  (−%d%%, static op-latency estimate)\n", f.CostBefore, f.CostAfter, costPct(f.CostBefore, f.CostAfter))
+		}
 	}
 	if !any {
 		fmt.Println("  no rewrites applied (no arithmetic simplification found within bounds)")
 	}
 	fmt.Printf("\n%d rewrite(s) proven equivalent, %d rejected by the oracle\n", rep.Applied, rep.Rejected)
+	if rep.CostBefore > 0 && rep.CostAfter < rep.CostBefore {
+		fmt.Printf("estimated cost %d → %d across optimized functions (−%d%%)\n", rep.CostBefore, rep.CostAfter, costPct(rep.CostBefore, rep.CostAfter))
+		fmt.Println("  cost = static latency-weighted op count (mul=4, div=5, shift/add/bitwise=1; loop bodies ×10), the")
+		fmt.Println("  proxy superoptimizers rank by. It ranks the rewrites deterministically; wall-clock at native -O2")
+		fmt.Println("  may differ because the C backend applies its own peephole passes. Algorithmic rewrites are where the")
+		fmt.Println("  large wall-clock wins live.")
+	}
 }
