@@ -34,6 +34,30 @@ func TestMismatchNamesIdentifierAndFunc(t *testing.T) {
 	if !strings.Contains(msg, `"main"`) {
 		t.Fatalf("message does not name the enclosing function: %q", msg)
 	}
+	// A collision on a function-local from disjoint `:=` branches must spell out
+	// the function-scoping rule, since Go instincts expect two block-locals (#507).
+	if !strings.Contains(msg, "does not shadow — variables are function-scoped") {
+		t.Fatalf("message does not explain function scoping: %q", msg)
+	}
+}
+
+// The function-scoping note is specific to locals: a collision on a package
+// GLOBAL (which genuinely cannot shadow anything) must NOT claim it does.
+func TestMismatchGlobalOmitsShadowNote(t *testing.T) {
+	prog, err := ParseProgram([]string{
+		`var steps = "a,b,c"`,
+		`func main() { steps = split("a,b,c", ",") println(steps[0]) }`,
+	})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	_, cerr := Check(prog)
+	if cerr == nil || !strings.Contains(cerr.Error(), "type mismatch") {
+		t.Fatalf("expected a type mismatch error, got %v", cerr)
+	}
+	if strings.Contains(cerr.Error(), "does not shadow") {
+		t.Fatalf("global mismatch should not mention shadowing: %q", cerr.Error())
+	}
 }
 
 // The `check` command should surface the enclosing declaration + its start line

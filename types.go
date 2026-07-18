@@ -1055,14 +1055,17 @@ func (c *Checker) tryIndex(iu indexUse) (bool, error) {
 
 // slotVar names the source identifier (if any) whose inferred type currently
 // resolves to slot — used to turn a bare "string vs slice" into a diagnostic
-// that names the offending variable. Returns "" for anonymous/expression slots.
+// that names the offending variable. The bool return is true when the name is a
+// function-local or parameter (as opposed to a package global): a local can
+// collide because `:=` is function-scoped, not block-scoped (issue #507), so
+// callers append that explanation. Returns "" for anonymous/expression slots.
 // Iteration is in stable declaration order so the chosen name is deterministic
 // when several identifiers share a resolved type.
-func (c *Checker) slotVar(slot int) string {
+func (c *Checker) slotVar(slot int) (string, bool) {
 	root := c.find(slot)
 	for _, name := range c.globalOrder {
 		if c.find(c.globalSlot[name]) == root {
-			return fmt.Sprintf("'%s'", name)
+			return fmt.Sprintf("'%s'", name), false
 		}
 	}
 	for _, inst := range c.instOrder {
@@ -1079,11 +1082,11 @@ func (c *Checker) slotVar(slot int) string {
 		names = append(names, c.localOrder[inst]...)
 		for _, name := range names {
 			if s, ok := env[name]; ok && c.find(s) == root {
-				return fmt.Sprintf("'%s' in %q", name, src)
+				return fmt.Sprintf("'%s' in %q", name, src), true
 			}
 		}
 	}
-	return ""
+	return "", false
 }
 
 // annotateMismatch enriches a bare `type mismatch: A vs B` from union() with the
@@ -1098,14 +1101,22 @@ func (c *Checker) annotateMismatch(err error, a, b int) error {
 	if !strings.HasPrefix(msg, "type mismatch: ") {
 		return err
 	}
-	who := c.slotVar(a)
+	who, local := c.slotVar(a)
 	if who == "" {
-		who = c.slotVar(b)
+		who, local = c.slotVar(b)
 	}
 	if who == "" {
 		return err
 	}
-	return fmt.Errorf("type mismatch for %s: %s", who, strings.TrimPrefix(msg, "type mismatch: "))
+	detail := strings.TrimPrefix(msg, "type mismatch: ")
+	if local {
+		// The colliding declarations bind one function-scoped slot: MFL does not
+		// block-scope `:=`, so the same name in disjoint branches unifies into a
+		// single variable rather than shadowing (issue #507). Say so, since a
+		// reader with Go instincts expects two independent block-local variables.
+		return fmt.Errorf("type mismatch for %s: %s; := does not shadow — variables are function-scoped", who, detail)
+	}
+	return fmt.Errorf("type mismatch for %s: %s", who, detail)
 }
 
 func (c *Checker) solve() error {
