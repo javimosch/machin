@@ -78,6 +78,47 @@ func TestArenaClosureCaptureClean(t *testing.T) {
 	}
 }
 
+// TestArenaFieldGranularityEscape: assigning arena memory into an INNER container's field/element
+// taints that place, so escaping the whole container is caught (a soundness fix — per-variable
+// taint missed this because the container was built from a pre-existing value and never
+// wholesale-assigned an arena value).
+func TestArenaFieldGranularityEscape(t *testing.T) {
+	cases := []struct {
+		name  string
+		decls []string
+	}{
+		{"field-assign-then-escape-struct", []string{
+			`type Box struct { items []string }`,
+			`func f(seed) (r) { arena { p := Box{seed}  p.items = append(p.items, "x" + str(1))  r = p } }`,
+			`func main() { b := f([]string{})  println(str(len(b.items))) }`}},
+		{"index-assign-then-escape-slice", []string{
+			`func f(seed) (r) { arena { xs := seed  xs[0] = "a" + str(1)  r = xs } }`,
+			`func main() { b := f([]string{"z"})  println(b[0]) }`}},
+		{"extract-the-tainted-field", []string{
+			`type Pair struct { a []string  b []string }`,
+			`func f(s1, s2) (r) { arena { p := Pair{s1, s2}  p.a = append(p.a, "x" + str(1))  r = p.a } }`,
+			`func main() { z := f([]string{}, []string{"ok"})  println(str(len(z))) }`}},
+	}
+	for _, tc := range cases {
+		if fs := arenaEscapes(t, tc.decls...); !hasEscapeIn(fs, "f") {
+			t.Errorf("%s: expected an ARENA001 escape, got none", tc.name)
+		}
+	}
+}
+
+// TestArenaFieldGranularityClean: after tainting ONE field of an inner struct, extracting a
+// DIFFERENT (untouched) field must stay clean — per-place taint does not over-report the way
+// whole-variable taint would.
+func TestArenaFieldGranularityClean(t *testing.T) {
+	fs := arenaEscapes(t,
+		`type Pair struct { a []string  b []string }`,
+		`func f(s1, s2) (r) { arena { p := Pair{s1, s2}  p.a = append(p.a, "x" + str(1))  r = p.b } }`,
+		`func main() { z := f([]string{}, []string{"ok"})  println(z[0]) }`)
+	if hasEscapeIn(fs, "f") {
+		t.Errorf("extracting an untouched clean field must not fire, got %+v", fs)
+	}
+}
+
 // TestArenaEscapeVectors: every way an arena-allocated value can outlive its block must fire.
 func TestArenaEscapeVectors(t *testing.T) {
 	cases := []struct {

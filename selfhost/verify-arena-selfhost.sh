@@ -41,6 +41,12 @@ printf 'func f(n) (r){arena{s:="x"+str(n) t:=s+"!" println(t)} r="done"}\nfunc m
 printf 'func f(ch){arena{ch<-"msg"+str(1)}}\nfunc main(){ch:=make(chan string) go f(ch) println(<-ch)}\n' > "$T/c4"; run "$T/c4" "channel send is safe (clean)"
 printf 'func f(a) (r){r=a+1}\nfunc main(){println(str(f(2)))}\n' > "$T/c5"; run "$T/c5" "no arena block (clean)"
 
+# finer place-path granularity: arena memory into an inner container's field/element taints that
+# place, so escaping the whole container is caught; extracting a DIFFERENT clean field is not.
+printf 'type Box struct{items []string}\nfunc f(seed) (r){arena{p:=Box{seed} p.items=append(p.items,"x"+str(1)) r=p}}\nfunc main(){b:=f([]string{}) println(str(len(b.items)))}\n' > "$T/sf1"; run "$T/sf1" "field-assign into inner struct then escape (ARENA001)"
+printf 'func f(seed) (r){arena{xs:=seed xs[0]="a"+str(1) r=xs}}\nfunc main(){b:=f([]string{"z"}) println(b[0])}\n' > "$T/sf2"; run "$T/sf2" "index-assign into inner slice then escape (ARENA001)"
+printf 'type Pair struct{a []string  b []string}\nfunc f(s1,s2) (r){arena{p:=Pair{s1,s2} p.a=append(p.a,"x"+str(1)) r=p.b}}\nfunc main(){z:=f([]string{},[]string{"ok"}) println(z[0])}\n' > "$T/sf3"; run "$T/sf3" "extract a different clean field (clean)"
+
 # interprocedural provenance: a pass-through helper must NOT flag; a fresh-allocating one must.
 printf 'func idp(s) (r){r=s}\nfunc f(p) (r){x:="" arena{x=idp(p)} r=x}\nfunc main(){println(f("hi"))}\n' > "$T/i1"; run "$T/i1" "pass-through helper (clean)"
 printf 'func wrap(s) (r){r="["+s+"]"}\nfunc f(p) (r){x:="" arena{x=wrap(p)} r=x}\nfunc main(){println(f("hi"))}\n' > "$T/i2"; run "$T/i2" "fresh-allocating helper (ARENA001)"
