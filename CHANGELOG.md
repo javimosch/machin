@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+## v0.120.0
+
+- **Windows target — Phase TLS: HTTPS/TLS + OpenSSL crypto** (issue #517). The
+  `--target windows` cross-compile now covers `https_*` / `wss_*` and the OpenSSL
+  crypto builtins (`rsa_*`, `x509_pubkey`, `rand_bytes`, `hmac_*`, …) — so the
+  entire pure-MFL **SAML / OIDC** path and any HTTPS client cross-compile to a
+  Windows `.exe`. The TLS/crypto runtimes already used `send`/`recv`; the port was
+  making the socket `close`/init portable (shared `closesocket`/`WSAStartup`
+  shims) and adding a mingw `strcasestr` the HTTP header parser needs. Certificate
+  verification works with no external files — the vendored CA root bundle is
+  compiled in (as the native `--static` build does). OpenSSL for
+  `x86_64-windows-gnu` is supplied by the caller via `MACHIN_WIN_OPENSSL=/path`
+  (a dir with `include/` and `lib/`, e.g. msys2's `mingw-w64-x86_64-openssl`) —
+  mirroring how the native `--static` + TLS build already requires libssl-dev's
+  archives; a missing path yields a clear error, not a cryptic link failure.
+  Verified by linking real Windows PEs (HTTPS client, WSS, `rand_bytes`,
+  `x509_pubkey`) against mingw OpenSSL 3.6.3. Still unsupported on Windows: XEdDSA
+  (libsodium), terminal raw mode, SQLite, regex. Native + wasm output unchanged.
+
 ## v0.119.0
 
 - **Windows target — Phase N: TCP sockets (winsock2)** (issue #517). The

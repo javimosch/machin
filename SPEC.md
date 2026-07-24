@@ -1,6 +1,6 @@
 # The MFL Language Specification
 
-Version 0.119.0
+Version 0.120.0
 
 MFL (Machine-First Language) is a statically-typed, Go-flavored backend language
 **shaped for machine authoring**: minimal syntax, no type annotations, one
@@ -540,11 +540,14 @@ id(42); id("hi"); id(3.14)   // → three native functions
   Windows port (issue #517) covers the POSIX-independent core under mingw-w64 —
   stdio, strings/maps/slices, `json()`, arena blocks + `arena_reset()`,
   goroutines/channels (winpthreads), math, file I/O — plus TCP sockets
-  (`dial`/`listen`/`accept`/`read`/`write`/`close`) via winsock2 (auto-links
-  `ws2_32`), with portability handled by `#ifdef _WIN32` guards in the emitted
-  runtime (so the same C still builds native and wasm). TLS/crypto (OpenSSL),
-  terminal raw mode, SQLite, and regex are not yet supported and are rejected at
-  build time.
+  (`dial`/`listen`/`accept`/`read`/`write`/`close`) via winsock2, plus HTTPS/TLS
+  (`https_*`/`wss_*`) and the OpenSSL crypto builtins. Portability is handled by
+  `#ifdef _WIN32` guards in the emitted runtime (so the same C still builds native
+  and wasm). TLS/crypto link a mingw OpenSSL the caller supplies via
+  `MACHIN_WIN_OPENSSL=/path` (a dir with `include/` and `lib/`); the CA root
+  bundle is compiled in so certificates verify with no external files. XEdDSA
+  (libsodium), terminal raw mode, SQLite, and regex remain unsupported and are
+  rejected at build time.
 
 ---
 
