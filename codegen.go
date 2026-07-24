@@ -190,6 +190,9 @@ const cRuntime = `#define _GNU_SOURCE
 #ifndef __wasm__
 #include <signal.h>     /* mingw-w64 ships signal.h; SIGPIPE just doesn't exist there (guarded at use) */
 #endif
+#ifdef __GLIBC__
+#include <malloc.h>     /* malloc_trim — arena_reset() returns freed heap pages to the OS (#529) */
+#endif
 
 #ifdef _WIN32
 /* Windows portability shims (#517). mingw-w64's headers don't declare the POSIX
@@ -269,10 +272,22 @@ static void mfl_arena_free(mfl_arena* a) {
    caller to ensure NO arena-allocated value is still reachable — any survivor
    dangles. Live cross-reset state must sit in malloc-backed maps/channels or on
    disk. Safe on both the main and spawned arenas; a later goroutine exit re-runs
-   mfl_arena_free on the now-empty head (a no-op). See issue #523. */
+   mfl_arena_free on the now-empty head (a no-op). See issue #523.
+
+   After freeing, it also asks the allocator to return the now-free pages to the
+   OS (malloc_trim on glibc): plain free() keeps the pages in the C heap's
+   free-list, so RSS would otherwise stay pinned at the peak (#529). This runs
+   only here, at the caller's quiescent reset point — NOT in mfl_arena_free, which
+   also fires on every goroutine exit and must stay a cheap free()-only path.
+   malloc_trim is glibc-specific and a no-op elsewhere (musl/macOS allocators
+   already release freed spans); it can only reclaim the free top of the heap, so
+   a live malloc-backed structure near the top may cap how much is returned. */
 static int64_t mfl_arena_reset(void) {
     if (!mfl_arena_cur) mfl_arena_cur = &mfl_main_arena;
     mfl_arena_free(mfl_arena_cur);
+#ifdef __GLIBC__
+    malloc_trim(0);
+#endif
     return 0;
 }
 

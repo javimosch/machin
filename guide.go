@@ -28,7 +28,7 @@ var skillDeploy string
 
 // machinVersion is the single version string for the toolchain. Bump it when
 // cutting a release (alongside README badge / SPEC / CHANGELOG).
-const machinVersion = "0.117.0"
+const machinVersion = "0.118.0"
 
 // ---- the source-of-truth feature catalog ----
 //
@@ -258,7 +258,7 @@ func machinGuide() guideCatalog {
 			{"noise2", "(number, number) -> float", "Perlin gradient noise (2D), deterministic, ~[-1,1], smooth. Layer it (fbm) by summing octaves at scaled freq/amp", "math"},
 			{"noise3", "(number, number, number) -> float", "Perlin gradient noise (3D) — animate 2D noise over time, or volumetric", "math"},
 			// raw memory (pointers are ints) — build C buffers/structs for the FFI
-			{"arena_reset", "() -> int", "free the CURRENT goroutine's value-arena chain in place, without ending the goroutine — hands all strings/slice-backings/closure-envs allocated so far back to the OS. The escape hatch for a long-running SINGLE-ACTOR server (one that can't run each request in its own goroutine, e.g. a non-thread-safe store): the main goroutine's arena otherwise grows forever, so call arena_reset() at a quiescent point to keep RSS flat. UNCHECKED, unlike an `arena { }` block (whose escape analysis PROVES nothing escapes): you assert NO arena-allocated value is still reachable — a survivor dangles. Keep any cross-reset state in malloc-backed maps/channels or on disk. Prefer `arena { }` when the lifetime is a lexical scope; reach for arena_reset() only across the request loop of a persistent single-actor server. Returns 0", "memory"},
+			{"arena_reset", "() -> int", "free the CURRENT goroutine's value-arena chain in place, without ending the goroutine — hands all strings/slice-backings/closure-envs allocated so far back to the OS. The escape hatch for a long-running SINGLE-ACTOR server (one that can't run each request in its own goroutine, e.g. a non-thread-safe store): the main goroutine's arena otherwise grows forever, so call arena_reset() at a quiescent point to keep RSS flat. UNCHECKED, unlike an `arena { }` block (whose escape analysis PROVES nothing escapes): you assert NO arena-allocated value is still reachable — a survivor dangles. Keep any cross-reset state in malloc-backed maps/channels or on disk. Prefer `arena { }` when the lifetime is a lexical scope; reach for arena_reset() only across the request loop of a persistent single-actor server. On glibc it also runs malloc_trim(0) so the freed pages are RETURNED TO THE OS (RSS actually drops, not just the C heap free-list); no-op on musl/macOS (their allocators already release freed spans). Returns 0", "memory"},
 			{"alloc", "(int) -> int", "allocate n zeroed bytes; returns a pointer (as int). For C buffers/structs to hand to an extern fn", "memory"},
 			{"free", "(int) ->", "free a pointer returned by alloc", "memory"},
 			{"madvise_free", "(int, int) ->", "drop resident pages of an mmap region (MADV_DONTNEED); re-faults lazily on next access", "memory"},

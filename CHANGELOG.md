@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## v0.118.0
+
+- **`arena_reset()` now returns freed pages to the OS** (issue #529). It already
+  freed the arena chain, but plain `free()` leaves the pages on glibc's heap
+  free-list, so process RSS stayed pinned at the peak (e.g. a poche single-actor
+  server plateaued at ~168 MB for an ~16 MB working set). `arena_reset()` now
+  also calls `malloc_trim(0)` on glibc, releasing that free heap back to the
+  kernel. Measured: a churn that peaks at ~825 MB drops to ~1.8 MB after reset
+  (was: no change). The trim runs only in `arena_reset()`, at the caller's
+  quiescent reset point — NOT in the per-goroutine-exit reclaim path, which stays
+  a cheap `free()`-only fast path. No-op on musl/macOS (their allocators already
+  release freed spans) and on the wasm/windows targets. No API change.
+
 ## v0.117.0
 
 - **Pure-MFL SAML / XML-DSig signature verification** (`framework/xml.src`) —
