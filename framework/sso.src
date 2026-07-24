@@ -174,3 +174,30 @@ func sso_verify_rs256(token, jwks_json) (claims, ok) {
         ok = 1
     }
 }
+
+// --- SAML / X.509 signature verification (issue #484) -----------------------
+// SAML metadata embeds the IdP's signing cert as a base64 DER X.509 inside a
+// <ds:X509Certificate>. sso_x509_rsa_verify pulls that cert's RSA public key out
+// with x509_pubkey and verifies an RSA-SHA256 (PKCS#1 v1.5) signature over
+// `signed` — the bytes an XML-DSig <ds:SignatureValue> covers (the canonicalized
+// <Assertion>/<SignedInfo>). Returns ok=1 only when the signature is valid.
+// This is the X.509/RSA key-extraction + verify ARM of pure-MFL SAML; XML
+// Exclusive Canonicalization (c14n) and <ds:Signature> reference parsing are the
+// remaining pieces of the full flow.
+//   cert_b64: the <ds:X509Certificate> text — standard base64 of the DER cert,
+//             XML indentation/newlines tolerated (stripped here).
+//   signed:   the exact signed bytes (already canonicalized by the caller).
+//   sig_b64:  the <ds:SignatureValue> — standard base64 of the signature bytes.
+func sso_x509_rsa_verify(cert_b64, signed, sig_b64) (ok) {
+    ok = 0
+    c := replace(cert_b64, "\n", "")
+    c = replace(c, "\r", "")
+    c = replace(c, "\t", "")
+    c = replace(c, " ", "")
+    cert_der := base64_decode_bytes(c)
+    if len(cert_der) == 0 { return }                // not decodable
+    n, e := x509_pubkey(cert_der)
+    if len(n) == 0 { return }                       // cert has no RSA key (EC/EdDSA)
+    sig := base64_decode_bytes(sig_b64)
+    if rsa_verify_jwk_sha256(n, e, signed, sig) { ok = 1 }
+}
