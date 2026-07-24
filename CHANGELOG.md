@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## v0.114.0
+
+- **`json()` is no longer O(n²)** — the generated serializers built their result
+  with chained `mfl_cat`, each of which recopied the entire accumulated prefix,
+  and every intermediate prefix stayed in the (never-collected) arena as
+  permanent garbage. Serializing a 4,000-element `[]struct` (~2 MB of output)
+  took ~5 s and **8.2 GB** peak RSS; 40k was effectively a hang. The serializers
+  now append into a growable string builder (`mfl_sb`, doubling, malloc-backed,
+  copied once into the arena at the end), so serialization is O(total output) in
+  both time and memory: the same 4k case is now ~0.01 s / ~12 MB, and 40k is
+  ~0.07 s / ~110 MB. Output bytes are unchanged. Fixes #520.
+
 ## v0.113.0
 
 - **`arena_reset()` builtin** — frees the current goroutine's value-arena chain
