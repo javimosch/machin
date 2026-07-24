@@ -20,7 +20,7 @@ func TestWindowsPreflightRejects(t *testing.T) {
 		mentions string
 	}{
 		{"tty", `func main() { raw_mode(1)  println(read_key()) }`, "terminal raw mode"},
-		{"tls", `func main() { println(https_get("https://example.com")) }`, "HTTPS/TLS"},
+		{"sqlite", `func main() { sqlite_open("x.db") }`, "SQLite"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -125,6 +125,58 @@ func TestWindowsNetCompiles(t *testing.T) {
 	}
 	if len(b) < 2 || b[0] != 'M' || b[1] != 'Z' {
 		t.Fatalf("net output is not a PE executable: first bytes %q", b[:min(8, len(b))])
+	}
+}
+
+// #517 Phase TLS: HTTPS/TLS + the OpenSSL crypto builtins now compile for the
+// windows target, linking a user-supplied mingw OpenSSL. The preflight no longer
+// rejects them, the emitted C includes OpenSSL + the strcasestr shim, and
+// BuildWindows demands MACHIN_WIN_OPENSSL (a clear error, not a cryptic link fail).
+func TestWindowsTLSCompiles(t *testing.T) {
+	src := `func main() {
+	code, body, err := http_get("https://example.com")
+	println(str(code) + " " + str(len(body)) + err)
+}`
+	prog, err := ParseProgram([]string{normalize(src)})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	// preflight lifted: TLS compiles to C for windows
+	winC, _, err := CompileToCTarget(prog, false, targetWindows)
+	if err != nil {
+		t.Fatalf("windows TLS compile should succeed (Phase TLS), got: %v", err)
+	}
+	if !strings.Contains(winC, "openssl/ssl.h") {
+		t.Fatal("windows TLS C should include OpenSSL")
+	}
+	if !strings.Contains(winC, "mfl_strcasestr") {
+		t.Fatal("windows TLS C should define the mingw strcasestr shim")
+	}
+
+	// BuildWindows must demand a user-supplied OpenSSL with a clear message.
+	t.Setenv("MACHIN_WIN_OPENSSL", "")
+	err = BuildWindows(prog, t.TempDir()+"/a.exe", false)
+	if err == nil || !strings.Contains(err.Error(), "MACHIN_WIN_OPENSSL") {
+		t.Fatalf("expected a MACHIN_WIN_OPENSSL requirement error, got: %v", err)
+	}
+
+	// End-to-end link, gated on BOTH a runnable zig and a mingw OpenSSL being
+	// present (CI has neither → skips); proves the winsock+OpenSSL link is real.
+	sslDir := os.Getenv("MACHIN_WIN_OPENSSL_TEST")
+	if sslDir == "" {
+		t.Skip("set MACHIN_WIN_OPENSSL_TEST to a mingw OpenSSL dir to link-test windows TLS")
+	}
+	if err := exec.Command(zigPath(), "version").Run(); err != nil {
+		t.Skipf("zig not runnable: %v", err)
+	}
+	t.Setenv("MACHIN_WIN_OPENSSL", sslDir)
+	out := t.TempDir() + "/https.exe"
+	if err := BuildWindows(prog, out, false); err != nil {
+		t.Fatalf("BuildWindows (TLS): %v", err)
+	}
+	b, _ := os.ReadFile(out)
+	if len(b) < 2 || b[0] != 'M' || b[1] != 'Z' {
+		t.Fatal("TLS output is not a PE executable")
 	}
 }
 

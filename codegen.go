@@ -45,9 +45,11 @@ func CompileToCTarget(p *Program, safe bool, target string) (string, []string, e
 // target does not yet cover. Phase 0 of #517 got the POSIX-independent core
 // compiling under mingw-w64 (stdio, strings/maps/slices, arena, goroutines +
 // channels via winpthreads, math, file I/O); Phase N added TCP sockets
-// (dial/listen/accept/read/write) via winsock2. Still later phases: TLS/crypto
-// (OpenSSL-Windows), terminal raw mode, SQLite, and POSIX regex. Failing here —
-// rather than emitting C that dies deep in the linker — keeps the error actionable.
+// (dial/listen/accept/read/write) via winsock2; Phase TLS added HTTPS/TLS + the
+// OpenSSL crypto builtins, which link a user-supplied mingw OpenSSL (see
+// BuildWindows / MACHIN_WIN_OPENSSL). Still not wired: XEdDSA (libsodium),
+// terminal raw mode, SQLite, POSIX regex. Failing here — rather than emitting C
+// that dies deep in the linker — keeps the error actionable.
 func windowsUnsupported(g *cgen) error {
 	for _, u := range []struct {
 		used bool
@@ -55,15 +57,12 @@ func windowsUnsupported(g *cgen) error {
 	}{
 		{g.usesTTY, "terminal raw mode (raw_mode/read_key)"},
 		{g.usesSelect, "select"},
-		{g.usesTLS, "HTTPS/TLS (https_* — needs OpenSSL for Windows)"},
-		{g.usesWSS, "secure WebSockets (wss_*)"},
-		{g.usesCrypto, "crypto builtins (rand/sha/hmac/x25519/... — need OpenSSL for Windows)"},
-		{g.usesXEdDSA, "XEdDSA (xeddsa_* — needs libsodium)"},
+		{g.usesXEdDSA, "XEdDSA (xeddsa_* — needs libsodium for Windows, not yet wired)"},
 		{g.usesSQLite, "SQLite (sqlite_*)"},
 		{g.usesRegex, "regex (regex_*)"},
 	} {
 		if u.used {
-			return fmt.Errorf("the windows target does not yet support %s — see issue #517 (supported: the stdio/compute core plus TCP sockets — strings, maps, slices, arena, goroutines/channels, math, file I/O, dial/listen/accept)", u.what)
+			return fmt.Errorf("the windows target does not yet support %s — see issue #517 (supported: the stdio/compute core, TCP sockets, and HTTPS/TLS+crypto via a user-supplied OpenSSL)", u.what)
 		}
 	}
 	return nil
@@ -2007,10 +2006,11 @@ static mfl_json_result mfl_json_get(const char* json, const char* path) {
 // the native target; under the wasm target it is emitted only when the program
 // actually calls one of these builtins (a frontend app that touches no sockets
 // then references no POSIX networking symbols at all).
-const netRuntime = `/* networking: the low-level shape of Go's net package */
-/* Windows uses winsock2: sockets are recv/send (not read/write), closesocket
-   (not close), and WSAStartup must run once before any socket call. These shims
-   keep the body below single-sourced across POSIX and Windows (#517 Phase N). */
+// sockCompatRuntime holds the POSIX/Windows socket portability shims shared by
+// every runtime that touches a socket (net, TLS, WSS). On Windows a socket is a
+// winsock2 SOCKET, not an fd: recv/send (not read/write), closesocket (not
+// close), and WSAStartup must run once before the first socket call (#517).
+const sockCompatRuntime = `/* socket portability shims (POSIX fd vs winsock2 SOCKET) — #517 */
 #ifdef _WIN32
 static void mfl_net_init(void) { static int mfl_ws = 0; if (!mfl_ws) { WSADATA w; WSAStartup(MAKEWORD(2, 2), &w); mfl_ws = 1; } }
 #define MFL_CLOSESOCK(fd)      closesocket((SOCKET)(fd))
@@ -2022,6 +2022,9 @@ static void mfl_net_init(void) {}
 #define MFL_SOCK_READ(fd,b,n)  read((int)(fd), (b), (n))
 #define MFL_SOCK_WRITE(fd,b,n) write((int)(fd), (b), (n))
 #endif
+`
+
+const netRuntime = `/* networking: the low-level shape of Go's net package */
 static int64_t mfl_listen(int64_t port) {
     mfl_net_init();
     /* replay: return the recorded fd without binding a real port (it may be taken, and
@@ -2209,6 +2212,20 @@ const tlsCoreRuntime = `#include <openssl/ssl.h>
 #include <openssl/rand.h>
 #include <openssl/pem.h>
 #include <openssl/x509.h>
+#ifdef _WIN32
+/* mingw-w64 lacks the GNU strcasestr the HTTP header parsing below uses; provide
+   a small portable one and route the calls through it (#517 Phase TLS). */
+static char* mfl_strcasestr(const char* h, const char* n) {
+    if (!*n) return (char*)h;
+    for (; *h; h++) {
+        const char* a = h; const char* b = n;
+        while (*a && *b && tolower((unsigned char)*a) == tolower((unsigned char)*b)) { a++; b++; }
+        if (!*b) return (char*)h;
+    }
+    return NULL;
+}
+#define strcasestr mfl_strcasestr
+#endif
 
 #ifdef MFL_HAS_CABUNDLE
 /* Compiled in by build.go (machin build --static) as a separate translation
@@ -2268,6 +2285,7 @@ static SSL* mfl_tls_handshake_client(int fd, const char* host, const char** stag
    Returns a connected SSL* (fd retrievable via SSL_get_fd) or NULL. On failure,
    *stage (if non-NULL) is set to why: "dns", "connect", or "tls". */
 static SSL* mfl_tls_dial_e(const char* host, int port, const char** stage) {
+    mfl_net_init();   /* winsock startup on Windows; no-op on POSIX (#517 Phase TLS) */
     struct addrinfo hints, *res = NULL;
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_UNSPEC;
@@ -2279,14 +2297,14 @@ static SSL* mfl_tls_dial_e(const char* host, int port, const char** stage) {
     for (struct addrinfo* a = res; a; a = a->ai_next) {
         fd = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
         if (fd < 0) continue;
-        if (connect(fd, a->ai_addr, a->ai_addrlen) == 0) break;
-        close(fd);
+        if (connect(fd, a->ai_addr, (int)a->ai_addrlen) == 0) break;
+        MFL_CLOSESOCK(fd);
         fd = -1;
     }
     freeaddrinfo(res);
     if (fd < 0) { if (stage) *stage = "connect"; return NULL; }
     SSL* ssl = mfl_tls_handshake_client(fd, host, stage);
-    if (!ssl) { close(fd); return NULL; } /* dial owns fd: close it on handshake failure */
+    if (!ssl) { MFL_CLOSESOCK(fd); return NULL; } /* dial owns fd: close it on handshake failure */
     return ssl;
 }
 
@@ -2296,7 +2314,7 @@ static void mfl_tls_hangup(SSL* ssl) {
     if (!ssl) return;
     int fd = SSL_get_fd(ssl);
     SSL_shutdown(ssl);
-    if (fd >= 0) close(fd);
+    if (fd >= 0) MFL_CLOSESOCK(fd);
     SSL_free(ssl);
 }
 
@@ -2459,6 +2477,7 @@ static mfl_http_result mfl_http_do(const char* method, const char* url, const ch
 /* plain (non-TLS) transport for http:// URLs, mirroring the TLS path's staged
    error vocabulary ("dns"/"connect"). */
 static int mfl_tcp_dial_e(const char* host, int port, const char** stage) {
+    mfl_net_init();   /* winsock startup on Windows; no-op on POSIX (#517 Phase TLS) */
     struct addrinfo hints, *res, *rp;
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_UNSPEC; hints.ai_socktype = SOCK_STREAM;
@@ -2468,8 +2487,8 @@ static int mfl_tcp_dial_e(const char* host, int port, const char** stage) {
     for (rp = res; rp; rp = rp->ai_next) {
         fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
         if (fd < 0) continue;
-        if (connect(fd, rp->ai_addr, rp->ai_addrlen) == 0) break;
-        close(fd); fd = -1;
+        if (connect(fd, rp->ai_addr, (int)rp->ai_addrlen) == 0) break;
+        MFL_CLOSESOCK(fd); fd = -1;
     }
     freeaddrinfo(res);
     if (fd < 0 && stage) *stage = "connect";
@@ -2550,7 +2569,7 @@ static mfl_http_result mfl_http_do(const char* method, const char* url, const ch
         if (fd < 0) { R.err = mfl_dup_arena(stage, strlen(stage)); free(req); return R; }
         mfl_sock_writeall(fd, req, rl);
         raw = mfl_sock_readall(fd, &rlen);
-        close(fd);
+        MFL_CLOSESOCK(fd);
     }
     free(req);
 
@@ -3901,6 +3920,11 @@ func (g *cgen) program(p *Program) (string, error) {
 		// dependency (#517). The windows preflight in CompileToCTarget rejects programs
 		// that DO use net/tty, so on that target these stay unemitted.
 		portableBase := !g.wasm() && !g.windows()
+		// socket portability shims: needed by any socket runtime (net, TLS, WSS)
+		if portableBase || g.usesNet || g.usesTLS || g.usesWSS {
+			out.WriteString(sockCompatRuntime)
+			out.WriteByte('\n')
+		}
 		if portableBase || g.usesNet {
 			out.WriteString(netRuntime)
 			out.WriteByte('\n')

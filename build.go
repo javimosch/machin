@@ -267,15 +267,33 @@ func BuildWasm(prog *Program, outPath string, safe bool) error {
 
 // BuildWindows cross-compiles the program to a Windows x86-64 .exe via
 // `zig cc -target x86_64-windows-gnu` (mingw-w64 + winpthreads, a single-binary
-// cross toolchain like the wasm path). Phase 0 of #517: the POSIX-independent
-// core only — CompileToCTarget's windows preflight rejects programs that use
-// networking, TLS/crypto, terminal raw mode, SQLite, or regex. No C compiler
-// besides zig is needed; override the zig binary with $ZIG.
+// cross toolchain like the wasm path). Covers #517 Phases 0+N+TLS: the
+// POSIX-independent core, TCP sockets (winsock2), and HTTPS/TLS + OpenSSL crypto
+// builtins. The preflight still rejects XEdDSA, terminal raw mode, SQLite, regex.
+//
+// zig alone suffices EXCEPT for TLS/crypto, which link OpenSSL: zig does not ship
+// an OpenSSL for the windows-gnu target, so the caller must point MACHIN_WIN_OPENSSL
+// at a mingw-w64 OpenSSL install (a dir with include/ and lib/ holding libssl.a /
+// libcrypto.a, e.g. from msys2's mingw-w64-x86_64-openssl). This mirrors how the
+// native --static + TLS build already requires libssl-dev's static archives on the
+// build host. Override the zig binary with $ZIG.
 func BuildWindows(prog *Program, outPath string, safe bool) error {
 	csrc, _, err := CompileToCTarget(prog, safe, targetWindows)
 	if err != nil {
 		return err
 	}
+
+	usesTLS := strings.Contains(csrc, "mfl_tls_dial")
+	usesCrypto := strings.Contains(csrc, "mfl_crypto_")
+	usesNet := strings.Contains(csrc, "WSAStartup")
+	usesOpenSSL := usesTLS || usesCrypto
+
+	// TLS/crypto need a mingw OpenSSL the caller supplies out of band.
+	sslDir := os.Getenv("MACHIN_WIN_OPENSSL")
+	if usesOpenSSL && sslDir == "" {
+		return fmt.Errorf("the windows target needs an OpenSSL built for x86_64-windows-gnu to link this program's TLS/crypto: set MACHIN_WIN_OPENSSL=/path to a mingw OpenSSL (a dir with include/ and lib/ — e.g. msys2's mingw-w64-x86_64-openssl). See issue #517")
+	}
+
 	tmp, err := os.CreateTemp("", "mfl-*.c")
 	if err != nil {
 		return err
@@ -288,10 +306,39 @@ func BuildWindows(prog *Program, outPath string, safe bool) error {
 
 	// libm (math/noise) is in mingw's default libs; winpthreads is linked
 	// automatically by zig for the *-windows-gnu target, so no explicit -l.
-	args := []string{"cc", "-target", "x86_64-windows-gnu", "-O2", "-fno-strict-aliasing", "-std=c11", "-o", outPath, tmp.Name()}
-	// TCP socket programs (dial/listen/accept) pull in winsock2 -> link ws2_32.
-	// WSAStartup only appears in the emitted C when the net runtime is present.
-	if strings.Contains(csrc, "WSAStartup") {
+	args := []string{"cc", "-target", "x86_64-windows-gnu", "-O2", "-fno-strict-aliasing", "-std=c11"}
+	var srcs []string // extra C sources compiled alongside the generated one
+	if usesOpenSSL {
+		args = append(args, "-I"+filepath.Join(sslDir, "include"))
+	}
+	// A TLS program needs a CA root store to verify certificates; Windows has no
+	// /etc/ssl/certs, so compile the vendored CA bundle in (as the native --static
+	// build does) and tell mfl_ssl_ctx via -DMFL_HAS_CABUNDLE.
+	if usesTLS {
+		dir, err := os.MkdirTemp("", "mfl-win-ca-*")
+		if err != nil {
+			return err
+		}
+		defer os.RemoveAll(dir)
+		pem, err := gunzip(caBundleGz)
+		if err != nil {
+			return fmt.Errorf("ca bundle: %w", err)
+		}
+		cpath := filepath.Join(dir, "mfl_cabundle.c")
+		if err := os.WriteFile(cpath, []byte("#include <stddef.h>\n"+cBytesLiteral("mfl_ca_bundle_pem", pem)), 0o644); err != nil {
+			return err
+		}
+		args = append(args, "-DMFL_HAS_CABUNDLE")
+		srcs = append(srcs, cpath)
+	}
+	args = append(args, "-o", outPath, tmp.Name())
+	args = append(args, srcs...)
+	// Libraries come after the sources. OpenSSL on Windows pulls in the system
+	// crypto (crypt32/bcrypt) and winsock; ws2_32 is also needed by any socket use.
+	if usesOpenSSL {
+		args = append(args, "-L"+filepath.Join(sslDir, "lib"), "-lssl", "-lcrypto", "-lcrypt32", "-lbcrypt")
+	}
+	if usesNet || usesOpenSSL {
 		args = append(args, "-lws2_32")
 	}
 	cmd := exec.Command(zigPath(), args...)
