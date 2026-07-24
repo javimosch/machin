@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## v0.113.0
+
+- **`arena_reset()` builtin** — frees the current goroutine's value-arena chain
+  in place, without ending the goroutine, handing all strings / slice backings /
+  closure environments allocated so far back to the OS. The escape hatch for a
+  long-running **single-actor** server (one that can't run each request in its
+  own goroutine, e.g. a non-thread-safe store like grange): the main goroutine's
+  arena otherwise grows monotonically. Call it at a quiescent point to keep RSS
+  flat — a 400k-iteration string churn drops from ~166 MB peak to ~2 MB with an
+  identical result. UNCHECKED, unlike an `arena { }` block (whose escape analysis
+  *proves* nothing escapes): the caller asserts no arena-allocated value is still
+  reachable; keep cross-reset state in malloc-backed maps/channels or on disk.
+  Fixes #523.
+
 ## v0.112.0
 
 - **Ternary / Q2_0 quantized matmul kernels** (`dot_q2`, `matmul_q2_batch`) for

@@ -200,6 +200,23 @@ static void mfl_arena_free(mfl_arena* a) {
     a->head = NULL;
     mfl_strlen_cache_s = NULL; /* freed addresses may be reused — drop stale length */
 }
+/* arena_reset(): free the CURRENT goroutine's arena chain in place, WITHOUT
+   ending the goroutine (same reclamation as mfl_arena_free, but on the live
+   arena). For a long-running single-actor server that cannot put each request
+   in its own goroutine (a non-thread-safe store like grange), the main
+   goroutine's arena otherwise grows forever; call this at a quiescent point to
+   hand all value buffers (strings, slice backings, closure envs) back to the OS
+   and keep RSS flat. UNCHECKED escape hatch: unlike an arena { } block (whose
+   escape analysis PROVES nothing allocated inside outlives it), this trusts the
+   caller to ensure NO arena-allocated value is still reachable — any survivor
+   dangles. Live cross-reset state must sit in malloc-backed maps/channels or on
+   disk. Safe on both the main and spawned arenas; a later goroutine exit re-runs
+   mfl_arena_free on the now-empty head (a no-op). See issue #523. */
+static int64_t mfl_arena_reset(void) {
+    if (!mfl_arena_cur) mfl_arena_cur = &mfl_main_arena;
+    mfl_arena_free(mfl_arena_cur);
+    return 0;
+}
 
 /* --safe runtime checks (used only when the program is built with --safe) */
 static void mfl_panic(const char* msg);   /* defined after the record/replay runtime (it enriches a crash with the schedule that led there) */
@@ -5758,6 +5775,8 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("mfl_exit(%s)", args[0]), nil
 	case "flush":
 		return "mfl_flush()", nil
+	case "arena_reset":
+		return "mfl_arena_reset()", nil
 	case "raw_mode":
 		g.usesTTY = true
 		return fmt.Sprintf("mfl_raw_mode(%s)", args[0]), nil
