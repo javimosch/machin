@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## v0.119.0
+
+- **Windows target — Phase N: TCP sockets (winsock2)** (issue #517). The
+  `--target windows` cross-compile now supports the raw socket layer —
+  `dial`/`listen`/`accept`/`read`/`write`/`close`/`peer_addr`/`socket_timeout` —
+  via winsock2, so plain-TCP clients and servers cross-compile and link to a
+  Windows `.exe` (auto-links `ws2_32`). The socket runtime is single-sourced
+  across POSIX and Windows behind `#ifdef _WIN32` shims (recv/send instead of
+  read/write, `closesocket`, a one-time `WSAStartup`, the DWORD-millisecond
+  `SO_RCVTIMEO`), so native and wasm output is unchanged. TLS/crypto (`https_*`,
+  `wss_*`, crypto builtins — the OpenSSL-for-Windows link), terminal raw mode,
+  SQLite, and regex remain unsupported on this target and are still rejected at
+  build time with a clear message.
+
 ## v0.118.0
 
 - **`arena_reset()` now returns freed pages to the OS** (issue #529). It already

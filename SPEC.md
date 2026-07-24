@@ -1,6 +1,6 @@
 # The MFL Language Specification
 
-Version 0.118.0
+Version 0.119.0
 
 MFL (Machine-First Language) is a statically-typed, Go-flavored backend language
 **shaped for machine authoring**: minimal syntax, no type annotations, one
@@ -536,13 +536,15 @@ id(42); id("hi"); id(3.14)   // → three native functions
   references no `socket()`/`termios`). machin ints are i64 (`BigInt` across the JS
   boundary); strings are pointers into the exported `memory`.
   `machin build --target windows` cross-compiles to a Windows x86-64 `.exe` via
-  `zig cc -target x86_64-windows-gnu` (also single-binary; `ZIG=` overrides). This
-  is Phase 0 of the Windows port (issue #517): the POSIX-independent core compiles
-  under mingw-w64 — stdio, strings/maps/slices, `json()`, arena blocks +
-  `arena_reset()`, goroutines/channels (winpthreads), math, file I/O — with
-  portability handled by `#ifdef _WIN32` guards in the emitted runtime (so the same
-  C still builds native and wasm). Networking (winsock2), TLS/crypto, terminal raw
-  mode, SQLite, and regex are not yet supported and are rejected at build time.
+  `zig cc -target x86_64-windows-gnu` (also single-binary; `ZIG=` overrides). The
+  Windows port (issue #517) covers the POSIX-independent core under mingw-w64 —
+  stdio, strings/maps/slices, `json()`, arena blocks + `arena_reset()`,
+  goroutines/channels (winpthreads), math, file I/O — plus TCP sockets
+  (`dial`/`listen`/`accept`/`read`/`write`/`close`) via winsock2 (auto-links
+  `ws2_32`), with portability handled by `#ifdef _WIN32` guards in the emitted
+  runtime (so the same C still builds native and wasm). TLS/crypto (OpenSSL),
+  terminal raw mode, SQLite, and regex are not yet supported and are rejected at
+  build time.
 
 ---
 

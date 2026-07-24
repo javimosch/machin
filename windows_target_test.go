@@ -19,7 +19,6 @@ func TestWindowsPreflightRejects(t *testing.T) {
 		src     string
 		mentions string
 	}{
-		{"net", `func main() { fd := listen(8080)  println(str(fd)) }`, "networking"},
 		{"tty", `func main() { raw_mode(1)  println(read_key()) }`, "terminal raw mode"},
 		{"tls", `func main() { println(https_get("https://example.com")) }`, "HTTPS/TLS"},
 	}
@@ -78,6 +77,54 @@ func TestWindowsCoreOmitsPosixRuntime(t *testing.T) {
 	}
 	if !strings.Contains(natC, "mfl_listen(") {
 		t.Fatal("native C unexpectedly lacks the socket runtime — test assumption broken")
+	}
+}
+
+// #517 Phase N: TCP sockets (dial/listen/accept/read/write/close) are now
+// supported on the windows target via winsock2, so a net program must pass the
+// preflight and emit the winsock startup + the ws2_32 dependency marker.
+func TestWindowsNetCompiles(t *testing.T) {
+	// a client (dial) and a server (listen/accept) both exercise the socket runtime
+	src := `func main() {
+	fd := dial("example.com", 80)
+	write(fd, "GET / HTTP/1.0\r\n\r\n")
+	println(read(fd))
+	close(fd)
+	sfd := listen(8080)
+	c := accept(sfd)
+	println(peer_addr(c))
+	close(c)
+	close(sfd)
+}`
+	prog, err := ParseProgram([]string{normalize(src)})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	winC, _, err := CompileToCTarget(prog, false, targetWindows)
+	if err != nil {
+		t.Fatalf("windows net compile should succeed (Phase N), got: %v", err)
+	}
+	// winsock is initialized (WSAStartup) and the socket runtime is present.
+	if !strings.Contains(winC, "WSAStartup") {
+		t.Fatal("windows net C should call WSAStartup (winsock init)")
+	}
+	if !strings.Contains(winC, "closesocket") {
+		t.Fatal("windows net C should use closesocket, not close(), on sockets")
+	}
+	// end-to-end link to a PE (gated on a runnable zig — links ws2_32)
+	if err := exec.Command(zigPath(), "version").Run(); err != nil {
+		t.Skipf("zig not runnable (%v) — skipping windows net PE link", err)
+	}
+	out := t.TempDir() + "/net.exe"
+	if err := BuildWindows(prog, out, false); err != nil {
+		t.Fatalf("BuildWindows (net): %v", err)
+	}
+	b, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(b) < 2 || b[0] != 'M' || b[1] != 'Z' {
+		t.Fatalf("net output is not a PE executable: first bytes %q", b[:min(8, len(b))])
 	}
 }
 

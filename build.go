@@ -289,6 +289,11 @@ func BuildWindows(prog *Program, outPath string, safe bool) error {
 	// libm (math/noise) is in mingw's default libs; winpthreads is linked
 	// automatically by zig for the *-windows-gnu target, so no explicit -l.
 	args := []string{"cc", "-target", "x86_64-windows-gnu", "-O2", "-fno-strict-aliasing", "-std=c11", "-o", outPath, tmp.Name()}
+	// TCP socket programs (dial/listen/accept) pull in winsock2 -> link ws2_32.
+	// WSAStartup only appears in the emitted C when the net runtime is present.
+	if strings.Contains(csrc, "WSAStartup") {
+		args = append(args, "-lws2_32")
+	}
 	cmd := exec.Command(zigPath(), args...)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("%s failed: %v\n%s", zigPath(), err, out)

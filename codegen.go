@@ -42,18 +42,17 @@ func CompileToCTarget(p *Program, safe bool, target string) (string, []string, e
 }
 
 // windowsUnsupported reports the first subsystem a program uses that the windows
-// target does not yet cover. Phase 0 of #517 gets the POSIX-independent core
+// target does not yet cover. Phase 0 of #517 got the POSIX-independent core
 // compiling under mingw-w64 (stdio, strings/maps/slices, arena, goroutines +
-// channels via winpthreads, math, file I/O); networking (winsock2), TLS/crypto
-// (OpenSSL-Windows), terminal raw mode, SQLite, and POSIX regex are later phases.
-// Failing here — rather than emitting C that dies deep in the linker — keeps the
-// error actionable.
+// channels via winpthreads, math, file I/O); Phase N added TCP sockets
+// (dial/listen/accept/read/write) via winsock2. Still later phases: TLS/crypto
+// (OpenSSL-Windows), terminal raw mode, SQLite, and POSIX regex. Failing here —
+// rather than emitting C that dies deep in the linker — keeps the error actionable.
 func windowsUnsupported(g *cgen) error {
 	for _, u := range []struct {
 		used bool
 		what string
 	}{
-		{g.usesNet, "networking (dial/listen/accept/fd I/O — winsock2 is a later phase)"},
 		{g.usesTTY, "terminal raw mode (raw_mode/read_key)"},
 		{g.usesSelect, "select"},
 		{g.usesTLS, "HTTPS/TLS (https_* — needs OpenSSL for Windows)"},
@@ -64,7 +63,7 @@ func windowsUnsupported(g *cgen) error {
 		{g.usesRegex, "regex (regex_*)"},
 	} {
 		if u.used {
-			return fmt.Errorf("the windows target does not yet support %s — see issue #517 (Phase 0 covers the stdio/compute core: strings, maps, slices, arena, goroutines/channels, math, file I/O)", u.what)
+			return fmt.Errorf("the windows target does not yet support %s — see issue #517 (supported: the stdio/compute core plus TCP sockets — strings, maps, slices, arena, goroutines/channels, math, file I/O, dial/listen/accept)", u.what)
 		}
 	}
 	return nil
@@ -155,6 +154,14 @@ func (g *cgen) wasm() bool    { return g.target == targetWasm }
 func (g *cgen) windows() bool { return g.target == targetWindows }
 
 const cRuntime = `#define _GNU_SOURCE
+#ifdef _WIN32
+/* winsock2 must precede any windows.h (which winpthreads' pthread.h pulls in),
+   so include it first; harmless for non-networking programs — it only adds the
+   ws2_32 link dependency when socket functions are actually used (#517 Phase N). */
+#define WIN32_LEAN_AND_MEAN
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -2001,12 +2008,27 @@ static mfl_json_result mfl_json_get(const char* json, const char* path) {
 // actually calls one of these builtins (a frontend app that touches no sockets
 // then references no POSIX networking symbols at all).
 const netRuntime = `/* networking: the low-level shape of Go's net package */
+/* Windows uses winsock2: sockets are recv/send (not read/write), closesocket
+   (not close), and WSAStartup must run once before any socket call. These shims
+   keep the body below single-sourced across POSIX and Windows (#517 Phase N). */
+#ifdef _WIN32
+static void mfl_net_init(void) { static int mfl_ws = 0; if (!mfl_ws) { WSADATA w; WSAStartup(MAKEWORD(2, 2), &w); mfl_ws = 1; } }
+#define MFL_CLOSESOCK(fd)      closesocket((SOCKET)(fd))
+#define MFL_SOCK_READ(fd,b,n)  recv((SOCKET)(fd), (char*)(b), (int)(n), 0)
+#define MFL_SOCK_WRITE(fd,b,n) send((SOCKET)(fd), (const char*)(b), (int)(n), 0)
+#else
+static void mfl_net_init(void) {}
+#define MFL_CLOSESOCK(fd)      close((int)(fd))
+#define MFL_SOCK_READ(fd,b,n)  read((int)(fd), (b), (n))
+#define MFL_SOCK_WRITE(fd,b,n) write((int)(fd), (b), (n))
+#endif
 static int64_t mfl_listen(int64_t port) {
+    mfl_net_init();
     /* replay: return the recorded fd without binding a real port (it may be taken, and
        no bytes flow through it on replay anyway — reads are served from the I/O log). */
     if (mfl_rr_mode == 2) return mfl_rr_io_pop_i64();
     int fd = socket(AF_INET, SOCK_STREAM, 0);
-    int opt = 1; setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    int opt = 1; setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (const char*)&opt, sizeof(opt));
     struct sockaddr_in a; memset(&a, 0, sizeof(a));
     a.sin_family = AF_INET; a.sin_addr.s_addr = INADDR_ANY; a.sin_port = htons((uint16_t)port);
     if (bind(fd, (struct sockaddr*)&a, sizeof(a)) < 0) { perror("bind"); exit(1); }
@@ -2039,9 +2061,16 @@ static const char* mfl_peer_addr(int64_t fd) {
    slow client can't park a connection forever. Returns 0 on success, -1 on error. */
 static int64_t mfl_socket_timeout(int64_t fd, int64_t ms) {
     if (mfl_rr_mode == 2) return mfl_rr_io_pop_i64();
+#ifdef _WIN32
+    /* winsock SO_RCVTIMEO/SO_SNDTIMEO take a DWORD of milliseconds, not a timeval */
+    DWORD tv = (DWORD)ms;
+    int a = setsockopt((SOCKET)fd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv));
+    int b = setsockopt((SOCKET)fd, SOL_SOCKET, SO_SNDTIMEO, (const char*)&tv, sizeof(tv));
+#else
     struct timeval tv; tv.tv_sec = ms / 1000; tv.tv_usec = (ms % 1000) * 1000;
     int a = setsockopt((int)fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     int b = setsockopt((int)fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+#endif
     int64_t r = (a == 0 && b == 0) ? 0 : -1;
     if (mfl_rr_mode == 1) mfl_rr_io_log_i64(r);
     return r;
@@ -2051,6 +2080,7 @@ static int64_t mfl_socket_timeout(int64_t fd, int64_t ms) {
 static int64_t mfl_dial(const char* host, int64_t port) {
     /* replay: recorded fd, no real connect (the peer's bytes come from the I/O log). */
     if (mfl_rr_mode == 2) return mfl_rr_io_pop_i64();
+    mfl_net_init();
     struct addrinfo hints, *res, *rp;
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_UNSPEC; hints.ai_socktype = SOCK_STREAM;
@@ -2060,8 +2090,8 @@ static int64_t mfl_dial(const char* host, int64_t port) {
     for (rp = res; rp; rp = rp->ai_next) {
         fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
         if (fd < 0) continue;
-        if (connect(fd, rp->ai_addr, rp->ai_addrlen) == 0) break;
-        close(fd); fd = -1;
+        if (connect(fd, rp->ai_addr, (int)rp->ai_addrlen) == 0) break;
+        MFL_CLOSESOCK(fd); fd = -1;
     }
     freeaddrinfo(res);
     if (mfl_rr_mode == 1) mfl_rr_io_log_i64(fd);
@@ -2073,7 +2103,7 @@ static char* mfl_read(int64_t fd) {
     if (mfl_rr_mode == 2) { size_t L; char* s = mfl_hexdec(mfl_io_pop(), &L); char* a = mfl_dup_arena(s, L); free(s); return a; }
     char* buf = mfl_alloc(65536);
     mfl_dl_io_park(1);
-    ssize_t n = read((int)fd, buf, 65535);
+    ssize_t n = MFL_SOCK_READ(fd, buf, 65535);
     mfl_dl_io_park(0);
     if (n > 0) mfl_dl_note(); /* got data = progress, so an active reader isn't "parked" */
     if (n < 0) n = 0;
@@ -2092,7 +2122,7 @@ static mfl_bytes mfl_read_bytes(int64_t fd) {
     }
     mfl_bytes b; b.data = (uint8_t*)mfl_alloc(65536);
     mfl_dl_io_park(1);
-    ssize_t n = read((int)fd, b.data, 65536);
+    ssize_t n = MFL_SOCK_READ(fd, b.data, 65536);
     mfl_dl_io_park(0);
     if (n > 0) mfl_dl_note(); /* got data = progress */
     if (n < 0) n = 0;
@@ -2104,7 +2134,7 @@ static mfl_bytes mfl_read_bytes(int64_t fd) {
    no real send (the fd is a recorded sentinel, so writing would EPIPE). */
 static int64_t mfl_write(int64_t fd, const char* s) {
     if (mfl_rr_mode == 2) return mfl_rr_io_pop_i64();
-    int64_t r = (int64_t)write((int)fd, s, strlen(s));
+    int64_t r = (int64_t)MFL_SOCK_WRITE(fd, s, strlen(s));
     if (mfl_rr_mode == 1) mfl_rr_io_log_i64(r);
     return r;
 }
@@ -2113,14 +2143,14 @@ static int64_t mfl_write_bytes(int64_t fd, mfl_bytes b) {
     if (mfl_rr_mode == 2) return mfl_rr_io_pop_i64();
     size_t off = 0;
     while (off < (size_t)b.len) {
-        ssize_t w = write((int)fd, b.data + off, (size_t)b.len - off);
+        ssize_t w = MFL_SOCK_WRITE(fd, b.data + off, (size_t)b.len - off);
         if (w <= 0) break;
         off += (size_t)w;
     }
     if (mfl_rr_mode == 1) mfl_rr_io_log_i64((int64_t)off);
     return (int64_t)off;
 }
-static void mfl_close(int64_t fd) { close((int)fd); }
+static void mfl_close(int64_t fd) { MFL_CLOSESOCK(fd); }
 `
 
 // ttyRuntime is terminal raw mode + non-blocking single-key reads (termios +
