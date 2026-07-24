@@ -1,6 +1,6 @@
 # The MFL Language Specification
 
-Version 0.112.0
+Version 0.113.0
 
 MFL (Machine-First Language) is a statically-typed, Go-flavored backend language
 **shaped for machine authoring**: minimal syntax, no type annotations, one
@@ -280,6 +280,7 @@ startup (before `main`; at `_initialize` for a wasm reactor).
 | `f64_from_bits` | `(int) -> float` | the inverse: an `int` bit pattern → `float` |
 | `exit` | `(int) -> ` | terminate the process with a status code |
 | `flush` | `() -> ` | flush buffered stdout (for prompt output through a pipe) |
+| `arena_reset` | `() -> int` | free the current goroutine's value-arena in place (keeps a long-running single-actor server's RSS flat); unchecked — caller asserts no arena value is still reachable (§13) |
 | `raw_mode` | `(int) -> int` | put the terminal in cbreak/no-echo mode (`1`) or restore it (`0`); pair them and restore before exit (TUIs/games) |
 | `read_key` | `() -> string` | non-blocking single-key read: a 1-char string, or `""` if no key is waiting (needs `raw_mode` for live input) |
 | `read_file` | `(string) -> string` | read a whole file ("" on error) |
@@ -483,6 +484,15 @@ id(42); id("hi"); id(3.14)   // → three native functions
   block (assigned to an outer variable, returned, sent on a channel) dangles, as
   with a stack frame. Scalars (ints, floats, bools) are not heap-allocated, so
   accumulating them across the block is always safe.
+- The **`arena_reset()`** builtin frees the current goroutine's value-arena chain
+  in place, without ending the goroutine. It is the escape hatch for a
+  long-running *single-actor* server that cannot run each request in its own
+  goroutine (a non-thread-safe store): the main goroutine's arena would otherwise
+  grow monotonically, so call `arena_reset()` at a quiescent point to keep RSS
+  flat. Unlike an `arena { }` block, it is **unchecked** — the caller asserts
+  that no arena-allocated value is still reachable at the reset point; any
+  survivor dangles. Keep cross-reset state in malloc-backed maps/channels or on
+  disk. Prefer `arena { }` when the lifetime is a lexical scope.
 - By default, integer overflow wraps (two's complement) and division by zero /
   out-of-bounds slice access are undefined (they follow the generated C).
 - Building with **`--safe`** inserts runtime checks: a slice index out of range,
