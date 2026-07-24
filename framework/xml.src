@@ -1,0 +1,581 @@
+// framework/xml.src — a minimal XML parser + Exclusive XML Canonicalization
+// (xml-exc-c14n#, non-comment) + XML-DSig (SAML) signature verification, all in
+// pure MFL. The remaining pieces of issue #484: the crypto primitives (RSA,
+// x509_pubkey) already exist; this adds the XML layer so a SAML <ds:Signature>
+// can be verified end to end with no native XML dependency.
+//
+// Scope (what real SAML uses): namespaced elements/attributes, the five named
+// entities, self-closing tags, comments/PIs/DOCTYPE skipped. Numeric character
+// references and CDATA in signed content are NOT decoded (rare in SAML); a doc
+// using them will fail closed (verification returns 0), never falsely pass.
+
+// ---- parsed node store -----------------------------------------------------
+// kind: 1 = element, 2 = text. Elements carry their own namespace declarations
+// (ns_pfx/ns_uri, "" prefix = default xmlns) and attributes (at_name/at_val,
+// values already entity-decoded); kids holds child node indices in document
+// order. A flat array with parent/child indices (no self-referential struct).
+type XNode struct {
+    kind    int
+    name    string
+    text    string
+    parent  int
+    ns_pfx  []string
+    ns_uri  []string
+    at_name []string
+    at_val  []string
+    kids    []int
+}
+
+var g_xn = []XNode{}
+var g_src = ""
+var g_pos = 0
+var g_skip = -1   // c14n: index of a subtree to omit (enveloped-signature transform)
+
+func xml_reset(src) (r) {
+    g_xn = []XNode{}
+    g_src = src
+    g_pos = 0
+    g_skip = -1
+    r = 0
+}
+
+func xml_add(kind, name, text, parent) (idx) {
+    n := XNode{kind: kind, name: name, text: text, parent: parent}
+    g_xn = append(g_xn, n)
+    idx = len(g_xn) - 1
+}
+
+func xml_is_space(c) (b) {
+    b = c == " " || c == "\t" || c == "\n" || c == "\r"
+}
+
+func xml_skip_ws() (r) {
+    r = 0
+    while g_pos < len(g_src) {
+        if xml_is_space(charat(g_src, g_pos)) {
+            g_pos = g_pos + 1
+        } else {
+            return
+        }
+    }
+}
+
+// read a name/nmtoken: up to whitespace or one of / > = <
+func xml_read_name() (nm) {
+    nm = ""
+    while g_pos < len(g_src) {
+        c := charat(g_src, g_pos)
+        if xml_is_space(c) || c == "/" || c == ">" || c == "=" || c == "<" {
+            return
+        }
+        nm = nm + c
+        g_pos = g_pos + 1
+    }
+}
+
+// read verbatim until (not including) the stop char
+func xml_read_until(stop) (s) {
+    s = ""
+    while g_pos < len(g_src) {
+        c := charat(g_src, g_pos)
+        if c == stop {
+            return
+        }
+        s = s + c
+        g_pos = g_pos + 1
+    }
+}
+
+// find ch in s at or after `from` (-1 if none)
+func xml_index_from(s, ch, from) (idx) {
+    idx = -1
+    i := from
+    n := len(s)
+    while i < n {
+        if charat(s, i) == ch {
+            idx = i
+            return
+        }
+        i = i + 1
+    }
+}
+
+// decode the five named XML entities; unknown/numeric refs are left verbatim
+// (so a doc relying on them fails closed later rather than mis-canonicalizing).
+func xml_decode(s) (out) {
+    out = ""
+    i := 0
+    n := len(s)
+    while i < n {
+        c := charat(s, i)
+        if c == "&" {
+            semi := xml_index_from(s, ";", i)
+            if semi > i {
+                ent := substr(s, i + 1, semi)
+                if ent == "lt" {
+                    out = out + "<"
+                } else if ent == "gt" {
+                    out = out + ">"
+                } else if ent == "amp" {
+                    out = out + "&"
+                } else if ent == "quot" {
+                    out = out + "\""
+                } else if ent == "apos" {
+                    out = out + "'"
+                } else {
+                    out = out + substr(s, i, semi + 1)
+                }
+                i = semi + 1
+            } else {
+                out = out + c
+                i = i + 1
+            }
+        } else {
+            out = out + c
+            i = i + 1
+        }
+    }
+}
+
+// skip <!-- ... --> ; <![CDATA[..]]> and <!DOCTYPE..> and other <! to '>'
+func xml_skip_bang() (r) {
+    r = 0
+    if substr(g_src, g_pos, g_pos + 4) == "<!--" {
+        g_pos = g_pos + 4
+        while g_pos < len(g_src) {
+            if substr(g_src, g_pos, g_pos + 3) == "-->" {
+                g_pos = g_pos + 3
+                return
+            }
+            g_pos = g_pos + 1
+        }
+        return
+    }
+    // other <! ... > (DOCTYPE etc.) — skip to the next '>'
+    xml_read_until(">")
+    g_pos = g_pos + 1
+}
+
+// skip <? ... ?>
+func xml_skip_pi() (r) {
+    r = 0
+    while g_pos < len(g_src) {
+        if substr(g_src, g_pos, g_pos + 2) == "?>" {
+            g_pos = g_pos + 2
+            return
+        }
+        g_pos = g_pos + 1
+    }
+}
+
+// parse an element starting at '<' (not '</'); returns its node index
+func xml_parse_element(parent) (idx) {
+    g_pos = g_pos + 1 // '<'
+    name := xml_read_name()
+    idx = xml_add(1, name, "", parent)
+    while g_pos < len(g_src) {
+        xml_skip_ws()
+        c := charat(g_src, g_pos)
+        if c == "/" {
+            g_pos = g_pos + 2 // '/' '>'
+            return
+        }
+        if c == ">" {
+            g_pos = g_pos + 1
+            xml_parse_children(idx)
+            return
+        }
+        an := xml_read_name()
+        xml_skip_ws()
+        g_pos = g_pos + 1 // '='
+        xml_skip_ws()
+        q := charat(g_src, g_pos)
+        g_pos = g_pos + 1 // opening quote
+        av := xml_decode(xml_read_until(q))
+        g_pos = g_pos + 1 // closing quote
+        if an == "xmlns" {
+            g_xn[idx].ns_pfx = append(g_xn[idx].ns_pfx, "")
+            g_xn[idx].ns_uri = append(g_xn[idx].ns_uri, av)
+        } else if has_prefix(an, "xmlns:") {
+            g_xn[idx].ns_pfx = append(g_xn[idx].ns_pfx, substr(an, 6, len(an)))
+            g_xn[idx].ns_uri = append(g_xn[idx].ns_uri, av)
+        } else {
+            g_xn[idx].at_name = append(g_xn[idx].at_name, an)
+            g_xn[idx].at_val = append(g_xn[idx].at_val, av)
+        }
+    }
+}
+
+// parse children until the matching end tag
+func xml_parse_children(elem) (r) {
+    r = 0
+    while g_pos < len(g_src) {
+        c := charat(g_src, g_pos)
+        if c == "<" {
+            c2 := charat(g_src, g_pos + 1)
+            if c2 == "/" {
+                g_pos = g_pos + 2
+                xml_read_name()
+                xml_skip_ws()
+                g_pos = g_pos + 1 // '>'
+                return
+            } else if c2 == "!" {
+                xml_skip_bang()
+            } else if c2 == "?" {
+                xml_skip_pi()
+            } else {
+                ch := xml_parse_element(elem)
+                g_xn[elem].kids = append(g_xn[elem].kids, ch)
+            }
+        } else {
+            t := xml_decode(xml_read_until("<"))
+            ti := xml_add(2, "", t, elem)
+            g_xn[elem].kids = append(g_xn[elem].kids, ti)
+        }
+    }
+}
+
+// parse a whole document; returns the root element index (-1 on no element)
+func xml_parse(src) (root) {
+    xml_reset(src)
+    root = -1
+    while g_pos < len(g_src) {
+        c := charat(g_src, g_pos)
+        if c == "<" {
+            c2 := charat(g_src, g_pos + 1)
+            if c2 == "?" {
+                xml_skip_pi()
+            } else if c2 == "!" {
+                xml_skip_bang()
+            } else {
+                root = xml_parse_element(-1)
+                return
+            }
+        } else {
+            g_pos = g_pos + 1
+        }
+    }
+}
+
+// ---- Exclusive XML Canonicalization (xml-exc-c14n#, non-comment) ------------
+
+func c14n_prefix(qn) (r) {
+    p := xml_index_from(qn, ":", 0)
+    if p < 0 { r = "" } else { r = substr(qn, 0, p) }
+}
+func c14n_local(qn) (r) {
+    p := xml_index_from(qn, ":", 0)
+    if p < 0 { r = qn } else { r = substr(qn, p + 1, len(qn)) }
+}
+
+// resolve a prefix to its namespace URI in the ORIGINAL document (walk ancestors)
+func ns_resolve(idx, pfx) (uri) {
+    uri = ""
+    cur := idx
+    while cur >= 0 {
+        j := 0
+        while j < len(g_xn[cur].ns_pfx) {
+            if g_xn[cur].ns_pfx[j] == pfx {
+                uri = g_xn[cur].ns_uri[j]
+                return
+            }
+            j = j + 1
+        }
+        cur = g_xn[cur].parent
+    }
+}
+
+// last URI rendered for prefix p in the output context, or a sentinel if none
+func c14n_ctx_lookup(pfxs, uris, p) (u) {
+    u = "@@NOT_RENDERED@@"
+    i := 0
+    while i < len(pfxs) {
+        if pfxs[i] == p { u = uris[i] }
+        i = i + 1
+    }
+}
+
+func c14n_clone(a) (r) {
+    r = []string{}
+    i := 0
+    while i < len(a) { r = append(r, a[i])  i = i + 1 }
+}
+
+func c14n_text_escape(s) (r) {
+    r = replace(s, "&", "&amp;")
+    r = replace(r, "<", "&lt;")
+    r = replace(r, ">", "&gt;")
+    r = replace(r, "\r", "&#xD;")
+}
+func c14n_attr_escape(s) (r) {
+    r = replace(s, "&", "&amp;")
+    r = replace(r, "<", "&lt;")
+    r = replace(r, "\"", "&quot;")
+    r = replace(r, "\t", "&#x9;")
+    r = replace(r, "\n", "&#xA;")
+    r = replace(r, "\r", "&#xD;")
+}
+
+// is attribute `other` greater than key (kuri,kloc) under c14n order (nsuri, local)?
+func c14n_attr_gt(idx, other, kuri, kloc) (gt) {
+    ouri := ns_resolve(idx, c14n_prefix(g_xn[idx].at_name[other]))
+    oloc := c14n_local(g_xn[idx].at_name[other])
+    gt = false
+    if ouri > kuri {
+        gt = true
+    } else if ouri == kuri {
+        if oloc > kloc { gt = true }
+    }
+}
+
+// indices of idx's attributes, sorted by (namespace-uri, local-name)
+func c14n_attr_order(idx) (order) {
+    order = []int{}
+    n := len(g_xn[idx].at_name)
+    i := 0
+    while i < n { order = append(order, i)  i = i + 1 }
+    a := 1
+    while a < n {
+        k := order[a]
+        kuri := ns_resolve(idx, c14n_prefix(g_xn[idx].at_name[k]))
+        kloc := c14n_local(g_xn[idx].at_name[k])
+        b := a - 1
+        while b >= 0 && c14n_attr_gt(idx, order[b], kuri, kloc) {
+            order[b + 1] = order[b]
+            b = b - 1
+        }
+        order[b + 1] = k
+        a = a + 1
+    }
+}
+
+// canonicalize the subtree at idx given the output namespace context already
+// rendered by ancestors (rpfx/ruri); g_skip's subtree is omitted (enveloped sig)
+func c14n_node(idx, rpfx, ruri) (out) {
+    out = ""
+    if idx == g_skip { return }
+    if g_xn[idx].kind == 2 {
+        out = c14n_text_escape(g_xn[idx].text)
+        return
+    }
+    name := g_xn[idx].name
+    nrpfx := c14n_clone(rpfx)
+    nruri := c14n_clone(ruri)
+
+    // visibly-used prefixes: the element's + its attributes' (unique, ordered)
+    used := []string{}
+    used = append(used, c14n_prefix(name))
+    a := 0
+    while a < len(g_xn[idx].at_name) {
+        ap := c14n_prefix(g_xn[idx].at_name[a])
+        if ap != "" {
+            seen := false
+            u2 := 0
+            while u2 < len(used) { if used[u2] == ap { seen = true }  u2 = u2 + 1 }
+            if !seen { used = append(used, ap) }
+        }
+        a = a + 1
+    }
+
+    // which namespaces must be rendered here (not already in output context)
+    rp := []string{}
+    ru := []string{}
+    ui := 0
+    while ui < len(used) {
+        p := used[ui]
+        u := ns_resolve(idx, p)
+        if p == "" && u == "" {
+            // unprefixed element in no namespace, no default in scope -> nothing
+        } else {
+            cur := c14n_ctx_lookup(nrpfx, nruri, p)
+            if cur != u {
+                rp = append(rp, p)
+                ru = append(ru, u)
+                nrpfx = append(nrpfx, p)
+                nruri = append(nruri, u)
+            }
+        }
+        ui = ui + 1
+    }
+    // sort namespace declarations by prefix ("" default sorts first)
+    si := 1
+    while si < len(rp) {
+        kp := rp[si]
+        ku := ru[si]
+        sj := si - 1
+        while sj >= 0 && rp[sj] > kp {
+            rp[sj + 1] = rp[sj]
+            ru[sj + 1] = ru[sj]
+            sj = sj - 1
+        }
+        rp[sj + 1] = kp
+        ru[sj + 1] = ku
+        si = si + 1
+    }
+
+    out = "<" + name
+    e := 0
+    while e < len(rp) {
+        if rp[e] == "" {
+            out = out + " xmlns=\"" + c14n_attr_escape(ru[e]) + "\""
+        } else {
+            out = out + " xmlns:" + rp[e] + "=\"" + c14n_attr_escape(ru[e]) + "\""
+        }
+        e = e + 1
+    }
+    order := c14n_attr_order(idx)
+    ao := 0
+    while ao < len(order) {
+        k := order[ao]
+        out = out + " " + g_xn[idx].at_name[k] + "=\"" + c14n_attr_escape(g_xn[idx].at_val[k]) + "\""
+        ao = ao + 1
+    }
+    out = out + ">"
+    ki := 0
+    while ki < len(g_xn[idx].kids) {
+        out = out + c14n_node(g_xn[idx].kids[ki], nrpfx, nruri)
+        ki = ki + 1
+    }
+    out = out + "</" + name + ">"
+}
+
+// canonicalize the subtree rooted at idx (fresh output namespace context)
+func c14n_subtree(idx) (out) {
+    empty := []string{}
+    empty2 := []string{}
+    out = c14n_node(idx, empty, empty2)
+}
+
+// ---- XML-DSig / SAML signature verification --------------------------------
+
+func xml_strip_ws(s) (r) {
+    r = replace(s, "\n", "")
+    r = replace(r, "\r", "")
+    r = replace(r, "\t", "")
+    r = replace(r, " ", "")
+}
+
+// concatenated text of an element's direct text children
+func xml_text(idx) (t) {
+    t = ""
+    i := 0
+    while i < len(g_xn[idx].kids) {
+        k := g_xn[idx].kids[i]
+        if g_xn[k].kind == 2 { t = t + g_xn[k].text }
+        i = i + 1
+    }
+}
+
+// value of the attribute whose LOCAL name == ln ("" if absent)
+func xml_attr(idx, ln) (v) {
+    v = ""
+    i := 0
+    while i < len(g_xn[idx].at_name) {
+        if c14n_local(g_xn[idx].at_name[i]) == ln {
+            v = g_xn[idx].at_val[i]
+            return
+        }
+        i = i + 1
+    }
+}
+
+// first descendant-or-self element with the given LOCAL name (-1 if none)
+func xml_find_local(idx, ln) (found) {
+    found = -1
+    if g_xn[idx].kind == 1 {
+        if c14n_local(g_xn[idx].name) == ln {
+            found = idx
+            return
+        }
+        i := 0
+        while i < len(g_xn[idx].kids) {
+            r := xml_find_local(g_xn[idx].kids[i], ln)
+            if r >= 0 {
+                found = r
+                return
+            }
+            i = i + 1
+        }
+    }
+}
+
+// element carrying an ID-type attribute (local name "ID") equal to id (-1 if none)
+func xml_find_id(id) (idx) {
+    idx = -1
+    i := 0
+    while i < len(g_xn) {
+        if g_xn[i].kind == 1 {
+            j := 0
+            while j < len(g_xn[i].at_name) {
+                if c14n_local(g_xn[i].at_name[j]) == "ID" && g_xn[i].at_val[j] == id {
+                    idx = i
+                    return
+                }
+                j = j + 1
+            }
+        }
+        i = i + 1
+    }
+}
+
+// saml_verify checks an enveloped XML-DSig signature (RSA-SHA256 + exclusive
+// c14n — the SAML profile) over `xml_str`, using the TRUSTED certificate the
+// caller supplies out of band (cert_b64, the IdP's known signing cert; the cert
+// embedded in the document is deliberately NOT trusted). Returns ok=1 only when
+// BOTH the reference digest and the signature verify. Fails closed on anything
+// it doesn't understand.
+//   Supported: one enveloped Reference, xml-exc-c14n#, rsa-sha256, sha256 digest.
+func saml_verify(xml_str, cert_b64) (ok) {
+    ok = 0
+    root := xml_parse(xml_str)
+    if root < 0 { return }
+    sig := xml_find_local(root, "Signature")
+    if sig < 0 { return }
+    si := xml_find_local(sig, "SignedInfo")
+    if si < 0 { return }
+    ref := xml_find_local(si, "Reference")
+    if ref < 0 { return }
+
+    // locate the referenced element (URI="#id"); empty/"" URI means the whole doc
+    uri := xml_attr(ref, "URI")
+    target := root
+    if len(uri) > 1 && has_prefix(uri, "#") {
+        target = xml_find_id(substr(uri, 1, len(uri)))
+    }
+    if target < 0 { return }
+
+    // (1) reference digest: enveloped-signature transform (omit the Signature
+    // subtree) -> exclusive c14n -> SHA-256 -> base64, compared to DigestValue.
+    g_skip = sig
+    dig_input := c14n_subtree(target)
+    g_skip = -1
+    dvNode := xml_find_local(si, "DigestValue")
+    if dvNode < 0 { return }
+    computed := base64_encode_bytes(sha256_bytes(bytes(dig_input)))
+    if computed != xml_strip_ws(xml_text(dvNode)) { return }
+
+    // (2) signature: exclusive c14n(SignedInfo) verified as RSA-SHA256 against
+    // the trusted cert's public key (via x509_pubkey + rsa_verify_jwk_sha256).
+    svNode := xml_find_local(sig, "SignatureValue")
+    if svNode < 0 { return }
+    si_c14n := c14n_subtree(si)
+    cert_der := base64_decode_bytes(xml_strip_ws(cert_b64))
+    if len(cert_der) == 0 { return }
+    n, e := x509_pubkey(cert_der)
+    if len(n) == 0 { return }
+    sigbytes := base64_decode_bytes(xml_strip_ws(xml_text(svNode)))
+    if rsa_verify_jwk_sha256(n, e, bytes(si_c14n), sigbytes) { ok = 1 }
+}
+
+// saml_signing_cert returns the base64 DER certificate embedded in the
+// document's <ds:X509Certificate> (whitespace stripped), or "" if none. Use it
+// to pin/compare against a known IdP cert — do NOT feed it straight back into
+// saml_verify (verifying a document with a key it carries proves nothing).
+func saml_signing_cert(xml_str) (cert_b64) {
+    cert_b64 = ""
+    root := xml_parse(xml_str)
+    if root < 0 { return }
+    c := xml_find_local(root, "X509Certificate")
+    if c < 0 { return }
+    cert_b64 = xml_strip_ws(xml_text(c))
+}

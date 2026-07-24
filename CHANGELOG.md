@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+## v0.117.0
+
+- **Pure-MFL SAML / XML-DSig signature verification** (`framework/xml.src`) —
+  completes the SAML arm of issue #484 with **no native XML dependency**. A
+  minimal XML parser + **Exclusive Canonicalization** (`xml-exc-c14n#`,
+  non-comment) + enveloped RSA-SHA256 signature verification, on top of the
+  existing `x509_pubkey` / `rsa_verify_jwk_sha256` builtins.
+  `saml_verify(xml_str, trusted_cert_b64)` returns 1 only when both the reference
+  digest and the signature verify against the caller-supplied trusted cert (the
+  cert embedded in the document is deliberately not trusted); it fails closed on
+  anything outside the supported profile. `saml_signing_cert(xml_str)` extracts
+  the embedded `<ds:X509Certificate>` for pinning. The c14n is verified
+  byte-for-byte against signxml/lxml golden vectors, including the exclusive
+  namespace-pruning case (a signed `<Assertion>` nested under a `<Response>` that
+  declares extra unused namespaces). Supported profile: one enveloped Reference,
+  exclusive c14n, rsa-sha256, sha256 digest, the five named XML entities; numeric
+  character references and CDATA in signed content are out of scope (fail closed).
+
 ## v0.116.0
 
 - **`x509_pubkey(cert_der) -> (n, e)` — the X.509 arm of pure-MFL SAML SSO**
