@@ -1,6 +1,6 @@
 # The MFL Language Specification
 
-Version 0.117.0
+Version 0.118.0
 
 MFL (Machine-First Language) is a statically-typed, Go-flavored backend language
 **shaped for machine authoring**: minimal syntax, no type annotations, one
@@ -492,7 +492,10 @@ id(42); id("hi"); id(3.14)   // → three native functions
   flat. Unlike an `arena { }` block, it is **unchecked** — the caller asserts
   that no arena-allocated value is still reachable at the reset point; any
   survivor dangles. Keep cross-reset state in malloc-backed maps/channels or on
-  disk. Prefer `arena { }` when the lifetime is a lexical scope.
+  disk. Prefer `arena { }` when the lifetime is a lexical scope. On glibc it also
+  runs `malloc_trim(0)`, returning the freed pages to the OS so RSS actually drops
+  (plain `free` keeps them on the C heap's free-list); it is a no-op on
+  musl/macOS, whose allocators already release freed spans.
 - By default, integer overflow wraps (two's complement) and division by zero /
   out-of-bounds slice access are undefined (they follow the generated C).
 - Building with **`--safe`** inserts runtime checks: a slice index out of range,
