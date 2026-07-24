@@ -833,6 +833,21 @@ static char* mfl_cat(const char* a, const char* b) {
     memcpy(r, a, la); memcpy(r + la, b, lb); r[la + lb] = 0;
     return r;
 }
+/* growable string builder: append in amortized O(1) so building N pieces is
+   O(total bytes), not the O(N^2) that chained mfl_cat produced (each mfl_cat
+   recopied the entire accumulated prefix, and every intermediate prefix stayed
+   in the arena as permanent garbage — a 2 MB json() output cost ~8 GB RSS). The
+   scratch buffer is plain malloc (doubling); mfl_sb_done copies the final bytes
+   once into the arena and frees the scratch, so no intermediate is arena garbage.
+   Used by the json() serializers. (#520) */
+typedef struct { char* buf; size_t len; size_t cap; } mfl_sb;
+static void mfl_sb_init(mfl_sb* sb) { sb->cap = 64; sb->len = 0; sb->buf = malloc(sb->cap); sb->buf[0] = 0; }
+static void mfl_sb_puts(mfl_sb* sb, const char* s) {
+    s = mfl_s(s); size_t n = strlen(s);
+    if (sb->len + n + 1 > sb->cap) { while (sb->len + n + 1 > sb->cap) sb->cap *= 2; sb->buf = realloc(sb->buf, sb->cap); }
+    memcpy(sb->buf + sb->len, s, n); sb->len += n; sb->buf[sb->len] = 0;
+}
+static char* mfl_sb_done(mfl_sb* sb) { char* r = mfl_alloc(sb->len + 1); memcpy(r, sb->buf, sb->len + 1); free(sb->buf); return r; }
 static char* mfl_str_i(int64_t v) { char* b = mfl_alloc(24); snprintf(b, 24, "%lld", (long long)v); return b; }
 static char* mfl_str_d(double v)  { char* b = mfl_alloc(32); snprintf(b, 32, "%g", v); return b; }
 /* reinterpret a double's IEEE-754 bits as an int64 and back — the byte-level access
@@ -5338,12 +5353,13 @@ func (g *cgen) jsonSerializer(typeStr string) (string, error) {
 			return "", err
 		}
 		ect := cTypeName(elem)
-		body = fmt.Sprintf(`char* out = mfl_dup("[");
+		body = fmt.Sprintf(`mfl_sb sb; mfl_sb_init(&sb); mfl_sb_puts(&sb, "[");
     for (int64_t i = 0; i < v.len; i++) {
-        if (i) out = mfl_cat(out, ",");
-        out = mfl_cat(out, %s(((%s*)v.data)[i]));
+        if (i) mfl_sb_puts(&sb, ",");
+        mfl_sb_puts(&sb, %s(((%s*)v.data)[i]));
     }
-    return mfl_cat(out, "]");`, es, ect)
+    mfl_sb_puts(&sb, "]");
+    return mfl_sb_done(&sb);`, es, ect)
 	case strings.HasPrefix(typeStr, "map["):
 		kt, vt, err := splitMapType(typeStr)
 		if err != nil {
@@ -5363,23 +5379,24 @@ func (g *cgen) jsonSerializer(typeStr string) (string, error) {
 			getCall = "mfl_map_get(v, _k, NULL, &_val);"
 		}
 		body = fmt.Sprintf(`mfl_slice _ks = mfl_map_keys(v);
-    char* out = mfl_dup("{");
+    mfl_sb sb; mfl_sb_init(&sb); mfl_sb_puts(&sb, "{");
     for (int64_t i = 0; i < _ks.len; i++) {
-        if (i) out = mfl_cat(out, ",");
+        if (i) mfl_sb_puts(&sb, ",");
         %s _k = ((%s*)_ks.data)[i];
         %s _val; %s
-        out = mfl_cat(out, %s);
-        out = mfl_cat(out, ":");
-        out = mfl_cat(out, %s(_val));
+        mfl_sb_puts(&sb, %s);
+        mfl_sb_puts(&sb, ":");
+        mfl_sb_puts(&sb, %s(_val));
     }
-    return mfl_cat(out, "}");`, kct, kct, vct, getCall, keyJSON, vs)
+    mfl_sb_puts(&sb, "}");
+    return mfl_sb_done(&sb);`, kct, kct, vct, getCall, keyJSON, vs)
 	default:
 		td, ok := g.c.StructTypes()[typeStr]
 		if !ok {
 			return "", fmt.Errorf("json: cannot serialize type %q", typeStr)
 		}
 		var b strings.Builder
-		b.WriteString(`char* out = mfl_dup("{");` + "\n")
+		b.WriteString(`mfl_sb sb; mfl_sb_init(&sb); mfl_sb_puts(&sb, "{");` + "\n")
 		for i, f := range td.Fields {
 			fs, err := g.jsonSerializer(f.Type)
 			if err != nil {
@@ -5389,10 +5406,11 @@ func (g *cgen) jsonSerializer(typeStr string) (string, error) {
 			if i > 0 {
 				prefix = `",\"` + f.Name + `\":"`
 			}
-			fmt.Fprintf(&b, "    out = mfl_cat(out, %s);\n", prefix)
-			fmt.Fprintf(&b, "    out = mfl_cat(out, %s(v.f_%s));\n", fs, f.Name)
+			fmt.Fprintf(&b, "    mfl_sb_puts(&sb, %s);\n", prefix)
+			fmt.Fprintf(&b, "    mfl_sb_puts(&sb, %s(v.f_%s));\n", fs, f.Name)
 		}
-		b.WriteString(`    return mfl_cat(out, "}");`)
+		b.WriteString(`    mfl_sb_puts(&sb, "}");` + "\n")
+		b.WriteString(`    return mfl_sb_done(&sb);`)
 		body = b.String()
 	}
 
