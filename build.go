@@ -265,6 +265,37 @@ func BuildWasm(prog *Program, outPath string, safe bool) error {
 	return nil
 }
 
+// BuildWindows cross-compiles the program to a Windows x86-64 .exe via
+// `zig cc -target x86_64-windows-gnu` (mingw-w64 + winpthreads, a single-binary
+// cross toolchain like the wasm path). Phase 0 of #517: the POSIX-independent
+// core only — CompileToCTarget's windows preflight rejects programs that use
+// networking, TLS/crypto, terminal raw mode, SQLite, or regex. No C compiler
+// besides zig is needed; override the zig binary with $ZIG.
+func BuildWindows(prog *Program, outPath string, safe bool) error {
+	csrc, _, err := CompileToCTarget(prog, safe, targetWindows)
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp("", "mfl-*.c")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.WriteString(csrc); err != nil {
+		return err
+	}
+	tmp.Close()
+
+	// libm (math/noise) is in mingw's default libs; winpthreads is linked
+	// automatically by zig for the *-windows-gnu target, so no explicit -l.
+	args := []string{"cc", "-target", "x86_64-windows-gnu", "-O2", "-fno-strict-aliasing", "-std=c11", "-o", outPath, tmp.Name()}
+	cmd := exec.Command(zigPath(), args...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("%s failed: %v\n%s", zigPath(), err, out)
+	}
+	return nil
+}
+
 // RunCaptured builds the program to a temp binary, runs it, and returns stdout.
 func RunCaptured(prog *Program) (string, error) {
 	bin, err := os.CreateTemp("", "mfl-bin-*")

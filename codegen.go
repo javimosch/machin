@@ -33,7 +33,41 @@ func CompileToCTarget(p *Program, safe bool, target string) (string, []string, e
 	if err != nil {
 		return "", nil, err
 	}
+	if target == targetWindows {
+		if err := windowsUnsupported(g); err != nil {
+			return "", nil, err
+		}
+	}
 	return src, c.ExportNames(), nil
+}
+
+// windowsUnsupported reports the first subsystem a program uses that the windows
+// target does not yet cover. Phase 0 of #517 gets the POSIX-independent core
+// compiling under mingw-w64 (stdio, strings/maps/slices, arena, goroutines +
+// channels via winpthreads, math, file I/O); networking (winsock2), TLS/crypto
+// (OpenSSL-Windows), terminal raw mode, SQLite, and POSIX regex are later phases.
+// Failing here — rather than emitting C that dies deep in the linker — keeps the
+// error actionable.
+func windowsUnsupported(g *cgen) error {
+	for _, u := range []struct {
+		used bool
+		what string
+	}{
+		{g.usesNet, "networking (dial/listen/accept/fd I/O — winsock2 is a later phase)"},
+		{g.usesTTY, "terminal raw mode (raw_mode/read_key)"},
+		{g.usesSelect, "select"},
+		{g.usesTLS, "HTTPS/TLS (https_* — needs OpenSSL for Windows)"},
+		{g.usesWSS, "secure WebSockets (wss_*)"},
+		{g.usesCrypto, "crypto builtins (rand/sha/hmac/x25519/... — need OpenSSL for Windows)"},
+		{g.usesXEdDSA, "XEdDSA (xeddsa_* — needs libsodium)"},
+		{g.usesSQLite, "SQLite (sqlite_*)"},
+		{g.usesRegex, "regex (regex_*)"},
+	} {
+		if u.used {
+			return fmt.Errorf("the windows target does not yet support %s — see issue #517 (Phase 0 covers the stdio/compute core: strings, maps, slices, arena, goroutines/channels, math, file I/O)", u.what)
+		}
+	}
+	return nil
 }
 
 // cTypeName renders a declared type string (int, float, bool, string, []elem,
@@ -112,11 +146,13 @@ func (g *cgen) wantsProbe(name string) bool {
 
 // build targets.
 const (
-	targetNative = "native"
-	targetWasm   = "wasm"
+	targetNative  = "native"
+	targetWasm    = "wasm"
+	targetWindows = "windows"
 )
 
-func (g *cgen) wasm() bool { return g.target == targetWasm }
+func (g *cgen) wasm() bool    { return g.target == targetWasm }
+func (g *cgen) windows() bool { return g.target == targetWindows }
 
 const cRuntime = `#define _GNU_SOURCE
 #include <stdio.h>
@@ -129,20 +165,42 @@ const cRuntime = `#define _GNU_SOURCE
 #include <unistd.h>
 #include <time.h>
 #include <sys/time.h>
-#include <pthread.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <netdb.h>
+#include <pthread.h>   /* mingw-w64 provides winpthreads, so the goroutine/channel runtime compiles for the windows target too (#517) */
 #include <dirent.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <errno.h>
+/* BSD sockets + termios + select are absent on Windows (winsock2 is Phase N of
+   #517); guard them by _WIN32 so a stdio/compute program cross-compiles via
+   zig cc -target x86_64-windows-gnu. The socket/tty runtime that USES these is
+   itself only emitted when the program calls net/tty builtins (never on the
+   windows target — see the CompileToCTarget preflight). wasm still includes
+   them (wasi isn't _WIN32), preserving that target's behavior. */
+#ifndef _WIN32
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netdb.h>
 #include <termios.h>
 #include <sys/select.h>
+#endif
+#if !defined(__wasm__) && !defined(_WIN32)
+#include <sys/mman.h>   /* mmap_file / madvise_free — POSIX-only; wasi-libc has no mmap (#463), Windows has no mmap (#517) */
+#include <sys/wait.h>   /* WEXITSTATUS — Windows system() returns the exit code directly */
+#endif
 #ifndef __wasm__
-#include <sys/mman.h>   /* mmap_file / madvise_free — POSIX-only; wasi-libc has no mmap (issue #463) */
-#include <sys/wait.h>
-#include <signal.h>
+#include <signal.h>     /* mingw-w64 ships signal.h; SIGPIPE just doesn't exist there (guarded at use) */
+#endif
+
+#ifdef _WIN32
+/* Windows portability shims (#517). mingw-w64's headers don't declare the POSIX
+   reentrant localtime_r/gmtime_r without _POSIX_THREAD_SAFE_FUNCTIONS, so map
+   them onto localtime/gmtime (whose buffer is thread-local on modern MSVCRT/ucrt)
+   copied into the caller's struct — same (time_t*, struct tm*) shape the runtime
+   uses. Defined before first use. */
+static struct tm* mfl_win_localtime_r(const time_t* t, struct tm* out) { struct tm* p = localtime(t); if (p) { *out = *p; return out; } return NULL; }
+static struct tm* mfl_win_gmtime_r(const time_t* t, struct tm* out) { struct tm* p = gmtime(t); if (p) { *out = *p; return out; } return NULL; }
+#define localtime_r mfl_win_localtime_r
+#define gmtime_r mfl_win_gmtime_r
 #endif
 
 /* slices: a Go-style header over an unboxed backing array */
@@ -864,7 +922,7 @@ static void mfl_raw_free(int64_t p) { free((void*)(intptr_t)p); }
 /* mmap_file / madvise_free are POSIX file-mapping helpers — native-only. wasi-libc
    has no mmap/madvise, so guard them out of the wasm build (a frontend that calls
    neither then emits no sys/mman.h reference). Matches the mfl_system guard. #463 */
-#ifndef __wasm__
+#if !defined(__wasm__) && !defined(_WIN32)
 /* madvise_free: hint the kernel to drop the resident pages of an mmap'd region
    (MADV_DONTNEED) — RSS falls, pages re-fault lazily on next access. For idle
    release of large mmap_file mappings without unmapping. */
@@ -888,7 +946,15 @@ static mfl_mmap_result mfl_mmap_file(const char* path) {
     R.ptr = (int64_t)(intptr_t)p; R.len = (int64_t)st.st_size;
     return R;
 }
-#endif   /* __wasm__ — mmap_file / madvise_free */
+#elif defined(_WIN32)
+/* Windows has no mmap/madvise. Keep the runtime compiling (Phase 0 of #517) by
+   stubbing both: mmap_file reports failure (0,0) — the documented error result —
+   so programs that reference it build and degrade gracefully; a real VirtualAlloc
+   file mapping is deferred to a later phase. */
+static void mfl_madvise_free(int64_t ptr, int64_t len) { (void)ptr; (void)len; }
+typedef struct { int64_t ptr; int64_t len; } mfl_mmap_result;
+static mfl_mmap_result mfl_mmap_file(const char* path) { (void)path; mfl_mmap_result R; R.ptr = 0; R.len = 0; return R; }
+#endif   /* mmap_file / madvise_free */
 /* read a NUL-terminated string from a raw pointer into an MFL (arena) string — the
    host->wasm direction: the JS host writes UTF-8 + a NUL into wasm memory at a
    pointer the program alloc'd, then passes it here. */
@@ -1738,7 +1804,11 @@ static mfl_slice mfl_list_dir(const char* path) {
     closedir(d); return out;
 }
 static int64_t mfl_mkdir(const char* path) {
+#ifdef _WIN32
+    int r = mkdir(path);          /* Windows mkdir() takes no mode argument */
+#else
     int r = mkdir(path, 0755);
+#endif
     if (r < 0 && errno == EEXIST) return 0;
     return r;
 }
@@ -1748,7 +1818,11 @@ static int64_t mfl_mkdir(const char* path) {
 static int64_t mfl_system(const char* cmd) {
     int r = system(cmd);
     if (r == -1) return -1;
+#ifdef _WIN32
+    return (int64_t)r;                 /* Windows system() returns the exit code directly (no wait-status encoding) */
+#else
     return (int64_t)WEXITSTATUS(r);
+#endif
 }
 /* run a shell command and capture its output: returns (exit_code, stdout, stderr).
    The command runs via /bin/sh in a subshell with stdout/stderr redirected to temp
@@ -1766,7 +1840,11 @@ static mfl_exec_result mfl_exec(const char* cmd) {
     if (full) {
         snprintf(full, n, "( %s ) >%s 2>%s", cmd, op, ep);
         int r = system(full);
+#ifdef _WIN32
+        R.code = (r == -1) ? -1 : (int64_t)r;
+#else
         R.code = (r == -1) ? -1 : (int64_t)WEXITSTATUS(r);
+#endif
         R.out = mfl_read_file(op);
         R.err = mfl_read_file(ep);
         free(full);
@@ -3738,13 +3816,17 @@ func (g *cgen) program(p *Program) (string, error) {
 		out.WriteString(cRuntime)
 		out.WriteByte('\n')
 		// POSIX socket + tty runtimes: always present for the native target; for the
-		// wasm target emitted only when actually used, so a browser app pulls in no
-		// socket/termios symbols (which wasi-libc does not fully provide).
-		if !g.wasm() || g.usesNet {
+		// wasm and windows targets emitted only when actually used, so a browser app
+		// pulls in no socket/termios symbols (which wasi-libc does not fully provide)
+		// and a Windows program that touches neither compiles with no winsock/termios
+		// dependency (#517). The windows preflight in CompileToCTarget rejects programs
+		// that DO use net/tty, so on that target these stay unemitted.
+		portableBase := !g.wasm() && !g.windows()
+		if portableBase || g.usesNet {
 			out.WriteString(netRuntime)
 			out.WriteByte('\n')
 		}
-		if !g.wasm() || g.usesTTY {
+		if portableBase || g.usesTTY {
 			out.WriteString(ttyRuntime)
 			out.WriteByte('\n')
 		}
@@ -3976,7 +4058,10 @@ func (g *cgen) program(p *Program) (string, error) {
 	if !g.wasm() && g.c.HasMain() {
 		// Ignore SIGPIPE so a write to a peer that closed the connection (e.g. an SSE
 		// client that navigated away) returns -1/EPIPE instead of killing the process.
-		out.WriteString("int main(int argc, char** argv) { signal(SIGPIPE, SIG_IGN); mfl_argc = argc; mfl_argv = argv; mfl_rr_init(); mfl_main(); mfl_rr_finish(); return 0; }\n")
+		// SIGPIPE doesn't exist on Windows (#517), so guard the signal() call there.
+		out.WriteString("int main(int argc, char** argv) {\n")
+		out.WriteString("#ifndef _WIN32\n    signal(SIGPIPE, SIG_IGN);\n#endif\n")
+		out.WriteString("    mfl_argc = argc; mfl_argv = argv; mfl_rr_init(); mfl_main(); mfl_rr_finish(); return 0; }\n")
 	}
 	return out.String(), nil
 }
