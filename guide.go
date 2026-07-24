@@ -28,7 +28,7 @@ var skillDeploy string
 
 // machinVersion is the single version string for the toolchain. Bump it when
 // cutting a release (alongside README badge / SPEC / CHANGELOG).
-const machinVersion = "0.115.0"
+const machinVersion = "0.116.0"
 
 // ---- the source-of-truth feature catalog ----
 //
@@ -340,6 +340,7 @@ func machinGuide() guideCatalog {
 			{"rsa_sign_pkcs1_sha256", "(bytes, bytes) -> bytes", "RSA PKCS#1 v1.5 sign (private PEM, msg) -> signature over SHA-256 (RS256; empty bytes on failure)", "crypto"},
 			{"rsa_verify_pkcs1_sha256", "(bytes, bytes, bytes) -> bool", "RSA PKCS#1 v1.5 verify (public PEM SubjectPublicKeyInfo, msg, sig) over SHA-256 (RS256)", "crypto"},
 			{"rsa_verify_jwk_sha256", "(bytes, bytes, bytes, bytes) -> bool", "RS256 JWT verify straight from a JWKS: (n, e, msg, sig) where n and e are the base64url-decoded modulus & exponent bytes from the IdP's JWKS. Builds the RSA public key from n/e (no PEM/X.509 needed) and verifies PKCS#1 v1.5 over SHA-256 — the OIDC id_token verification path (issue #484)", "crypto"},
+			{"x509_pubkey", "(bytes) -> (bytes, bytes)", "extract the RSA public key from a DER-encoded X.509 certificate -> (n, e) as raw big-endian modulus & exponent bytes. MULTI-ASSIGN ONLY: n, e := x509_pubkey(cert_der). The cert_der is the base64-DECODED bytes of a SAML metadata <ds:X509Certificate>. Output plugs straight into rsa_verify_jwk_sha256(n, e, msg, sig) — so a SAML/XML-DSig RSA-SHA256 signature can be verified against the IdP's embedded cert with no JWKS. Non-RSA (EC/Ed25519) certs return two EMPTY buffers (check len). The X.509 arm of pure-MFL SAML SSO (issue #484); XML c14n + <ds:Signature> parsing are the remaining pieces", "crypto"},
 			// sqlite (libsqlite3, linked only when used)
 			{"sqlite_open", "(string) -> int", "open/create a SQLite db file -> handle (0 on fail); \":memory:\" for in-memory", "db"},
 			{"sqlite_exec", "(int, string[, []string]) -> int", "run SQL with no result; optional []string binds the ? params (injection-safe); 0 ok", "db"},

@@ -3063,6 +3063,7 @@ const cryptoRuntime = `#include <openssl/evp.h>
 #include <openssl/rsa.h>
 #include <openssl/pem.h>
 #include <openssl/bn.h>
+#include <openssl/x509.h>
 #include <string.h>
 
 static mfl_bytes mfl_crypto_buf(int64_t n) {
@@ -3174,6 +3175,39 @@ static int mfl_crypto_ed25519_verify(mfl_bytes pub, mfl_bytes msg, mfl_bytes sig
    JWKS path builds the public key straight from the raw big-endian modulus (n)
    and exponent (e) bytes a JWKS exposes as base64url. */
 typedef struct { mfl_bytes priv; mfl_bytes pub; } mfl_crypto_rsa_keypair;
+/* x509_pubkey result: the RSA public key's modulus (n) and exponent (e) as raw
+   big-endian bytes — the exact shape rsa_verify_jwk_sha256 consumes (BN_bin2bn),
+   so a SAML <ds:X509Certificate> plugs straight into the RS256/RSA-SHA256 verify
+   path with no JWKS. Both empty on any parse/type failure. #484 */
+typedef struct { mfl_bytes n; mfl_bytes e; } mfl_crypto_x509_pubkey;
+/* Extract the RSA public key (n, e) from a DER-encoded X.509 certificate — the
+   base64-decoded bytes of a SAML metadata <ds:X509Certificate>. Non-RSA keys
+   (EC/Ed25519) yield two empty buffers (caller checks len). */
+static mfl_crypto_x509_pubkey mfl_crypto_x509_pubkey_ne(mfl_bytes der) {
+    mfl_crypto_x509_pubkey r;
+    r.n = mfl_crypto_buf(1); r.n.len = 0;
+    r.e = mfl_crypto_buf(1); r.e.len = 0;
+    const unsigned char* p = der.data;
+    X509* cert = d2i_X509(NULL, &p, (long)der.len);
+    if (!cert) return r;
+    EVP_PKEY* pk = X509_get_pubkey(cert);
+    if (pk) {
+        RSA* rsa = EVP_PKEY_get1_RSA(pk);
+        if (rsa) {
+            const BIGNUM* bn = NULL; const BIGNUM* be = NULL;
+            RSA_get0_key(rsa, &bn, &be, NULL);
+            if (bn && be) {
+                int ln = BN_num_bytes(bn), le = BN_num_bytes(be);
+                if (ln > 0) { mfl_bytes o = mfl_crypto_buf(ln); o.len = BN_bn2bin(bn, o.data); r.n = o; }
+                if (le > 0) { mfl_bytes o = mfl_crypto_buf(le); o.len = BN_bn2bin(be, o.data); r.e = o; }
+            }
+            RSA_free(rsa);
+        }
+        EVP_PKEY_free(pk);
+    }
+    X509_free(cert);
+    return r;
+}
 
 /* Generate an RSA keypair; returns PEM (PKCS#8 private, SubjectPublicKeyInfo
    public), both empty on failure. Keygen draws from the CSPRNG internally and —
@@ -4368,6 +4402,8 @@ func multiRetBuiltinC(name string) (cfn, ctype string, fields []string, needsTLS
 		return "mfl_mmap_file", "mfl_mmap_result", []string{"ptr", "len"}, false, true
 	case "rsa_generate":
 		return "mfl_crypto_rsa_generate", "mfl_crypto_rsa_keypair", []string{"priv", "pub"}, false, true
+	case "x509_pubkey":
+		return "mfl_crypto_x509_pubkey_ne", "mfl_crypto_x509_pubkey", []string{"n", "e"}, false, true
 	}
 	return "", "", nil, false, false
 }

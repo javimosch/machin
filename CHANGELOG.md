@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## v0.116.0
+
+- **`x509_pubkey(cert_der) -> (n, e)` — the X.509 arm of pure-MFL SAML SSO**
+  (issue #484). Extracts an RSA public key (raw big-endian modulus `n` and
+  exponent `e`) from a DER-encoded X.509 certificate — the base64-decoded bytes of
+  a SAML metadata `<ds:X509Certificate>`. The output plugs straight into
+  `rsa_verify_jwk_sha256(n, e, msg, sig)`, so an RSA-SHA256 signature can be
+  verified against the IdP's embedded cert with no JWKS. Non-RSA (EC/Ed25519)
+  certs return two empty buffers so a caller can detect "not an RSA cert". A new
+  pure-MFL helper `sso_x509_rsa_verify(cert_b64, signed, sig_b64)` in
+  `framework/sso.src` wraps the extract-and-verify flow (XML whitespace tolerated).
+  Verified end-to-end against genuine `crypto/x509` certs + `crypto/rsa`
+  signatures. XML Exclusive Canonicalization (c14n) + `<ds:Signature>` parsing —
+  the rest of SAML — remain open under #484.
+
 ## v0.115.0
 
 - **Windows cross-compile target (`--target windows`), Phase 0** — `machin build

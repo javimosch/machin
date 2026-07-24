@@ -1590,6 +1590,8 @@ func (c *Checker) multiRetBuiltin(name string) (args []int, rets []int, ok bool)
 		return []int{c.cString}, []int{c.cInt, c.cInt}, true
 	case "rsa_generate":
 		return []int{c.cInt}, []int{c.cBytes, c.cBytes}, true
+	case "x509_pubkey":
+		return []int{c.cBytes}, []int{c.cBytes, c.cBytes}, true
 	}
 	return nil, nil, false
 }
@@ -2570,6 +2572,8 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		return 0, fmt.Errorf("mmap_file returns 2 values; use: ptr, size := mmap_file(path)")
 	case "rsa_generate":
 		return 0, fmt.Errorf("rsa_generate returns 2 values; use: priv, pub := rsa_generate(bits)")
+	case "x509_pubkey":
+		return 0, fmt.Errorf("x509_pubkey returns 2 values; use: n, e := x509_pubkey(cert_der)")
 	case "wss_open":
 		if len(argSlots) != 1 {
 			return 0, fmt.Errorf("wss_open: 1 arg (url string)")
