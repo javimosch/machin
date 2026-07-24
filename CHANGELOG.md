@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## v0.115.0
+
+- **Windows cross-compile target (`--target windows`), Phase 0** — `machin build
+  app.mfl --target windows` produces a Windows x86-64 `.exe` via `zig cc -target
+  x86_64-windows-gnu` (needs `zig`, no other toolchain; override with `ZIG=`).
+  This first phase gets the POSIX-independent core compiling under mingw-w64:
+  stdio, strings/maps/slices, structs, `json()`, arena blocks + `arena_reset()`,
+  **goroutines + channels** (mingw's winpthreads, so the concurrency runtime is
+  unchanged), math, and file/dir I/O. Portability is by `#ifdef _WIN32` guards in
+  the emitted runtime (non-portable headers, `WEXITSTATUS`, `SIGPIPE`, `mmap`,
+  `localtime_r`/`gmtime_r`, `mkdir` arity), so the same C still builds native and
+  wasm unchanged. Programs that use networking (winsock2), TLS/crypto
+  (OpenSSL-for-Windows), terminal raw mode, SQLite, or POSIX regex are rejected at
+  build time with an actionable message — those are later phases. Part of #517.
+
 ## v0.114.0
 
 - **`json()` is no longer O(n²)** — the generated serializers built their result

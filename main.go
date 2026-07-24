@@ -126,6 +126,7 @@ usage:
   machin run   <file.mfl>            compile to native + execute
   machin build <file.mfl> [-o out]   compile to a native binary
   machin build <file.mfl> --target wasm  compile to a WebAssembly module (needs zig; mark exports with export func)
+  machin build <file.mfl> --target windows  cross-compile to a Windows .exe (needs zig; stdio/compute core, no net/TLS yet — #517)
   machin build <file.mfl> --static   fully static binary (bundles SQLite; pair with CC=musl-gcc for FROM scratch)
   machin build <file.mfl> --emit-c   print the generated C and stop
   machin build|run <file.mfl> --safe  insert bounds / div-zero / overflow checks
@@ -473,8 +474,12 @@ func cmdBuild(args []string) error {
 		if static {
 			return fmt.Errorf("build: --static applies to the native target, not wasm")
 		}
+	case "windows":
+		if static {
+			return fmt.Errorf("build: --static applies to the native target, not windows")
+		}
 	default:
-		return fmt.Errorf("build: unknown --target %q (want native or wasm)", target)
+		return fmt.Errorf("build: unknown --target %q (want native, wasm, or windows)", target)
 	}
 	prog, err := loadMFL(src)
 	if err != nil {
@@ -501,6 +506,16 @@ func cmdBuild(args []string) error {
 			return err
 		}
 		fmt.Fprintf(os.Stderr, "built %s (wasm)\n", out)
+		return nil
+	}
+	if target == "windows" {
+		if out == "" {
+			out = strings.TrimSuffix(filepath.Base(src), filepath.Ext(src)) + ".exe"
+		}
+		if err := BuildWindows(prog, out, safe); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "built %s (windows)\n", out)
 		return nil
 	}
 	if out == "" {
