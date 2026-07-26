@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+## v0.121.0
+
+- **`parse()`: a JSON `null` no longer silently drops the rest of the object**
+  (PR #533). `parse("{\"a\":null,\"b\":\"hello\",\"n\":42}", T{})` returned `b=""`
+  and `n=0`. Every `mfl_js_*` value parser returned its zero value **without
+  advancing the cursor** when the value wasn't the shape it expected
+  (`mfl_js_str`: `if (**p != '"') return mfl_dup("");`), so a `null` left the
+  cursor parked on the literal; the enclosing struct's field loop then looked for
+  its separating comma, found `n`, and broke out — losing every remaining field
+  and derailing the enclosing parsers too. Silent data loss, no error, no crash.
+  This bit real APIs hard: OpenAI/OpenRouter return exactly
+  `{"content":null,"tool_calls":[...]}` on a tool call, so `tool_calls` **and** the
+  sibling `usage` block vanished and a tool-calling client saw "no tools
+  requested". New `mfl_js_null()` consumes the literal and is called first in
+  every value parser — `int`, `float`, `bool`, `string`, slice, map, and struct —
+  so a `null` yields the type's zero value *and* leaves the cursor on the comma.
+  `json_get()` was never affected (separate code path). Found while adding
+  declarative tool calling to chatsnip.
+
 ## v0.120.0
 
 - **Windows target — Phase TLS: HTTPS/TLS + OpenSSL crypto** (issue #517). The

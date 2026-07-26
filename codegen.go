@@ -1484,9 +1484,19 @@ static char* mfl_http_body(const char* s) { /* bytes after the blank line of an 
 
 /* JSON parsing: a cursor (const char**) walked by recursive-descent helpers */
 static void mfl_js_ws(const char** p) { while (**p==' '||**p=='\t'||**p=='\n'||**p=='\r') (*p)++; }
-static int64_t mfl_js_int(const char** p) { mfl_js_ws(p); char* e; long long v = strtoll(*p, &e, 10); *p = e; return v; }
-static double mfl_js_float(const char** p) { mfl_js_ws(p); char* e; double v = strtod(*p, &e); *p = e; return v; }
-static int mfl_js_bool(const char** p) { mfl_js_ws(p); if (**p=='t') { *p += 4; return 1; } if (**p=='f') { *p += 5; return 0; } return 0; }
+/* mfl_js_null: consume a JSON null literal if the cursor is on one (-> 1), else
+   leave the cursor untouched (-> 0). EVERY value parser must call this first: a
+   parser that returns its zero value WITHOUT consuming the null leaves the cursor
+   parked on the literal, so the enclosing object's field loop then fails to find
+   its comma and silently drops every REMAINING field ({"a":null,"b":1} lost b). */
+static int mfl_js_null(const char** p) {
+    mfl_js_ws(p);
+    if ((*p)[0]=='n' && (*p)[1]=='u' && (*p)[2]=='l' && (*p)[3]=='l') { *p += 4; return 1; }
+    return 0;
+}
+static int64_t mfl_js_int(const char** p) { if (mfl_js_null(p)) return 0; char* e; long long v = strtoll(*p, &e, 10); *p = e; return v; }
+static double mfl_js_float(const char** p) { if (mfl_js_null(p)) return 0; char* e; double v = strtod(*p, &e); *p = e; return v; }
+static int mfl_js_bool(const char** p) { if (mfl_js_null(p)) return 0; if (**p=='t') { *p += 4; return 1; } if (**p=='f') { *p += 5; return 0; } return 0; }
 /* mfl_hex4: the 4 hex digits at p as an int, or -1 if any of them aren't hex
    (a malformed \u escape -- the caller falls back to treating it literally). */
 static int mfl_hex4(const char* p) {
@@ -1510,7 +1520,7 @@ static size_t mfl_utf8_encode(char* out, int cp) {
     out[0] = (char)(0xF0 | (cp >> 18)); out[1] = (char)(0x80 | ((cp >> 12) & 0x3F)); out[2] = (char)(0x80 | ((cp >> 6) & 0x3F)); out[3] = (char)(0x80 | (cp & 0x3F)); return 4;
 }
 static char* mfl_js_str(const char** p) {
-    mfl_js_ws(p);
+    if (mfl_js_null(p)) return mfl_dup("");
     if (**p != '"') return mfl_dup("");
     (*p)++;
     char* out = mfl_alloc(strlen(*p) + 1); size_t j = 0;
@@ -5637,6 +5647,7 @@ func (g *cgen) jsonParser(typeStr string) (string, error) {
 		}
 		ect := cTypeName(elem)
 		body = fmt.Sprintf(`mfl_slice s = {0};
+    if (mfl_js_null(p)) return s;
     mfl_js_ws(p);
     if (**p == '[') {
         (*p)++; mfl_js_ws(p);
@@ -5666,6 +5677,7 @@ func (g *cgen) jsonParser(typeStr string) (string, error) {
 			keyIsStr, setCall = 1, "mfl_map_set(m, 0, _k, &_val);"
 		}
 		body = fmt.Sprintf(`mfl_map* m = mfl_make_map(%d, sizeof(%s));
+    if (mfl_js_null(p)) return m;
     mfl_js_ws(p);
     if (**p == '{') {
         (*p)++; mfl_js_ws(p);
@@ -5695,7 +5707,8 @@ func (g *cgen) jsonParser(typeStr string) (string, error) {
 		} else {
 			fmt.Fprintf(&b, "%s out = {0};\n", ct)
 		}
-		b.WriteString(`    mfl_js_ws(p);
+		b.WriteString(`    if (mfl_js_null(p)) return out;
+    mfl_js_ws(p);
     if (**p == '{') {
         (*p)++; mfl_js_ws(p);
         if (**p != '}') {
