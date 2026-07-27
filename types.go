@@ -2481,6 +2481,12 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 			return 0, fmt.Errorf("arena_reset: no args")
 		}
 		return c.cInt, nil
+	case "escape":
+		// identity at the type level: escape(x) has exactly x's type
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("escape: 1 arg (the value to copy out of the arena block)")
+		}
+		return argSlots[0], nil
 	case "base64_encode", "base64_decode", "url_encode", "url_decode", "sha256":
 		if len(argSlots) != 1 {
 			return 0, fmt.Errorf("%s: 1 arg (string)", ex.Callee)

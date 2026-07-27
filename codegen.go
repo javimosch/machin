@@ -108,6 +108,7 @@ type cgen struct {
 	rangeID      int             // unique temp names for for-range loops
 	tmpID        int             // unique temp names for multi-assignment
 	arenaID      int             // unique temp names for scoped-arena blocks
+	arenaStack   []int           // ids of the arena { } blocks currently open (escape() copies into the innermost parent)
 	curFn        string          // name of the function currently being emitted
 	safe         bool            // emit runtime bounds / div-by-zero / overflow checks
 	usesTLS      bool            // program calls https_get/https_post -> emit + link OpenSSL
@@ -261,6 +262,26 @@ static inline int64_t mfl_strlen_cached(const char* s) {
     mfl_strlen_cache_s = s; mfl_strlen_cache_n = n;
     return n;
 }
+/* escape(): copy a value OUT of the current scoped arena into the enclosing
+   one, so exactly one result can survive an arena block while everything
+   else is still reclaimed in bulk. Without it a scoped arena is all-or-nothing
+   — usable for pure side-effect work, useless for "do heavy work, return one
+   answer", which is exactly the shape of a request handler in a long-running
+   single-actor server (see issue #523 and the grange dogfood). The copy is made
+   in the PARENT arena before the child chain is freed, so the surviving value
+   has the same lifetime as anything the caller allocated itself; ARENA001 then
+   treats the result of escape() as untainted, because it provably is. */
+static char* mfl_escape_str(mfl_arena* parent, const char* s) {
+    if (!s) return NULL;
+    mfl_arena* cur = mfl_arena_cur;
+    mfl_arena_cur = parent;
+    size_t n = strlen(s);
+    char* out = (char*)mfl_alloc(n + 1);
+    memcpy(out, s, n + 1);
+    mfl_arena_cur = cur;
+    return out;
+}
+
 static void mfl_arena_free(mfl_arena* a) {
     mfl_blk* b = a->head;
     while (b) { mfl_blk* n = b->next; free(b); b = n; }
@@ -833,13 +854,29 @@ static int mfl_chan_tryrecv2(mfl_chan* c, void* out, int* ok) {
 
 /* maps: a chained hash table keyed by int64 or string, fixed-size values */
 typedef struct mfl_ment { struct mfl_ment* next; int64_t ik; char* sk; void* val; } mfl_ment;
-typedef struct { mfl_ment** buckets; int64_t nb, count, vs; int sk; } mfl_map;
+typedef struct { mfl_ment** buckets; int64_t nb, count, vs; int sk; int ar; } mfl_map;
 static uint64_t mfl_hash_i(int64_t k) { uint64_t x=(uint64_t)k; x^=x>>33; x*=0xff51afd7ed558ccdULL; x^=x>>33; return x; }
 static uint64_t mfl_hash_s(const char* s) { uint64_t h=1469598103934665603ULL; while(*s){ h^=(unsigned char)*s++; h*=1099511628211ULL; } return h; }
+/* A map made while a SCOPED arena (an arena { } block) or a goroutine arena is
+   current is allocated from that arena, so it is reclaimed in bulk with it —
+   exactly like the strings and slices around it. Maps used to be malloc-only
+   with no free anywhere, which made every transient map (a per-page group, a
+   per-request lookup table) a permanent leak in a long-running server; scoping
+   them fixes that without touching long-lived maps, which are made on the main
+   arena and keep the old malloc + per-entry free semantics (so delete-heavy
+   caches still hand memory back). ARENA001 already refuses to let an
+   arena-allocated map escape its block, which is what makes this sound. */
 static mfl_map* mfl_make_map(int keyIsStr, int64_t vs) {
-    mfl_map* m = malloc(sizeof(mfl_map));
-    m->nb = 16; m->count = 0; m->sk = keyIsStr; m->vs = vs;
-    m->buckets = calloc(m->nb, sizeof(mfl_ment*));
+    if (!mfl_arena_cur) mfl_arena_cur = &mfl_main_arena;
+    int ar = (mfl_arena_cur != &mfl_main_arena);
+    mfl_map* m = ar ? (mfl_map*)mfl_alloc(sizeof(mfl_map)) : (mfl_map*)malloc(sizeof(mfl_map));
+    m->nb = 16; m->count = 0; m->sk = keyIsStr; m->vs = vs; m->ar = ar;
+    if (ar) {
+        m->buckets = (mfl_ment**)mfl_alloc(m->nb * sizeof(mfl_ment*));
+        memset(m->buckets, 0, m->nb * sizeof(mfl_ment*));
+    } else {
+        m->buckets = calloc(m->nb, sizeof(mfl_ment*));
+    }
     return m;
 }
 static mfl_ment** mfl_map_at(mfl_map* m, int64_t ik, const char* sk) {
@@ -853,7 +890,9 @@ static mfl_ment** mfl_map_at(mfl_map* m, int64_t ik, const char* sk) {
    walks a chain of length N/16) — 25s for a 128k-entry map. Amortized O(1). */
 static void mfl_map_grow(mfl_map* m) {
     int64_t nn = m->nb * 2;
-    mfl_ment** nb2 = calloc(nn, sizeof(mfl_ment*));
+    mfl_ment** nb2;
+    if (m->ar) { nb2 = (mfl_ment**)mfl_alloc(nn * sizeof(mfl_ment*)); memset(nb2, 0, nn * sizeof(mfl_ment*)); }
+    else { nb2 = calloc(nn, sizeof(mfl_ment*)); }
     for (int64_t b = 0; b < m->nb; b++) {
         mfl_ment* e = m->buckets[b];
         while (e) {
@@ -864,14 +903,16 @@ static void mfl_map_grow(mfl_map* m) {
             e = nx;
         }
     }
-    free(m->buckets); m->buckets = nb2; m->nb = nn;
+    if (!m->ar) free(m->buckets);   /* arena buckets go back with the arena */
+    m->buckets = nb2; m->nb = nn;
 }
 static void mfl_map_set(mfl_map* m, int64_t ik, const char* sk, const void* val) {
     mfl_ment** pp = mfl_map_at(m, ik, sk);
     if (*pp) { memcpy((*pp)->val, val, m->vs); return; }
-    mfl_ment* e = malloc(sizeof(mfl_ment)); e->next=NULL; e->ik=ik; e->sk=NULL;
-    if (m->sk) { e->sk = malloc(strlen(sk)+1); strcpy(e->sk, sk); }
-    e->val = malloc(m->vs); memcpy(e->val, val, m->vs);
+    mfl_ment* e = m->ar ? (mfl_ment*)mfl_alloc(sizeof(mfl_ment)) : (mfl_ment*)malloc(sizeof(mfl_ment));
+    e->next=NULL; e->ik=ik; e->sk=NULL;
+    if (m->sk) { size_t kn = strlen(sk)+1; e->sk = m->ar ? (char*)mfl_alloc(kn) : (char*)malloc(kn); memcpy(e->sk, sk, kn); }
+    e->val = m->ar ? mfl_alloc(m->vs) : malloc(m->vs); memcpy(e->val, val, m->vs);
     *pp = e; m->count++;
     if (m->count > m->nb) mfl_map_grow(m);
 }
@@ -882,7 +923,9 @@ static void mfl_map_get(mfl_map* m, int64_t ik, const char* sk, void* out) {
 static int mfl_map_has(mfl_map* m, int64_t ik, const char* sk) { return *mfl_map_at(m, ik, sk) != NULL; }
 static void mfl_map_del(mfl_map* m, int64_t ik, const char* sk) {
     mfl_ment** pp = mfl_map_at(m, ik, sk);
-    if (*pp) { mfl_ment* e=*pp; *pp=e->next; free(e->sk); free(e->val); free(e); m->count--; }
+    if (*pp) { mfl_ment* e=*pp; *pp=e->next;
+        if (!m->ar) { free(e->sk); free(e->val); free(e); }  /* arena entries are freed with the arena */
+        m->count--; }
 }
 static int64_t mfl_map_len(mfl_map* m) { return m->count; }
 static mfl_slice mfl_map_keys(mfl_map* m) {
@@ -1287,6 +1330,17 @@ static char* mfl_url_decode(const char* s) {
    Values are immutable (builtins return fresh arena buffers), so passing one by
    value just shares the backing — same discipline as strings. */
 typedef struct { uint8_t* data; int64_t len; } mfl_bytes;
+static mfl_bytes mfl_escape_bytes(mfl_arena* parent, mfl_bytes b) {
+    mfl_arena* cur = mfl_arena_cur;
+    mfl_arena_cur = parent;
+    mfl_bytes out;
+    out.len = b.len;
+    out.data = (uint8_t*)mfl_alloc(b.len ? (size_t)b.len : 1);
+    if (b.len) memcpy(out.data, b.data, (size_t)b.len);
+    mfl_arena_cur = cur;
+    return out;
+}
+
 static mfl_bytes mfl_bytes_from_str(const char* s) {
     int64_t n = (int64_t)strlen(s);
     mfl_bytes b; b.len = n; b.data = (uint8_t*)mfl_alloc(n ? n : 1);
@@ -4447,11 +4501,14 @@ func (g *cgen) stmt(s Stmt, depth int) error {
 		id := g.arenaID
 		g.arenaID++
 		fmt.Fprintf(&g.buf, "{ mfl_arena _sa%d = {0}; mfl_arena* _sp%d = mfl_arena_cur; mfl_arena_cur = &_sa%d;\n", id, id, id)
+		g.arenaStack = append(g.arenaStack, id)
 		for _, b := range st.Body {
 			if err := g.stmt(b, depth+1); err != nil {
+				g.arenaStack = g.arenaStack[:len(g.arenaStack)-1]
 				return err
 			}
 		}
+		g.arenaStack = g.arenaStack[:len(g.arenaStack)-1]
 		indentC(&g.buf, depth)
 		fmt.Fprintf(&g.buf, "mfl_arena_cur = _sp%d; mfl_arena_free(&_sa%d); }\n", id, id)
 	case *GoStmt:
@@ -5998,6 +6055,24 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return "mfl_flush()", nil
 	case "arena_reset":
 		return "mfl_arena_reset()", nil
+	case "escape":
+		// copy one value into the enclosing arena so it survives the block
+		if len(g.arenaStack) == 0 {
+			return "", fmt.Errorf("escape: only valid inside an arena { } block (there is nothing to escape from)")
+		}
+		parent := g.arenaStack[len(g.arenaStack)-1]
+		ct := g.c.NodeCType(g.curFn, ex.Args[0])
+		switch ct {
+		case "char*":
+			return fmt.Sprintf("mfl_escape_str(_sp%d, %s)", parent, args[0]), nil
+		case "mfl_bytes":
+			return fmt.Sprintf("mfl_escape_bytes(_sp%d, %s)", parent, args[0]), nil
+		case "int64_t", "double", "int":
+			// a scalar holds no arena pointer: escaping it is a no-op, and
+			// accepting it keeps generic helper code compiling
+			return args[0], nil
+		}
+		return "", fmt.Errorf("escape: v1 supports string, bytes and scalars (got %s) — build the result as a string (e.g. json()/join()) before escaping it", ct)
 	case "raw_mode":
 		g.usesTTY = true
 		return fmt.Sprintf("mfl_raw_mode(%s)", args[0]), nil

@@ -158,6 +158,12 @@ func detectArenaEscapes(prog *Program, c *Checker) []arenaFinding {
 				case *Binary:
 					return true // a heap-kind binary is a string concatenation — allocated here
 				case *Call:
+					// escape(x) copies x into the ENCLOSING arena before this block is
+					// reclaimed, so its result provably outlives the block: it is the one
+					// sanctioned way to carry an answer out (codegen emits mfl_escape_*).
+					if t.Callee == "escape" {
+						return false
+					}
 					// interprocedural: the call carries arena memory only if the callee allocates
 					// fresh heap, or passes through an argument that is itself arena-tainted
 					cs := retProv[t.Callee]
