@@ -1877,6 +1877,29 @@ static int64_t mfl_read_file_raw(const char* path, int64_t ptr, int64_t nbytes) 
 }
 /* delete a file (0 on success, -1 on error) — e.g. removing a stored upload. */
 static int64_t mfl_remove_file(const char* path) { return remove(path) == 0 ? 0 : -1; }
+/* fsync a path — the missing half of durability. write_file returns when the
+   data is in the page cache, so a power loss can still lose it; fsync returns
+   only once the storage device has it.
+
+   Works on a DIRECTORY too, which is not a detail: creating or renaming a file
+   is a directory modification, so a fully-synced file can still vanish after a
+   crash if its directory entry never reached the disk. The durable-write recipe
+   is therefore write -> fsync(file) -> fsync(dirname). A directory must be
+   opened read-only (O_RDONLY); opening it for write fails with EISDIR.
+
+   Returns 0 on success, -1 on error. EINVAL is reported as success: some
+   filesystems reject fsync on a directory fd, and there the directory entry is
+   not the thing at risk. */
+static int64_t mfl_fsync(const char* path) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return -1;
+    int r = fsync(fd);
+    int e = errno;
+    close(fd);
+    if (r == 0) return 0;
+    if (e == EINVAL) return 0;
+    return -1;
+}
 /* read a file's raw bytes (NUL-safe, unlike read_file which returns a C string).
    Empty bytes if the file can't be opened. */
 static mfl_bytes mfl_read_file_bytes(const char* path) {
@@ -6291,6 +6314,8 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("mfl_system(%s)", args[0]), nil
 	case "mkdir":
 		return fmt.Sprintf("mfl_mkdir(%s)", args[0]), nil
+	case "fsync":
+		return fmt.Sprintf("mfl_fsync(%s)", args[0]), nil
 	case "https_get":
 		g.usesTLS = true
 		return fmt.Sprintf("mfl_https_get(%s)", args[0]), nil
