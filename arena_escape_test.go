@@ -206,12 +206,16 @@ func TestEscapeKeepsReclamationEffective(t *testing.T) {
 // this, every transient map (a per-request lookup table, a per-page group) was a
 // permanent leak, because maps were malloc-only with no free path anywhere.
 func TestScopedArenaReclaimsMaps(t *testing.T) {
+	// The retained-vs-reclaimed delta must dwarf ru_maxrss's fixed base, which is
+	// ~1 MB on a dev box but ~15 MB on a CI runner: at 300 iterations the ratio read
+	// 2.6x on CI (reclamation working) and tripped a 3x floor. 2000 iterations makes
+	// the unscoped leak ~100 MB, so the floor tests reclamation rather than the base.
 	prog := func(scoped bool) string {
 		inner := `m := make(map[string]string) i := 0 while i < 400 { m["key-" + str(i)] = "value-" + str(i) i = i + 1 } total = total + len(keys(m))`
 		if scoped {
 			inner = `arena { ` + inner + ` }`
 		}
-		return `func main() { total := 0 n := 0 while n < 300 { ` + inner + ` n = n + 1 } println(total) }`
+		return `func main() { total := 0 n := 0 while n < 2000 { ` + inner + ` n = n + 1 } println(total) }`
 	}
 	scopedOut, scopedRSS := buildRun(t, prog(true))
 	unscopedOut, unscopedRSS := buildRun(t, prog(false))
