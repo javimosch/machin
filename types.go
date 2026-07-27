@@ -2440,6 +2440,12 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		}
 		c.addPair(argSlots[0], c.cString)
 		return newSliceSlot(c, c.cString), nil
+	case "fsync":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("fsync: 1 arg (path)")
+		}
+		c.addPair(argSlots[0], c.cString)
+		return c.cInt, nil
 	case "mkdir":
 		if len(argSlots) != 1 {
 			return 0, fmt.Errorf("mkdir: 1 arg (path)")

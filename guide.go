@@ -219,6 +219,7 @@ func machinGuide() guideCatalog {
 			{"remove", "(string) -> int", "delete a file (0 ok; -1 error)", "io"},
 			{"list_dir", "(string) -> []string", "directory entries (excludes . / ..)", "io"},
 			{"mkdir", "(string) -> int", "create a directory (0 ok; -1 error)", "io"},
+			{"fsync", "(string) -> int", "flush a file (or a DIRECTORY) to the storage device (0 ok; -1 error). write_file returns when the data is only in the page cache, so a power loss can still lose it. Durable write = write_file -> fsync(file) -> fsync(dir), because creating the file is a directory change that must be synced too", "io"},
 			// cli / process
 			{"args", "() -> []string", "command-line args (args()[0] is program path)", "cli"},
 			{"env", "(string) -> string", "environment variable (\"\" if unset)", "cli"},
