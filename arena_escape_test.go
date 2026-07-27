@@ -244,3 +244,27 @@ func TestMainArenaMapKeepsFreeingOnDelete(t *testing.T) {
 		t.Fatalf("long-lived map semantics changed: %q", got)
 	}
 }
+
+// A scoped arena that freed a lot should hand the pages back to the OS, not just
+// to the C heap's free-list: glibc raises its mmap threshold once large blocks
+// have been freed, so a server doing heavy scoped work per request otherwise
+// sees RSS climb even though every block is reclaimed correctly. (It can only
+// release the free TOP of the heap — live data allocated above freed pages caps
+// what comes back, which is why this asserts a ratio rather than a fixed floor.)
+func TestScopedArenaReturnsPagesToTheOS(t *testing.T) {
+	prog := func(scoped bool) string {
+		inner := `big := []string{} i := 0 while i < 120000 { big = append(big, "row-" + str(i) + "-payload") i = i + 1 } total = total + len(big)`
+		if scoped {
+			inner = `arena { ` + inner + ` }`
+		}
+		return `func main() { total := 0 n := 0 while n < 6 { ` + inner + ` n = n + 1 } println(total) }`
+	}
+	scopedOut, scopedRSS := buildRun(t, prog(true))
+	unscopedOut, unscopedRSS := buildRun(t, prog(false))
+	if scopedOut != unscopedOut {
+		t.Fatalf("trimming changed output: %q vs %q", scopedOut, unscopedOut)
+	}
+	if scopedRSS*3 > unscopedRSS {
+		t.Fatalf("scoped arena did not return pages: scoped %d kB vs unscoped %d kB", scopedRSS, unscopedRSS)
+	}
+}
