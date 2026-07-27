@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+## v0.122.0
+
+- **`fsync(path)` builtin — the missing half of durability** (PR #536). MFL had
+  no way to make a write durable: `write_file` returns once the data is in the
+  page cache, so a program that wrote a file and reported success could still
+  lose it to a power cut or a kernel panic. This surfaced building
+  [grange](https://github.com/javimosch/grange), whose crash harness only ever
+  proved PROCESS-crash safety (`kill -9`) — which the page cache survives on its
+  own, so the harness could not have caught the gap.
+
+  `fsync(path) -> int` (0 ok, -1 error) accepts a **directory** as well as a
+  file, which is the part that is easy to miss: creating a file is a
+  modification of its directory, so a fully-synced file can still vanish after a
+  crash if the directory entry never reached the disk. The durable-write recipe
+  is `write_file(p, data)` then `fsync(p)` (content durable) then `fsync(dir)`
+  (the file's existence durable). A directory must be opened `O_RDONLY`
+  (`O_WRONLY` fails with `EISDIR`), which is why this is a builtin rather than
+  something a caller can express. `EINVAL` is reported as success: some
+  filesystems reject fsync on a directory fd, and there the directory entry is
+  not what is at risk.
+
+  Verified with `strace` that both calls reach the kernel as real `fsync(2)` on
+  the right fds — a builtin that returned 0 without syncing would pass any
+  behavioural test.
+
 ## v0.121.0
 
 - **`parse()`: a JSON `null` no longer silently drops the rest of the object**
