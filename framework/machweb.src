@@ -429,10 +429,20 @@ func read_request(conn) (raw) {
     if sep >= 0 {
         clen := content_length(substr(raw, 0, sep))
         body_start := sep + 4
-        for len(raw) - body_start < clen {
-            chunk := read(conn)
-            if chunk == "" { break }            // connection closed early
-            raw = raw + chunk
+        have := len(raw) - body_start
+        if have < clen {
+            // Collect the chunks and join ONCE. `raw = raw + chunk` in this loop
+            // is quadratic: a 1.5 MB body arriving in 64 kB reads allocates ~24
+            // ever-larger copies (~18 MB), and in a long-lived server that all
+            // stays on the goroutine's arena. join() allocates the result once.
+            parts := []string{raw}
+            while have < clen {
+                chunk := read(conn)
+                if chunk == "" { break }        // connection closed early
+                parts = append(parts, chunk)
+                have = have + len(chunk)
+            }
+            raw = join(parts, "")
         }
     }
 }
@@ -449,10 +459,33 @@ func read_request_bytes(conn) (raw) {
         // (no buffering, no OOM) rather than draining megabytes off the socket.
         if machweb_max_body == 0 || clen <= machweb_max_body {
             body_start := sep + 4
-            for len(raw) - body_start < clen {
-                chunk := read_bytes(conn)
-                if len(chunk) == 0 { break }    // connection closed early (or read timeout)
-                raw = bytes_concat(raw, chunk)
+            // Same quadratic trap as read_request, in bytes: merge the chunks
+            // pairwise (each pass halves the count) so the total copying is
+            // O(n log n) instead of O(n^2). bytes has no join().
+            have := len(raw) - body_start
+            if have < clen {
+                parts := []bytes{}
+                parts = append(parts, raw)
+                while have < clen {
+                    chunk := read_bytes(conn)
+                    if len(chunk) == 0 { break } // connection closed early (or read timeout)
+                    parts = append(parts, chunk)
+                    have = have + len(chunk)
+                }
+                while len(parts) > 1 {
+                    merged := []bytes{}
+                    i := 0
+                    while i < len(parts) {
+                        if i + 1 < len(parts) {
+                            merged = append(merged, bytes_concat(parts[i], parts[i+1]))
+                        } else {
+                            merged = append(merged, parts[i])
+                        }
+                        i = i + 2
+                    }
+                    parts = merged
+                }
+                raw = parts[0]
             }
         }
     }

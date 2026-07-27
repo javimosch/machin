@@ -227,7 +227,7 @@ typedef struct { void* fn; void* env; } mfl_closure;
    own goroutine and frees everything it allocated on return. Subsystems that
    free explicitly (channels, maps, goroutine args) use raw malloc/free. */
 typedef struct mfl_blk { struct mfl_blk* next; size_t size; } mfl_blk;
-typedef struct { mfl_blk* head; } mfl_arena;
+typedef struct { mfl_blk* head; size_t bytes; } mfl_arena;
 static mfl_arena mfl_main_arena = { NULL };
 static _Thread_local mfl_arena* mfl_arena_cur = NULL;
 static void* mfl_alloc(size_t sz) {
@@ -235,6 +235,7 @@ static void* mfl_alloc(size_t sz) {
     if (sz == 0) sz = 1;
     mfl_blk* b = malloc(sizeof(mfl_blk) + sz);
     b->size = sz; b->next = mfl_arena_cur->head; mfl_arena_cur->head = b;
+    mfl_arena_cur->bytes += sz;
     return (void*)(b + 1);
 }
 /* mfl_calloc is only ever used to box a local captured by a nested closure
@@ -286,7 +287,28 @@ static void mfl_arena_free(mfl_arena* a) {
     mfl_blk* b = a->head;
     while (b) { mfl_blk* n = b->next; free(b); b = n; }
     a->head = NULL;
+    a->bytes = 0;
     mfl_strlen_cache_s = NULL; /* freed addresses may be reused — drop stale length */
+}
+
+/* Exit path for an arena { } block. free() alone hands the pages to the C heap's
+   free-list, not to the OS, and glibc's mmap threshold adapts upward once large
+   blocks have been freed — so a server doing heavy scoped work per request sees
+   RSS climb monotonically even though every block is correctly reclaimed
+   (measured: ~23 MB per request retained across a bulk-ingest loop, with the
+   arena working exactly as designed). When a block freed a lot, ask the
+   allocator to return the pages; the syscall is worth it at this size and is
+   skipped entirely for the small blocks that dominate hot loops. Same trim
+   arena_reset() has always done, now available to the checked, scoped form. */
+#ifndef MFL_ARENA_TRIM_BYTES
+#define MFL_ARENA_TRIM_BYTES (8u * 1024u * 1024u)
+#endif
+static void mfl_arena_free_scoped(mfl_arena* a) {
+    size_t had = a->bytes;
+    mfl_arena_free(a);
+#ifdef __GLIBC__
+    if (had >= MFL_ARENA_TRIM_BYTES) malloc_trim(0);
+#endif
 }
 /* arena_reset(): free the CURRENT goroutine's arena chain in place, WITHOUT
    ending the goroutine (same reclamation as mfl_arena_free, but on the live
@@ -4510,7 +4532,7 @@ func (g *cgen) stmt(s Stmt, depth int) error {
 		}
 		g.arenaStack = g.arenaStack[:len(g.arenaStack)-1]
 		indentC(&g.buf, depth)
-		fmt.Fprintf(&g.buf, "mfl_arena_cur = _sp%d; mfl_arena_free(&_sa%d); }\n", id, id)
+		fmt.Fprintf(&g.buf, "mfl_arena_cur = _sp%d; mfl_arena_free_scoped(&_sa%d); }\n", id, id)
 	case *GoStmt:
 		return g.goStmt(st)
 	default:
