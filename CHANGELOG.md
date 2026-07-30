@@ -2,6 +2,48 @@
 
 ## Unreleased
 
+## v0.123.0
+
+- **`stat` / `is_dir` / `file_size` / `is_symlink` builtins — the metadata half
+  of file I/O** (PR #541). MFL could list a directory and read a file, but could
+  not ask what an entry **is**. That made a recursive tree walk impossible to
+  write safely: every `list_dir()` entry may be a subdirectory, and there was no
+  way to test for one. The runtime already knew — `mfl_is_dir` exists as the
+  guard that stops `read_file` from `fopen`'ing a directory, and its own comment
+  calls that "a real, easy-to-hit path, not a contrived one" — but the language
+  never exposed it.
+
+  It surfaced porting [token-optimizer-cli](https://github.com/javimosch/token-optimizer-cli)'s
+  repo scanner to MFL (now [mfltok](https://github.com/javimosch/mfltok) `scan`):
+  walk the tree, skip vendor directories, skip files over 10 MB. Not one of
+  those three steps was expressible.
+
+  ```go
+  kind, size, mtime := stat(path)   // MULTI-ASSIGN only
+  is_dir(path) -> bool
+  file_size(path) -> int            // -1 when the path cannot be stat'd
+  is_symlink(path) -> bool
+  ```
+
+  `stat` answers all three questions in **one syscall** and follows symlinks,
+  like Go's `os.Stat`. `kind` is `0` missing / `1` file / `2` directory / `3`
+  other; `size` is `-1` on failure, so a caller that ignores `kind` still sees
+  the error; `mtime` is Unix seconds.
+
+  `is_symlink` is the one that is easy to leave out and must not be: it uses
+  `lstat`, because a symlink **to** a directory is `is_dir=true` (stat follows)
+  and would make a walker recurse into a link pointing back up the tree,
+  forever. Without it the other three are **not sufficient to write a
+  terminating walk**, which is the entire motivating use case. Always `false` on
+  Windows, which has no `lstat` — a walk there still terminates, it just cannot
+  detect a junction.
+
+  `is_dir` reuses the existing `mfl_is_dir` helper rather than redefining it.
+  Tests cover kind/size/mtime, the missing path, the link-to-dir distinction,
+  and end-to-end: a recursive walk over a tree containing a symlink cycle back
+  to its own root, asserted to terminate and to total the same bytes as the real
+  files.
+
 ## v0.122.0
 
 - **`fsync(path)` builtin — the missing half of durability** (PR #536). MFL had
