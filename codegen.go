@@ -1942,6 +1942,51 @@ static int64_t mfl_mkdir(const char* path) {
     if (r < 0 && errno == EEXIST) return 0;
     return r;
 }
+/* stat / is_dir / file_size / is_symlink — the metadata half of file I/O.
+
+   MFL could list a directory (list_dir) and read a file, but could not ask what
+   an entry IS. That made a recursive walk impossible to write safely: every
+   list_dir() entry may be a subdirectory, and read_file_bytes on a directory is
+   not a meaningful read. Any tool that walks a tree — a scanner, a bundler, a
+   size auditor — needs this before it needs anything else.
+
+   stat() answers all three questions in ONE syscall and follows symlinks, like
+   Go's os.Stat. kind: 0 missing, 1 regular file, 2 directory, 3 other (device,
+   socket, fifo). size is -1 when the path cannot be stat'd, so a caller that
+   ignores kind still sees failure. mtime is Unix seconds.
+
+   is_symlink() is the exception: it uses lstat, because a walker that follows
+   links needs to detect them to avoid an infinite cycle (a/link -> a). Without
+   it the other three are not enough to write a terminating walk. */
+typedef struct { int64_t kind; int64_t size; int64_t mtime; } mfl_stat_result;
+static mfl_stat_result mfl_stat(const char* path) {
+    mfl_stat_result R; R.kind = 0; R.size = -1; R.mtime = 0;
+    struct stat st;
+    if (stat(path, &st) != 0) return R;
+    if (S_ISDIR(st.st_mode)) R.kind = 2;
+    else if (S_ISREG(st.st_mode)) R.kind = 1;
+    else R.kind = 3;
+    R.size = (int64_t)st.st_size;
+    R.mtime = (int64_t)st.st_mtime;
+    return R;
+}
+/* is_dir reuses the existing mfl_is_dir helper defined above (the guard that
+   keeps read_file from fopen'ing a directory) — same semantics, one definition. */
+static int64_t mfl_file_size(const char* path) {
+    struct stat st;
+    if (stat(path, &st) != 0) return -1;
+    return (int64_t)st.st_size;
+}
+static int mfl_is_symlink(const char* path) {
+#if defined(_WIN32) || !defined(S_ISLNK)
+    /* Windows has no lstat/S_ISLNK; report "not a symlink" rather than fail so a
+       walk still terminates (it just cannot detect a junction). */
+    (void)path; return 0;
+#else
+    struct stat st;
+    return (lstat(path, &st) == 0 && S_ISLNK(st.st_mode)) ? 1 : 0;
+#endif
+}
 #ifndef __wasm__
 /* run a shell command, return its exit code (-1 if it could not be launched). For
    process orchestration — e.g. spawning a detached daemon with a trailing "&". */
@@ -4581,6 +4626,8 @@ func multiRetBuiltinC(name string) (cfn, ctype string, fields []string, needsTLS
 		return "mfl_exec", "mfl_exec_result", []string{"code", "out", "err"}, false, true
 	case "mmap_file":
 		return "mfl_mmap_file", "mfl_mmap_result", []string{"ptr", "len"}, false, true
+	case "stat":
+		return "mfl_stat", "mfl_stat_result", []string{"kind", "size", "mtime"}, false, true
 	case "rsa_generate":
 		return "mfl_crypto_rsa_generate", "mfl_crypto_rsa_keypair", []string{"priv", "pub"}, false, true
 	case "x509_pubkey":
@@ -6314,6 +6361,12 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("mfl_system(%s)", args[0]), nil
 	case "mkdir":
 		return fmt.Sprintf("mfl_mkdir(%s)", args[0]), nil
+	case "is_dir":
+		return fmt.Sprintf("mfl_is_dir(%s)", args[0]), nil
+	case "file_size":
+		return fmt.Sprintf("mfl_file_size(%s)", args[0]), nil
+	case "is_symlink":
+		return fmt.Sprintf("mfl_is_symlink(%s)", args[0]), nil
 	case "fsync":
 		return fmt.Sprintf("mfl_fsync(%s)", args[0]), nil
 	case "https_get":

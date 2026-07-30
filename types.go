@@ -1588,6 +1588,8 @@ func (c *Checker) multiRetBuiltin(name string) (args []int, rets []int, ok bool)
 		return []int{c.cString}, []int{c.cInt, c.cString, c.cString}, true
 	case "mmap_file":
 		return []int{c.cString}, []int{c.cInt, c.cInt}, true
+	case "stat":
+		return []int{c.cString}, []int{c.cInt, c.cInt, c.cInt}, true
 	case "rsa_generate":
 		return []int{c.cInt}, []int{c.cBytes, c.cBytes}, true
 	case "x509_pubkey":
@@ -2452,6 +2454,24 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		}
 		c.addPair(argSlots[0], c.cString)
 		return c.cInt, nil
+	case "is_dir":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("is_dir: 1 arg (path)")
+		}
+		c.addPair(argSlots[0], c.cString)
+		return c.cBool, nil
+	case "file_size":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("file_size: 1 arg (path)")
+		}
+		c.addPair(argSlots[0], c.cString)
+		return c.cInt, nil
+	case "is_symlink":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("is_symlink: 1 arg (path)")
+		}
+		c.addPair(argSlots[0], c.cString)
+		return c.cBool, nil
 	case "system":
 		if len(argSlots) != 1 {
 			return 0, fmt.Errorf("system: 1 arg (command string)")
@@ -2582,6 +2602,8 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		return 0, fmt.Errorf("exec returns 3 values; use: code, out, err := exec(cmd)")
 	case "mmap_file":
 		return 0, fmt.Errorf("mmap_file returns 2 values; use: ptr, size := mmap_file(path)")
+	case "stat":
+		return 0, fmt.Errorf("stat returns 3 values; use: kind, size, mtime := stat(path)")
 	case "rsa_generate":
 		return 0, fmt.Errorf("rsa_generate returns 2 values; use: priv, pub := rsa_generate(bits)")
 	case "x509_pubkey":

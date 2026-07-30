@@ -218,6 +218,10 @@ func machinGuide() guideCatalog {
 			{"read_file_raw", "(string, int, int) -> int", "read a file into a raw memory region (ptr, nbytes) in one fread; returns bytes read, -1 on open error", "io"},
 			{"remove", "(string) -> int", "delete a file (0 ok; -1 error)", "io"},
 			{"list_dir", "(string) -> []string", "directory entries (excludes . / ..)", "io"},
+			{"stat", "(string) -> (int, int, int)", "file metadata in ONE syscall -> (kind, size, mtime). MULTI-ASSIGN ONLY: kind, size, mtime := stat(path). kind: 0 missing, 1 file, 2 directory, 3 other; size -1 and mtime 0 when the path cannot be stat'd; mtime is Unix seconds. Follows symlinks (like Go's os.Stat). This is what makes a recursive walk writable: every list_dir() entry may be a subdirectory", "io"},
+			{"is_dir", "(string) -> bool", "true if the path is a directory (follows symlinks); false if missing", "io"},
+			{"file_size", "(string) -> int", "size in bytes, or -1 if the path cannot be stat'd — the cheap way to skip a huge file without reading it", "io"},
+			{"is_symlink", "(string) -> bool", "true if the path itself is a symlink (lstat — does NOT follow). The cycle guard for a recursive walk: a link back up the tree makes a following walk loop forever. Always false on Windows (no lstat)", "io"},
 			{"mkdir", "(string) -> int", "create a directory (0 ok; -1 error)", "io"},
 			{"fsync", "(string) -> int", "flush a file (or a DIRECTORY) to the storage device (0 ok; -1 error). write_file returns when the data is only in the page cache, so a power loss can still lose it. Durable write = write_file -> fsync(file) -> fsync(dir), because creating the file is a directory change that must be synced too", "io"},
 			// cli / process
