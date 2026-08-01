@@ -317,6 +317,8 @@ startup (before `main`; at `_initialize` for a wasm reactor).
 | `byte_at` | `(bytes, int) -> int` | byte value 0–255 at an index (`-1` if out of range) |
 | `bytes_sub` | `(bytes, int, int) -> bytes` | sub-range `[start, end)` |
 | `bytes_concat` | `(bytes, bytes) -> bytes` | concatenate two `bytes` values |
+| `zlib_compress` | `(bytes, int) -> bytes` | zlib-compress raw bytes at the given level (`0`-`9`, `-1` for default `6`); links `-lz` only when used |
+| `zlib_decompress` | `(bytes) -> bytes` | zlib-decompress a raw zlib stream back to raw bytes; empty `bytes` on an invalid stream |
 | `rand_bytes` | `(int) -> bytes` | `n` cryptographically-random bytes (CSPRNG) |
 | `sha256_bytes` | `(bytes) -> bytes` | SHA-256 of binary → 32-byte digest (binary-safe) |
 | `hmac_sha256_bytes` | `(bytes, bytes) -> bytes` | HMAC-SHA256(key, msg) → 32 bytes |
