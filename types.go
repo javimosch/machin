@@ -1892,6 +1892,19 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		c.addPair(argSlots[0], c.cBytes)
 		c.addPair(argSlots[1], c.cBytes)
 		return c.cBytes, nil
+	case "zlib_compress":
+		if len(argSlots) != 2 {
+			return 0, fmt.Errorf("zlib_compress: 2 args (bytes, level)")
+		}
+		c.addPair(argSlots[0], c.cBytes)
+		c.addPair(argSlots[1], c.cInt)
+		return c.cBytes, nil
+	case "zlib_decompress":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("zlib_decompress: 1 arg (bytes)")
+		}
+		c.addPair(argSlots[0], c.cBytes)
+		return c.cBytes, nil
 	case "rand_bytes":
 		if len(argSlots) != 1 {
 			return 0, fmt.Errorf("rand_bytes: 1 arg (count)")

@@ -451,6 +451,8 @@ first := users[0]                                // value copy
 | `byte_at(b, i)`             | byte value 0–255 at index `i` (−1 if out of range) |
 | `bytes_sub(b, start, end)`  | sub-range `[start, end)` of a `bytes` value  |
 | `bytes_concat(a, b)`        | concatenate two `bytes` values               |
+| `zlib_compress(b, level)`   | zlib-compress raw `bytes`; `level` 0–9 (`-1` = default) |
+| `zlib_decompress(b)`        | zlib-decompress raw `bytes`                  |
 | `bytes_index(b, needle, from)` | find `needle` in `b` at/after index `from`, NUL-safe (`-1` if absent); for binary protocols / multipart boundaries |
 | `alloc(n)` / `free(p)`      | allocate/free `n` zeroed raw bytes on the heap → pointer (an `int`); for building C buffers/structs to pass over FFI |
 | `poke_f32(p, off, v)` / `peek_f32(p, off)` | write/read a 4-byte float at byte offset `off` from pointer `p` |

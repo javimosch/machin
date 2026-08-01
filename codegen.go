@@ -60,6 +60,7 @@ func windowsUnsupported(g *cgen) error {
 		{g.usesXEdDSA, "XEdDSA (xeddsa_* — needs libsodium for Windows, not yet wired)"},
 		{g.usesSQLite, "SQLite (sqlite_*)"},
 		{g.usesRegex, "regex (regex_*)"},
+		{g.usesZlib, "zlib (zlib_*)"},
 	} {
 		if u.used {
 			return fmt.Errorf("the windows target does not yet support %s — see issue #517 (supported: the stdio/compute core, TCP sockets, and HTTPS/TLS+crypto via a user-supplied OpenSSL)", u.what)
@@ -119,6 +120,7 @@ type cgen struct {
 	usesSelect   bool            // program uses `select` (now record/replay-gated; kept for diagnostics)
 	usesXEdDSA   bool            // program calls xeddsa_* -> emit XEdDSA runtime + link -lsodium -lcrypto
 	usesMath     bool            // program calls math builtins (sin/cos/sqrt/...) -> emit math runtime + link -lm
+	usesZlib     bool            // program calls zlib_* -> emit zlib runtime + link -lz
 	usesNoise    bool            // program calls noise2/noise3 -> emit Perlin noise runtime + link -lm
 	usesNet      bool            // program calls dial/listen/accept/read/write/close(fd) -> emit POSIX socket runtime
 	usesTTY      bool            // program calls raw_mode/read_key -> emit termios/select runtime
@@ -3879,6 +3881,59 @@ static int mfl_xeddsa_verify(mfl_bytes pub, mfl_bytes msg, mfl_bytes sig) {
 }
 `
 
+// zlibRuntime implements raw zlib compress/decompress over the bytes type.
+// Emitted and linked -lz only when a program calls zlib_*. Level follows zlib
+// semantics (0-9, -1 default); both functions return empty bytes on failure.
+const zlibRuntime = `#include <zlib.h>
+
+static mfl_bytes mfl_zlib_compress(mfl_bytes src, int64_t level) {
+    mfl_bytes r; r.len = 0; r.data = NULL;
+    if (src.len < 0) return r;
+    uLong bound = compressBound((uLong)src.len);
+    r.data = (uint8_t*)mfl_alloc(bound ? bound : 1);
+    uLongf outLen = (uLongf)bound;
+    int lvl = (int)level;
+    if (lvl < -1) lvl = -1;
+    if (lvl > 9) lvl = 9;
+    int ret = compress2(r.data, &outLen, src.data, (uLong)src.len, lvl);
+    if (ret != Z_OK) { r.len = 0; return r; }
+    r.len = (int64_t)outLen;
+    return r;
+}
+
+static mfl_bytes mfl_zlib_decompress(mfl_bytes src) {
+    mfl_bytes r; r.len = 0; r.data = NULL;
+    if (src.len < 0) return r;
+    z_stream s; memset(&s, 0, sizeof(s));
+    s.next_in = (Bytef*)src.data;
+    s.avail_in = (uInt)src.len;
+    if (inflateInit(&s) != Z_OK) return r;
+    size_t cap = (size_t)src.len * 2;
+    if (cap < 256) cap = 256;
+    uint8_t* out = (uint8_t*)mfl_alloc(cap);
+    s.next_out = (Bytef*)out;
+    s.avail_out = (uInt)cap;
+    int ret;
+    while ((ret = inflate(&s, Z_NO_FLUSH)) == Z_OK) {
+        if (s.avail_out == 0) {
+            size_t done = (size_t)s.total_out;
+            cap *= 2;
+            out = (uint8_t*)mfl_realloc(out, cap);
+            s.next_out = (Bytef*)(out + done);
+            s.avail_out = (uInt)(cap - done);
+        }
+    }
+    if (ret != Z_STREAM_END) {
+        inflateEnd(&s);
+        return r;
+    }
+    r.data = out;
+    r.len = (int64_t)s.total_out;
+    inflateEnd(&s);
+    return r;
+}
+`
+
 // isFFIScalar reports whether t is an FFI scalar type name (vs a cstruct name).
 func isFFIScalar(t string) bool {
 	switch t {
@@ -4121,6 +4176,10 @@ func (g *cgen) program(p *Program) (string, error) {
 		}
 		if g.usesXEdDSA {
 			out.WriteString(xeddsaRuntime)
+			out.WriteByte('\n')
+		}
+		if g.usesZlib {
+			out.WriteString(zlibRuntime)
 			out.WriteByte('\n')
 		}
 	}
@@ -6015,6 +6074,12 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("mfl_bytes_index(%s, %s, %s)", args[0], args[1], args[2]), nil
 	case "bytes_concat":
 		return fmt.Sprintf("mfl_bytes_concat(%s, %s)", args[0], args[1]), nil
+	case "zlib_compress":
+		g.usesZlib = true
+		return fmt.Sprintf("mfl_zlib_compress(%s, %s)", args[0], args[1]), nil
+	case "zlib_decompress":
+		g.usesZlib = true
+		return fmt.Sprintf("mfl_zlib_decompress(%s)", args[0]), nil
 	case "rand_bytes":
 		g.usesCrypto = true
 		return fmt.Sprintf("mfl_crypto_rand(%s)", args[0]), nil

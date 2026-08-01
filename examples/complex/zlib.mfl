@@ -1,0 +1,1 @@
+func main(){b:=from_hex("48656c6c6f2c207a6c696221")c:=zlib_compress(b,6)d:=zlib_decompress(c)println(str(len(b))+" "+str(len(c))+" "+str(len(d)))}

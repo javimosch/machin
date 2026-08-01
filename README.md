@@ -144,6 +144,7 @@ bin/machin guide  --text                 # print the full feature catalog for ag
 - **Web:** [`machweb`](framework/) HTTP framework (router, cookies, SSO, SSE streaming, file uploads, proxy hardening) + reactive wasm frontend
 - **CLI:** [`flags.src`](framework/flags.src) — a composable flag parser (short/long flags, bools, `=`/space values)
 - **Crypto:** SHA-256, HMAC, HKDF, Ed25519, X25519, AES-GCM/CBC — binary and text paths
+- **Binary/wire:** NUL-safe `bytes`, hex, base64, zlib compress/decompress — for blob storage and protocols
 - **C FFI:** `extern` blocks, by-value structs, opaque handles — real raylib 3D games
 
 Full surface and grammar: [`SPEC.md`](SPEC.md). Runnable programs: [`examples/`](examples/).
