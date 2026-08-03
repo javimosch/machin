@@ -496,6 +496,29 @@ id(42); id("hi"); id(3.14)   // → three native functions
   runs `malloc_trim(0)`, returning the freed pages to the OS so RSS actually drops
   (plain `free` keeps them on the C heap's free-list); it is a no-op on
   musl/macOS, whose allocators already release freed spans.
+- **Persistence across `arena_reset()`** — which globals stay valid after a reset
+  is not obvious and not diagnosed. The rule:
+
+  | held in a global across `arena_reset()` | result |
+  |---|---|
+  | string literal | survives |
+  | `env("X")` value | survives |
+  | `args()` value | survives |
+  | **computed string** (concatenation, etc.) | **silently corrupted** |
+
+  Literals, `env()`, and `args()` are re-derivation sources whose backing memory
+  is not on the arena chain, so they survive a reset. A computed string (built
+  with `+` at startup and kept in a global) is arena-allocated; after the reset
+  its backing pages are freed and may be reused, so the global silently reads as
+  garbage — no crash, no diagnostic, exit 0. The failure only appears once the
+  freed pages are reused (e.g. after allocation churn), which makes casual testing
+  actively misleading. This bit `grange`: one computed global (`bytes("\n")`-style
+  separator) was corrupted after a reset, so every line-walk searched for garbage
+  and the integrity checker reported "malformed page records" on files that were
+  fine. The consumer-side workaround is to re-derive any computed global from
+  `args()`/`env()`/literals directly after each reset (grange re-parses argv and
+  re-initialises its separator inside its own reset wrapper), or keep cross-reset
+  state in malloc-backed maps/channels or on disk as noted above.
 - By default, integer overflow wraps (two's complement) and division by zero /
   out-of-bounds slice access are undefined (they follow the generated C).
 - Building with **`--safe`** inserts runtime checks: a slice index out of range,
