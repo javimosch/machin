@@ -22,6 +22,20 @@ func TestParamNamedReturnCollisionString(t *testing.T) {
 	)
 }
 
+func TestDuplicateParamNames(t *testing.T) {
+	checkErr(t, `duplicate parameter "n"`,
+		`func foo(n, n) { println(n) }`,
+		`func main() { foo(1, 2) }`,
+	)
+}
+
+func TestDuplicateNamedReturns(t *testing.T) {
+	checkErr(t, `duplicate named return value "n"`,
+		`func foo() (n, n) { n = 1 }`,
+		`func main() { a, b := foo() println(a) println(b) }`,
+	)
+}
+
 func TestParamNamedReturnNoCollision(t *testing.T) {
 	got := runNative(t,
 		`func bump(n) (out) { out = n + 1 }`,

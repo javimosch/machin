@@ -659,17 +659,26 @@ func Check(p *Program) (*Checker, error) {
 		if _, dup := c.funcs[fn.Name]; dup {
 			return nil, fmt.Errorf("duplicate function %q", fn.Name)
 		}
-		// A parameter sharing a name with one of the function's own named
-		// returns would alias the same local slot in env (see instantiate),
-		// and downstream that collides as two C declarations of the same
-		// identifier — cc would reject it with an opaque symbol error
-		// instead of a clear MFL-level diagnostic.
-		for _, r := range fn.Returns {
-			for _, p := range fn.Params {
-				if p == r {
-					return nil, fmt.Errorf("function %q: parameter %q has the same name as a named return value", fn.Name, p)
-				}
+		// Two parameters, two named returns, or a parameter and a named
+		// return sharing a name all alias the same local slot in env (see
+		// instantiate), and downstream that collides as two C declarations
+		// of the same identifier — cc would reject it with an opaque
+		// symbol error instead of a clear MFL-level diagnostic.
+		seen := map[string]string{}
+		for _, p := range fn.Params {
+			if _, dup := seen[p]; dup {
+				return nil, fmt.Errorf("function %q: duplicate parameter %q", fn.Name, p)
 			}
+			seen[p] = "parameter"
+		}
+		for _, r := range fn.Returns {
+			switch seen[r] {
+			case "parameter":
+				return nil, fmt.Errorf("function %q: parameter %q has the same name as a named return value", fn.Name, r)
+			case "named return value":
+				return nil, fmt.Errorf("function %q: duplicate named return value %q", fn.Name, r)
+			}
+			seen[r] = "named return value"
 		}
 		c.funcs[fn.Name] = fn
 		if fn.Exported {
