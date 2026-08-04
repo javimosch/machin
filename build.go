@@ -108,7 +108,9 @@ func BuildBinaryStatic(prog *Program, outPath string, safe, static bool) error {
 	// -fno-strict-aliasing: the raw-memory peek_*/poke_* builtins (and other
 	// runtime helpers) type-pun through pointer casts, which -O2's strict
 	// aliasing otherwise treats as UB and can silently miscompile.
-	args := []string{"-O2", "-fno-strict-aliasing", "-std=c11", "-pthread"}
+	// -fwrapv: signed overflow wraps two's-complement (matching Go's spec)
+	// instead of being UB that -O2 is free to fold into a constant.
+	args := []string{"-O2", "-fno-strict-aliasing", "-fwrapv", "-std=c11", "-pthread"}
 	var srcs []string // extra C source files compiled alongside the generated one
 	if static {
 		args = append(args, "-static")
@@ -256,7 +258,9 @@ func BuildWasm(prog *Program, outPath string, safe bool) error {
 	// Each exported function carries an export_name attribute (emitted by codegen),
 	// which forces its export under the clean source name — so no --export flags.
 	_ = exports
-	args := []string{"cc", "-target", "wasm32-wasi", "-mexec-model=reactor", "-O2", "-fno-strict-aliasing", "-std=c11", "-o", outPath, tmp.Name()}
+	// -fwrapv: signed overflow wraps two's-complement (matching Go's spec)
+	// instead of being UB that -O2 is free to fold into a constant.
+	args := []string{"cc", "-target", "wasm32-wasi", "-mexec-model=reactor", "-O2", "-fno-strict-aliasing", "-fwrapv", "-std=c11", "-o", outPath, tmp.Name()}
 
 	cmd := exec.Command(zigPath(), args...)
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -306,7 +310,9 @@ func BuildWindows(prog *Program, outPath string, safe bool) error {
 
 	// libm (math/noise) is in mingw's default libs; winpthreads is linked
 	// automatically by zig for the *-windows-gnu target, so no explicit -l.
-	args := []string{"cc", "-target", "x86_64-windows-gnu", "-O2", "-fno-strict-aliasing", "-std=c11"}
+	// -fwrapv: signed overflow wraps two's-complement (matching Go's spec)
+	// instead of being UB that -O2 is free to fold into a constant.
+	args := []string{"cc", "-target", "x86_64-windows-gnu", "-O2", "-fno-strict-aliasing", "-fwrapv", "-std=c11"}
 	var srcs []string // extra C sources compiled alongside the generated one
 	if usesOpenSSL {
 		args = append(args, "-I"+filepath.Join(sslDir, "include"))
