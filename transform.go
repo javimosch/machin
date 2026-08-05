@@ -178,7 +178,7 @@ func collectDeclared(body []Stmt, set map[string]bool) {
 	for _, s := range body {
 		switch st := s.(type) {
 		case *AssignStmt:
-			if st.Op == ":=" {
+			if st.Op == ":=" && st.Name != "_" {
 				set[st.Name] = true
 			}
 		case *MultiAssign:

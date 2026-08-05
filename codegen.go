@@ -4474,6 +4474,12 @@ func (g *cgen) stmt(s Stmt, depth int) error {
 		if err != nil {
 			return err
 		}
+		if st.Name == "_" {
+			// the blank identifier discards the value; still evaluate it for
+			// any side effect (e.g. a function call), but drop the result.
+			g.buf.WriteString("(void)(" + e + ");\n")
+			return nil
+		}
 		fmt.Fprintf(&g.buf, "%s = %s;\n", g.varRef(st.Name), e)
 		g.emitProbe(st.Name, g.c.NodeKind(g.curFn, st.Val), depth)
 	case *ReturnStmt:
