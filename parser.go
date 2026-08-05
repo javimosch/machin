@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 )
@@ -1078,7 +1079,17 @@ func (p *Parser) parsePrimary() (Expr, error) {
 		p.next()
 		n, err := strconv.ParseInt(t.Val, 0, 64) // base 0: decimal, 0x hex, 0b binary, 0o octal
 		if err != nil {
-			return nil, err
+			// A non-decimal literal (0x/0b/0o) is a bit pattern, not a magnitude: if it
+			// fits in 64 bits unsigned, reinterpret it as its two's-complement int value
+			// instead of erroring, matching how the arithmetic already treats overflow.
+			isDecimal := len(t.Val) < 2 || t.Val[0] != '0' || (t.Val[1] != 'x' && t.Val[1] != 'X' && t.Val[1] != 'b' && t.Val[1] != 'B' && t.Val[1] != 'o' && t.Val[1] != 'O')
+			if !isDecimal {
+				if u, uerr := strconv.ParseUint(t.Val, 0, 64); uerr == nil {
+					return &IntLit{Val: int64(u)}, nil
+				}
+				return nil, fmt.Errorf("literal %s exceeds 64-bit range (max 0xFFFFFFFFFFFFFFFF)", t.Val)
+			}
+			return nil, fmt.Errorf("decimal literal %s exceeds int range (max %d); for a bit pattern, write it in hex/binary/octal instead", t.Val, int64(math.MaxInt64))
 		}
 		return &IntLit{Val: n}, nil
 	case TFloat:
