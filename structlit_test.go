@@ -54,3 +54,31 @@ func main() {
 		t.Fatalf("string ops on an absent-map-key value = %q", got)
 	}
 }
+
+// Non-empty []struct literals (#553): []P{P{1,2}, P{3,4}} must compile and read
+// back correctly, including a struct field that is itself a slice or a string,
+// and a nested struct literal inside an element.
+func TestNonEmptyStructSliceLit(t *testing.T) {
+	prog := progFromSrc(t, `
+type Inner struct { tag string }
+type P struct { a int  b int }
+type Row struct { name string  vals []int  inner Inner }
+func main() {
+    xs := []P{P{1,2}, P{3,4}}
+    println("len=" + str(len(xs)))
+    println("xs0=" + str(xs[0].a) + "," + str(xs[0].b))
+    println("xs1=" + str(xs[1].a) + "," + str(xs[1].b))
+
+    rows := []Row{Row{name: "r0", vals: []int{1,2}, inner: Inner{tag: "t0"}}}
+    println("rows0=" + rows[0].name + " " + str(len(rows[0].vals)) + " " + rows[0].inner.tag)
+}`)
+	out, err := RunCaptured(prog)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	got := strings.Join(strings.Fields(out), " ")
+	want := "len=2 xs0=1,2 xs1=3,4 rows0=r0 2 t0"
+	if got != want {
+		t.Fatalf("non-empty []struct literal:\ngot:  %q\nwant: %q", got, want)
+	}
+}
