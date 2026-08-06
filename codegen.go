@@ -5526,8 +5526,10 @@ func (g *cgen) sliceLit(ex *SliceLit) (string, error) {
 		builder, cast = "mfl_lit_str", "char*"
 	case KInt, KBool:
 		builder, cast = "mfl_lit_i64", "int64_t"
+	case KStruct:
+		return g.structSliceLit(ex)
 	default:
-		// struct / nested-slice elements: build empty + append in source instead
+		// nested-slice elements: build empty + append in source instead
 		return "", fmt.Errorf("non-empty []%s literals are not supported; build with append", ek)
 	}
 	return g.seqExprs(ex.Elems, func(names []string) (string, error) {
@@ -5537,6 +5539,32 @@ func (g *cgen) sliceLit(ex *SliceLit) (string, error) {
 		}
 		return builder + "(" + strings.Join(parts, ", ") + ")", nil
 	})
+}
+
+// structSliceLit builds a non-empty []T literal whose element T is a struct:
+// an arena-backed T array sized to the literal, filled one element per
+// assignment (the same shape the append-based workaround writes by hand),
+// wrapped in an mfl_slice.
+func (g *cgen) structSliceLit(ex *SliceLit) (string, error) {
+	ct := g.c.ElemCType(g.curFn, ex)
+	n := len(ex.Elems)
+	names := make([]string, n)
+	for i, el := range ex.Elems {
+		s, err := g.expr(el)
+		if err != nil {
+			return "", err
+		}
+		names[i] = s
+	}
+	id := g.tmpID
+	g.tmpID++
+	arr := fmt.Sprintf("_arrlit%d", id)
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s* %s = (%s*)mfl_alloc(%d * sizeof(%s)); ", ct, arr, ct, n, ct)
+	for i, s := range names {
+		fmt.Fprintf(&b, "%s[%d] = %s; ", arr, i, s)
+	}
+	return fmt.Sprintf("({ %s(mfl_slice){%s, %d, %d}; })", b.String(), arr, n, n), nil
 }
 
 // stringZeroInits returns designated initializers that set every string reachable in
