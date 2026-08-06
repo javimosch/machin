@@ -26,16 +26,6 @@ jobs:
       - name: Build
         run: go build ./...
 
-      - name: Test
-        run: go test ./...
-
-      - name: Run every example (integration smoke test)
-        run: ./examples/run.sh
-
-      # Guard the wasm target: a POSIX-only helper (mmap, madvise, a <sys/*> include)
-      # that lands in the always-on cRuntime compiles fine natively but breaks
-      # `--target wasm` under a strict zig (wasi-libc has no mmap). This smoke build
-      # fails CI if that regresses again. See issue #463.
       # Install zig straight from ziglang.org, not mlugg/setup-zig: that action fetches
       # only from community mirrors, which lag the canonical site and were 404/503-ing for
       # every version. `zig cc` is clang-based and version-stable for the C->wasm smoke
@@ -47,9 +37,34 @@ jobs:
           mkdir -p /tmp/zig && tar -xf /tmp/zig.tar.xz -C /tmp/zig --strip-components=1
           echo "/tmp/zig" >> "$GITHUB_PATH"
 
+      # zig is installed ABOVE this step on purpose. The wasm and windows target
+      # tests call zigPath() and `t.Skipf` when zig is missing — so with the install
+      # below them they SKIPPED in CI, and a broken windows target shipped in
+      # v0.122.0 and survived two releases while `TestWindowsNetCompiles` and
+      # `TestWindowsBuildsPE` were red on every developer machine (#549, #517).
+      - name: Test
+        run: go test ./...
+
+      - name: Run every example (integration smoke test)
+        run: ./examples/run.sh
+
+      # Guard the wasm target: a POSIX-only helper (mmap, madvise, a <sys/*> include)
+      # that lands in the always-on cRuntime compiles fine natively but breaks
+      # `--target wasm` under a strict zig (wasi-libc has no mmap). This smoke build
+      # fails CI if that regresses again. See issue #463.
       - name: wasm smoke build (guards POSIX-only code out of cRuntime — #463)
         run: |
           go build -o /tmp/machin .
           printf 'export func ping() (n) { n = 1 }\n' > /tmp/wasm_smoke.mfl
           /tmp/machin build /tmp/wasm_smoke.mfl --target wasm -o /tmp/wasm_smoke.wasm
           test -s /tmp/wasm_smoke.wasm && echo "wasm smoke build OK ($(wc -c < /tmp/wasm_smoke.wasm) bytes)"
+
+      # Same guard for the windows target: a builtin whose emitted C calls a POSIX
+      # function with no _WIN32 shim breaks `--target windows`. Exercises the file/dir
+      # I/O family specifically — that is where the last two breakages were (#549).
+      - name: windows smoke build (guards POSIX-only code out of the windows target — #517)
+        run: |
+          printf 'func main() {\n  p := "probe.txt"\n  write_file(p, "payload")\n  kind, size, mtime := stat(p)\n  sy := fsync(p)\n  n := len(list_dir("."))\n  remove(p)\n  println(str(kind) + str(size) + str(mtime) + str(sy) + str(n) + str(is_dir(".")))\n}\n' > /tmp/win_smoke.src
+          /tmp/machin encode /tmp/win_smoke.src > /tmp/win_smoke.mfl
+          /tmp/machin build /tmp/win_smoke.mfl --target windows -o /tmp/win_smoke.exe
+          test -s /tmp/win_smoke.exe && echo "windows smoke build OK ($(wc -c < /tmp/win_smoke.exe) bytes)"
