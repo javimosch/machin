@@ -320,6 +320,8 @@ func machinGuide() guideCatalog {
 			{"bytes_sub", "(bytes, int, int) -> bytes", "sub-range [start, end) of a bytes value", "bytes"},
 			{"bytes_index", "(bytes, bytes, int) -> int", "find a needle in bytes at/after an offset, NUL-safe (-1 if absent); for binary protocols / multipart boundaries", "bytes"},
 			{"bytes_concat", "(bytes, bytes) -> bytes", "concatenate two bytes values", "bytes"},
+			{"zlib_compress", "(bytes, int) -> bytes", "zlib-compress raw bytes at the given level (0-9, -1 for default 6); links libz only when used", "bytes"},
+			{"zlib_decompress", "(bytes) -> bytes", "zlib-decompress a raw zlib stream back to raw bytes; empty bytes on error", "bytes"},
 			// crypto over bytes (OpenSSL libcrypto, linked only when used)
 			{"rand_bytes", "(int) -> bytes", "n cryptographically-random bytes (CSPRNG)", "crypto"},
 			{"sha256_bytes", "(bytes) -> bytes", "SHA-256 of binary -> 32-byte digest (binary-safe, unlike sha256)", "crypto"},

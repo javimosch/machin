@@ -62,6 +62,7 @@ machin build examples/complex/primes.mfl --emit-c   # see the generated C
 | `grep`            | `regex_match`/`regex_find`/`regex_groups`/`regex_replace` |
 | `time`            | `time_make`/`time_format`/`time_fields` — build, format, and round-trip a timestamp |
 | `bytes`           | `bytes` type: construct, `to_hex`/`from_hex`, `byte_at`, `bytes_sub`, `bytes_concat`, `bytes_str`; NUL-safe vs string |
+| `zlib`            | `zlib_compress`/`zlib_decompress` over raw `bytes` — level 6 round-trip with a Go `compress/zlib` stream |
 | `sha256`          | `sha256(s)` → lowercase hex; `hmac_sha256(key, msg)` → lowercase hex; webhook signature verification |
 | `crypto`          | OpenSSL crypto suite: SHA-256, HMAC, AES-GCM round-trip (`ct\|\|tag` layout), Ed25519 sign/verify |
 | `base64`          | `base64_encode`/`base64_decode`: standard padded encode, lenient decode (standard + URL-safe alphabets, ignores padding) |

@@ -1,0 +1,16 @@
+//zlib:zlib compress/decompress over raw bytes.
+
+func main(){
+//compress a JSON-shaped orderbook snapshot at level 6
+in:=bytes("{\"bids\":[[\"100.50\",\"1.2\"],[\"100.25\",\"0.8\"]],\"asks\":[[\"100.75\",\"0.5\"]]}")
+c:=zlib_compress(in,6)
+println("compressed len:",len(c))
+
+//decompress back to the original bytes
+out:=zlib_decompress(c)
+println("decompressed:",bytes_str(out))
+
+//decompress a Go-produced level-6 stream(hex of compressed "MFL/Go round-trip")
+goStream:=from_hex("789cf275f3d177cf5728ca2fcd4bd12d29ca2c00040000ffff316905f9")
+println("go round-trip:",bytes_str(zlib_decompress(goStream)))
+}

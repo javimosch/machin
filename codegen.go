@@ -60,6 +60,7 @@ func windowsUnsupported(g *cgen) error {
 		{g.usesXEdDSA, "XEdDSA (xeddsa_* — needs libsodium for Windows, not yet wired)"},
 		{g.usesSQLite, "SQLite (sqlite_*)"},
 		{g.usesRegex, "regex (regex_*)"},
+		{g.usesZlib, "zlib (zlib_compress/zlib_decompress — needs a mingw libz, not yet wired)"},
 	} {
 		if u.used {
 			return fmt.Errorf("the windows target does not yet support %s — see issue #517 (supported: the stdio/compute core, TCP sockets, and HTTPS/TLS+crypto via a user-supplied OpenSSL)", u.what)
@@ -122,6 +123,7 @@ type cgen struct {
 	usesNoise    bool            // program calls noise2/noise3 -> emit Perlin noise runtime + link -lm
 	usesNet      bool            // program calls dial/listen/accept/read/write/close(fd) -> emit POSIX socket runtime
 	usesTTY      bool            // program calls raw_mode/read_key -> emit termios/select runtime
+	usesZlib     bool            // program calls zlib_* -> emit zlib runtime + link -lz
 	target       string          // "" or "native" (default) -> cc; "wasm" -> zig cc, lean runtime, FFI as imports, exports
 	globals      map[string]bool // package-global names (emitted as C statics, mfl_g_<name>)
 	bodyOnly     bool            // oracle mode: emit only the program-specific C (skip the static runtime blocks)
@@ -2383,6 +2385,74 @@ static char* mfl_read_key(void) {
 }
 `
 
+// zlibRuntime provides zlib compression/decompression over the bytes type.
+// Emitted (and linked, -lz) only when a program calls zlib_compress/zlib_decompress.
+const zlibRuntime = `#include <zlib.h>
+
+/* zlib-compress data at the given level (0-9, -1 for default). Returns the
+   raw zlib stream bytes, or empty bytes if deflate fails. */
+static mfl_bytes mfl_zlib_compress(mfl_bytes in, int64_t level) {
+    mfl_bytes out; out.len = 0; out.data = (uint8_t*)mfl_alloc(1);
+    if (level < -1) level = -1;
+    if (level > 9) level = 9;
+    uLong bound = compressBound((uLong)in.len);
+    if (bound > (uLong)INT64_MAX) return out;
+    uint8_t* buf = (uint8_t*)mfl_alloc(bound ? bound : 1);
+    z_stream z;
+    memset(&z, 0, sizeof(z));
+    z.next_in = in.data;
+    z.avail_in = (uInt)in.len;
+    z.next_out = buf;
+    z.avail_out = (uInt)bound;
+    if (deflateInit2(&z, (int)level, Z_DEFLATED, 15, 8, Z_DEFAULT_STRATEGY) != Z_OK) return out;
+    int rc = deflate(&z, Z_FINISH);
+    if (rc == Z_STREAM_END) {
+        out.len = (int64_t)z.total_out;
+        out.data = (uint8_t*)mfl_alloc(out.len ? out.len : 1);
+        if (out.len) memcpy(out.data, buf, (size_t)out.len);
+    }
+    deflateEnd(&z);
+    return out;
+}
+
+/* zlib-decompress a raw zlib stream. Returns the uncompressed bytes, or empty
+   bytes on any error (invalid data, wrong format, allocation failure). */
+static mfl_bytes mfl_zlib_decompress(mfl_bytes in) {
+    mfl_bytes out; out.len = 0; out.data = (uint8_t*)mfl_alloc(1);
+    if (in.len == 0) return out;
+    size_t cap = (size_t)in.len * 4;
+    if (cap < 256) cap = 256;
+    uint8_t* buf = (uint8_t*)malloc(cap);
+    if (!buf) return out;
+    z_stream z;
+    memset(&z, 0, sizeof(z));
+    z.next_in = in.data;
+    z.avail_in = (uInt)in.len;
+    z.next_out = buf;
+    z.avail_out = (uInt)cap;
+    if (inflateInit2(&z, 15) != Z_OK) { free(buf); return out; }
+    for (;;) {
+        int rc = inflate(&z, Z_NO_FLUSH);
+        if (rc == Z_STREAM_END) break;
+        if (rc != Z_OK) { free(buf); inflateEnd(&z); return out; }
+        size_t have = (size_t)z.total_out;
+        size_t need = cap * 2;
+        uint8_t* nb = (uint8_t*)realloc(buf, need);
+        if (!nb) { free(buf); inflateEnd(&z); return out; }
+        buf = nb; cap = need;
+        z.next_out = buf + have;
+        z.avail_out = (uInt)(cap - have);
+    }
+    size_t have = (size_t)z.total_out;
+    out.len = (int64_t)have;
+    out.data = (uint8_t*)mfl_alloc(out.len ? out.len : 1);
+    if (out.len) memcpy(out.data, buf, (size_t)out.len);
+    free(buf);
+    inflateEnd(&z);
+    return out;
+}
+`
+
 // tlsCoreRuntime holds the shared OpenSSL plumbing (a verified TLS dial) used by
 // both the HTTPS client and the WebSocket client. Emitted whenever a program
 // uses native TLS (https_* or wss_*); linked against -lssl -lcrypto. A single
@@ -4169,6 +4239,10 @@ func (g *cgen) program(p *Program) (string, error) {
 		}
 		if g.usesXEdDSA {
 			out.WriteString(xeddsaRuntime)
+			out.WriteByte('\n')
+		}
+		if g.usesZlib {
+			out.WriteString(zlibRuntime)
 			out.WriteByte('\n')
 		}
 	}
@@ -6124,6 +6198,12 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("mfl_bytes_index(%s, %s, %s)", args[0], args[1], args[2]), nil
 	case "bytes_concat":
 		return fmt.Sprintf("mfl_bytes_concat(%s, %s)", args[0], args[1]), nil
+	case "zlib_compress":
+		g.usesZlib = true
+		return fmt.Sprintf("mfl_zlib_compress(%s, %s)", args[0], args[1]), nil
+	case "zlib_decompress":
+		g.usesZlib = true
+		return fmt.Sprintf("mfl_zlib_decompress(%s)", args[0]), nil
 	case "rand_bytes":
 		g.usesCrypto = true
 		return fmt.Sprintf("mfl_crypto_rand(%s)", args[0]), nil

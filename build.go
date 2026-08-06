@@ -102,6 +102,7 @@ func BuildBinaryStatic(prog *Program, outPath string, safe, static bool) error {
 	usesTLS := strings.Contains(csrc, "mfl_tls_dial")
 	usesCrypto := strings.Contains(csrc, "mfl_crypto_")
 	usesSodium := strings.Contains(csrc, "mfl_xeddsa_")
+	usesZlib := strings.Contains(csrc, "mfl_zlib_")
 	bundleSqlite := static && usesSqlite
 
 	// foreign linkage: extern cflags go before the source; -l libs after it
@@ -210,6 +211,10 @@ func BuildBinaryStatic(prog *Program, outPath string, safe, static bool) error {
 	// Requires libsodium-dev (provides libsodium.so) on the build host.
 	if usesSodium {
 		libs = append(libs, "-lsodium", "-lcrypto")
+	}
+	// zlib compression (zlib_compress/zlib_decompress) links libz — only when used.
+	if usesZlib {
+		libs = append(libs, "-lz")
 	}
 	args = append(args, "-o", outPath, tmp.Name())
 	args = append(args, srcs...)
