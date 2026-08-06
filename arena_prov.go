@@ -246,65 +246,8 @@ func computeGlobalWrites(prog *Program, c *Checker, retProv map[string]*provSumm
 			}
 			localFresh := map[string]bool{}
 
-			// fresh reports whether e evaluates to heap allocated in THIS call —
-			// the same question `prov` asks for returns, minus the pass-through
-			// bookkeeping (a parameter or a global is pre-existing, so neither
-			// can dangle when the block is reclaimed).
-			var fresh func(e Expr) bool
-			fresh = func(e Expr) bool {
-				if slot, ok := c.nodeSlot[inst][e]; ok && !arenaHeapKind(c, slot) {
-					return false
-				}
-				switch t := e.(type) {
-				case *Ident:
-					if isParam[t.Name] {
-						return false
-					}
-					if _, isGlobal := c.globalSlot[t.Name]; isGlobal {
-						return false
-					}
-					return localFresh[t.Name]
-				case *Binary:
-					return true // heap-kind binary = string concat, allocated here
-				case *SliceLit:
-					return true
-				case *Unary:
-					return fresh(t.X)
-				case *Index:
-					return fresh(t.X)
-				case *FieldAccess:
-					return fresh(t.X)
-				case *StructLit:
-					for _, v := range t.Vals {
-						if fresh(v) {
-							return true
-						}
-					}
-					return false
-				case *Call:
-					if t.Callee == "escape" {
-						return false // escape() copies into the enclosing arena
-					}
-					if s := retProv[t.Callee]; s != nil {
-						if s.fresh {
-							return true
-						}
-						for i := range s.pass { // passes an argument through
-							if i < len(t.Args) && fresh(t.Args[i]) {
-								return true
-							}
-						}
-						return false
-					}
-					return true // builtin / unknown callee: conservatively fresh
-				}
-				// Default FALSE, matching carriesArena in arena_check.go: a literal
-				// is static storage, not arena memory, and ARENA001 is only worth
-				// having if every finding is real. An allocating form not listed
-				// above is a false negative, which is the trade this analysis has
-				// always made.
-				return false
-			}
+			fr := &arenaFreshness{c: c, inst: inst, retProv: retProv, isParam: isParam, localFresh: localFresh}
+			fresh := fr.of
 
 			var walk func(body []Stmt)
 			walk = func(body []Stmt) {
@@ -361,4 +304,77 @@ func arenaCallWrites(callee string, writes map[string]map[string]bool) []string 
 	}
 	sort.Strings(gs)
 	return gs
+}
+
+// arenaFreshness answers "does this expression evaluate to heap allocated in THIS
+// call?" — the predicate both arena checks turn on. ARENA001 uses it to decide
+// whether a global gains block memory; the arena_reset check (#540) uses it to
+// decide whether a global is holding arena memory when the arena is dropped.
+//
+// It defaults to FALSE, matching carriesArena in arena_check.go: a literal is
+// static storage, `env()`/`args()` are re-derivation sources off the arena chain,
+// and a parameter or another global is pre-existing. Only a value built here can
+// dangle. An allocating form not enumerated is a false negative — the trade this
+// analysis has always made, and what keeps every finding real.
+type arenaFreshness struct {
+	c          *Checker
+	inst       string
+	retProv    map[string]*provSummary
+	isParam    map[string]bool
+	localFresh map[string]bool
+}
+
+func (a *arenaFreshness) of(e Expr) bool {
+	if slot, ok := a.c.nodeSlot[a.inst][e]; ok && !arenaHeapKind(a.c, slot) {
+		return false
+	}
+	switch t := e.(type) {
+	case *Ident:
+		if a.isParam[t.Name] {
+			return false
+		}
+		if _, isGlobal := a.c.globalSlot[t.Name]; isGlobal {
+			return false
+		}
+		return a.localFresh[t.Name]
+	case *Binary:
+		return true // heap-kind binary = string concat, allocated here
+	case *SliceLit:
+		return true
+	case *Unary:
+		return a.of(t.X)
+	case *Index:
+		return a.of(t.X)
+	case *FieldAccess:
+		return a.of(t.X)
+	case *StructLit:
+		for _, v := range t.Vals {
+			if a.of(v) {
+				return true
+			}
+		}
+		return false
+	case *Call:
+		if t.Callee == "escape" {
+			return false // escape() copies into the enclosing arena
+		}
+		// env()/args() are re-derivation sources: their storage is not on the
+		// arena chain, so a global holding one survives arena_reset() (#540).
+		if t.Callee == "env" || t.Callee == "args" {
+			return false
+		}
+		if s := a.retProv[t.Callee]; s != nil {
+			if s.fresh {
+				return true
+			}
+			for i := range s.pass {
+				if i < len(t.Args) && a.of(t.Args[i]) {
+					return true
+				}
+			}
+			return false
+		}
+		return true // builtin / unknown callee: conservatively fresh
+	}
+	return false
 }
