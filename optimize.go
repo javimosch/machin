@@ -250,6 +250,15 @@ func transformExpr(e Expr, rule func(Expr) Expr) Expr {
 		return rule(&CallValue{Fn: transformExpr(x.Fn, rule), Args: transformExprs(x.Args, rule)})
 	case *Index:
 		return rule(&Index{X: transformExpr(x.X, rule), Idx: transformExpr(x.Idx, rule)})
+	case *SliceExpr:
+		ne := &SliceExpr{X: transformExpr(x.X, rule)}
+		if x.Lo != nil {
+			ne.Lo = transformExpr(x.Lo, rule)
+		}
+		if x.Hi != nil {
+			ne.Hi = transformExpr(x.Hi, rule)
+		}
+		return rule(ne)
 	case *FieldAccess:
 		return rule(&FieldAccess{X: transformExpr(x.X, rule), Name: x.Name})
 	case *SliceLit:
