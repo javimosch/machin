@@ -2,6 +2,87 @@
 
 ## Unreleased
 
+## v0.124.0
+
+Nine changes, all of them surfaced by building a real thing in MFL — a 2D game
+engine ([machin-ressort](https://github.com/javimosch/machin-ressort)) whose
+state checksum silently stopped discriminating. Chasing that one bug down turned
+up an undefined-behaviour hole in codegen, a silent FFI truncation, and most of
+the ergonomic gaps every machin skill has been documenting as "caveats".
+
+**Integer overflow is now DEFINED — this is a semantics change** (PR #548, issue
+#547). `machin build` compiles the emitted C with `-fwrapv`, so signed overflow
+wraps two's-complement on every target and optimization level, matching Go's
+spec. It previously did not: signed overflow was undefined behaviour, and at
+`-O2` the C optimizer was free to fold it. The textbook 64-bit FNV-1a round
+`h = (h ^ b) * 1099511628211` collapsed to the constant `INT64_MAX`, so a state
+checksum returned the same digest for two different worlds — with no error
+anywhere. It was correct at `-O0` and wrong at `-O2`, which is the worst way for
+a language to be wrong. `certify`, `equiv`, `optimize` and `superopt` all reason
+about integer arithmetic; none of them could be sound over UB. Measured cost on
+`make bench` (`fib(40)`): none.
+
+**Narrow `cstruct` fields are checked under `--safe`** (PR #559, issue #552). An
+out-of-range value assigned to a `u8`/`u16`/`i8`/`i16`/`i32`/`u32` FFI field was
+silently truncated **at the C boundary only** — the MFL side kept the full
+`int64`, so reading the field back did not reveal the divergence. Tinting a
+sprite by 1.5x turned bright orange fire green: `r` wrapped past 255 while `g`
+and `b` did not. `--safe` now range-checks each narrow field in the generated
+`mfl_to_<Struct>` and panics with the field named; the default build still
+plain-casts (checking every FFI conversion would cost every call), and the
+behaviour is documented in `machin guide`.
+
+**Non-empty `[]struct` literals** (PR #560, issue #553). `xs := []P{P{1,2},
+P{3,4}}` compiles. This was the single most-cited caveat across every machin
+skill and demo repo — table-driven code (material tables, tile legends, level
+rows, test fixtures) had to be written as a paragraph of `append` calls, while
+`[]int{1,2,3}` worked fine. The literal allocates from the current arena and is
+covered by `ARENA001`, so it cannot quietly escape an `arena { }` block.
+
+**Slice ranges** (PR #565, issue #557). `s[lo:hi]`, `s[lo:]`, `s[:hi]`, with
+Go's bounds rules and Go's panic message. The result is **always a fresh copy**,
+never a view sharing the backing array — matching `substr`'s copy semantics on
+strings, so mutating the result never affects the original. Bounds are checked
+unconditionally. `mfl_subslice` is registered with the arena escape analysis, so
+a sub-range that outlives its `arena { }` is still caught by `ARENA001`.
+
+**Multi-assign into a field or index** (PR #563, issue #554). `ns.rng, v =
+next(s.rng)` and `xs[i], ok = f()` parse. Threading a sub-struct through a
+multi-value call previously cost two throwaway names per call — the dominant
+noise in any value-semantic state machine. Desugared in the parser into a temp
+bind plus the stores, so the type checker and codegen are untouched. Note the
+call is evaluated once, **before** the destinations' index expressions; Go
+evaluates left-hand index operands first, so a program observing both side
+effects will see a different order.
+
+**Hex/binary/octal literals accept 64-bit bit patterns** (PR #562, issue #556).
+`0x9E3779B97F4A7C15` compiles. It was a *parse* error — the raw `strconv` message
+leaking through — even though the same bit pattern was expressible as arithmetic.
+Those are exactly the constants you need: the golden-ratio mixer, the FNV-1a
+offset basis, every SplitMix64 seed. Decimal literals above `2^63-1` still error,
+now with a message that names the limit and the fix.
+
+**`_` as the sole assignment destination** (PR #561, issue #555). `_ = f()` and
+`_ := f()` discard the value while still evaluating the call. `_` already worked
+inside a multi-assign, so the restriction was an inconsistency you hit the moment
+you wanted a call for its side effect alone.
+
+**The `:= does not shadow` hint only fires on an actual redeclaration** (PR
+#558, issue #551). It was appended to every mismatch naming a local, including
+ones with no `:=` involved, where it sent the reader after a shadowing problem
+that did not exist. **The rest of #551 is still open**: a mismatch still names
+the variable but not the expression or call site that caused the type — when a
+builtin's return type is the culprit, the builtin is not mentioned.
+
+**The Windows target builds again** (PR #564, issue #549). The emitted runtime
+called POSIX `fsync` unconditionally; mingw does not declare it and `zig cc`
+treats an implicit declaration as a hard error under C11, so `--target windows`
+had been broken since the `fsync` builtin landed in v0.122.0. Now mapped to
+`_commit`, the MSVCRT equivalent that genuinely flushes to disk — not stubbed to
+a no-op, which would have compiled everything and quietly destroyed the
+durability guarantee. Worth noting the trap has now caught the newest filesystem
+builtin in two consecutive releases.
+
 ## v0.123.0
 
 - **`stat` / `is_dir` / `file_size` / `is_symlink` builtins — the metadata half
