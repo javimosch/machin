@@ -11,6 +11,15 @@ type Parser struct {
 	toks    []Token
 	pos     int
 	structs map[string]bool // known struct type names (for T{...} literals)
+	tmpCnt  int             // counter for compiler-generated temp names (multi-assign lvalue destructuring)
+}
+
+// newTempName returns a fresh, source-unreachable local variable name, used
+// to destructure a multi-assign into a field/index destination: the value is
+// first bound to a temp by the call, then stored into place.
+func (p *Parser) newTempName() string {
+	p.tmpCnt++
+	return fmt.Sprintf("_matmp%d", p.tmpCnt)
 }
 
 func (p *Parser) peek() Token { return p.toks[p.pos] }
@@ -534,11 +543,11 @@ func (p *Parser) parseBlock() ([]Stmt, error) {
 	}
 	var stmts []Stmt
 	for p.peek().Val != "}" && p.peek().Kind != TEOF {
-		s, err := p.parseStmt()
+		ss, err := p.parseStmt()
 		if err != nil {
 			return nil, err
 		}
-		stmts = append(stmts, s)
+		stmts = append(stmts, ss...)
 		// optional semicolons
 		for p.peek().Val == ";" {
 			p.next()
@@ -550,39 +559,55 @@ func (p *Parser) parseBlock() ([]Stmt, error) {
 	return stmts, nil
 }
 
-func (p *Parser) parseStmt() (Stmt, error) {
+// parseStmt parses one syntactic statement. It returns a slice because a
+// multi-assign into a field/index destination (e.g. `ns.rng, v = next(s.rng)`)
+// desugars into several AST statements: a temp-destructuring MultiAssign
+// followed by the field/index stores.
+func (p *Parser) parseStmt() ([]Stmt, error) {
 	t := p.peek()
 	if t.Kind == TKeyword {
 		switch t.Val {
 		case "return":
 			p.next()
 			if p.peek().Val == "}" || p.peek().Val == ";" {
-				return &ReturnStmt{}, nil
+				return []Stmt{&ReturnStmt{}}, nil
 			}
 			vals, err := p.parseExprList()
 			if err != nil {
 				return nil, err
 			}
-			return &ReturnStmt{Vals: vals}, nil
+			return []Stmt{&ReturnStmt{Vals: vals}}, nil
 		case "break":
 			p.next()
-			return &BreakStmt{}, nil
+			return []Stmt{&BreakStmt{}}, nil
 		case "continue":
 			p.next()
-			return &ContinueStmt{}, nil
+			return []Stmt{&ContinueStmt{}}, nil
 		case "if":
-			return p.parseIf()
+			s, err := p.parseIf()
+			if err != nil {
+				return nil, err
+			}
+			return []Stmt{s}, nil
 		case "while":
-			return p.parseWhile()
+			s, err := p.parseWhile()
+			if err != nil {
+				return nil, err
+			}
+			return []Stmt{s}, nil
 		case "for":
-			return p.parseFor()
+			s, err := p.parseFor()
+			if err != nil {
+				return nil, err
+			}
+			return []Stmt{s}, nil
 		case "arena":
 			p.next()
 			body, err := p.parseBlock()
 			if err != nil {
 				return nil, err
 			}
-			return &ArenaStmt{Body: body}, nil
+			return []Stmt{&ArenaStmt{Body: body}}, nil
 		case "go":
 			p.next()
 			call, err := p.parsePostfix()
@@ -593,9 +618,13 @@ func (p *Parser) parseStmt() (Stmt, error) {
 			if !ok {
 				return nil, fmt.Errorf("go requires a function call")
 			}
-			return &GoStmt{Call: c}, nil
+			return []Stmt{&GoStmt{Call: c}}, nil
 		case "select":
-			return p.parseSelect()
+			s, err := p.parseSelect()
+			if err != nil {
+				return nil, err
+			}
+			return []Stmt{s}, nil
 		case "var":
 			p.next()
 			nameTok, err := p.expect(TIdent, "")
@@ -609,12 +638,8 @@ func (p *Parser) parseStmt() (Stmt, error) {
 			if err != nil {
 				return nil, err
 			}
-			return &AssignStmt{Name: nameTok.Val, Op: ":=", Val: val}, nil
+			return []Stmt{&AssignStmt{Name: nameTok.Val, Op: ":=", Val: val}}, nil
 		}
-	}
-	// multi-assign: ident, ident, ... (:=|=) rhs
-	if t.Kind == TIdent && p.toks[p.pos+1].Val == "," {
-		return p.parseMultiAssign()
 	}
 	// declaration: ident := expr
 	if t.Kind == TIdent && p.toks[p.pos+1].Val == ":=" {
@@ -624,9 +649,10 @@ func (p *Parser) parseStmt() (Stmt, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &AssignStmt{Name: name, Op: ":=", Val: val}, nil
+		return []Stmt{&AssignStmt{Name: name, Op: ":=", Val: val}}, nil
 	}
-	// expression, possibly an assignment target (ident = / slice[i] =), or the
+	// expression, possibly an assignment target (ident = / slice[i] =), the
+	// first destination of a multi-assign (x, y = ... / x, y := ...), or the
 	// channel of a send statement (ch <- v) — parseExprForStmt (unlike parseExpr)
 	// does NOT reinterpret a trailing `<-` as `<` + unary `-`, so it's left
 	// here for the send-statement check below to claim.
@@ -634,13 +660,16 @@ func (p *Parser) parseStmt() (Stmt, error) {
 	if err != nil {
 		return nil, err
 	}
+	if p.peek().Val == "," {
+		return p.parseMultiAssign(x)
+	}
 	if p.peek().Val == "<-" { // channel send: ch <- v
 		p.next()
 		val, err := p.parseExpr()
 		if err != nil {
 			return nil, err
 		}
-		return &SendStmt{Ch: x, Val: val}, nil
+		return []Stmt{&SendStmt{Ch: x, Val: val}}, nil
 	}
 	if p.peek().Val == "=" {
 		p.next()
@@ -650,16 +679,16 @@ func (p *Parser) parseStmt() (Stmt, error) {
 		}
 		switch lhs := x.(type) {
 		case *Ident:
-			return &AssignStmt{Name: lhs.Name, Op: "=", Val: val}, nil
+			return []Stmt{&AssignStmt{Name: lhs.Name, Op: "=", Val: val}}, nil
 		case *Index:
-			return &IndexAssign{Target: lhs, Val: val}, nil
+			return []Stmt{&IndexAssign{Target: lhs, Val: val}}, nil
 		case *FieldAccess:
-			return &FieldAssign{Target: lhs, Val: val}, nil
+			return []Stmt{&FieldAssign{Target: lhs, Val: val}}, nil
 		default:
 			return nil, fmt.Errorf("cannot assign to %T", x)
 		}
 	}
-	return &ExprStmt{X: x}, nil
+	return []Stmt{&ExprStmt{X: x}}, nil
 }
 
 func (p *Parser) parseIf() (Stmt, error) {
@@ -810,11 +839,11 @@ func (p *Parser) parseSelectBody() ([]Stmt, error) {
 		if v == "case" || v == "default" || v == "}" || p.peek().Kind == TEOF {
 			break
 		}
-		s, err := p.parseStmt()
+		ss, err := p.parseStmt()
 		if err != nil {
 			return nil, err
 		}
-		stmts = append(stmts, s)
+		stmts = append(stmts, ss...)
 		for p.peek().Val == ";" {
 			p.next()
 		}
@@ -839,19 +868,19 @@ func (p *Parser) parseExprList() ([]Expr, error) {
 	return list, nil
 }
 
-// parseMultiAssign parses `a, b, ... (:=|=) rhs`.
-func (p *Parser) parseMultiAssign() (Stmt, error) {
-	var names []string
-	for {
-		n, err := p.expect(TIdent, "")
+// parseMultiAssign parses `first, dest, ... (:=|=) rhs`, where first is the
+// already-parsed leading destination. Each destination may be an identifier,
+// a field access (a.b.c), or an index (xs[i]) — matching what single-assignment
+// already accepts. `:=` still requires plain identifiers, since it declares.
+func (p *Parser) parseMultiAssign(first Expr) ([]Stmt, error) {
+	targets := []Expr{first}
+	for p.peek().Val == "," {
+		p.next()
+		e, err := p.parseExprForStmt()
 		if err != nil {
 			return nil, err
 		}
-		names = append(names, n.Val)
-		if p.peek().Val != "," {
-			break
-		}
-		p.next()
+		targets = append(targets, e)
 	}
 	op := p.peek().Val
 	if op != ":=" && op != "=" {
@@ -862,7 +891,55 @@ func (p *Parser) parseMultiAssign() (Stmt, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &MultiAssign{Names: names, Op: op, Rhs: rhs}, nil
+
+	allIdent := true
+	for _, t := range targets {
+		if _, ok := t.(*Ident); !ok {
+			allIdent = false
+			break
+		}
+	}
+	if op == ":=" && !allIdent {
+		return nil, fmt.Errorf("cannot declare a field or index with :=")
+	}
+	if allIdent {
+		names := make([]string, len(targets))
+		for i, t := range targets {
+			names[i] = t.(*Ident).Name
+		}
+		return []Stmt{&MultiAssign{Names: names, Op: op, Rhs: rhs}}, nil
+	}
+
+	// Mixed lvalues: the call runs once, destructuring into temporaries, then
+	// each destination is stored into left to right (as Go does).
+	names := make([]string, len(targets))
+	var stores []Stmt
+	for i, t := range targets {
+		switch lhs := t.(type) {
+		case *Ident:
+			if lhs.Name == "_" {
+				names[i] = "_"
+				continue
+			}
+			tmp := p.newTempName()
+			names[i] = tmp
+			stores = append(stores, &AssignStmt{Name: lhs.Name, Op: "=", Val: &Ident{Name: tmp}})
+		case *Index:
+			tmp := p.newTempName()
+			names[i] = tmp
+			stores = append(stores, &IndexAssign{Target: lhs, Val: &Ident{Name: tmp}})
+		case *FieldAccess:
+			tmp := p.newTempName()
+			names[i] = tmp
+			stores = append(stores, &FieldAssign{Target: lhs, Val: &Ident{Name: tmp}})
+		default:
+			return nil, fmt.Errorf("cannot assign to %T", t)
+		}
+	}
+	stmts := make([]Stmt, 0, 1+len(stores))
+	stmts = append(stmts, &MultiAssign{Names: names, Op: ":=", Rhs: rhs})
+	stmts = append(stmts, stores...)
+	return stmts, nil
 }
 
 // parseRange parses `IDENT [, IDENT] := range EXPR { ... }` (the `for` already
