@@ -1136,14 +1136,44 @@ func (p *Parser) parsePostfix() (Expr, error) {
 			x = &CallValue{Fn: x, Args: args}
 		default: // "["
 			p.next()
-			idx, err := p.parseExpr()
+			if p.peek().Val == ":" { // x[:hi]
+				p.next()
+				var hi Expr
+				if p.peek().Val != "]" {
+					hi, err = p.parseExpr()
+					if err != nil {
+						return nil, err
+					}
+				}
+				if _, err := p.expect(TPunct, "]"); err != nil {
+					return nil, err
+				}
+				x = &SliceExpr{X: x, Hi: hi}
+				break
+			}
+			first, err := p.parseExpr()
 			if err != nil {
 				return nil, err
+			}
+			if p.peek().Val == ":" { // x[lo:hi] or x[lo:]
+				p.next()
+				var hi Expr
+				if p.peek().Val != "]" {
+					hi, err = p.parseExpr()
+					if err != nil {
+						return nil, err
+					}
+				}
+				if _, err := p.expect(TPunct, "]"); err != nil {
+					return nil, err
+				}
+				x = &SliceExpr{X: x, Lo: first, Hi: hi}
+				break
 			}
 			if _, err := p.expect(TPunct, "]"); err != nil {
 				return nil, err
 			}
-			x = &Index{X: x, Idx: idx}
+			x = &Index{X: x, Idx: first}
 		}
 	}
 	return x, nil

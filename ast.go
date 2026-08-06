@@ -127,6 +127,13 @@ type Index struct {
 	Idx Expr
 }
 
+// SliceExpr is a slice-range expression: x[lo:hi]. Lo/Hi are nil when omitted
+// (defaulting to 0 / len(x)). Always produces a fresh copy — see guide.go.
+type SliceExpr struct {
+	X      Expr
+	Lo, Hi Expr
+}
+
 // StructLit constructs a struct value: Point{x: 1, y: 2} or Point{1, 2}.
 // FieldNames is nil for positional literals.
 type StructLit struct {
@@ -181,6 +188,7 @@ func (Binary) node()      {}
 func (Call) node()        {}
 func (SliceLit) node()    {}
 func (Index) node()       {}
+func (SliceExpr) node()   {}
 func (StructLit) node()   {}
 func (FieldAccess) node() {}
 func (FuncLit) node()     {}

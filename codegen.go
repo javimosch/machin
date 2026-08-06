@@ -353,6 +353,22 @@ static int64_t mfl_bounds(int64_t i, int64_t n) {
     if (i < 0 || i >= n) { char b[80]; snprintf(b, 80, "index out of range [%lld] with length %lld", (long long)i, (long long)n); mfl_panic(b); }
     return i;
 }
+/* s[lo:hi]: always a fresh copy (never a view sharing s's backing storage) —
+   matches substr's copy semantics on strings and sidesteps cap/aliasing
+   surprises when the result escapes the current block. Bounds are checked
+   unconditionally (like s[i] is under --safe), since an out-of-range slice
+   would otherwise read/copy past the backing array. */
+static mfl_slice mfl_subslice(mfl_slice s, int64_t lo, int64_t hi, int64_t es) {
+    if (lo < 0 || hi < lo || hi > s.len) {
+        char b[96];
+        snprintf(b, 96, "slice bounds out of range [%lld:%lld] with length %lld", (long long)lo, (long long)hi, (long long)s.len);
+        mfl_panic(b);
+    }
+    int64_t n = hi - lo;
+    mfl_slice r = { n ? mfl_alloc(n * es) : NULL, n, n };
+    if (n) memcpy(r.data, (char*)s.data + lo * es, n * es);
+    return r;
+}
 static int64_t mfl_idiv(int64_t a, int64_t b) { if (b == 0) mfl_panic("integer divide by zero"); return a / b; }
 static int64_t mfl_imod(int64_t a, int64_t b) { if (b == 0) mfl_panic("integer modulo by zero"); return a % b; }
 static int64_t mfl_iadd(int64_t a, int64_t b) { int64_t r; if (__builtin_add_overflow(a, b, &r)) mfl_panic("integer overflow (+)"); return r; }
@@ -5316,6 +5332,29 @@ func (g *cgen) expr(e Expr) (string, error) {
 			return fmt.Sprintf("({ %s _g; mfl_map_get(%s, %s, %s, &_g); %s })", g.c.NodeCType(g.curFn, ex), x, ik, sk, tail), nil
 		}
 		return fmt.Sprintf("((%s*)(%s).data)[%s]", g.c.ElemCType(g.curFn, ex.X), x, g.boundsIdx(idx, x)), nil
+	case *SliceExpr:
+		x, err := g.expr(ex.X)
+		if err != nil {
+			return "", err
+		}
+		id := g.tmpID
+		g.tmpID++
+		lo := "0"
+		if ex.Lo != nil {
+			lo, err = g.expr(ex.Lo)
+			if err != nil {
+				return "", err
+			}
+		}
+		hi := fmt.Sprintf("_sl%d.len", id)
+		if ex.Hi != nil {
+			hi, err = g.expr(ex.Hi)
+			if err != nil {
+				return "", err
+			}
+		}
+		ct := g.c.ElemCType(g.curFn, ex.X)
+		return fmt.Sprintf("({ mfl_slice _sl%d = %s; mfl_subslice(_sl%d, %s, %s, sizeof(%s)); })", id, x, id, lo, hi, ct), nil
 	case *StructLit:
 		return g.structLit(ex)
 	case *FieldAccess:
@@ -5408,6 +5447,8 @@ func exprHasSideEffect(e Expr) bool {
 		return exprHasSideEffect(x.L) || exprHasSideEffect(x.R)
 	case *Index:
 		return exprHasSideEffect(x.X) || exprHasSideEffect(x.Idx)
+	case *SliceExpr:
+		return exprHasSideEffect(x.X) || (x.Lo != nil && exprHasSideEffect(x.Lo)) || (x.Hi != nil && exprHasSideEffect(x.Hi))
 	case *FieldAccess:
 		return exprHasSideEffect(x.X)
 	case *SliceLit:
