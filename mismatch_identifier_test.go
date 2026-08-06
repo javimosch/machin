@@ -148,3 +148,82 @@ func TestMismatchWithoutIdentifierUnchanged(t *testing.T) {
 		t.Fatalf("expected a type mismatch error, got %v", cerr)
 	}
 }
+
+// A mismatch must name the EXPRESSION that produced the conflicting type, not
+// only the variable that ended up with it (#551). The variable is the effect;
+// the expression is the cause, and on a long function the cause is what you have
+// to go find. No line number: MFL's canonical form is one declaration per line,
+// so every expression in a function shares one.
+func TestMismatchNamesTheConflictingBuiltin(t *testing.T) {
+	prog, err := ParseProgram([]string{
+		`func hash(h, s) (o) { o = h i := 0 while i < len(s) { o = o + charat(s, i) i = i + 1 } }`,
+		`func main() { println(str(hash(7, "ab"))) }`,
+	})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	_, cerr := Check(prog)
+	if cerr == nil {
+		t.Fatal("expected a type mismatch")
+	}
+	// charat returns a string, not a byte — that is the actual mistake, and the
+	// message used to blame only the accumulator `h`.
+	if !strings.Contains(cerr.Error(), "charat(s, i)") {
+		t.Fatalf("message does not name the builtin whose return type conflicts: %q", cerr.Error())
+	}
+}
+
+// The same for a parameter whose type was fixed by an earlier call: name the
+// call that conflicts, so you do not bisect a dozen call sites by hand.
+func TestMismatchNamesTheConflictingCall(t *testing.T) {
+	prog, err := ParseProgram([]string{
+		`func report(flag, name) (n) { n = 0 if flag == 1 { println(name) } }`,
+		`func main() { x := report(1, "int call") y := report(2 == 2, "bool call") println(str(x + y)) }`,
+	})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	_, cerr := Check(prog)
+	if cerr == nil {
+		t.Fatal("expected a type mismatch")
+	}
+	if !strings.Contains(cerr.Error(), "report(2 == 2") {
+		t.Fatalf("message does not name the conflicting call: %q", cerr.Error())
+	}
+}
+
+// An assignment is caused by its right-hand side.
+func TestMismatchNamesTheAssignedExpression(t *testing.T) {
+	prog, err := ParseProgram([]string{
+		`func main() { steps := "a,b,c" steps = split("a,b,c", ",") println(steps[0]) }`,
+	})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	_, cerr := Check(prog)
+	if cerr == nil {
+		t.Fatal("expected a type mismatch")
+	}
+	if !strings.Contains(cerr.Error(), `split("a,b,c", ",")`) {
+		t.Fatalf("message does not name the assigned expression: %q", cerr.Error())
+	}
+}
+
+// A bare identifier or literal adds nothing the message does not already say, so
+// it must NOT be appended — the cause is only worth printing when it is a real
+// expression.
+func TestMismatchOmitsNoisyCause(t *testing.T) {
+	prog, err := ParseProgram([]string{
+		`func main() { v := 1 v = "s" println(v) }`,
+	})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	_, cerr := Check(prog)
+	if cerr == nil {
+		t.Fatal("expected a type mismatch")
+	}
+	if strings.Contains(cerr.Error(), "— from") {
+		t.Fatalf("a literal cause should be omitted as noise: %q", cerr.Error())
+	}
+}
