@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+## v0.124.1
+
+Patch: **a closure could not reference a slice inside a range bound** (PR #567).
+
+`v0.124.0` added slice ranges (`s[lo:hi]`) as a new `SliceExpr` AST node, but three
+passes that walk the AST were never taught about it — most importantly the
+free-identifier walker in `transform.go`, which drives closure lifting. A closure
+whose only reference to an outer variable sat inside a range bound therefore did
+not capture it, and the program failed to compile:
+
+```
+xs := []int{1,2,3,4,5}
+lo := 2
+f := func() { s := xs[lo:]  println(len(s)) }
+→ error: typecheck: lambda_0$1: undefined variable "xs"
+```
+
+`render.go` and `optimize.go` had the same gap. Fixed by adding the missing
+`*SliceExpr` cases, with tests for capture, rendering and traversal.
+
+Worth recording *why* this shipped: v0.124.0's slice-range work was reviewed for
+bounds, copy semantics, element types and the arena interaction, and the full
+suite was green — but nothing put a slice range inside a closure, so no test
+covered the combination. **Adding an AST node means auditing every pass that
+walks the AST**, not only the ones the new syntax obviously touches.
+
 ## v0.124.0
 
 Nine changes, all of them surfaced by building a real thing in MFL — a 2D game
