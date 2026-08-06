@@ -159,35 +159,88 @@ Feature work goes on a branch, then a PR, then squash-merge + delete the branch.
 
 Releases are automated by [`.github/workflows/release.yml`](.github/workflows/release.yml).
 Pushing a `v*` tag cross-compiles machin and attaches the binaries to that tag's
-GitHub release. **To cut a release:**
+GitHub release.
 
-1. Update the version: bump the badge in `README.md`, the `Version` line in
-   `SPEC.md`, **`machinVersion` in `guide.go`** (a test enforces it matches the
-   README badge), and add a section to the top of `CHANGELOG.md` (newest first).
-   Also bump the other version-stamped, user-facing surfaces, which have **no
-   automated guard** (the `guide.go` test only checks the README↔guide pair) and
-   must be updated by hand: the landing-page badge in `docs/index.html`, the
-   `version:` field in `selfhost/server.mfl`, and the monthly changelog pages
-   (`docs/changelog-YYYY-MM.html` / `docs/changelog-YYYY-MM-product.md` — add
-   the new release to the latest month's page). Commit to `main`.
+> **`main` is a protected branch.** You cannot commit a release directly to it —
+> `git push origin main` is rejected by the branch hook. Releases go through a PR
+> like everything else, and the tag is applied to the **squashed commit on `main`**
+> afterwards.
+>
+> **A tag push is NOT protected.** `git push origin vX.Y.Z` succeeds even when the
+> branch push was just rejected, and it immediately triggers the release workflow —
+> so it is easy to end up with a tag pointing at a commit that is not on `main`,
+> building a release nobody can reproduce from the default branch. Tag **last**,
+> and only after the release PR has merged.
+
+**To cut a release:**
+
+1. **Bump the version.** Two files are guarded — `guide_test.go` fails if they
+   disagree:
+   - the badge in `README.md`
+   - `machinVersion` in `guide.go`
+
+   Two more are version-stamped but have **no automated guard**, so they drift
+   silently (`SPEC.md` had fallen three releases behind by v0.124.0):
+   - the `Version` line in `SPEC.md`
+   - a new section at the top of `CHANGELOG.md` (newest first)
+
+   If you touched a **bundled skill** under `skills/`, also run
+   `tools/sync-plugin-skills.sh` — `TestPluginSkillsInSync` requires
+   `skills/<name>/SKILL.md` and `plugins/machin/skills/<name>/SKILL.md` to be
+   byte-identical, and a release that ships a stale bundled skill documents
+   caveats the release just removed.
+
+2. **Open a PR and merge it** (`main` is protected). Commit subject:
    ```
    release: vX.Y.Z (one-line summary)
    ```
-2. Tag and push:
+   Wait for the `test` check; a `release` check showing `CANCELLED` from an
+   earlier aborted tag build does not block the merge.
+
+3. **Tag the merged commit and push the tag:**
    ```bash
+   git checkout main && git pull --ff-only
    git tag -a vX.Y.Z -m "MFL vX.Y.Z" && git push origin vX.Y.Z
    ```
-3. The workflow builds `machin-vX.Y.Z-<os>-<arch>` for **linux/{amd64,arm64}**,
+
+4. The workflow builds `machin-vX.Y.Z-<os>-<arch>` for **linux/{amd64,arm64}**,
    **darwin/{amd64,arm64}**, and **windows/amd64** (`.exe`), plus
    `SHA256SUMS.txt`, and publishes them. Watch it:
    ```bash
    gh run list --workflow=release.yml --limit 1
    gh run watch <run-id> --exit-status
    ```
-4. Verify the assets landed:
+
+5. **Verify the assets landed — and that the shipped binary is the version you
+   think it is:**
    ```bash
    gh release view vX.Y.Z --json assets -q '[.assets[].name]'
+   gh release download vX.Y.Z --pattern 'machin-vX.Y.Z-linux-amd64' -O /tmp/m
+   chmod +x /tmp/m && /tmp/m guide | head -c 60
    ```
+   Then refresh your own install (`make install`) — the guide catalog is compiled
+   **into** the binary, so a stale `machin` on `PATH` advertises a stale feature
+   set (this is what produced #196).
+
+### Surfaces that are NOT part of a release
+
+These were previously listed as release steps. Both claims were wrong, and
+following them destroys information:
+
+- **`docs/index.html`** — its badge reads `v0.106.0 · the compiler now compiles
+  itself`. That is a **milestone announcement**, not a version stamp: it records
+  *when self-hosting landed*. Change it only when a release is itself a milestone
+  worth announcing on the landing page — and then change the words too, not just
+  the number.
+- **`docs/changelog-YYYY-MM.*`** — these are **product/marketing** pages (feature
+  cards, a month's narrative) indexed by `docs/changelog.html`. They carry no
+  version numbers at all, and only `2026-06` exists. Writing one is a periodic
+  marketing task, not a per-release step.
+
+`selfhost/server.mfl` renders `MFL <version>` on the page it serves and had been
+stuck at `0.4.1` for ~119 releases. It is hand-maintained with no guard — bump it
+when you remember, or better, add a test pinning it to `machinVersion` so it stops
+drifting.
 
 Notes:
 - The workflow is **idempotent for a tag**: if a release already exists for the
