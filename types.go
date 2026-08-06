@@ -1187,6 +1187,13 @@ func (c *Checker) genStmt(fn *FuncDecl, s Stmt) error {
 		if err != nil {
 			return err
 		}
+		if st.Name == "_" {
+			// the blank identifier discards the value: never readable, never
+			// allocated as a local, and it counts as neither a new binding nor
+			// a reference to an existing one.
+			c.addPair(newSlot(c, KVar), vs)
+			return nil
+		}
 		env := c.vars[fn.Name]
 		slot, ok := env[st.Name]
 		if !ok {

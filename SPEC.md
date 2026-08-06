@@ -394,6 +394,11 @@ A multi-value call may appear only as the sole right-hand side of a
 multi-assignment. `_` discards a value. A function returning ≥2 values compiles
 to a generated result struct.
 
+`_` is also accepted as the sole destination of a single-value assignment —
+`_ = f()` and `_ := f()` both discard the result, identically to `_` inside a
+multi-assign. `_` is write-only in every position: it is never allocated, never
+counts as a use, and reading it back (`x := _`) is a compile-time error.
+
 **Named returns.** A function may name its return values in the signature; they
 become zero-initialized locals, and a bare `return` (or falling off the end)
 yields their current values:

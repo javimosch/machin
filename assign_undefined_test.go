@@ -84,3 +84,50 @@ func TestAssignFlatScopeReassignOK(t *testing.T) {
 		t.Fatalf("check: %v", err)
 	}
 }
+
+// TestAssignBlankSingleDestOK confirms `_` is accepted as the sole assignment
+// destination (not just inside a multi-assign): the value is discarded, never
+// allocated as a local, and the assignment is never treated as undefined.
+func TestAssignBlankSingleDestOK(t *testing.T) {
+	prog, err := ParseProgram([]string{
+		`func f() (v) { v = 1 }`,
+		`func main() { _ = f() println("ok") }`,
+	})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if _, err := Check(prog); err != nil {
+		t.Fatalf("check: %v", err)
+	}
+}
+
+// TestAssignBlankSingleDestWalrusOK confirms `_ := f()` behaves the same as
+// `_ = f()`: the blank identifier discards the value either way.
+func TestAssignBlankSingleDestWalrusOK(t *testing.T) {
+	prog, err := ParseProgram([]string{
+		`func f() (v) { v = 1 }`,
+		`func main() { _ := f() println("ok") }`,
+	})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if _, err := Check(prog); err != nil {
+		t.Fatalf("check: %v", err)
+	}
+}
+
+// TestAssignBlankUnreadableRejected confirms `_` remains write-only: reading
+// it back (`x := _`) must still be a compile-time error.
+func TestAssignBlankUnreadableRejected(t *testing.T) {
+	prog, err := ParseProgram([]string{
+		`func f() (v) { v = 1 }`,
+		`func main() { _ = f() x := _ println(str(x)) }`,
+	})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	_, err = Check(prog)
+	if err == nil || !strings.Contains(err.Error(), `undefined variable "_"`) {
+		t.Fatalf("expected undefined-variable error for reading _, got %v", err)
+	}
+}
