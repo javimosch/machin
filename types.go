@@ -112,6 +112,22 @@ type Checker struct {
 	hasMainFn   bool                               // program defines a main function
 	globalSlot  map[string]int                     // package-global name -> type slot
 	globalOrder []string                           // package globals in declaration order
+
+	// diagnostic provenance (issue #551): tracks which slots a `:=` actually
+	// redeclared, so a mismatch error only appends the "does not shadow" hint
+	// when a redeclaration is genuinely involved, instead of on every local.
+	redeclared []int // slots that a `:=` actually redeclared (reused an existing name)
+}
+
+// isRedeclared reports whether any slot marked as `:=`-redeclared now belongs to
+// the same equivalence class as root (root must already be c.find'd).
+func (c *Checker) isRedeclared(root int) bool {
+	for _, s := range c.redeclared {
+		if c.find(s) == root {
+			return true
+		}
+	}
+	return false
 }
 
 // IsLocal reports whether name is a parameter or local of the given instance (so
@@ -1101,19 +1117,23 @@ func (c *Checker) annotateMismatch(err error, a, b int) error {
 	if !strings.HasPrefix(msg, "type mismatch: ") {
 		return err
 	}
-	who, local := c.slotVar(a)
+	who, _ := c.slotVar(a)
+	matched := a
 	if who == "" {
-		who, local = c.slotVar(b)
+		who, _ = c.slotVar(b)
+		matched = b
 	}
 	if who == "" {
 		return err
 	}
 	detail := strings.TrimPrefix(msg, "type mismatch: ")
-	if local {
-		// The colliding declarations bind one function-scoped slot: MFL does not
-		// block-scope `:=`, so the same name in disjoint branches unifies into a
-		// single variable rather than shadowing (issue #507). Say so, since a
-		// reader with Go instincts expects two independent block-local variables.
+	if c.isRedeclared(c.find(matched)) {
+		// The colliding declarations bind one function-scoped slot that a `:=`
+		// actually redeclared: MFL does not block-scope `:=`, so the same name in
+		// disjoint branches unifies into a single variable rather than shadowing
+		// (issue #551). Say so, since a reader with Go instincts expects two
+		// independent block-local variables. Only append this hint when a `:=`
+		// redeclaration is actually involved — otherwise it is a red herring.
 		return fmt.Errorf("type mismatch for %s: %s; := does not shadow — variables are function-scoped", who, detail)
 	}
 	return fmt.Errorf("type mismatch for %s: %s", who, detail)
@@ -1184,6 +1204,10 @@ func (c *Checker) genStmt(fn *FuncDecl, s Stmt) error {
 				return fmt.Errorf("assignment to undefined variable %q", st.Name)
 			}
 			slot = c.newLocal(fn.Name, st.Name)
+		} else if st.Op == ":=" {
+			// name already bound and `:=` used again: this is the function-scoped
+			// "redeclaration" case (issue #507) — := does not shadow here.
+			c.redeclared = append(c.redeclared, slot)
 		}
 		c.addPair(slot, vs)
 		return nil
@@ -1612,6 +1636,8 @@ func (c *Checker) genMultiAssign(fn *FuncDecl, st *MultiAssign) error {
 				return fmt.Errorf("assignment to undefined variable %q", n)
 			}
 			slot = c.newLocal(fn.Name, n)
+		} else if st.Op == ":=" {
+			c.redeclared = append(c.redeclared, slot)
 		}
 		nameSlots[i] = slot
 	}

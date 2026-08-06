@@ -87,6 +87,53 @@ func TestMismatchCheckCarriesDeclAndLine(t *testing.T) {
 	}
 }
 
+// A parameter's type, fixed by inference from one call site, conflicting with a
+// later call must NOT carry the `:= does not shadow` hint: no `:=` redeclaration
+// is involved at all, so the hint would send the reader down the wrong path
+// (issue #551, case "which call site fixed a parameter's type").
+func TestMismatchParamConflictOmitsShadowNote(t *testing.T) {
+	prog, err := ParseProgram([]string{
+		`func report(flag, name) (n) { n = 0 if flag == 1 { println(name) } }`,
+		`func main() { x := report(1, "int call") y := report(2 == 2, "bool call") println(str(x + y)) }`,
+	})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	_, cerr := Check(prog)
+	if cerr == nil || !strings.Contains(cerr.Error(), "type mismatch") {
+		t.Fatalf("expected a type mismatch error, got %v", cerr)
+	}
+	if !strings.Contains(cerr.Error(), "'flag'") {
+		t.Fatalf("message does not name the offending parameter: %q", cerr.Error())
+	}
+	if strings.Contains(cerr.Error(), "does not shadow") {
+		t.Fatalf("param-conflict mismatch has no := redeclaration, should not mention shadowing: %q", cerr.Error())
+	}
+}
+
+// A builtin whose return type conflicts with a parameter's inferred type must
+// also omit the shadow hint — the collision comes from `charat`'s return, not a
+// `:=` redeclaration (issue #551, case "a builtin's return type").
+func TestMismatchBuiltinReturnOmitsShadowNote(t *testing.T) {
+	prog, err := ParseProgram([]string{
+		`func hash(h, s) (o) { o = h i := 0 while i < len(s) { o = o + charat(s, i) i = i + 1 } }`,
+		`func main() { println(str(hash(7, "ab"))) }`,
+	})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	_, cerr := Check(prog)
+	if cerr == nil || !strings.Contains(cerr.Error(), "type mismatch") {
+		t.Fatalf("expected a type mismatch error, got %v", cerr)
+	}
+	if !strings.Contains(cerr.Error(), "'h'") {
+		t.Fatalf("message does not name the offending identifier: %q", cerr.Error())
+	}
+	if strings.Contains(cerr.Error(), "does not shadow") {
+		t.Fatalf("builtin-return mismatch has no := redeclaration, should not mention shadowing: %q", cerr.Error())
+	}
+}
+
 // A mismatch with no named identifier on either side (e.g. a literal vs a
 // literal) must pass through unchanged — annotation is best-effort, never noise.
 func TestMismatchWithoutIdentifierUnchanged(t *testing.T) {
