@@ -211,6 +211,13 @@ static struct tm* mfl_win_localtime_r(const time_t* t, struct tm* out) { struct 
 static struct tm* mfl_win_gmtime_r(const time_t* t, struct tm* out) { struct tm* p = gmtime(t); if (p) { *out = *p; return out; } return NULL; }
 #define localtime_r mfl_win_localtime_r
 #define gmtime_r mfl_win_gmtime_r
+/* fsync(2) is POSIX-only; mingw doesn't declare it and zig cc's C11 treats an
+   implicit declaration as a hard error (#549). _commit is the documented
+   MSVCRT/ucrt equivalent — flush a file descriptor's buffers to disk — and is
+   what mingw programs use in its place. */
+#include <io.h>
+static int mfl_win_fsync(int fd) { return _commit(fd); }
+#define fsync mfl_win_fsync
 #endif
 
 /* slices: a Go-style header over an unboxed backing array */
