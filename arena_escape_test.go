@@ -268,3 +268,82 @@ func TestScopedArenaReturnsPagesToTheOS(t *testing.T) {
 		t.Fatalf("scoped arena did not return pages: scoped %d kB vs unscoped %d kB", scopedRSS, unscopedRSS)
 	}
 }
+
+// ARENA001's interprocedural half (#539): a global assigned arena memory one
+// call deeper than the block. This is the normal way to write MFL — you call a
+// helper inside `arena { }` — and it produced silent wrong data with a clean
+// `machin check`: the global's length still read right while its contents were
+// freed memory.
+func TestArenaEscapeThroughCallee(t *testing.T) {
+	findings := arenaEscapes(t, `var g_cache = []string{}`,
+		`func build_cache() { out := []string{} i := 0 while i < 3 { out = append(out, "e" + str(i)) i = i + 1 } g_cache = out }`,
+		`func main() { arena { build_cache() } println(str(len(g_cache))) }`)
+	if !arenaDetailHas(findings, "g_cache") || !arenaDetailHas(findings, "build_cache()") {
+		t.Fatalf("expected ARENA001 naming both the global and the callee, got %v", findings)
+	}
+}
+
+// Two hops: arena { a() } -> b() -> g = <fresh>. The summary is a fixpoint over
+// the call graph, so depth must not matter.
+func TestArenaEscapeThroughCalleeTransitive(t *testing.T) {
+	findings := arenaEscapes(t, `var g = []string{}`,
+		`func b() { out := []string{} out = append(out, "x") g = out }`,
+		`func a() { b() }`,
+		`func main() { arena { a() } println(str(len(g))) }`)
+	if !arenaDetailHas(findings, "`g`") {
+		t.Fatalf("expected ARENA001 through two call hops, got %v", findings)
+	}
+}
+
+// The `fresh` gate is what keeps this usable. A global assigned something that
+// was NOT allocated in the block does not dangle, and must not be flagged —
+// ARENA001 is only worth having if every finding is real.
+func TestArenaEscapeThroughCalleeNoFalsePositives(t *testing.T) {
+	cases := []struct {
+		name  string
+		decls []string
+	}{
+		{"assigns a literal", []string{
+			`var g = ""`,
+			`func store() { g = "constant" }`,
+			`func main() { arena { store() } println(g) }`}},
+		{"assigns a parameter", []string{
+			`var g = ""`,
+			`func store(s) { g = s }`,
+			`func main() { arena { store("x") } println(g) }`}},
+		{"assigns another global", []string{
+			`var g = ""`, `var h = "x"`,
+			`func store() { g = h }`,
+			`func main() { arena { store() } println(g) }`}},
+		{"callee writes no global", []string{
+			`func work() { x := []string{} x = append(x, "a") println(str(len(x))) }`,
+			`func main() { arena { work() } println("done") }`}},
+		{"the write is outside any arena", []string{
+			`var g = []string{}`,
+			`func build() { out := []string{} out = append(out, "a") g = out }`,
+			`func main() { build() println(str(len(g))) }`}},
+		{"escape() carries it out legitimately", []string{
+			`var g = []string{}`,
+			`func build() { out := []string{} out = append(out, "a") g = escape(out) }`,
+			`func main() { arena { build() } println(str(len(g))) }`}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, f := range arenaEscapes(t, tc.decls...) {
+				if f.Code == "ARENA001" {
+					t.Fatalf("false positive: %s", f.Detail)
+				}
+			}
+		})
+	}
+}
+
+// arenaDetailHas reports whether any ARENA001 finding mentions want.
+func arenaDetailHas(fs []arenaFinding, want string) bool {
+	for _, f := range fs {
+		if f.Code == "ARENA001" && strings.Contains(f.Detail, want) {
+			return true
+		}
+	}
+	return false
+}
