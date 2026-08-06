@@ -358,6 +358,10 @@ static int64_t mfl_imod(int64_t a, int64_t b) { if (b == 0) mfl_panic("integer m
 static int64_t mfl_iadd(int64_t a, int64_t b) { int64_t r; if (__builtin_add_overflow(a, b, &r)) mfl_panic("integer overflow (+)"); return r; }
 static int64_t mfl_isub(int64_t a, int64_t b) { int64_t r; if (__builtin_sub_overflow(a, b, &r)) mfl_panic("integer overflow (-)"); return r; }
 static int64_t mfl_imul(int64_t a, int64_t b) { int64_t r; if (__builtin_mul_overflow(a, b, &r)) mfl_panic("integer overflow (*)"); return r; }
+static int64_t mfl_narrow(int64_t v, int64_t lo, int64_t hi, const char* label) {
+    if (v < lo || v > hi) { char b[96]; snprintf(b, 96, "integer overflow (%s)", label); mfl_panic(b); }
+    return v;
+}
 
 static mfl_slice mfl_append(mfl_slice s, const void* elem, int64_t es) {
     if (s.len >= s.cap) {
@@ -3902,6 +3906,27 @@ func isFFINumeric(t string) bool {
 	return isFFIScalar(t) && t != "string" && t != "ptr"
 }
 
+// narrowRange returns the [lo, hi] range of an FFI integer type narrower than
+// MFL's int64, and ok=true if t is such a type. Used under --safe to catch a
+// cstruct field assignment that would silently truncate at the C boundary.
+func narrowRange(t string) (lo, hi int64, ok bool) {
+	switch t {
+	case "i8":
+		return -128, 127, true
+	case "i16":
+		return -32768, 32767, true
+	case "i32":
+		return -2147483648, 2147483647, true
+	case "u8":
+		return 0, 255, true
+	case "u16":
+		return 0, 65535, true
+	case "u32":
+		return 0, 4294967295, true
+	}
+	return 0, 0, false
+}
+
 // ffiCType maps an FFI scalar type name to its C type (for headerless prototypes
 // and struct-field casts). Returns "void" for "" or anything non-scalar.
 func ffiCType(t string) string {
@@ -4218,6 +4243,8 @@ func (g *cgen) program(p *Program) (string, error) {
 					// a pointer field: MFL holds it as an int; void* converts to the
 					// real C field type (float*, unsigned char*, ...).
 					fmt.Fprintf(&out, " .%s = (void*)(intptr_t)m.f_%s,", f.Name, f.Name)
+				} else if lo, hi, isNarrow := narrowRange(f.CType); isNarrow && g.safe {
+					fmt.Fprintf(&out, " .%s = (%s)mfl_narrow(m.f_%s, %d, %d, \"%s field '%s'\"),", f.Name, ffiCType(f.CType), f.Name, lo, hi, f.CType, f.Name)
 				} else {
 					fmt.Fprintf(&out, " .%s = (%s)m.f_%s,", f.Name, ffiCType(f.CType), f.Name)
 				}

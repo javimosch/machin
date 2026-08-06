@@ -1518,6 +1518,44 @@ func TestNestedCStruct(t *testing.T) {
 	}
 }
 
+// Issue #552: a narrow cstruct field (u8/u16/i32/...) silently truncates at the
+// FFI boundary while the MFL-side value keeps the full int64 — reading the
+// field back does not reveal it. Under --safe, mfl_to_<Struct> must instead
+// range-check the field and panic rather than wrap.
+func TestNarrowCStructFieldSafe(t *testing.T) {
+	src := []string{
+		`extern "g" { header "g.h" cstruct Color { r u8 g u8 b u8 a u8 } fn Use(Color) }`,
+		`func main() { c := Color{360, 0, 0, 255}  Use(c) }`,
+	}
+
+	prog, err := ParseProgram(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unsafeC, err := CompileToC(prog, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(unsafeC, "mfl_narrow(m.f_r") {
+		t.Fatal("default (non-safe) build must not emit a narrowing check — silent truncation is the documented fast path")
+	}
+	if !strings.Contains(unsafeC, "(uint8_t)m.f_r") {
+		t.Fatal("default build must still plain-cast the narrow field")
+	}
+
+	prog2, err := ParseProgram(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	safeC, err := CompileToC(prog2, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(safeC, `mfl_narrow(m.f_r, 0, 255, "u8 field 'r'")`) {
+		t.Fatal("--safe build must range-check a narrow cstruct field and panic on overflow")
+	}
+}
+
 // Perlin noise builtins: deterministic, in ~[-1,1], continuous; gated (-lm only
 // when used).
 func TestNoise(t *testing.T) {
