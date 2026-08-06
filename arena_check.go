@@ -79,6 +79,10 @@ func arenaPlaceString(e Expr) (string, bool) {
 		if p, ok := arenaPlaceString(t.X); ok {
 			return p + "#", true
 		}
+	case *SliceExpr:
+		if p, ok := arenaPlaceString(t.X); ok {
+			return p + "#", true
+		}
 	}
 	return "", false
 }
@@ -181,6 +185,8 @@ func detectArenaEscapes(prog *Program, c *Checker) []arenaFinding {
 					return false
 				case *SliceLit:
 					return true
+				case *SliceExpr:
+					return true // mfl_subslice always allocates a fresh copy
 				case *MakeClosure:
 					// a closure created here dangles if it captures a variable that currently
 					// holds arena memory: the capture is read at this make site (inside the

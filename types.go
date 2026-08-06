@@ -1458,6 +1458,28 @@ func (c *Checker) genExprInner(fn *FuncDecl, e Expr) (int, error) {
 		res := newSlot(c, KVar)
 		c.indexUses = append(c.indexUses, indexUse{base: xs, idx: is, result: res})
 		return res, nil
+	case *SliceExpr:
+		xs, err := c.genExpr(fn, ex.X)
+		if err != nil {
+			return 0, err
+		}
+		if ex.Lo != nil {
+			ls, err := c.genExpr(fn, ex.Lo)
+			if err != nil {
+				return 0, err
+			}
+			c.addPair(ls, c.cInt)
+		}
+		if ex.Hi != nil {
+			hs, err := c.genExpr(fn, ex.Hi)
+			if err != nil {
+				return 0, err
+			}
+			c.addPair(hs, c.cInt)
+		}
+		res := newSlot(c, KVar)
+		c.addPair(res, xs) // s[lo:hi] has the same type as s
+		return res, nil
 	case *MakeMap:
 		ks, err := c.typeSlot(ex.Key)
 		if err != nil {
