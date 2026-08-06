@@ -112,6 +112,10 @@ func detectArenaEscapes(prog *Program, c *Checker) []arenaFinding {
 		return nil
 	}
 	retProv := computeRetProv(prog, c) // interprocedural return-provenance summary
+	// Which globals does calling f fill with memory it allocated? (#539) Without
+	// this, `arena { build() }` where build() does `g = out` is invisible: the
+	// assignment is one stack frame deeper than the block.
+	globalWrites := computeGlobalWrites(prog, c, retProv)
 
 	var out []arenaFinding
 	seen := map[string]bool{} // dedup per (function, detail)
@@ -253,6 +257,15 @@ func detectArenaEscapes(prog *Program, c *Checker) []arenaFinding {
 								setPlace(n, tv)
 							} else if tv {
 								flag("ARENA001", "`"+n+"` outlives this arena block but is assigned a value allocated inside it — it dangles after the block's memory is reclaimed")
+							}
+						}
+					case *ExprStmt:
+						// A call whose callee assigns a global memory it allocated: the
+						// store happens inside this block, so the global dangles once the
+						// block is reclaimed — the interprocedural half of ARENA001 (#539).
+						if call, ok := st.X.(*Call); ok {
+							for _, g := range arenaCallWrites(call.Callee, globalWrites) {
+								flag("ARENA001", "`"+g+"` outlives this arena block but `"+call.Callee+"()` assigns it a value allocated inside it — it dangles after the block's memory is reclaimed")
 							}
 						}
 					case *ReturnStmt:
