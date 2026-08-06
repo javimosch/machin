@@ -2,6 +2,84 @@
 
 ## Unreleased
 
+## v0.125.0
+
+Two new compile-time findings, a new builtin pair, and three diagnostics that
+stop naming the wrong thing. Every item came from working an issue by hand
+rather than from a feature plan.
+
+**`zlib_compress` / `zlib_decompress`** (PR #544, issue #537). A codec over
+`bytes`, matching the existing `bytes_*` style. `-lz` links **only when a program
+calls them**, the same feature-gate the OpenSSL prelude uses, so the
+no-dependency-binary property is untouched for everything else; the windows
+target refuses with a named reason until a mingw libz is wired. Verified
+**bidirectionally against Go's `compress/zlib`** — MFL-compressed data decodes in
+Go and vice versa — which is the point, since the use case is reading blobs that
+are already on disk.
+
+**ARENA001 now sees through a call** (PR #573, issue #539). It caught
+`g = out` written literally inside an `arena { }`, but not the identical
+assignment one frame deeper:
+
+```
+func build() { out := []string{} … g_cache = out }
+func main()  { arena { build() }  println(g_cache[0]) }
+```
+
+which is the normal way to write MFL. `machin check` said "ok — no errors" while
+the program printed a length of 200 with empty contents: silent wrong data,
+exit 0. It segfaulted grange in production-shaped use. `computeGlobalWrites` is
+the write-side companion to the existing return-provenance summary — per
+function, which globals it may fill with freshly-allocated heap, to a fixpoint
+over the call graph.
+
+**ARENA003: a value still live across `arena_reset()`** (PR #574, issue #540).
+The reset frees the arena wholesale and trusts you to have dropped every live
+reference. What survives was documented but not diagnosed: literals, `env()` and
+`args()` are re-derivation sources off the arena chain and survive; a **computed**
+value is corrupted — a global built as `"tok-" + env("T") + "-end"` read back as
+`1` after a reset plus allocation churn, with no crash and no diagnostic. Now
+reported. It also covers **locals**, which neither the issue nor the guide table
+mentioned and which corrupt identically; a local is flagged only when it is
+actually read after the reset.
+
+Both arena checks share one freshness predicate that defaults to **false** — a
+literal, a parameter, another global or `escape()` is never flagged. Fourteen
+no-flag cases are pinned by tests. Still false-negative-permitting, as this
+analysis has always been: every finding is real, not every hazard is found.
+
+**A type mismatch names the expression that caused it** (PR #572, issue #551).
+
+```
+before: type mismatch for 'h' in "hash": num vs string
+after:  type mismatch for 'h' in "hash": num vs string — from o + charat(s, i)
+```
+
+`charat` returns a string, not a byte — that is the actual mistake, and the
+message used to blame only the accumulator. A parameter conflict now names the
+**call site** that disagrees, so you stop bisecting callers by hand. No line
+numbers: MFL's canonical form is one declaration per line, so every expression in
+a function shares one, and a number would have pointed at all of them equally.
+
+**A parameter sharing its function's named-return name is rejected** (PR #550,
+issue #546). It used to reach the C compiler and fail there:
+`'v_v' redeclared as different kind of symbol`. Now
+`parameter "v" has the same name as a named return value`, at the type-checking
+stage, for any type. Same class as the mismatch fix — an error that named a
+generated C symbol instead of anything in your program.
+
+**CI runs the windows and wasm target tests instead of skipping them**
+(PR #571, issue #517). `--target windows` was broken from v0.122.0 to v0.124.0
+with CI green throughout, and it was not a coverage gap: `go test ./...` ran
+before the zig install, and those tests `t.Skipf` when zig is missing. They were
+red on every developer machine and invisible in CI. The install is hoisted above
+the test step, and a windows smoke build now sits next to the wasm one, covering
+the file/dir I/O family where both breakages landed.
+
+Also: the `arena_reset()` persistence rule is documented in `SPEC.md` and the
+guide (PR #545), now updated to say it is diagnosed and that locals are affected
+too.
+
 ## v0.124.1
 
 Patch: **a closure could not reference a slice inside a range bound** (PR #567).
