@@ -503,10 +503,11 @@ id(42); id("hi"); id(3.14)   // → three native functions
   runs `malloc_trim(0)`, returning the freed pages to the OS so RSS actually drops
   (plain `free` keeps them on the C heap's free-list); it is a no-op on
   musl/macOS, whose allocators already release freed spans.
-- **Persistence across `arena_reset()`** — which globals stay valid after a reset
-  is not obvious and not diagnosed. The rule:
+- **Persistence across `arena_reset()`** — which values stay valid after a reset
+  is not obvious. **ARENA003 diagnoses it** (advisory, like the other arena
+  findings); the rule it encodes:
 
-  | held in a global across `arena_reset()` | result |
+  | held across `arena_reset()` | result |
   |---|---|
   | string literal | survives |
   | `env("X")` value | survives |

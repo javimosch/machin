@@ -347,3 +347,112 @@ func arenaDetailHas(fs []arenaFinding, want string) bool {
 	}
 	return false
 }
+
+// ARENA003 (#540): arena_reset() frees the arena wholesale, and which values
+// survive is not obvious. Measured on v0.124.1:
+//
+//	string literal    survives   (static storage)
+//	env() / args()    survives   (re-derivation sources, off the arena chain)
+//	computed string   CORRUPTED  (arena-allocated; read back as `1`)
+//
+// no crash, no diagnostic, exit 0 — and only once the freed pages are reused,
+// which makes casual testing actively misleading.
+func TestArenaResetLiveGlobalFlagged(t *testing.T) {
+	findings := arenaEscapes(t, `var g = ""`,
+		`func main() { g = "tok-" + env("T") + "-end" arena_reset() println(g) }`)
+	if !arenaCodeDetailHas(findings, "ARENA003", "`g`") {
+		t.Fatalf("expected ARENA003 for a computed global live across arena_reset, got %v", findings)
+	}
+}
+
+// A local is corrupted identically — the issue and the guide table both frame
+// this as a globals problem, but `x := "a" + env("T")` read after a reset comes
+// back as garbage the same way.
+func TestArenaResetLiveLocalFlagged(t *testing.T) {
+	findings := arenaEscapes(t,
+		`func main() { x := "a" + env("T") arena_reset() println(x) }`)
+	if !arenaCodeDetailHas(findings, "ARENA003", "`x`") {
+		t.Fatalf("expected ARENA003 for a local read after arena_reset, got %v", findings)
+	}
+}
+
+// Through a callee that fills the global.
+func TestArenaResetThroughCallee(t *testing.T) {
+	findings := arenaEscapes(t, `var g = []string{}`,
+		`func fill() { out := []string{} out = append(out, "x") g = out }`,
+		`func main() { fill() arena_reset() println(str(len(g))) }`)
+	if !arenaCodeDetailHas(findings, "ARENA003", "`g`") {
+		t.Fatalf("expected ARENA003 through a callee, got %v", findings)
+	}
+}
+
+// The cases that must stay silent. A value that was never on the arena cannot
+// dangle, a cleared global is no longer live, and ordering matters.
+func TestArenaResetNoFalsePositives(t *testing.T) {
+	cases := []struct {
+		name  string
+		decls []string
+	}{
+		{"global holds a literal", []string{
+			`var g = ""`, `func main() { g = "lit" arena_reset() println(g) }`}},
+		{"global holds env()", []string{
+			`var g = ""`, `func main() { g = env("X") arena_reset() println(g) }`}},
+		{"global holds args()", []string{
+			`var g = []string{}`, `func main() { g = args() arena_reset() println(str(len(g))) }`}},
+		{"global re-assigned a literal before the reset", []string{
+			`var g = ""`, `func main() { g = "a" + env("X") g = "plain" arena_reset() println(g) }`}},
+		{"assigned only AFTER the reset", []string{
+			`var g = ""`, `func main() { arena_reset() g = "a" + env("X") println(g) }`}},
+		{"local is dead after the reset", []string{
+			`func main() { x := "a" + env("X") println(x) arena_reset() println("done") }`}},
+		{"no arena_reset in the program", []string{
+			`var g = ""`, `func main() { g = "a" + env("X") println(g) }`}},
+		{"a parameter, not an allocation", []string{
+			`var g = ""`, `func store(s) { g = s }`,
+			`func main() { store("x") arena_reset() println(g) }`}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, f := range arenaEscapes(t, tc.decls...) {
+				if f.Code == "ARENA003" {
+					t.Fatalf("false positive: %s", f.Detail)
+				}
+			}
+		})
+	}
+}
+
+// The liveness scan must see reads in every statement shape, or a real hazard
+// inside a loop or branch would be missed.
+func TestArenaResetLivenessSeesNestedReads(t *testing.T) {
+	cases := map[string]string{
+		"read in an if":     `func main() { x := "a" + env("T") arena_reset() if 1 == 1 { println(x) } }`,
+		"read in a while":   `func main() { x := "a" + env("T") arena_reset() i := 0 while i < 1 { println(x) i = i + 1 } }`,
+		"read in a range":   `func main() { x := "a" + env("T") arena_reset() for _, v := range []int{1} { println(x + str(v)) } }`,
+		"read via an index": `func main() { xs := []string{} xs = append(xs, "a" + env("T")) arena_reset() println(xs[0]) }`,
+		"read in a call":    `func main() { x := "a" + env("T") arena_reset() println(str(len(x))) }`,
+	}
+	for name, src := range cases {
+		t.Run(name, func(t *testing.T) {
+			found := false
+			for _, f := range arenaEscapes(t, src) {
+				if f.Code == "ARENA003" {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("liveness scan missed the read: %s", src)
+			}
+		})
+	}
+}
+
+// arenaCodeDetailHas reports whether a finding with the given code mentions want.
+func arenaCodeDetailHas(fs []arenaFinding, code, want string) bool {
+	for _, f := range fs {
+		if f.Code == code && strings.Contains(f.Detail, want) {
+			return true
+		}
+	}
+	return false
+}

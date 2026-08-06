@@ -108,7 +108,11 @@ func detectArenaEscapes(prog *Program, c *Checker) []arenaFinding {
 	for _, f := range prog.Funcs {
 		arenaFindEach(f.Body, func(*ArenaStmt) { hasArena = true })
 	}
-	if !hasArena {
+	hasReset := false
+	for _, f := range prog.Funcs {
+		arenaFindCall(f.Body, "arena_reset", func() { hasReset = true })
+	}
+	if !hasArena && !hasReset {
 		return nil
 	}
 	retProv := computeRetProv(prog, c) // interprocedural return-provenance summary
@@ -119,6 +123,9 @@ func detectArenaEscapes(prog *Program, c *Checker) []arenaFinding {
 
 	var out []arenaFinding
 	seen := map[string]bool{} // dedup per (function, detail)
+	if hasReset {
+		out = append(out, detectArenaResetHazards(prog, c, retProv, globalWrites)...)
+	}
 	for _, inst := range c.reps {
 		f := c.instFn[inst]
 		if f == nil {
@@ -377,4 +384,205 @@ func arenaInnerDeclared(body []Stmt) map[string]bool {
 	}
 	walk(body)
 	return m
+}
+
+
+// arenaFindCall invokes hit for every call to `name` anywhere in body.
+func arenaFindCall(body []Stmt, name string, hit func()) {
+	for _, s := range body {
+		switch st := s.(type) {
+		case *ExprStmt:
+			if call, ok := st.X.(*Call); ok && call.Callee == name {
+				hit()
+			}
+		case *IfStmt:
+			arenaFindCall(st.Then, name, hit)
+			arenaFindCall(st.Else, name, hit)
+		case *WhileStmt:
+			arenaFindCall(st.Body, name, hit)
+		case *RangeStmt:
+			arenaFindCall(st.Body, name, hit)
+		case *ArenaStmt:
+			arenaFindCall(st.Body, name, hit)
+		}
+	}
+}
+
+// detectArenaResetHazards reports ARENA003: a package global still holding
+// memory allocated on the arena when `arena_reset()` drops it (#540).
+//
+// arena_reset() frees the arena wholesale and trusts the author to have dropped
+// every live reference. Which globals survive is not obvious and was not
+// diagnosed:
+//
+//	string literal      survives   (static storage)
+//	env("X") / args()   survives   (re-derivation sources, off the arena chain)
+//	computed string     CORRUPTED  (arena-allocated; its pages are reused)
+//
+// Measured: a global built as `"tok-" + env("T") + "-end"` read back as `1`
+// after a reset plus allocation churn — no crash, no diagnostic, exit 0. The
+// failure only appears once the freed pages are reused, which makes casual
+// testing actively misleading; it cost grange an "integrity checker reports
+// malformed pages on files that are fine" hunt.
+//
+// A forward scan per function: a global assigned a FRESH value is live from that
+// point; assigning it a non-fresh value (a literal, env(), a parameter) clears
+// it; reaching arena_reset() with any live global is the finding.
+func detectArenaResetHazards(prog *Program, c *Checker, retProv map[string]*provSummary, globalWrites map[string]map[string]bool) []arenaFinding {
+	var out []arenaFinding
+	seen := map[string]bool{}
+	for _, inst := range c.reps {
+		f := c.instFn[inst]
+		if f == nil {
+			continue
+		}
+		isParam := map[string]bool{}
+		for _, p := range f.Params {
+			isParam[p] = true
+		}
+		localFresh := map[string]bool{}
+		fr := &arenaFreshness{c: c, inst: inst, retProv: retProv, isParam: isParam, localFresh: localFresh}
+		live := map[string]bool{} // globals currently holding arena memory
+
+		var scan func(body []Stmt)
+		scan = func(body []Stmt) {
+			for i, st := range body {
+				switch t := st.(type) {
+				case *AssignStmt:
+					if _, isGlobal := c.globalSlot[t.Name]; isGlobal {
+						if _, shadowed := c.vars[inst][t.Name]; !shadowed {
+							live[t.Name] = fr.of(t.Val) // a non-fresh value clears it
+						}
+					} else {
+						localFresh[t.Name] = fr.of(t.Val)
+					}
+				case *ExprStmt:
+					call, ok := t.X.(*Call)
+					if !ok {
+						continue
+					}
+					if call.Callee == "arena_reset" {
+						// A LOCAL holding arena memory is corrupted identically — the
+						// issue and the guide table both frame this as a globals
+						// problem, but `x := "a" + env("T")` read after a reset comes
+						// back as garbage the same way. Only flag one that is actually
+						// READ after the reset: most locals are dead by then, and a
+						// finding nobody can act on is worse than none.
+						after := map[string]bool{}
+						arenaReadIdents(body[i+1:], after)
+						for _, l := range sortedLiveGlobals(localFresh) {
+							if !after[l] {
+								continue
+							}
+							if _, isGlobal := c.globalSlot[l]; isGlobal {
+								continue
+							}
+							detail := "`" + l + "` holds memory allocated on the arena and is read after `arena_reset()` frees it — it reads as garbage (no crash, no diagnostic). Move the read before the reset, or re-derive the value after it"
+							key := f.Name + "\x00" + detail
+							if !seen[key] {
+								seen[key] = true
+								out = append(out, arenaFinding{Decl: f.Name, Code: "ARENA003", Detail: detail})
+							}
+						}
+						for _, g := range sortedLiveGlobals(live) {
+							detail := "`" + g + "` still holds memory allocated on the arena when `arena_reset()` frees it — after the reset it reads as garbage (no crash, no diagnostic). Re-derive it from a literal, `env()` or `args()` after the reset, or keep it off the arena"
+							key := f.Name + "\x00" + detail
+							if !seen[key] {
+								seen[key] = true
+								out = append(out, arenaFinding{Decl: f.Name, Code: "ARENA003", Detail: detail})
+							}
+						}
+						continue
+					}
+					for g := range globalWrites[call.Callee] {
+						live[g] = true
+					}
+				case *IfStmt:
+					scan(t.Then)
+					scan(t.Else)
+				case *WhileStmt:
+					scan(t.Body)
+				case *RangeStmt:
+					scan(t.Body)
+				case *ArenaStmt:
+					scan(t.Body)
+				}
+			}
+		}
+		scan(f.Body)
+	}
+	return out
+}
+
+func sortedLiveGlobals(live map[string]bool) []string {
+	var gs []string
+	for g, ok := range live {
+		if ok {
+			gs = append(gs, g)
+		}
+	}
+	sort.Strings(gs)
+	return gs
+}
+
+
+// arenaReadIdents collects every identifier read in body (approximate: names
+// appearing anywhere in an expression), used to tell whether a local is still
+// live after an arena_reset().
+func arenaReadIdents(body []Stmt, out map[string]bool) {
+	var expr func(e Expr)
+	expr = func(e Expr) {
+		switch t := e.(type) {
+		case nil:
+			return
+		case *Ident:
+			out[t.Name] = true
+		case *Binary:
+			expr(t.L)
+			expr(t.R)
+		case *Unary:
+			expr(t.X)
+		case *Index:
+			expr(t.X)
+			expr(t.Idx)
+		case *FieldAccess:
+			expr(t.X)
+		case *Call:
+			for _, a := range t.Args {
+				expr(a)
+			}
+		case *SliceLit:
+			for _, el := range t.Elems {
+				expr(el)
+			}
+		case *StructLit:
+			for _, v := range t.Vals {
+				expr(v)
+			}
+		}
+	}
+	for _, s := range body {
+		switch t := s.(type) {
+		case *ExprStmt:
+			expr(t.X)
+		case *AssignStmt:
+			expr(t.Val)
+		case *ReturnStmt:
+			for _, v := range t.Vals {
+				expr(v)
+			}
+		case *IfStmt:
+			expr(t.Cond)
+			arenaReadIdents(t.Then, out)
+			arenaReadIdents(t.Else, out)
+		case *WhileStmt:
+			expr(t.Cond)
+			arenaReadIdents(t.Body, out)
+		case *RangeStmt:
+			expr(t.X)
+			arenaReadIdents(t.Body, out)
+		case *ArenaStmt:
+			arenaReadIdents(t.Body, out)
+		}
+	}
 }
