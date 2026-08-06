@@ -90,6 +90,14 @@ type Checker struct {
 	externs map[string]*ExternFunc // foreign C functions, by name
 
 	pairs []int      // flattened pairs: pairs[2i], pairs[2i+1]
+	// pairSrc[i] is the expression that generated pairs[2i]/pairs[2i+1], kept as
+	// an AST node and rendered only on failure (#551). When unification fails,
+	// the failing constraint IS the conflicting use — naming it is the whole
+	// difference between "'h' is num vs string" and "the string comes from
+	// charat(s, i)". Not a line number: MFL's canonical form is one declaration
+	// per line, so every expression inside a function shares its line.
+	pairSrc []Expr
+	curExpr Expr // expression being constraint-generated; recorded by addPair
 	plus  []plusCons // overloaded '+' constraints, resolved by fixpoint
 
 	lenArgs   []int      // slots passed to len(); must resolve to string/slice/map
@@ -185,7 +193,10 @@ type indexUse struct {
 	result int
 }
 
-type plusCons struct{ l, r, res int }
+type plusCons struct {
+	l, r, res int
+	src       Expr // the `+` expression, for the #551 mismatch cause
+}
 
 // funcSig is a function value's signature: parameter slots and a single return
 // slot (ret < 0 means void).
@@ -889,7 +900,10 @@ func (c *Checker) sigString(inst string) string {
 	return b.String()
 }
 
-func (c *Checker) addPair(a, b int) { c.pairs = append(c.pairs, a, b) }
+func (c *Checker) addPair(a, b int) {
+	c.pairs = append(c.pairs, a, b)
+	c.pairSrc = append(c.pairSrc, c.curExpr)
+}
 
 // checkTypeName validates that a declared type string is known.
 func (c *Checker) checkTypeName(t string) error {
@@ -1133,7 +1147,31 @@ func (c *Checker) slotVar(slot int) (string, bool) {
 // identifier — and, via the enclosing function, the declaration `check` maps to a
 // line — removes the guesswork. Non-mismatch errors and anonymous slots pass
 // through unchanged.
-func (c *Checker) annotateMismatch(err error, a, b int) error {
+// pairSrcAt returns the expression behind pairs[i]/pairs[i+1], or nil.
+func (c *Checker) pairSrcAt(i int) Expr {
+	if j := i / 2; j < len(c.pairSrc) {
+		return c.pairSrc[j]
+	}
+	return nil
+}
+
+// mismatchCause renders the expression that produced the failing constraint,
+// but only when it actually adds information: a bare identifier or literal just
+// repeats what the message already says, and naming it would be noise.
+func mismatchCause(e Expr) string {
+	switch e.(type) {
+	case nil, *Ident, *IntLit, *FloatLit, *StringLit, *BoolLit:
+		return ""
+	}
+	r := &renderer{complete: true}
+	src := r.expr(e, 0)
+	if len(src) > 60 {
+		src = src[:57] + "..."
+	}
+	return src
+}
+
+func (c *Checker) annotateMismatch(err error, a, b int, src Expr) error {
 	msg := err.Error()
 	if !strings.HasPrefix(msg, "type mismatch: ") {
 		return err
@@ -1155,9 +1193,17 @@ func (c *Checker) annotateMismatch(err error, a, b int) error {
 		// (issue #551). Say so, since a reader with Go instincts expects two
 		// independent block-local variables. Only append this hint when a `:=`
 		// redeclaration is actually involved — otherwise it is a red herring.
-		return fmt.Errorf("type mismatch for %s: %s; := does not shadow — variables are function-scoped", who, detail)
+		return fmt.Errorf("type mismatch for %s: %s%s; := does not shadow — variables are function-scoped", who, detail, causeSuffix(src))
 	}
-	return fmt.Errorf("type mismatch for %s: %s", who, detail)
+	return fmt.Errorf("type mismatch for %s: %s%s", who, detail, causeSuffix(src))
+}
+
+// causeSuffix formats the conflicting expression for an error message.
+func causeSuffix(src Expr) string {
+	if cause := mismatchCause(src); cause != "" {
+		return " — from " + cause
+	}
+	return ""
 }
 
 func (c *Checker) solve() error {
@@ -1166,7 +1212,7 @@ func (c *Checker) solve() error {
 		for i := 0; i+1 < len(c.pairs); i += 2 {
 			ch, err := c.union(c.pairs[i], c.pairs[i+1])
 			if err != nil {
-				return c.annotateMismatch(err, c.pairs[i], c.pairs[i+1])
+				return c.annotateMismatch(err, c.pairs[i], c.pairs[i+1], c.pairSrcAt(i))
 			}
 			changed = changed || ch
 		}
@@ -1182,11 +1228,11 @@ func (c *Checker) solve() error {
 			}
 			ch1, err := c.union(a, b)
 			if err != nil {
-				return c.annotateMismatch(err, a, b)
+				return c.annotateMismatch(err, a, b, p.src)
 			}
 			ch2, err := c.union(p.res, p.l)
 			if err != nil {
-				return c.annotateMismatch(err, p.res, p.l)
+				return c.annotateMismatch(err, p.res, p.l, p.src)
 			}
 			changed = changed || ch1 || ch2
 		}
@@ -1208,6 +1254,11 @@ func (c *Checker) genStmt(fn *FuncDecl, s Stmt) error {
 		if err != nil {
 			return err
 		}
+		// An assignment's constraint is caused by its right-hand side (#551):
+		// `steps = split(...)` should blame split, not the bare name.
+		prevAssign := c.curExpr
+		c.curExpr = st.Val
+		defer func() { c.curExpr = prevAssign }()
 		if st.Name == "_" {
 			// the blank identifier discards the value: never readable, never
 			// allocated as a local, and it counts as neither a new binding nor
@@ -1437,7 +1488,10 @@ func (c *Checker) genExpr(fn *FuncDecl, e Expr) (int, error) {
 	if s, ok := ns[e]; ok {
 		return s, nil
 	}
+	prev := c.curExpr
+	c.curExpr = e
 	slot, err := c.genExprInner(fn, e)
+	c.curExpr = prev
 	if err != nil {
 		return 0, err
 	}
@@ -1623,7 +1677,7 @@ func (c *Checker) genBinary(fn *FuncDecl, ex *Binary) (int, error) {
 	switch ex.Op {
 	case "+":
 		res := newSlot(c, KVar)
-		c.plus = append(c.plus, plusCons{l: ls, r: rs, res: res})
+		c.plus = append(c.plus, plusCons{l: ls, r: rs, res: res, src: ex})
 		return res, nil
 	case "-", "*", "/":
 		c.addPair(ls, rs)
