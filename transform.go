@@ -103,6 +103,14 @@ func (l *lifter) expr(e Expr) Expr {
 	case *Index:
 		ex.X = l.expr(ex.X)
 		ex.Idx = l.expr(ex.Idx)
+	case *SliceExpr:
+		ex.X = l.expr(ex.X)
+		if ex.Lo != nil {
+			ex.Lo = l.expr(ex.Lo)
+		}
+		if ex.Hi != nil {
+			ex.Hi = l.expr(ex.Hi)
+		}
 	case *FieldAccess:
 		ex.X = l.expr(ex.X)
 	case *Recv:
@@ -259,6 +267,14 @@ func freeIdents(body []Stmt, params []string) map[string]bool {
 		case *Index:
 			we(ex.X)
 			we(ex.Idx)
+		case *SliceExpr:
+			we(ex.X)
+			if ex.Lo != nil {
+				we(ex.Lo)
+			}
+			if ex.Hi != nil {
+				we(ex.Hi)
+			}
 		case *FieldAccess:
 			we(ex.X)
 		case *Recv:

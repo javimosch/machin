@@ -141,6 +141,15 @@ func (r *renderer) expr(e Expr, parentPrec int) string {
 		return r.expr(x.Fn, 10) + "(" + r.args(x.Args, false) + ")"
 	case *Index:
 		return r.expr(x.X, 10) + "[" + r.expr(x.Idx, 0) + "]"
+	case *SliceExpr:
+		lo, hi := "", ""
+		if x.Lo != nil {
+			lo = r.expr(x.Lo, 0)
+		}
+		if x.Hi != nil {
+			hi = r.expr(x.Hi, 0)
+		}
+		return r.expr(x.X, 10) + "[" + lo + ":" + hi + "]"
 	case *FieldAccess:
 		return r.expr(x.X, 10) + "." + x.Name
 	case *SliceLit:
