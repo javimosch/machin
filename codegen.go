@@ -161,6 +161,7 @@ const cRuntime = `#define _GNU_SOURCE
 #define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <io.h>        /* _commit — the Windows fd-flush equivalent of fsync (#549) */
 #endif
 #include <stdio.h>
 #include <stdlib.h>
@@ -1893,7 +1894,11 @@ static int64_t mfl_remove_file(const char* path) { return remove(path) == 0 ? 0 
 static int64_t mfl_fsync(const char* path) {
     int fd = open(path, O_RDONLY);
     if (fd < 0) return -1;
+#ifdef _WIN32
+    int r = _commit(fd);
+#else
     int r = fsync(fd);
+#endif
     int e = errno;
     close(fd);
     if (r == 0) return 0;
