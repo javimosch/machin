@@ -24,13 +24,17 @@ FAIRNESS:
     Comparing a dynamically-linked binary to a statically-linked one is not a
     like-for-like comparison, so the linkage is printed next to every number.
 
-ZIG CAVEAT: on the machine this was developed on (zig 0.16.0 beta, snap), every
-`-OReleaseFast` build that touches `std.debug.print` costs ~13 s and is NOT reused
-between identical invocations, while the same program in Debug costs 0.5 s and a
-program that prints nothing costs 0.22 s. That is the cost of compiling std's
-formatting under ReleaseFast, apparently uncached on this build. It says little
-about how Zig scales with YOUR code, so this harness prints Zig's number but draws
-no conclusion from it.
+ZIG VERSIONS: Zig 0.16.0 (the current stable) does not reuse its cache for these
+`-OReleaseFast` builds — a second identical invocation costs the same ~13 s as the
+first. Zig 0.15.2 does: ~3.3 s cold, ~0.3 s warm. That is a ~45x warm-build
+regression between the two releases, reproduced on the official ziglang.org
+binaries (so it is not a packaging artifact), and it is why this harness reports
+BOTH cold and warm and lets you point it at a specific Zig:
+
+    ZIG=~/opt/zig-x86_64-linux-0.15.2/zig ./run.sh
+
+Reporting only 0.16.0 would credit machin with a ~130x build-time win that is
+really someone else's caching bug.
 """
 import os
 import shutil
@@ -43,6 +47,7 @@ OUT = os.path.join(HERE, "build")
 KERNELS = ["fib", "mandel", "sieve", "intsum"]
 LANGS = ["machin", "rust", "zig"]
 RUNS = 3
+ZIG = os.environ.get("ZIG", "zig")
 
 
 def timed(cmd, cwd=None):
@@ -70,14 +75,17 @@ def build_rust(k):
                   os.path.join(SRC, "rust", f"{k}.rs"), "-o", out]), out
 
 
-def build_zig(k):
+def build_zig(k, cold=True):
+    """cold=True wipes the cache first; cold=False measures a warm rebuild."""
     out = os.path.join(OUT, f"zig-{k}")
-    for c in (".zig-cache", "zig-cache"):
-        shutil.rmtree(os.path.join(OUT, c), ignore_errors=True)
+    gc = os.path.join(OUT, f"zigcache-{k}")
+    if cold:
+        shutil.rmtree(gc, ignore_errors=True)
     for p in (out, out + ".o"):
         if os.path.exists(p):
             os.remove(p)
-    return timed(["zig", "build-exe", "-OReleaseFast",
+    return timed([ZIG, "build-exe", "-OReleaseFast",
+                  "--global-cache-dir", gc, "--cache-dir", gc + "-local",
                   os.path.join(SRC, "zig", f"{k}.zig"),
                   "-femit-bin=" + out], cwd=OUT), out
 
@@ -123,18 +131,28 @@ def main():
             stripped[(k, lang)] = stripped_size(path) if good else None
             link[(k, lang)] = linkage(path) if good else "?"
 
+    # A warm Zig rebuild, measured once per kernel after the cold runs above.
+    zig_warm = {}
+    for k in KERNELS:
+        (dt, ok), _ = build_zig(k, cold=False)
+        zig_warm[k] = dt if ok else None
+
     print(f"BUILD TIME — source to optimized native binary, min of {RUNS} builds\n")
-    print(f"{'kernel':<8} {'machin':>10} {'rust':>10} {'zig':>10}")
-    print("-" * 42)
+    print(f"{'kernel':<8} {'machin':>10} {'rust':>10} {'zig cold':>10} {'zig warm':>10}")
+    print("-" * 54)
     for k in KERNELS:
         cells = []
         for l in LANGS:
             t = times[(k, l)]
             cells.append(f"{t*1000:8.0f}ms" if t else f"{'FAIL':>10}")
-        print(f"{k:<8} {cells[0]:>10} {cells[1]:>10} {cells[2]:>10}")
-    print("\nRust wins this outright on single-file programs; machin's number "
-          "includes\nits cc -O2 backend run. See the ZIG CAVEAT in this file's "
-          "docstring before\nreading anything into Zig's column.")
+        w = zig_warm.get(k)
+        cells.append(f"{w*1000:8.0f}ms" if w else f"{'FAIL':>10}")
+        print(f"{k:<8} {cells[0]:>10} {cells[1]:>10} {cells[2]:>10} {cells[3]:>10}")
+    print(f"\nzig binary: {ZIG}")
+    print("Rust wins this outright on single-file programs; machin's number includes")
+    print("its cc -O2 backend run. If zig cold and warm are nearly equal you are on")
+    print("0.16.0, whose cache does not help here — compare against 0.15.2 before")
+    print("reading a build-time win against Zig (see the docstring).")
 
     print(f"\n\nBINARY SIZE — as produced, and stripped (linkage in brackets)\n")
     print(f"{'kernel':<8} {'machin':>22} {'rust':>22} {'zig':>22}")

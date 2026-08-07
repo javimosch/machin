@@ -7,46 +7,60 @@ binary, and how big it is when you get one.
 Same four kernels, byte-identical output, each language at its real release
 setting.
 
-## Build time — machin loses to Rust
+## Build time — machin loses to Rust, beats Zig
 
-Source → runnable optimized native binary, min of 3 builds:
+Source → runnable optimized native binary, min of 3 builds, Zig 0.15.2:
 
-| kernel | machin | Rust `-O3` | Zig `ReleaseFast` |
-|---|--:|--:|--:|
-| fib | 95 ms | **52 ms** | 11418 ms † |
-| mandel | 87 ms | **54 ms** | 12589 ms † |
-| sieve | 96 ms | **74 ms** | 13813 ms † |
-| intsum | 116 ms | **73 ms** | 12863 ms † |
+| kernel | machin | Rust `-O3` | Zig cold | Zig warm |
+|---|--:|--:|--:|--:|
+| fib | 96 ms | **52 ms** | 3507 ms | 297 ms |
+| mandel | 90 ms | **58 ms** | 3517 ms | 289 ms |
+| sieve | 99 ms | **75 ms** | 3477 ms | 354 ms |
+| intsum | 103 ms | **51 ms** | 3535 ms | 287 ms |
 
 **Rust wins this outright**, roughly 1.5×. machin's number includes its `cc -O2`
-backend run — the whole pipeline to a runnable binary, which is the honest thing
-to measure even though it's the unflattering one.
+backend run — the whole pipeline to a runnable binary, which is the honest thing to
+measure even though it's the unflattering one. Rust is invoked as bare `rustc` on a
+single file, **not** `cargo build`: cargo would add manifest parsing and lockfile
+resolution that has nothing to do with compiler speed, and charging that to Rust
+would have made machin look good for a bad reason.
 
-Rust is invoked as bare `rustc` on a single file, **not** `cargo build`. Cargo
-would add manifest parsing, lockfile resolution and dependency work that has
-nothing to do with compiler speed, and charging that to Rust would have made
-machin look good for a bad reason.
+machin beats Zig ~3× warm and ~35× cold.
 
-### † Zig's column is not a result
+### Which Zig, and why it matters a lot here
 
-Do not read "machin builds 130× faster than Zig" out of that column. On this
-machine:
+An earlier version of this benchmark reported Zig at **~13 s** and declined to draw
+any conclusion, blaming a "0.16.0 beta from snap". **Both halves of that were
+wrong**, and the correction changes the result:
 
-| what | time |
-|---|--:|
-| `std.debug.print` + `-OReleaseFast` | **12.6–13.8 s** |
-| `std.debug.print` + Debug | 0.53 s |
-| fib **without** printing + `-OReleaseFast` | 0.22 s |
-| empty program + `-OReleaseFast` | 0.22 s |
+- 0.16.0 is not a beta. It is the current **stable** release (2026-04-13). The snap
+  channel name (`latest/beta`) misled us.
+- It is not a packaging artifact. The official ziglang.org binaries reproduce it
+  exactly.
 
-The entire cost is compiling std's formatting machinery under `ReleaseFast`, and
-on this install it is **not reused between two identical consecutive runs** —
-including with an explicit writable `--global-cache-dir`, which fills to 45 MB and
-still doesn't help. This is zig 0.16.0 (beta, snap).
+What is actually happening is a **caching regression between 0.15.2 and 0.16.0**,
+on the same program and the same machine:
 
-That is a fixed std-formatting tax on a beta toolchain, not a statement about how
-Zig scales with your code, so this benchmark reports it and draws no conclusion
-from it. Zig's build times are normally one of its selling points.
+| | 1st build | 2nd, identical | 
+|---|--:|--:|
+| Zig 0.15.2 | 3.2 s | **0.28 s** |
+| Zig 0.16.0 | 16.1 s | **13.3 s** |
+
+0.15.2 reuses its cache; 0.16.0 effectively does not — a ~45× warm-build
+regression. It reproduces with an explicit writable `--global-cache-dir`, which
+fills to 45 MB and still doesn't help.
+
+So this benchmark reports **0.15.2**, where Zig's caching works as intended, and
+you can point it at any toolchain:
+
+```bash
+ZIG=~/opt/zig-x86_64-linux-0.15.2/zig ./run.sh
+```
+
+Reporting 0.16.0 instead would credit machin with a ~130× build-time win that is
+really someone else's caching bug. The whole cost, in both versions, is compiling
+std's formatting under `ReleaseFast` — a program that prints nothing builds in
+0.22 s.
 
 ## Binary size — machin wins big, dynamically
 

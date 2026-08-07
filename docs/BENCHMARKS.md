@@ -24,7 +24,7 @@ marketing, not evidence.
 | float loop (mandelbrot) | tie | tie (1.03×) | [native-speed](../bench/native-speed) |
 | integer loop (`intsum 10⁹`) | tie (+3%) | tie (+3%) | [native-speed](../bench/native-speed) |
 | array build + sieve | **1.41× slower** | **1.46× slower** | [native-speed](../bench/native-speed) |
-| build time | **slower** (~100 ms vs ~57 ms) | not conclusive — see caveat | [compile-speed](../bench/compile-speed) |
+| build time | **slower** (~100 ms vs ~57 ms) | **~3x faster** warm, ~35x cold (Zig 0.15.2) | [compile-speed](../bench/compile-speed) |
 | binary size floor, stripped, dynamic | **~320 kB smaller** (14 kB vs 335 kB) | — | [compile-speed](../bench/compile-speed) |
 | binary size, fully static | — | **~2× larger** (940 kB vs 491 kB) | [compile-speed](../bench/compile-speed) |
 | deadlock reported | **yes, Rust never** | **yes, Zig never** | [evidence](../bench/evidence) |
@@ -103,12 +103,17 @@ takes ~87–122 ms, because its number includes the `cc -O2` backend run. Rust w
 this outright, and `cargo` was deliberately not used so the comparison could not
 be inflated in machin's favour.
 
-Zig's column is **not reported as a result**. On the development machine every
-`-OReleaseFast` build touching `std.debug.print` costs ~13 s and is not reused
-between identical invocations, while the same program in Debug costs 0.5 s and one
-that prints nothing costs 0.22 s. That is the cost of compiling std's formatting
-under ReleaseFast on a 0.16 beta — it says nothing about how Zig scales with your
-code, so no conclusion is drawn from it.
+Against Zig, machin wins: ~3x faster than a warm Zig build and ~35x faster than a
+cold one (Zig 0.15.2 — 290 ms warm, 3.5 s cold).
+
+**That number depends on which Zig, and an earlier version of this document got it
+wrong.** It reported Zig at ~13 s and drew no conclusion, blaming "a 0.16.0 beta
+from snap". 0.16.0 is not a beta — it is the current stable release — and the
+official ziglang.org binaries reproduce the 13 s exactly, so it was not a packaging
+artifact either. What it actually is: a **caching regression between 0.15.2 and
+0.16.0**. 0.15.2 rebuilds an unchanged program in 0.28 s; 0.16.0 takes 13.3 s, ~45x
+slower. The benchmark therefore reports 0.15.2, where caching works. Quoting 0.16.0
+would credit machin with a ~130x win that is really someone else's bug.
 
 ### Default runtime safety — Rust is safer
 

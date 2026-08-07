@@ -125,7 +125,9 @@ Needs `machin`, `rustc`, `zig`. Hanging programs are killed with `timeout`; a ki
 (exit 124) is a result, not a harness failure.
 
 > Both Zig programs use POSIX APIs through `std.c` (`sem_wait`, `getenv`) rather
-> than Zig's own equivalents. Zig 0.16 is mid-redesign: concurrency primitives
-> moved under `std.Io` and now require an `Io` instance, `std.os.argv` is gone, and
-> `std.process`'s argument iterators want an allocator. The POSIX calls are stable
-> and express exactly the same program.
+> than Zig's own equivalents. Zig **0.16.0 — the current stable release, not a
+> beta** — moved concurrency primitives under `std.Io` (they now require an `Io`
+> instance), deprecated `std.fs` in favour of `std.Io.Dir`, removed
+> `std.os.argv`, and renamed `GeneralPurposeAllocator`. The POSIX calls are stable
+> across versions and express exactly the same program, which keeps this benchmark
+> comparable as that migration continues.
