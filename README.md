@@ -177,10 +177,15 @@ Zig `ReleaseFast` (min of 9 rounds, this machine):
 The sieve gap is *not* slice indexing — that loop ties Rust exactly (110 ms vs
 111 ms); it's `append`'s growth path ([#578](https://github.com/javimosch/machin/issues/578)).
 
-Where machin actually beats both: **binary size** (14 kB stripped vs Rust's 335 kB,
-both dynamic) and **compile-time bug reports** — a guaranteed deadlock that `rustc`
-and `zig` accept silently and then hang on, machin reports as `DL001` before you run
-it. Where it loses: **build time** (Rust ~57 ms vs machin ~100 ms) and **default
+Where machin actually beats both: **binary size** — 14 kB stripped vs Rust's 335 kB,
+both dynamic. Read that as a fixed offset (Rust starts ~320 kB ahead), not a ratio:
+machin's hello world and its fib are the same size to the byte, so both numbers
+measure each toolchain's floor, and real code adds bytes to both.
+
+And **compile-time bug reports** — a guaranteed deadlock that `rustc` and `zig`
+accept silently and then hang on, machin reports as `DL001` before you run it.
+
+Where it loses: **build time** (Rust ~57 ms vs machin ~100 ms) and **default
 runtime safety** (machin, like Zig `ReleaseFast`, omits bounds checks unless you
 pass `--safe`; Rust traps by default).
 

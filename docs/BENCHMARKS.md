@@ -25,7 +25,7 @@ marketing, not evidence.
 | integer loop (`intsum 10⁹`) | tie (+3%) | tie (+3%) | [native-speed](../bench/native-speed) |
 | array build + sieve | **1.41× slower** | **1.46× slower** | [native-speed](../bench/native-speed) |
 | build time | **slower** (~100 ms vs ~57 ms) | not conclusive — see caveat | [compile-speed](../bench/compile-speed) |
-| binary size, stripped, dynamic | **~24× smaller** (14 kB vs 335 kB) | — | [compile-speed](../bench/compile-speed) |
+| binary size floor, stripped, dynamic | **~320 kB smaller** (14 kB vs 335 kB) | — | [compile-speed](../bench/compile-speed) |
 | binary size, fully static | — | **~2× larger** (940 kB vs 491 kB) | [compile-speed](../bench/compile-speed) |
 | deadlock reported | **yes, Rust never** | **yes, Zig never** | [evidence](../bench/evidence) |
 | out-of-range index reported at compile time | **yes, Rust never** | **yes, Zig never** | [evidence](../bench/evidence) |
@@ -56,6 +56,14 @@ An **out-of-range index** is reported by `machin falsify` as `FALS001` with a
 concrete failing input, before the program runs, on code whose only call site is
 in range. `rustc` and `zig` say nothing.
 
+**Neither analysis proves absence, and neither should be read that way.**
+`falsify` is unsound-complete: every counterexample it reports is real, but a
+clean result means "no bug within the bounds", never "correct". `DL001` is the
+opposite trade — sound and false-positive-free, so it only fires when it can prove
+a channel is never fed, which means a clean result is not a proof of
+deadlock-freedom either (the runtime detector catches the rest). "machin found
+nothing" is weaker than "machin found this bug, here is the input".
+
 → [bench/evidence](../bench/evidence)
 
 ### 2. Binary size
@@ -64,8 +72,16 @@ Stripped, with both dynamically linked against the system libc — a like-for-li
 comparison — machin produces **14 kB** where Rust produces **335 kB**. There is
 no std runtime to link.
 
-Compare like with like, though: fully static, Zig produces 491 kB against
-machin's 940 kB, and wins.
+**Read that as a fixed offset, not a ratio.** machin's hello world and its fib(40)
+are *byte-identical* in size (14,544 B), and Rust's differ by 2% (343,568 vs
+335,472). Neither is measuring the program — both measure the baseline each
+toolchain links in. Real code adds real bytes to both; machin's JSON+HTTP example
+is ~12 kB above its own floor. The durable claim is **"Rust starts ~320 kB
+ahead"**, not "machin binaries are 24× smaller"; the ratio shrinks as programs
+grow, the offset does not. For a real service rather than a kernel, see
+[cold-start](../bench/cold-start).
+
+And fully static, Zig wins: 491 kB against machin's 940 kB.
 
 → [bench/compile-speed](../bench/compile-speed)
 

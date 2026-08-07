@@ -61,8 +61,30 @@ As produced / stripped:
 
 **Compare like with like.** machin and Rust both link dynamically against the
 system libc, so their stripped numbers are directly comparable: **14 kB vs
-335 kB — about 24× smaller.** There is no std runtime to link; machin's output is
-C, and C's runtime is already on the machine.
+335 kB — about 24×.** There is no std runtime to link; machin's output is C, and
+C's runtime is already on the machine.
+
+### What that 24× is, and is not
+
+It is a comparison of each toolchain's **fixed floor**, not evidence that machin
+binaries scale 24× better. These kernels are tiny, and the numbers say so plainly:
+
+| program | machin | Rust |
+|---|--:|--:|
+| hello world | 14,544 B | 343,568 B |
+| fib(40) | 14,544 B | 335,472 B |
+| a JSON+HTTP example | 26,840 B | — |
+
+machin's hello world and its fib are **byte-identical in size**, and Rust's differ
+by 2%. Neither number is measuring the program; both are measuring the baseline
+each toolchain links in. Real code adds real bytes to both — machin's JSON+HTTP
+example is ~12 kB above its own floor.
+
+So the honest form of the claim is **"Rust starts about 320 kB ahead"**, not
+"machin binaries are 24× smaller". The ratio narrows as programs grow; the
+constant offset is what persists. That offset is what matters if you ship
+containers or care about cold start — see [`../cold-start`](../cold-start), which
+measures a real REST+SQLite service rather than a kernel.
 
 The as-produced column (17 kB vs 4291 kB, ~250×) is a much bigger number and a
 much worse comparison — it mostly measures how much debug info each toolchain
@@ -76,10 +98,11 @@ loss for Zig: **fully static, Zig wins.** `machin build --static` produces
 
 Two clear results in opposite directions:
 
-- **Binary size is a genuine machin win** — 24× smaller than Rust at equal
-  linkage, and it holds across every kernel. If you ship containers or care about
-  cold start, this is the number that matters (see also
-  [`../cold-start`](../cold-start)).
+- **Binary size is a genuine machin win**, but it is a *fixed-floor* win: Rust
+  starts ~320 kB ahead at equal linkage, and that offset persists rather than the
+  24× ratio (see above — machin's hello world and its fib are the same size to the
+  byte). If you ship containers or care about cold start, the offset is the number
+  that matters (see also [`../cold-start`](../cold-start)).
 - **Build time is a genuine machin loss.** Rust is ~1.5× faster at producing these
   binaries and machin should not pretend otherwise. machin's compensation is
   `machin check` — lex/parse/typecheck/race/arena analysis with no `cc` run at all,
