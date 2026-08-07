@@ -1,0 +1,13 @@
+func at(xs, i) (r) {
+    r = xs[i]
+}
+
+func main() {
+    xs := []int{10, 20, 30}
+    i := 1
+    e := env("IDX")
+    if e != "" {
+        i = parse_int(e)
+    }
+    println(at(xs, i))
+}

@@ -1,0 +1,5 @@
+func main() {
+    ch := make(chan int)
+    v := <-ch
+    println(v)
+}
