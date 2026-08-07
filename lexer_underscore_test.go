@@ -136,3 +136,45 @@ func TestUnderscoreLiteralDoesNotSwallowIdentifier(t *testing.T) {
 		}
 	}
 }
+
+// v0.124.0 (#556) made a hex/binary/octal literal whose top bit is set parse as
+// its two's-complement value, so constants like the FNV-1a offset basis are
+// writable at all. Underscore separators keep working through that path — it
+// falls out of strconv.ParseUint(base 0) rather than being deliberate, so pin it
+// before someone rewrites the fallback and silently drops it.
+func TestLexBitPatternLiteralWithUnderscores(t *testing.T) {
+	cases := []struct {
+		src  string
+		want int64
+	}{
+		{"0x9E37_79B9_7F4A_7C15", -7046029254386353131}, // golden-ratio mixer
+		{"0xCBF2_9CE4_8422_2325", -3750763034362895579}, // FNV-1a 64 offset basis
+		{"0xFFFF_FFFF_FFFF_FFFF", -1},
+		{"0x2545_F491_4F6C_DD1D", 2685821657736338717}, // top bit clear: unchanged
+	}
+	for _, c := range cases {
+		toks, err := Lex(c.src)
+		if err != nil {
+			t.Errorf("Lex(%q) error: %v", c.src, err)
+			continue
+		}
+		if len(toks) != 2 || toks[0].Kind != TInt || toks[0].Val != c.src {
+			t.Errorf("Lex(%q) = %+v, want a single TInt preserving the raw literal", c.src, toks)
+			continue
+		}
+		p := &Parser{toks: toks}
+		e, err := p.parsePrimary()
+		if err != nil {
+			t.Errorf("parse(%q): %v", c.src, err)
+			continue
+		}
+		lit, ok := e.(*IntLit)
+		if !ok {
+			t.Errorf("parse(%q) = %T, want *IntLit", c.src, e)
+			continue
+		}
+		if lit.Val != c.want {
+			t.Errorf("parse(%q) = %d, want %d", c.src, lit.Val, c.want)
+		}
+	}
+}
