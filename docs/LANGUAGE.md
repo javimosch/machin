@@ -389,6 +389,8 @@ first := users[0]                                // value copy
 | `time_make(y, mo, d, h, mi, s)` | build a unix timestamp from local calendar fields; inverse of `time_fields` |
 | `len(x)`                    | length of a slice or string                  |
 | `append(xs, v)`             | return `xs` with `v` appended                |
+| `sort(xs)`                  | stable ascending sort of an int/float/string slice |
+| `sort_by(xs, less)`         | stable sort by comparator `less(a, b)`       |
 | `has(m, k)`                 | whether map `m` contains key `k`             |
 | `delete(m, k)`              | remove key `k` from map `m`                  |
 | `keys(m)`                   | a slice of map `m`'s keys                    |

@@ -100,6 +100,8 @@ type cgen struct {
 	c            *Checker
 	buf          strings.Builder // function bodies
 	tramp        strings.Builder // goroutine trampolines
+	helpers      strings.Builder // generated per-call helper functions (e.g. sort_by comparators)
+	sortByID     int             // unique ids for sort_by comparator helpers
 	goID         int
 	jsonFns      strings.Builder      // generated per-type JSON serializers + parsers
 	jsonMemo     map[string]string    // type string -> serializer function name
@@ -999,6 +1001,62 @@ static mfl_slice mfl_map_keys(mfl_map* m) {
 // the string ops treat NULL as "" rather than dereferencing it.
 static const char* mfl_s(const char* s) { return s ? s : ""; }
 static int mfl_strcmp(const char* a, const char* b) { return strcmp(mfl_s(a), mfl_s(b)); }
+/* sort / sort_by: stable bottom-up merge sort. sort_by is generic over element
+   size and a comparator callback; the built-in sort() forms use the same path.
+   Both return a NEW slice: MFL slices share backing storage, so sorting in place
+   would silently reorder every alias. The input is copied before sorting. */
+static mfl_slice mfl_sort_by(mfl_slice s, int64_t es, mfl_closure* c, int (*cmp)(mfl_closure*, const void*, const void*)) {
+    mfl_slice res = s;
+    if (s.len > 0) {
+        res.data = mfl_alloc(s.len * es);
+        res.cap = s.len;
+        memcpy(res.data, s.data, s.len * es);
+    } else {
+        res.data = NULL;
+        res.cap = 0;
+    }
+    if (s.len <= 1) return res;
+    char* tmp = (char*)mfl_alloc(s.len * es);
+    char* src = (char*)res.data;
+    char* dst = tmp;
+    for (int64_t w = 1; w < s.len; w *= 2) {
+        for (int64_t i = 0; i < s.len; i += 2 * w) {
+            int64_t l = i, m = i + w, r = i + 2 * w;
+            if (m > s.len) m = s.len;
+            if (r > s.len) r = s.len;
+            int64_t p = l, q = m, k = l;
+            while (p < m && q < r) {
+                int cr = cmp(c, src + p * es, src + q * es);
+                if (cr <= 0) {
+                    memcpy(dst + k * es, src + p * es, es); p++; k++;
+                } else {
+                    memcpy(dst + k * es, src + q * es, es); q++; k++;
+                }
+            }
+            while (p < m) { memcpy(dst + k * es, src + p * es, es); p++; k++; }
+            while (q < r) { memcpy(dst + k * es, src + q * es, es); q++; k++; }
+        }
+        char* t = src; src = dst; dst = t;
+    }
+    if (src != (char*)res.data) memcpy(res.data, src, s.len * es);
+    return res;
+}
+static int mfl_sortcmp_i(mfl_closure* c, const void* a, const void* b) {
+    int64_t av = *(int64_t*)a, bv = *(int64_t*)b;
+    return av <= bv ? -1 : 1;
+}
+static int mfl_sortcmp_d(mfl_closure* c, const void* a, const void* b) {
+    double av = *(double*)a, bv = *(double*)b;
+    return av <= bv ? -1 : 1;
+}
+static int mfl_sortcmp_s(mfl_closure* c, const void* a, const void* b) {
+    char* av = *(char**)a;
+    char* bv = *(char**)b;
+    return mfl_strcmp(av, bv) <= 0 ? -1 : 1;
+}
+static mfl_slice mfl_sort_i(mfl_slice s) { return mfl_sort_by(s, sizeof(int64_t), NULL, mfl_sortcmp_i); }
+static mfl_slice mfl_sort_d(mfl_slice s) { return mfl_sort_by(s, sizeof(double), NULL, mfl_sortcmp_d); }
+static mfl_slice mfl_sort_s(mfl_slice s) { return mfl_sort_by(s, sizeof(char*), NULL, mfl_sortcmp_s); }
 static char* mfl_cat(const char* a, const char* b) {
     a = mfl_s(a); b = mfl_s(b);
     size_t la = strlen(a), lb = strlen(b);
@@ -4392,6 +4450,7 @@ func (g *cgen) program(p *Program) (string, error) {
 	}
 	out.WriteByte('\n')
 	out.WriteString(g.tramp.String())
+	out.WriteString(g.helpers.String())
 	out.WriteString(g.buf.String())
 	// package-global initializers run in a C constructor — before main (native) and
 	// at _initialize (wasm reactor). Compile each init into a scratch buffer so any
@@ -6606,6 +6665,19 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 	case "tls_close":
 		g.usesTLS = true
 		return fmt.Sprintf("mfl_tls_close_h(%s)", args[0]), nil
+	case "sort":
+		ct := g.c.ElemCType(g.curFn, ex.Args[0])
+		switch ct {
+		case "int64_t":
+			return fmt.Sprintf("mfl_sort_i(%s)", args[0]), nil
+		case "double":
+			return fmt.Sprintf("mfl_sort_d(%s)", args[0]), nil
+		case "char*":
+			return fmt.Sprintf("mfl_sort_s(%s)", args[0]), nil
+		}
+		return "", fmt.Errorf("sort: element type %s has no ordering — use sort_by(xs, less) and say how to compare them", ct)
+	case "sort_by":
+		return g.genSortBy(args[0], args[1], ex.Args[0], ex.Args[1])
 	case "print", "println":
 		return "", fmt.Errorf("print/println may only be used as a statement")
 	}
@@ -6654,4 +6726,34 @@ func (g *cgen) closureCall(clos string, paramCTypes []string, retCType string, a
 		callArgs += ", " + a
 	}
 	return fmt.Sprintf("({ mfl_closure _c%d = %s; ((%s(*)%s)_c%d.fn)(%s); })", id, clos, retCType, fnSig, id, callArgs)
+}
+
+// genSortBy emits a sort_by call. It mints a per-call comparator helper that
+// knows the slice element's C type and calls the MFL closure with the right
+// signature; the helper is placed in g.helpers so it is defined before the
+// function bodies that use it.
+func (g *cgen) genSortBy(sliceArg, cmpArg string, sliceExpr, cmpExpr Expr) (string, error) {
+	ect := g.c.ElemCType(g.curFn, sliceExpr)
+	params, ret := g.c.NodeFuncSig(g.curFn, cmpExpr)
+	if len(params) != 2 {
+		return "", fmt.Errorf("sort_by: comparator must take two arguments")
+	}
+	g.sortByID++
+	hname := fmt.Sprintf("mfl_sortcmp_%d", g.sortByID)
+	fnType := fmt.Sprintf("%s (*)(void*, %s, %s)", ret, params[0], params[1])
+	var b strings.Builder
+	fmt.Fprintf(&b, "static int %s(mfl_closure* _c, const void* _a, const void* _b) {\n", hname)
+	fmt.Fprintf(&b, "    %s a = *(%s*)_a;\n", ect, ect)
+	fmt.Fprintf(&b, "    %s b = *(%s*)_b;\n", ect, ect)
+	fmt.Fprintf(&b, "    mfl_closure c = *_c;\n")
+	fmt.Fprintf(&b, "    int ab = ((%s)c.fn)(c.env, a, b);\n", fnType)
+	fmt.Fprintf(&b, "    if (ab) return -1;\n")
+	fmt.Fprintf(&b, "    int ba = ((%s)c.fn)(c.env, b, a);\n", fnType)
+	fmt.Fprintf(&b, "    if (ba) return 1;\n")
+	fmt.Fprintf(&b, "    return 0;\n")
+	fmt.Fprintf(&b, "}\n")
+	g.helpers.WriteString(b.String())
+	id := g.tmpID
+	g.tmpID++
+	return fmt.Sprintf("({ mfl_slice _s%d = %s; mfl_closure _c%d = %s; mfl_sort_by(_s%d, (int64_t)sizeof(%s), &_c%d, %s); })", id, sliceArg, id, cmpArg, id, ect, id, hname), nil
 }

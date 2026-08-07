@@ -102,6 +102,7 @@ type Checker struct {
 
 	lenArgs   []int      // slots passed to len(); must resolve to string/slice/map
 	strArgs   []int      // slots passed to str(); must resolve to a number, bool, or string
+	sortArgs  []sortArg  // sort() element slots and sort_by() comparators, validated after solve
 	fieldUses []fieldUse // struct field access/assign, resolved after solve
 	indexUses []indexUse // x[i] access/assign, resolved after solve (slice or map)
 	rangeUses []rangeUse // for-range loops, resolved after solve
@@ -203,6 +204,13 @@ type plusCons struct {
 type funcSig struct {
 	params []int
 	ret    int
+}
+
+// sortArg records a slice element slot (and optional comparator slot) so
+// sort/sort_by can be validated after the element type is fully resolved.
+type sortArg struct {
+	elem int
+	cmp  int // -1 for sort(), the comparator slot for sort_by()
 }
 
 // fieldUse defers a struct field access/assignment: once base resolves to a
@@ -847,6 +855,29 @@ func Check(p *Program) (*Checker, error) {
 	for _, slot := range c.strArgs {
 		if k := c.kindOf(slot); !isNumeric(k) && k != KBool && k != KString {
 			return nil, fmt.Errorf("str: argument must be a number, bool, or string, got %s", k)
+		}
+	}
+	// 5c. validate sort()/sort_by() after the element type is resolved.
+	for _, a := range c.sortArgs {
+		if a.cmp < 0 {
+			// sort(): the slice element must be one of the directly-supported kinds.
+			k := c.kindOf(a.elem)
+			if k != KInt && k != KFloat && k != KString {
+				return nil, fmt.Errorf("sort: element type %s has no ordering — use sort_by(xs, less) and say how to compare them", k)
+			}
+			continue
+		}
+		// sort_by(): the comparator must be a (T, T) -> bool function.
+		if c.kindOf(a.cmp) != KFunc {
+			return nil, fmt.Errorf("sort_by: comparator must be a function, got %s", c.kindOf(a.cmp))
+		}
+		r := c.find(a.cmp)
+		sig := c.fsig[r]
+		if sig == nil || len(sig.params) != 2 || c.find(sig.params[0]) != c.find(a.elem) || c.find(sig.params[1]) != c.find(a.elem) {
+			return nil, fmt.Errorf("sort_by: comparator must be a function of the slice element type")
+		}
+		if c.kindOf(sig.ret) != KBool {
+			return nil, fmt.Errorf("sort_by: comparator must return bool")
 		}
 	}
 	// 6. dedup instances by concrete signature and assign C names
@@ -2144,6 +2175,28 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 			return 0, err
 		}
 		c.addPair(argSlots[1], eslot)
+		return argSlots[0], nil
+	case "sort":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("sort: 1 arg")
+		}
+		eslot, err := c.sliceElem(argSlots[0])
+		if err != nil {
+			return 0, err
+		}
+		c.sortArgs = append(c.sortArgs, sortArg{elem: eslot, cmp: -1})
+		return argSlots[0], nil
+	case "sort_by":
+		if len(argSlots) != 2 {
+			return 0, fmt.Errorf("sort_by: 2 args")
+		}
+		eslot, err := c.sliceElem(argSlots[0])
+		if err != nil {
+			return 0, err
+		}
+		fsig := newFuncSlot(c, &funcSig{params: []int{eslot, eslot}, ret: c.cBool})
+		c.addPair(argSlots[1], fsig)
+		c.sortArgs = append(c.sortArgs, sortArg{elem: eslot, cmp: argSlots[1]})
 		return argSlots[0], nil
 	case "sleep":
 		if len(argSlots) != 1 {

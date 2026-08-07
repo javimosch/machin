@@ -297,6 +297,8 @@ func machinGuide() guideCatalog {
 			// collections
 			{"len", "(string|slice|map) -> int", "length", "collection"},
 			{"append", "([]T, T) -> []T", "grow a slice", "collection"},
+			{"sort", "([]int|[]float|[]string) -> []T", "stable ascending sort of an int/float/string slice", "collection"},
+			{"sort_by", "([]T, (T T) -> bool) -> []T", "stable sort by a comparator function less(a, b)", "collection"},
 			{"has", "(map, K) -> bool", "key membership", "collection"},
 			{"delete", "(map, K) ->", "remove a key", "collection"},
 			{"keys", "(map[K]V) -> []K", "a map's keys", "collection"},

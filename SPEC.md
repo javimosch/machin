@@ -294,6 +294,8 @@ startup (before `main`; at `_initialize` for a wasm reactor).
 | math | `(number[, number]) -> float` | native libm (linked `-lm` only when used): `sin` `cos` `tan` `asin` `acos` `atan` `atan2` `sqrt` `cbrt` `pow` `exp` `log` `log2` `log10` `floor` `ceil` `round` `trunc` `abs` `fmod` `hypot`, and `pi()`. Numeric in, `float` out. An `extern` of the same name shadows the builtin. |
 | `noise2`/`noise3` | `(number, ...) -> float` | Perlin gradient noise (2D / 3D), deterministic, ~`[-1,1]`, smooth. Layer it (fbm) for procedural terrain. Links `-lm`; emitted only when used. |
 | `append` | `([]T, T) -> []T` | grow a slice |
+| `sort` | `([]int\|[]float\|[]string) -> []T` | stable ascending sort |
+| `sort_by` | `([]T, (T T) -> bool) -> []T` | stable sort by a comparator `less(a, b)` |
 | `has`, `delete` | `(map, K) -> bool` / `-> ` | membership / removal |
 | `keys` | `(map[K]V) -> []K` | a map's keys |
 | `json` | `(any) -> string` | serialize to JSON |
