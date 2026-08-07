@@ -28,7 +28,7 @@ func CompileToCTarget(p *Program, safe bool, target string) (string, []string, e
 	if err != nil {
 		return "", nil, err
 	}
-	g := &cgen{c: c, safe: safe, target: target, probeVars: debugProbeVars, jsonMemo: map[string]string{}, parseMemo: map[string]string{}, chanJSONMemo: map[string][2]string{}}
+	g := &cgen{c: c, safe: safe, target: target, probeVars: debugProbeVars, jsonMemo: map[string]string{}, parseMemo: map[string]string{}, sortMemo: map[string]string{}, chanJSONMemo: map[string][2]string{}}
 	src, err := g.program(p)
 	if err != nil {
 		return "", nil, err
@@ -102,6 +102,9 @@ type cgen struct {
 	tramp        strings.Builder // goroutine trampolines
 	goID         int
 	jsonFns      strings.Builder      // generated per-type JSON serializers + parsers
+	sortFns      strings.Builder      // generated per-element-type sort_by comparators (#580)
+	sortMemo     map[string]string    // element C type -> comparator function name
+	sortID       int
 	jsonMemo     map[string]string    // type string -> serializer function name
 	parseMemo    map[string]string    // type string -> parser function name
 	chanJSONMemo map[string][2]string // type string -> {serWrapper, desWrapper}
@@ -389,6 +392,56 @@ static mfl_slice mfl_append(mfl_slice s, const void* elem, int64_t es) {
     memcpy((char*)s.data + s.len * es, elem, es);
     s.len++;
     return s;
+}
+/* sort / sort_by (#580).
+   A STABLE bottom-up merge sort over the raw element array. lt(a, b, ctx)
+   returns nonzero when b must precede a; ties keep the original order, so equal
+   elements come out in input order and a two-pass sort composes predictably.
+   Merge sort rather than qsort() because qsort is not stable and its comparator
+   cannot carry an MFL closure environment portably. */
+static void mfl_sort_run(void* base, int64_t n, int64_t es,
+                         int (*lt)(const void*, const void*, void*), void* ctx) {
+    if (n < 2) return;
+    char* src = (char*)base;
+    char* tmp = (char*)mfl_alloc((size_t)(n * es));
+    for (int64_t w = 1; w < n; w *= 2) {
+        for (int64_t i = 0; i < n; i += 2 * w) {
+            int64_t mid = (i + w < n) ? i + w : n;
+            int64_t end = (i + 2 * w < n) ? i + 2 * w : n;
+            int64_t a = i, b = mid, o = i;
+            while (a < mid && b < end) {
+                if (lt(src + a * es, src + b * es, ctx)) { memcpy(tmp + o * es, src + b * es, (size_t)es); o++; b++; }
+                else { memcpy(tmp + o * es, src + a * es, (size_t)es); o++; a++; }
+            }
+            while (a < mid) { memcpy(tmp + o * es, src + a * es, (size_t)es); o++; a++; }
+            while (b < end) { memcpy(tmp + o * es, src + b * es, (size_t)es); o++; b++; }
+        }
+        memcpy(src, tmp, (size_t)(n * es));
+    }
+}
+/* sort() returns a NEW slice rather than sorting in place. MFL slices share
+   backing storage (b := a aliases, and so does passing one to a function), so
+   an in-place sort would silently reorder every alias — the same hazard that made
+   in-place realloc unsound in #578. Copy-then-sort matches slice-range, which
+   also always returns a fresh copy. */
+static mfl_slice mfl_sort_copy(mfl_slice s, int64_t es,
+                               int (*lt)(const void*, const void*, void*), void* ctx) {
+    mfl_slice r = s;
+    if (s.len > 0) {
+        r.data = mfl_alloc((size_t)(s.len * es));
+        memcpy(r.data, s.data, (size_t)(s.len * es));
+        r.cap = s.len;
+        mfl_sort_run(r.data, r.len, es, lt, ctx);
+    }
+    return r;
+}
+static int mfl_lt_i64(const void* a, const void* b, void* c) { (void)c; return *(const int64_t*)b < *(const int64_t*)a; }
+static int mfl_lt_f64(const void* a, const void* b, void* c) { (void)c; return *(const double*)b < *(const double*)a; }
+static int mfl_lt_str(const void* a, const void* b, void* c) {
+    (void)c;
+    const char* x = *(const char* const*)a; const char* y = *(const char* const*)b;
+    if (!x) x = ""; if (!y) y = "";
+    return strcmp(y, x) < 0;
 }
 static mfl_slice mfl_lit_i64(int64_t n, ...) {
     mfl_slice s = { n ? mfl_alloc(n * 8) : NULL, n, n };
@@ -4370,6 +4423,11 @@ func (g *cgen) program(p *Program) (string, error) {
 		out.WriteString(g.jsonFns.String())
 		out.WriteByte('\n')
 	}
+	// sort_by comparators (generated on demand); reference struct typedefs too
+	if g.sortFns.Len() > 0 {
+		out.WriteString(g.sortFns.String())
+		out.WriteByte('\n')
+	}
 	// package globals: zero-initialized C statics; their MFL initializers run in a
 	// constructor (emitted after the function bodies). Declared here so function
 	// bodies that reference mfl_g_<name> compile.
@@ -5859,6 +5917,33 @@ func (g *cgen) chanJSONFns(typeStr string) (string, string, error) {
 // jsonSerializer ensures a C function exists that serializes a value of the
 // given MFL type to a JSON string, returning the function name. It recurses
 // into element/field/value types, emitting children before parents.
+// sortComparator emits (once per element C type) the bridge between mfl_sort_run's
+// raw (const void*, const void*, void*) comparator and an MFL `less` closure.
+//
+// ctx carries the mfl_closure by address; the closure is invoked through the same
+// convention as any other function value — fn cast to a signature whose leading
+// parameter is the captured environment (see closureCall).
+//
+// Note the argument order: mfl_sort_run asks "must b precede a?", which is exactly
+// less(b, a). Asking it that way needs ONE call per comparison rather than two,
+// and makes the sort stable — when neither element is less than the other the
+// predicate is false and the left (earlier) element is taken first.
+func (g *cgen) sortComparator(elemCType string) string {
+	if name, ok := g.sortMemo[elemCType]; ok {
+		return name
+	}
+	name := fmt.Sprintf("mfl_ltby_%d", g.sortID)
+	g.sortID++
+	g.sortMemo[elemCType] = name
+	fmt.Fprintf(&g.sortFns,
+		"static int %s(const void* _a, const void* _b, void* _ctx) {\n"+
+			"    mfl_closure _c = *(mfl_closure*)_ctx;\n"+
+			"    return ((int(*)(void*, %s, %s))_c.fn)(_c.env, *(const %s*)_b, *(const %s*)_a);\n"+
+			"}\n",
+		name, elemCType, elemCType, elemCType, elemCType)
+	return name
+}
+
 func (g *cgen) jsonSerializer(typeStr string) (string, error) {
 	if name, ok := g.jsonMemo[typeStr]; ok {
 		return name, nil
@@ -6328,6 +6413,24 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		// (a plain &(T){v} would mis-init an aggregate field-by-field).
 		ct := g.c.ElemCType(g.curFn, ex.Args[0])
 		return fmt.Sprintf("mfl_append(%s, &((%s[1]){%s})[0], sizeof(%s))", args[0], ct, args[1], ct), nil
+	case "sort":
+		ct := g.c.ElemCType(g.curFn, ex.Args[0])
+		lt, ok := map[string]string{
+			"int64_t": "mfl_lt_i64", "double": "mfl_lt_f64", "char*": "mfl_lt_str",
+		}[ct]
+		if !ok {
+			return "", fmt.Errorf("sort: element type %s has no ordering — use sort_by(xs, less) and say how to compare them", ct)
+		}
+		return fmt.Sprintf("mfl_sort_copy(%s, sizeof(%s), %s, NULL)", args[0], ct, lt), nil
+	case "sort_by":
+		ct := g.c.ElemCType(g.curFn, ex.Args[0])
+		cmp := g.sortComparator(ct)
+		id := g.tmpID
+		g.tmpID++
+		// The closure is materialized into a local so its address stays valid for
+		// the duration of the sort; the comparator reads it back out of ctx.
+		return fmt.Sprintf("({ mfl_closure _sc%d = %s; mfl_sort_copy(%s, sizeof(%s), %s, &_sc%d); })",
+			id, args[1], args[0], ct, cmp, id), nil
 	case "sleep":
 		return fmt.Sprintf("mfl_sleep(%s)", args[0]), nil
 	case "exit":

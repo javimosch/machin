@@ -300,6 +300,8 @@ func machinGuide() guideCatalog {
 			{"has", "(map, K) -> bool", "key membership", "collection"},
 			{"delete", "(map, K) ->", "remove a key", "collection"},
 			{"keys", "(map[K]V) -> []K", "a map's keys", "collection"},
+			{"sort", "([]T) -> []T", "ascending sort of an int/float/string slice. Returns a NEW slice — MFL slices share backing storage (b := a aliases, and so does passing one to a function), so sorting in place would silently reorder every alias; this matches slice-range, which also always copies. Stable. An element type with no natural ordering (a struct) is refused at compile time and points you at sort_by", "collection"},
+			{"sort_by", "([]T, func(T, T) bool) -> []T", "like sort but you supply less(a, b): a NEW slice ordered by it. STABLE — elements where neither is less than the other keep their input order, so sorting by one key then another composes the way you expect. The comparator is an ordinary closure and may capture (sort_by(keys(m), func(a, b) { return m[a] > m[b] }) orders keys by their map value)", "collection"},
 			// strings
 			{"substr", "(string, int, int) -> string", "substring [start,end)", "string"},
 			{"index", "(string, string) -> int", "first index, or -1", "string"},
