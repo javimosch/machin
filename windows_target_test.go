@@ -180,6 +180,73 @@ func TestWindowsTLSCompiles(t *testing.T) {
 	}
 }
 
+// #517 XEdDSA: xeddsa_sign/verify now cross-compile for Windows, linking a
+// user-supplied mingw libsodium. The preflight no longer rejects them, the
+// emitted C contains the XEdDSA runtime, and BuildWindows demands both
+// MACHIN_WIN_OPENSSL (XEdDSA uses OpenSSL SHA-512) and MACHIN_WIN_SODIUM.
+func TestWindowsXEdDSACompiles(t *testing.T) {
+	src := `func main() {
+	priv := bytes("01234567890123456789012345678901")
+	pub := bytes("01234567890123456789012345678901")
+	msg := bytes("hello")
+	rnd := bytes("0123456789012345678901234567890123456789012345678901234567890123")
+	sig := xeddsa_sign(priv, msg, rnd)
+	ok := xeddsa_verify(pub, msg, sig)
+	println(ok)
+}`
+	prog, err := ParseProgram([]string{normalize(src)})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	winC, _, err := CompileToCTarget(prog, false, targetWindows)
+	if err != nil {
+		t.Fatalf("windows XEdDSA compile should succeed, got: %v", err)
+	}
+	for _, sym := range []string{"mfl_xeddsa_sign", "mfl_xeddsa_verify", "mflx_mont_to_ed"} {
+		if !strings.Contains(winC, sym) {
+			t.Fatalf("windows XEdDSA C should contain %q", sym)
+		}
+	}
+	if !strings.Contains(winC, "openssl/evp.h") {
+		t.Fatal("windows XEdDSA C should include OpenSSL")
+	}
+
+	// BuildWindows must demand MACHIN_WIN_OPENSSL first (XEdDSA needs OpenSSL).
+	t.Setenv("MACHIN_WIN_OPENSSL", "")
+	t.Setenv("MACHIN_WIN_SODIUM", "")
+	err = BuildWindows(prog, t.TempDir()+"/xeddsa.exe", false)
+	if err == nil || !strings.Contains(err.Error(), "MACHIN_WIN_OPENSSL") {
+		t.Fatalf("expected a MACHIN_WIN_OPENSSL requirement error, got: %v", err)
+	}
+
+	// With OpenSSL set, it must demand MACHIN_WIN_SODIUM for libsodium.
+	t.Setenv("MACHIN_WIN_OPENSSL", "/tmp/fake-openssl")
+	err = BuildWindows(prog, t.TempDir()+"/xeddsa.exe", false)
+	if err == nil || !strings.Contains(err.Error(), "MACHIN_WIN_SODIUM") {
+		t.Fatalf("expected a MACHIN_WIN_SODIUM requirement error, got: %v", err)
+	}
+
+	// End-to-end link, gated on runnable zig + mingw OpenSSL + libsodium.
+	sslDir := os.Getenv("MACHIN_WIN_OPENSSL_TEST")
+	sodiumDir := os.Getenv("MACHIN_WIN_SODIUM_TEST")
+	if sslDir == "" || sodiumDir == "" {
+		t.Skip("set MACHIN_WIN_OPENSSL_TEST and MACHIN_WIN_SODIUM_TEST to a mingw OpenSSL and libsodium dir to link-test windows XEdDSA")
+	}
+	if err := exec.Command(zigPath(), "version").Run(); err != nil {
+		t.Skipf("zig not runnable: %v", err)
+	}
+	t.Setenv("MACHIN_WIN_OPENSSL", sslDir)
+	t.Setenv("MACHIN_WIN_SODIUM", sodiumDir)
+	out := t.TempDir() + "/xeddsa.exe"
+	if err := BuildWindows(prog, out, false); err != nil {
+		t.Fatalf("BuildWindows (XEdDSA): %v", err)
+	}
+	b, _ := os.ReadFile(out)
+	if len(b) < 2 || b[0] != 'M' || b[1] != 'Z' {
+		t.Fatal("XEdDSA output is not a PE executable")
+	}
+}
+
 // End-to-end: cross-compile a real program to a Windows PE. Gated on a working
 // zig (the snap wrapper is often broken; set $ZIG to the real binary), so CI
 // without a windows-capable zig skips rather than fails.
