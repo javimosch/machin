@@ -164,17 +164,27 @@ Built something? Add it to [awesome-machin](https://github.com/javimosch/awesome
 ## Performance
 
 machin compiles through C, so it runs in the **native tier**, not the scripting tier.
-On four kernels with byte-identical output, `cc -O2` on machin's generated C **wins 2,
-ties 1, loses 1** against Rust `-O3` and Zig `ReleaseFast` (min of 5, this machine):
+On four kernels with byte-identical output, timed interleaved against Rust `-O3` and
+Zig `ReleaseFast` (min of 9 rounds, this machine):
 
 | | fib(40) | mandelbrot 1000² | sieve 10⁷ | intsum 10⁹ |
 |---|--:|--:|--:|--:|
-| **machin** | **245 ms** | 827 ms | 203 ms | **2832 ms** |
-| Rust `-O3` | 303 ms | **814 ms** | 153 ms | 3764 ms |
-| Zig fast | 306 ms | 819 ms | **145 ms** | 3556 ms |
+| **machin** | **214.7 ms** | 724.2 ms | 202.0 ms | **3079.7 ms** |
+| Rust `-O3` | 289.7 ms | 720.1 ms | 142.9 ms | 3223.8 ms |
+| Zig fast | 292.9 ms | **702.8 ms** | **137.9 ms** | 3189.7 ms |
 
-Fastest on scalar recursion + integer loops; ~1.4× behind on array-heavy code. Unboxed
-values, no interpreter, no VM. Numbers + reproduce: [`bench/native-speed`](bench/native-speed).
+**Wins 1 clearly, ties 2, loses 1.** Unboxed values, no interpreter, no VM.
+The sieve gap is *not* slice indexing — that loop ties Rust exactly (110 ms vs
+111 ms); it's `append`'s growth path ([#578](https://github.com/javimosch/machin/issues/578)).
+
+Where machin actually beats both: **binary size** (14 kB stripped vs Rust's 335 kB,
+both dynamic) and **compile-time bug reports** — a guaranteed deadlock that `rustc`
+and `zig` accept silently and then hang on, machin reports as `DL001` before you run
+it. Where it loses: **build time** (Rust ~57 ms vs machin ~100 ms) and **default
+runtime safety** (machin, like Zig `ReleaseFast`, omits bounds checks unless you
+pass `--safe`; Rust traps by default).
+
+**Full numbers, methodology, and the losses in detail: [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).**
 
 ## License
 

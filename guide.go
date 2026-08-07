@@ -168,7 +168,7 @@ func machinGuide() guideCatalog {
 				},
 				{
 					Axis:      "native runtime speed",
-					Result:    "vs Rust -O3 / Zig ReleaseFast on 4 kernels with byte-identical output: wins fib(40) and a 10^9 integer-sum loop by ~20-25%, ties a float-heavy mandelbrot within 2%, trails an array-heavy sieve by ~1.4x",
+					Result:    "vs Rust -O3 / Zig ReleaseFast on 4 kernels with byte-identical output, timed interleaved (not language-by-language, which lets thermal drift penalize whoever runs last): wins recursive fib(40) by ~26%, ties a 10^9 integer-sum loop and a float-heavy mandelbrot within a few percent, trails an array-heavy sieve by ~1.46x. That last gap is NOT slice indexing — phase timing shows the sieve loop itself ties Rust exactly (110ms vs 111ms); the whole difference is building the 10M-element array by append, because a growing slice cannot be realloc'd in place (see issue #578)",
 					Reproduce: "bench/native-speed: ./run.sh (needs machin, cc, rustc, zig, python3)",
 				},
 				{
@@ -185,6 +185,16 @@ func machinGuide() guideCatalog {
 					Axis:      "data-race safety",
 					Result:    "a textbook shared-counter race (4 threads, no sync): `machin check` catches it at compile time on the untouched code (RACE001) and `--race-safe` refuses the build; Go's compiler accepts it silently (and visibly corrupted the output on this run — confirmed an independent bug, not a false claim, via `go run -race`); Rust's naive translation fails to compile (E0133), and its safe fix needs `Arc<AtomicI64>`/`Ordering` wrapper types machin's zero-annotation channel-based fix doesn't. Numeric output alone is NOT reliable evidence of a race either way (machin's racy build printed the correct sum here too) — which is exactly why compile-time detection beats hoping a test run exposes it",
 					Reproduce: "bench/race-freedom: ./run.sh (needs machin, go, rustc)",
+				},
+				{
+					Axis:      "compile-time bug reports vs Rust & Zig",
+					Result:    "the differentiator is WHEN you learn about the bug, not speed. A guaranteed deadlock (receive on a channel nothing sends to): machin reports DL001 at compile time AND exits 2 at runtime with a causal wait-cycle; rustc and zig both accept it silently and the program HANGS FOREVER (killed at 5s) — Rust prevents data races, it has never prevented deadlocks. An out-of-range index: `machin falsify` reports FALS001 with a concrete failing input before the program runs; rustc and zig say nothing. HONEST COUNTERWEIGHT: at RUNTIME Rust wins — it keeps bounds checks in release and traps (exit 101), while machin's DEFAULT build omits them exactly like Zig ReleaseFast (machin printed a silent wrong `0`, Zig read `281479271677952` out of adjacent memory, both exit 0); both need an opt-in (--safe / ReleaseSafe). So the claim is 'machin tells you earlier', NOT 'machin is safer than Rust'",
+					Reproduce: "bench/evidence: ./run.sh (needs machin, rustc, zig)",
+				},
+				{
+					Axis:      "build time & binary size vs Rust & Zig",
+					Result:    "build time is NOT a machin win: bare `rustc -C opt-level=3` builds these single-file kernels in ~57ms vs machin's ~87-122ms (machin's number includes its cc -O2 backend run). Binary size IS: stripped and both dynamically linked, machin is ~14 kB vs Rust's ~335 kB — ~24x smaller, because there is no std runtime to link. Fully static, Zig wins instead (~491 kB vs machin's ~940 kB, which bundles SQLite). Zig's build-time column is not reported as a result: on this machine every -OReleaseFast build touching std.debug.print costs ~13s and is not reused between identical runs, while the same program in Debug costs 0.5s — a std-formatting compile cost on a 0.16 beta, not a statement about Zig",
+					Reproduce: "bench/compile-speed: ./run.sh (needs machin, rustc, zig, python3)",
 				},
 			},
 		},
