@@ -55,7 +55,7 @@ jobs:
             echo "cores: $(nproc)   load: $(cut -d' ' -f1-3 /proc/loadavg)"
             echo "gcc $(gcc -dumpversion) | $(rustc --version) | zig $(zig version)"
             echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: native-speed (runtime — the ratio claim under test)
         run: |
@@ -64,7 +64,7 @@ jobs:
             echo '```'
             ( cd bench/native-speed && ./run.sh 2>&1 | tail -20 )
             echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: compile-speed (build time + binary size)
         run: |
@@ -73,7 +73,7 @@ jobs:
             echo '```'
             ( cd bench/compile-speed && python3 measure.py 2>&1 )
             echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: evidence (verdicts, not timings — must be machine-independent)
         run: |
@@ -82,4 +82,4 @@ jobs:
             echo '```'
             ( cd bench/evidence && ./run.sh 2>&1 | tail -40 )
             echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
