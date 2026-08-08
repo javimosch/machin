@@ -2164,6 +2164,36 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 			return c.cBool, nil
 		}
 		return c.cVoid, nil
+	case "sort":
+		// sort(xs) -> a NEW slice, ascending. Element type must be ordered
+		// (int/float/string); codegen picks the comparator from it. (#580)
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("sort: 1 arg (slice)")
+		}
+		el, err := c.sliceElem(argSlots[0])
+		if err != nil {
+			return 0, err
+		}
+		return newSliceSlot(c, el), nil
+	case "sort_by":
+		// sort_by(xs, less) -> a NEW slice ordered by less(a, b) bool. Stable:
+		// elements where neither compares less keep their input order.
+		if len(argSlots) != 2 {
+			return 0, fmt.Errorf("sort_by: 2 args (slice, less func)")
+		}
+		el, err := c.sliceElem(argSlots[0])
+		if err != nil {
+			return 0, err
+		}
+		sig, err := c.funcOf(argSlots[1], 2)
+		if err != nil {
+			return 0, err
+		}
+		// less takes two elements and returns bool.
+		c.addPair(sig.params[0], el)
+		c.addPair(sig.params[1], el)
+		c.addPair(sig.ret, c.cBool)
+		return newSliceSlot(c, el), nil
 	case "keys":
 		if len(argSlots) != 1 {
 			return 0, fmt.Errorf("keys: 1 arg (map)")

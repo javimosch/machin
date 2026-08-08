@@ -28,7 +28,7 @@ var skillDeploy string
 
 // machinVersion is the single version string for the toolchain. Bump it when
 // cutting a release (alongside README badge / SPEC / CHANGELOG).
-const machinVersion = "0.125.0"
+const machinVersion = "0.126.0"
 
 // ---- the source-of-truth feature catalog ----
 //
@@ -193,7 +193,7 @@ func machinGuide() guideCatalog {
 				},
 				{
 					Axis:      "build time & binary size vs Rust & Zig",
-					Result:    "build time is NOT a machin win: bare `rustc -C opt-level=3` builds these single-file kernels in ~57ms vs machin's ~87-122ms (machin's number includes its cc -O2 backend run). Binary size IS: stripped and both dynamically linked, machin is ~14 kB vs Rust's ~335 kB, because there is no std runtime to link. Read that as a FIXED OFFSET (~320 kB), not a ratio — machin's hello world and its fib(40) are byte-identical in size and Rust's differ by 2%, so both numbers measure each toolchain's floor rather than the program; real code adds real bytes to both (machin's JSON+HTTP example is ~12 kB above its own floor). Fully static, Zig wins instead (~491 kB vs machin's ~940 kB, which bundles SQLite). Zig's build-time column is not reported as a result: on this machine every -OReleaseFast build touching std.debug.print costs ~13s and is not reused between identical runs, while the same program in Debug costs 0.5s — a std-formatting compile cost on a 0.16 beta, not a statement about Zig",
+					Result:    "build time is NOT a machin win: bare `rustc -C opt-level=3` builds these single-file kernels in ~57ms vs machin's ~87-122ms (machin's number includes its cc -O2 backend run). Binary size IS: stripped and both dynamically linked, machin is ~14 kB vs Rust's ~335 kB, because there is no std runtime to link. Read that as a FIXED OFFSET (~320 kB), not a ratio — machin's hello world and its fib(40) are byte-identical in size and Rust's differ by 2%, so both numbers measure each toolchain's floor rather than the program; real code adds real bytes to both (machin's JSON+HTTP example is ~12 kB above its own floor). Fully static, Zig wins instead (~491 kB vs machin's ~940 kB, which bundles SQLite). Against Zig, machin wins build time: ~3x faster than a WARM Zig build and ~35x faster than a cold one (Zig 0.15.2: 290ms warm, 3.5s cold). Which Zig matters — 0.16.0 (current stable, NOT a beta as an earlier version of this claimed) does not reuse its cache for these builds and takes ~13s warm, a ~45x regression vs 0.15.2 reproduced on official ziglang.org binaries; quoting that would credit machin with a ~130x win that is really someone elses caching bug",
 					Reproduce: "bench/compile-speed: ./run.sh (needs machin, rustc, zig, python3)",
 				},
 			},
@@ -300,6 +300,8 @@ func machinGuide() guideCatalog {
 			{"has", "(map, K) -> bool", "key membership", "collection"},
 			{"delete", "(map, K) ->", "remove a key", "collection"},
 			{"keys", "(map[K]V) -> []K", "a map's keys", "collection"},
+			{"sort", "([]T) -> []T", "ascending sort of an int/float/string slice. Returns a NEW slice — MFL slices share backing storage (b := a aliases, and so does passing one to a function), so sorting in place would silently reorder every alias; this matches slice-range, which also always copies. Stable. An element type with no natural ordering (a struct) is refused at compile time and points you at sort_by", "collection"},
+			{"sort_by", "([]T, func(T, T) bool) -> []T", "like sort but you supply less(a, b): a NEW slice ordered by it. STABLE — elements where neither is less than the other keep their input order, so sorting by one key then another composes the way you expect. The comparator is an ordinary closure and may capture (sort_by(keys(m), func(a, b) { return m[a] > m[b] }) orders keys by their map value)", "collection"},
 			// strings
 			{"substr", "(string, int, int) -> string", "substring [start,end)", "string"},
 			{"index", "(string, string) -> int", "first index, or -1", "string"},
