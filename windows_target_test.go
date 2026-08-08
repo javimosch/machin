@@ -20,7 +20,6 @@ func TestWindowsPreflightRejects(t *testing.T) {
 		mentions string
 	}{
 		{"tty", `func main() { raw_mode(1)  println(read_key()) }`, "terminal raw mode"},
-		{"sqlite", `func main() { sqlite_open("x.db") }`, "SQLite"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -207,5 +206,47 @@ func TestWindowsBuildsPE(t *testing.T) {
 	}
 	if len(b) < 2 || b[0] != 'M' || b[1] != 'Z' {
 		t.Fatalf("output is not a PE executable (missing MZ header): first bytes %q", b[:min(8, len(b))])
+	}
+}
+
+// #517 SQLite: sqlite_* builtins now cross-compile for Windows, bundling the
+// embedded amalgamation so no external libsqlite3 is needed. The preflight no
+// longer rejects them, the emitted C includes the SQLite runtime, and BuildWindows
+// links a valid PE.
+func TestWindowsSQLiteCompiles(t *testing.T) {
+	src := `func main() {
+	db := sqlite_open(":memory:")
+	sqlite_exec(db, "CREATE TABLE t (k TEXT, v INT)")
+	sqlite_exec(db, "INSERT INTO t VALUES ('x', 42)")
+	rows := sqlite_query(db, "SELECT * FROM t")
+	println(str(len(rows)))
+	sqlite_close(db)
+}`
+	prog, err := ParseProgram([]string{normalize(src)})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	winC, _, err := CompileToCTarget(prog, false, targetWindows)
+	if err != nil {
+		t.Fatalf("windows sqlite compile should succeed, got: %v", err)
+	}
+	for _, sym := range []string{"mfl_sqlite_open", "mfl_sqlite_exec", "mfl_sqlite_query", "sqlite3.h"} {
+		if !strings.Contains(winC, sym) {
+			t.Fatalf("windows SQLite C should contain %q", sym)
+		}
+	}
+	if err := exec.Command(zigPath(), "version").Run(); err != nil {
+		t.Skipf("zig not runnable: %v", err)
+	}
+	out := t.TempDir() + "/sqlite.exe"
+	if err := BuildWindows(prog, out, false); err != nil {
+		t.Fatalf("BuildWindows (SQLite): %v", err)
+	}
+	b, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(b) < 2 || b[0] != 'M' || b[1] != 'Z' {
+		t.Fatalf("SQLite output is not a PE executable: first bytes %q", b[:min(8, len(b))])
 	}
 }

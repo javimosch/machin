@@ -40,6 +40,38 @@ func gunzip(b []byte) ([]byte, error) {
 	return io.ReadAll(r)
 }
 
+// bundleSQLiteFiles decompresses the embedded SQLite amalgamation into a temp
+// directory and returns the directory and the path to sqlite3.c. The caller is
+// responsible for removing the directory; it must add -I<dir>,
+// -DSQLITE_OMIT_LOAD_EXTENSION and -DSQLITE_THREADSAFE=1 to the compile flags
+// and <cpath> to the source list.
+func bundleSQLiteFiles() (dir string, cpath string, err error) {
+	dir, err = os.MkdirTemp("", "mfl-sqlite-*")
+	if err != nil {
+		return "", "", err
+	}
+	hdr, err := gunzip(sqliteHdrGz)
+	if err != nil {
+		os.RemoveAll(dir)
+		return "", "", fmt.Errorf("sqlite amalgamation: %w", err)
+	}
+	amalg, err := gunzip(sqliteAmalgGz)
+	if err != nil {
+		os.RemoveAll(dir)
+		return "", "", fmt.Errorf("sqlite amalgamation: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "sqlite3.h"), hdr, 0o644); err != nil {
+		os.RemoveAll(dir)
+		return "", "", err
+	}
+	cpath = filepath.Join(dir, "sqlite3.c")
+	if err := os.WriteFile(cpath, amalg, 0o644); err != nil {
+		os.RemoveAll(dir)
+		return "", "", err
+	}
+	return dir, cpath, nil
+}
+
 // cBytesLiteral renders data as a C translation unit defining a byte array
 // `name` and a `name_len` length constant — the standard way to embed an
 // arbitrary binary blob (here, a CA bundle) directly into a compiled program.
@@ -119,26 +151,11 @@ func BuildBinaryStatic(prog *Program, outPath string, safe, static bool) error {
 	if bundleSqlite {
 		// Decompress the embedded amalgamation into a temp dir, compile sqlite3.c in,
 		// and point the generated `#include <sqlite3.h>` at our bundled header.
-		dir, err := os.MkdirTemp("", "mfl-sqlite-*")
+		dir, cpath, err := bundleSQLiteFiles()
 		if err != nil {
 			return err
 		}
 		defer os.RemoveAll(dir)
-		hdr, err := gunzip(sqliteHdrGz)
-		if err != nil {
-			return fmt.Errorf("sqlite amalgamation: %w", err)
-		}
-		amalg, err := gunzip(sqliteAmalgGz)
-		if err != nil {
-			return fmt.Errorf("sqlite amalgamation: %w", err)
-		}
-		if err := os.WriteFile(filepath.Join(dir, "sqlite3.h"), hdr, 0o644); err != nil {
-			return err
-		}
-		cpath := filepath.Join(dir, "sqlite3.c")
-		if err := os.WriteFile(cpath, amalg, 0o644); err != nil {
-			return err
-		}
 		args = append(args, "-I"+dir,
 			"-DSQLITE_OMIT_LOAD_EXTENSION", // no dlopen -> no -ldl, stays static
 			"-DSQLITE_THREADSAFE=1")        // safe across machweb's per-connection goroutines
@@ -276,14 +293,16 @@ func BuildWasm(prog *Program, outPath string, safe bool) error {
 
 // BuildWindows cross-compiles the program to a Windows x86-64 .exe via
 // `zig cc -target x86_64-windows-gnu` (mingw-w64 + winpthreads, a single-binary
-// cross toolchain like the wasm path). Covers #517 Phases 0+N+TLS: the
-// POSIX-independent core, TCP sockets (winsock2), and HTTPS/TLS + OpenSSL crypto
-// builtins. The preflight still rejects XEdDSA, terminal raw mode, SQLite, regex.
+// cross toolchain like the wasm path). Covers #517 Phases 0+N+TLS+SQLite: the
+// POSIX-independent core, TCP sockets (winsock2), HTTPS/TLS + OpenSSL crypto
+// builtins, and SQLite via the bundled amalgamation. The preflight still rejects
+// XEdDSA, terminal raw mode, and POSIX regex.
 //
 // zig alone suffices EXCEPT for TLS/crypto, which link OpenSSL: zig does not ship
 // an OpenSSL for the windows-gnu target, so the caller must point MACHIN_WIN_OPENSSL
 // at a mingw-w64 OpenSSL install (a dir with include/ and lib/ holding libssl.a /
-// libcrypto.a, e.g. from msys2's mingw-w64-x86_64-openssl). This mirrors how the
+// libcrypto.a, e.g. from msys2's mingw-w64-x86_64-openssl). SQLite is bundled from
+// the embedded amalgamation, so no external library is needed. This mirrors how the
 // native --static + TLS build already requires libssl-dev's static archives on the
 // build host. Override the zig binary with $ZIG.
 func BuildWindows(prog *Program, outPath string, safe bool) error {
@@ -294,6 +313,7 @@ func BuildWindows(prog *Program, outPath string, safe bool) error {
 
 	usesTLS := strings.Contains(csrc, "mfl_tls_dial")
 	usesCrypto := strings.Contains(csrc, "mfl_crypto_")
+	usesSqlite := strings.Contains(csrc, "mfl_sqlite_")
 	usesNet := strings.Contains(csrc, "WSAStartup")
 	usesOpenSSL := usesTLS || usesCrypto
 
@@ -340,6 +360,19 @@ func BuildWindows(prog *Program, outPath string, safe bool) error {
 			return err
 		}
 		args = append(args, "-DMFL_HAS_CABUNDLE")
+		srcs = append(srcs, cpath)
+	}
+	// SQLite is bundled from the embedded amalgamation, so a sqlite_* program
+	// needs no external libsqlite3 on Windows (just like the native --static build).
+	if usesSqlite {
+		dir, cpath, err := bundleSQLiteFiles()
+		if err != nil {
+			return err
+		}
+		defer os.RemoveAll(dir)
+		args = append(args, "-I"+dir,
+			"-DSQLITE_OMIT_LOAD_EXTENSION", // no dlopen -> no -ldl, stays self-contained
+			"-DSQLITE_THREADSAFE=1")        // safe across goroutines
 		srcs = append(srcs, cpath)
 	}
 	args = append(args, "-o", outPath, tmp.Name())
