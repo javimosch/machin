@@ -25,8 +25,8 @@ marketing, not evidence.
 | integer loop (`intsum 10⁹`) | tie (+3%) | tie (+3%) | [native-speed](../bench/native-speed) |
 | array build + sieve | **1.41× slower** | **1.46× slower** | [native-speed](../bench/native-speed) |
 | build time | **slower** (~100 ms vs ~57 ms) | **~3x faster** warm, ~35x cold (Zig 0.15.2) | [compile-speed](../bench/compile-speed) |
-| binary size floor, stripped, dynamic | **~320 kB smaller** (14 kB vs 335 kB) | — | [compile-speed](../bench/compile-speed) |
-| binary size, fully static | — | **~2× larger** (940 kB vs 491 kB) | [compile-speed](../bench/compile-speed) |
+| binary size floor, stripped, dynamic | **~320 kB smaller** (14 kB vs 335 kB) | tie (Zig 16 kB, and static) | [compile-speed](../bench/compile-speed) |
+| binary size, fully static | — | **~60× larger** (940 kB vs 16 kB) | [compile-speed](../bench/compile-speed) |
 | deadlock reported | **yes, Rust never** | **yes, Zig never** | [evidence](../bench/evidence) |
 | out-of-range index reported at compile time | **yes, Rust never** | **yes, Zig never** | [evidence](../bench/evidence) |
 | out-of-range index trapped at runtime, by default | **no — Rust wins** | tie (both need opt-in) | [evidence](../bench/evidence) |
@@ -83,7 +83,13 @@ ahead"**, not "machin binaries are 24× smaller"; the ratio shrinks as programs
 grow, the offset does not. For a real service rather than a kernel, see
 [cold-start](../bench/cold-start).
 
-And fully static, Zig wins: 491 kB against machin's 940 kB.
+**Against Zig, machin does not win this.** An earlier version of this document
+said "fully static, Zig wins" by about 2× — 491 kB against machin's 940 kB. That
+491 kB was measured on Zig **0.16.0**, which inflates it ~32×. On 0.15.2, Zig's
+*fully static* stripped binary is **16 kB** — effectively the same size as
+machin's *dynamic* one, while needing nothing on the target — and **~60× smaller
+than machin's own `--static` build**. For shipping a self-contained artifact, Zig
+is simply better at this. The size win is over Rust, not over Zig.
 
 → [bench/compile-speed](../bench/compile-speed)
 
@@ -167,6 +173,46 @@ implemented, tested, and **rejected as unsound**: MFL slices share backing stora
 (`b := a` aliases, and so does passing a slice to a function), so in-place growth
 would turn every existing alias into a use-after-free. Tracked with sound
 alternatives in [#578](https://github.com/javimosch/machin/issues/578).
+
+## Verified on a second machine
+
+Every number here was originally measured on one laptop with a worst observed
+run-to-run spread of **41%**, and this document told you that "absolute
+milliseconds are machine-specific; the **ratios** are the portable result." That
+was an assertion, not a finding — so it was tested.
+
+`.github/workflows/bench.yml` runs the suite on a GitHub runner (manual dispatch)
+and writes the tables into both the log and the job summary, so the second machine
+is one nobody involved controls and anyone can re-check the output.
+
+**Runner:** AMD EPYC 7763, 4 cores, load 0.85, gcc 13, rustc 1.97.1, zig 0.15.2 —
+a different CPU vendor, different compilers, and much quieter (15% spread vs 41%).
+
+| claim | laptop | EPYC runner | holds? |
+|---|---|---|---|
+| fib: machin faster | 26% | 28% | **yes** |
+| mandelbrot | near-tie (1.03×) | tie | **yes** |
+| intsum | tie (+3%) | tie | **yes** |
+| sieve: machin slower | 1.46× | **1.32×** | direction yes, magnitude drifts |
+| Rust wins build time | yes | yes | **yes** |
+| machin ~3× faster than a warm Zig build | yes | yes | **yes** |
+| machin 14 kB vs Rust ~335 kB | yes | 14 kB vs 334 kB | **yes, exactly** |
+| every `evidence` verdict | — | identical | **yes** |
+
+**The verdicts are portable; the exact ratios are not always.** Three of the four
+runtime verdicts reproduce unchanged, and the deadlock/out-of-range results are
+bit-for-bit the same story (even Zig's out-of-bounds garbage differs between
+machines, which is what undefined behaviour should do). The sieve gap, though,
+moved from 1.46× to 1.32× — a ~10% swing. That is consistent with its cause: the
+gap is `append` faulting in fresh pages (#578), which is the most
+memory-subsystem-sensitive thing in the suite, and the EPYC has a better one.
+
+So read a **verdict** ("machin wins recursion, loses the sieve") as portable, and a
+**precise ratio** as this-machine-specific. Where this document quotes a ratio, it
+is the laptop's.
+
+The run also **caught a wrong published claim** — the Zig static binary size above
+— which is the entire reason for doing this.
 
 ## Methodology
 
