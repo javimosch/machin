@@ -205,7 +205,8 @@ startup (before `main`; at `_initialize` for a wasm reactor).
   it is rejected with a type-check error wherever it appears, since no value
   type accepts it yet (no slice/map/chan/func-optional support). See §16.
 - **Composite literals:** `[]T{...}`, `T{f: v, ...}` / `T{v, ...}`.
-- **Construction:** `make(map[K]V)`, `make(chan T)`, `func(params){...}`.
+- **Construction:** `make(map[K]V)`, `make(chan T)`,
+  `make([]T, n)`, `make([]T, len, cap)`, `func(params){...}`.
 - **Operators**, by increasing precedence:
   `||` · `&&` · `== != < <= > >=` · `+ - | ^` · `* / % << >> &` · unary `- ! ^ <-`.
 - **Bitwise** `& | ^ << >>` (and unary `^`, complement) are **`int`-only** —
@@ -591,6 +592,9 @@ TypeDecl    = "type" ident "struct" "{" { ident TypeName } "}" .
 FuncDecl    = "func" ident "(" [ identList [ "..." ] ] ")" [ "(" identList ")" ] Block .
 TypeName    = "int" | "float" | "bool" | "string" | ident
             | "[]" TypeName | "map" "[" TypeName "]" TypeName | "chan" TypeName .
+MakeExpr    = "make" "(" "chan" TypeName ")"
+            | "make" "(" "map" "[" TypeName "]" TypeName ")"
+            | "make" "(" "[]" TypeName "," Expr [ "," Expr ] ")" .
 Block       = "{" { Stmt } "}" .
 Stmt        = Decl? | Assign | If | Loop | Return | Send | Go | Select | Arena | ExprStmt
             | "break" | "continue" .

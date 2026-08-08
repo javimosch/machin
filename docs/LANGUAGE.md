@@ -270,14 +270,21 @@ operators yield `bool`.
 ## Slices
 
 ```go
-xs := []int{}          // empty
-xs = append(xs, 42)    // grow
-v := xs[0]             // index (0-based)
-xs[1] = 7              // assign element
-n := len(xs)           // length
-ys := sort(xs)         // ascending; returns a NEW slice
+xs := []int{}                  // empty
+xs = append(xs, 42)            // grow
+v := xs[0]                     // index (0-based)
+xs[1] = 7                      // assign element
+n := len(xs)                   // length
+ys := sort(xs)                 // ascending; returns a NEW slice
 zs := sort_by(xs, func(a, b) { return a > b })   // your own ordering
+
+as := make([]int, 100)         // len 100, cap 100, zero-initialized
+bs := make([]int, 0, 1000)     // len 0, cap 1000; append grows in place
 ```
+
+`make([]T, n)` and `make([]T, len, cap)` pre-allocate a zero-initialized
+backing array. Use them when the final size is known — they avoid the
+repeated allocation/copy cost of growing an empty slice one `append` at a time.
 
 `len` also returns the length of a `string`.
 

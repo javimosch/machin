@@ -204,7 +204,7 @@ func machinGuide() guideCatalog {
 			{"bool", "true/false"},
 			{"string", "immutable UTF-8 bytes; zero value \"\""},
 			{"bytes", "NUL-safe binary buffer (ptr+len); from bytes()/from_hex(); inspect with len/byte_at/to_hex. For binary protocols & crypto (strings truncate at NUL)"},
-			{"[]T", "slice (append to grow); for i, v := range. T can be a struct, another slice, or `func` (`[]func{}` — a slice of closures, for dispatch tables / effect lists). Slice-range s[lo:hi] / s[lo:] / s[:hi] (lo defaults 0, hi defaults len(s)) ALWAYS returns a fresh COPY, never a view sharing s's backing storage — matches substr's copy semantics on strings and means mutating the result (e.g. via append or index-assign) never affects s. Bounds (0 <= lo <= hi <= len(s)) are checked unconditionally, like s[i] under --safe; a violation panics the same way"},
+			{"[]T", "slice (append to grow); make([]T, n) or make([]T, len, cap) pre-allocates a zero-initialized backing array so append loops avoid repeated reallocation/copy. for i, v := range. T can be a struct, another slice, or `func` (`[]func{}` — a slice of closures, for dispatch tables / effect lists). Slice-range s[lo:hi] / s[lo:] / s[:hi] (lo defaults 0, hi defaults len(s)) ALWAYS returns a fresh COPY, never a view sharing s's backing storage — matches substr's copy semantics on strings and means mutating the result (e.g. via append or index-assign) never affects s. Bounds (0 <= lo <= hi <= len(s)) are checked unconditionally, like s[i] under --safe; a violation panics the same way"},
 			{"map[K]V", "K is int or string; make(map[K]V); has/delete/keys"},
 			{"struct", "type T struct { f T ... }; value semantics; T{f: v}"},
 			{"chan T", "make(chan T); ch <- v; <-ch; close; for v := range ch; v, ok := <-ch"},
@@ -416,6 +416,7 @@ func machinGuide() guideCatalog {
 func main() { println(str(fbm(1.5, 2.5))) }`},
 			{"types", `type P struct { name string  age int }
 func main() { p := P{name: "ada", age: 36}  xs := []int{1, 2, 3}  m := make(map[string]int)  m["k"] = 1  println(p.name + " " + str(len(xs)) + " " + str(m["k"])) }`},
+			{"prealloc-slice", `func main() { xs := make([]int, 0, 4)  xs = append(xs, 1)  xs = append(xs, 2)  xs = append(xs, 3)  println(str(len(xs))) }`},
 			{"goroutine-channel", `func work(ch) { ch <- 42 }
 func main() { ch := make(chan int)  go work(ch)  println(str(<-ch)) }`},
 			{"select-timeout", `func after(ms, ch) { sleep(ms)  ch <- true }

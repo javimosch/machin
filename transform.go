@@ -98,6 +98,11 @@ func (l *lifter) expr(e Expr) Expr {
 		l.exprs(ex.Args)
 	case *SliceLit:
 		l.exprs(ex.Elems)
+	case *MakeSlice:
+		ex.Len = l.expr(ex.Len)
+		if ex.Cap != nil {
+			ex.Cap = l.expr(ex.Cap)
+		}
 	case *StructLit:
 		l.exprs(ex.Vals)
 	case *Index:
@@ -259,6 +264,11 @@ func freeIdents(body []Stmt, params []string) map[string]bool {
 		case *SliceLit:
 			for _, a := range ex.Elems {
 				we(a)
+			}
+		case *MakeSlice:
+			we(ex.Len)
+			if ex.Cap != nil {
+				we(ex.Cap)
 			}
 		case *StructLit:
 			for _, a := range ex.Vals {

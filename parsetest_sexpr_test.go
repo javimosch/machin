@@ -31,6 +31,7 @@ func TestSexprExprAllKinds(t *testing.T) {
 		{"struct named", &StructLit{Type: "Point", FieldNames: []string{"x", "y"}, Vals: []Expr{&IntLit{Val: 1}, &IntLit{Val: 2}}}, "(struct Point (keys x y) (int 1) (int 2))"},
 		{"makechan", &MakeChan{Elem: "int"}, "(makechan int)"},
 		{"makemap", &MakeMap{Key: "string", Val: "int"}, "(makemap string int)"},
+		{"makeslice", &MakeSlice{Elem: "int", Len: &IntLit{Val: 10}}, "(makeslice int (int 10))"},
 		{"recv", &Recv{Ch: &Ident{Name: "ch"}}, "(recv (id ch))"},
 		{"funclit", &FuncLit{Params: []string{"a"}, Body: []Stmt{&BreakStmt{}}}, "(funclit (params a) (body (break)))"},
 	}

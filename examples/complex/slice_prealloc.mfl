@@ -1,0 +1,1 @@
+func main(){xs:=make([]int,0,4)xs=append(xs,1)xs=append(xs,2)xs=append(xs,3)println(str(len(xs)))}

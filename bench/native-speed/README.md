@@ -85,8 +85,9 @@ The tempting fix — hand the arena's most recent block straight to `realloc` �
 **unsound in MFL and was rejected**, because slices share backing storage
 (`b := a` aliases, and so does passing a slice to a function). Today an
 abandoned block stays live, so every existing alias keeps reading valid memory;
-with in-place growth those aliases would become use-after-free. Tracked with the
-sound alternatives in **issue #578**.
+with in-place growth those aliases would become use-after-free. This is closed
+for the common "known final size" case by pre-allocating with
+`make([]int, 0, n+1)` — see **issue #578**.
 
 ## Fairness notes
 
