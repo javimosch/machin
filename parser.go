@@ -1254,7 +1254,8 @@ func (p *Parser) parsePrimary() (Expr, error) {
 	return nil, fmt.Errorf("unexpected token %q at pos %d", t.Val, t.Pos)
 }
 
-// parseMake parses make(chan T) or make(map[K]V).
+// parseMake parses make(chan T), make(map[K]V), or make([]T, n) /
+// make([]T, len, cap).
 func (p *Parser) parseMake() (Expr, error) {
 	p.next() // make
 	if _, err := p.expect(TPunct, "("); err != nil {
@@ -1291,8 +1292,41 @@ func (p *Parser) parseMake() (Expr, error) {
 			return nil, err
 		}
 		return &MakeMap{Key: key, Val: val}, nil
+	case "[":
+		p.next()
+		if _, err := p.expect(TPunct, "]"); err != nil {
+			return nil, err
+		}
+		elem, err := p.parseTypeName()
+		if err != nil {
+			return nil, err
+		}
+		var ln, cap Expr
+		if !p.atPunct(")") {
+			if _, err := p.expect(TPunct, ","); err != nil {
+				return nil, err
+			}
+			ln, err = p.parseExpr()
+			if err != nil {
+				return nil, err
+			}
+			if p.atPunct(",") {
+				p.next()
+				cap, err = p.parseExpr()
+				if err != nil {
+					return nil, err
+				}
+			}
+		}
+		if ln == nil {
+			return nil, fmt.Errorf("make: slice length required")
+		}
+		if _, err := p.expect(TPunct, ")"); err != nil {
+			return nil, err
+		}
+		return &MakeSlice{Elem: elem, Len: ln, Cap: cap}, nil
 	}
-	return nil, fmt.Errorf("make: expected chan or map, got %q", p.peek().Val)
+	return nil, fmt.Errorf("make: expected chan, map, or []T, got %q", p.peek().Val)
 }
 
 // parseStructLit parses Point{x: 1, y: 2} (keyed) or Point{1, 2} (positional).

@@ -174,6 +174,11 @@ type MakeChan struct{ Elem string }
 // MakeMap constructs a map: make(map[K]V).
 type MakeMap struct{ Key, Val string }
 
+// MakeSlice constructs a slice with a pre-allocated backing array:
+// make([]T, n) or make([]T, len, cap). The element type name is stored as
+// a string because the parser resolves it before type checking.
+type MakeSlice struct{ Elem string; Len, Cap Expr }
+
 // Recv receives from a channel: <-ch.
 type Recv struct{ Ch Expr }
 
@@ -196,6 +201,7 @@ func (CallValue) node()   {}
 func (MakeClosure) node() {}
 func (MakeChan) node()    {}
 func (MakeMap) node()     {}
+func (MakeSlice) node()   {}
 func (Recv) node()        {}
 
 // ---- Statements ----

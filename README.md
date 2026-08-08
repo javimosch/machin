@@ -175,7 +175,8 @@ Zig `ReleaseFast` (min of 9 rounds, this machine):
 
 **Wins 1 clearly, ties 2, loses 1.** Unboxed values, no interpreter, no VM.
 The sieve gap is *not* slice indexing — that loop ties Rust exactly (110 ms vs
-111 ms); it's `append`'s growth path ([#578](https://github.com/javimosch/machin/issues/578)).
+111 ms); it's `append`'s growth path, now closed by pre-allocating with
+`make([]int, 0, n)` ([#578](https://github.com/javimosch/machin/issues/578)).
 
 Where machin actually beats both: **binary size** — 14 kB stripped vs Rust's 335 kB,
 both dynamic. Read that as a fixed offset (Rust starts ~320 kB ahead), not a ratio:

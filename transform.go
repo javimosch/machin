@@ -115,6 +115,11 @@ func (l *lifter) expr(e Expr) Expr {
 		ex.X = l.expr(ex.X)
 	case *Recv:
 		ex.Ch = l.expr(ex.Ch)
+	case *MakeSlice:
+		ex.Len = l.expr(ex.Len)
+		if ex.Cap != nil {
+			ex.Cap = l.expr(ex.Cap)
+		}
 	}
 	return e
 }
@@ -279,6 +284,11 @@ func freeIdents(body []Stmt, params []string) map[string]bool {
 			we(ex.X)
 		case *Recv:
 			we(ex.Ch)
+		case *MakeSlice:
+			we(ex.Len)
+			if ex.Cap != nil {
+				we(ex.Cap)
+			}
 		}
 	}
 	ws = func(s Stmt) {

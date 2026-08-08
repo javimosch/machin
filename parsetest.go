@@ -310,6 +310,12 @@ func sexprExpr(e Expr) string {
 		return "(makechan " + v.Elem + ")"
 	case *MakeMap:
 		return "(makemap " + v.Key + " " + v.Val + ")"
+	case *MakeSlice:
+		cap := ""
+		if v.Cap != nil {
+			cap = " " + sexprExpr(v.Cap)
+		}
+		return "(makeslice " + v.Elem + " " + sexprExpr(v.Len) + cap + ")"
 	case *Recv:
 		return "(recv " + sexprExpr(v.Ch) + ")"
 	case *FuncLit:

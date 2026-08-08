@@ -384,6 +384,16 @@ static int64_t mfl_narrow(int64_t v, int64_t lo, int64_t hi, const char* label) 
     return v;
 }
 
+static mfl_slice mfl_make_slice(int64_t len, int64_t cap, int64_t es) {
+    if (cap < len) cap = len;
+    mfl_slice s;
+    s.data = mfl_alloc((size_t)(cap * es));
+    s.len = len;
+    s.cap = cap;
+    memset(s.data, 0, (size_t)(cap * es));
+    return s;
+}
+
 static mfl_slice mfl_append(mfl_slice s, const void* elem, int64_t es) {
     if (s.len >= s.cap) {
         int64_t nc = s.cap ? s.cap * 2 : 4;
@@ -5555,6 +5565,19 @@ func (g *cgen) expr(e Expr) (string, error) {
 			keyIsStr = 1
 		}
 		return fmt.Sprintf("mfl_make_map(%d, sizeof(%s))", keyIsStr, g.c.MapValCType(g.curFn, ex)), nil
+	case *MakeSlice:
+		ln, err := g.expr(ex.Len)
+		if err != nil {
+			return "", err
+		}
+		cap := ln
+		if ex.Cap != nil {
+			cap, err = g.expr(ex.Cap)
+			if err != nil {
+				return "", err
+			}
+		}
+		return fmt.Sprintf("mfl_make_slice(%s, %s, sizeof(%s))", ln, cap, g.c.ElemCType(g.curFn, ex)), nil
 	case *Recv:
 		ch, err := g.expr(ex.Ch)
 		if err != nil {
@@ -5589,6 +5612,8 @@ func exprHasSideEffect(e Expr) bool {
 				return true
 			}
 		}
+	case *MakeSlice:
+		return exprHasSideEffect(x.Len) || (x.Cap != nil && exprHasSideEffect(x.Cap))
 	case *StructLit:
 		for _, v := range x.Vals {
 			if exprHasSideEffect(v) {

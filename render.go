@@ -154,6 +154,9 @@ func (r *renderer) expr(e Expr, parentPrec int) string {
 		return r.expr(x.X, 10) + "." + x.Name
 	case *SliceLit:
 		return "[]" + x.Elem + "{" + r.args(x.Elems, false) + "}"
+	case *MakeSlice:
+		r.complete = false
+		return "/*?*/"
 	case *StructLit:
 		if len(x.FieldNames) == len(x.Vals) && len(x.FieldNames) > 0 {
 			parts := make([]string, len(x.Vals))
