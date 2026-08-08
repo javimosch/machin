@@ -1,0 +1,85 @@
+name: bench
+
+# Benchmarks are expensive and timing-sensitive, so this NEVER runs on push.
+# Trigger it by hand when you want a second machine's opinion:
+#   gh workflow run bench.yml
+#
+# WHY THIS EXISTS: every number in docs/BENCHMARKS.md was measured on one laptop,
+# and those docs claim "absolute milliseconds are machine-specific; the RATIOS are
+# the portable result". That claim was published without ever being tested on a
+# second machine. This tests it, on hardware nobody involved controls, and puts the
+# tables in the job summary so anyone can check them.
+#
+# A shared cloud runner is noisier than a quiet desktop. That is handled, not
+# hidden: the harness interleaves languages, reports run-to-run spread, and calls
+# anything inside 3% a tie rather than a win.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Install system deps
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libssl-dev zlib1g-dev binutils
+
+      # Same pinned stable as ci.yml. 0.16.0 is deliberately NOT used: it does not
+      # reuse its build cache for these -OReleaseFast builds (~13s warm vs 0.15.2's
+      # ~0.3s), which would credit machin with a build-time win that is really a
+      # caching regression. See bench/compile-speed/README.md.
+      - name: Install zig 0.15.2
+        run: |
+          ZIG_VER=0.15.2
+          curl -fsSL "https://ziglang.org/download/${ZIG_VER}/zig-x86_64-linux-${ZIG_VER}.tar.xz" -o /tmp/zig.tar.xz
+          mkdir -p /tmp/zig && tar -xf /tmp/zig.tar.xz -C /tmp/zig --strip-components=1
+          echo "/tmp/zig" >> "$GITHUB_PATH"
+
+      - name: Build and install machin
+        run: |
+          go build -o /usr/local/bin/machin .
+          machin guide --text | head -1
+
+      - name: Record the machine
+        run: |
+          {
+            echo '## Machine'
+            echo '```'
+            grep -m1 'model name' /proc/cpuinfo | cut -d: -f2- | sed 's/^ //'
+            echo "cores: $(nproc)   load: $(cut -d' ' -f1-3 /proc/loadavg)"
+            echo "gcc $(gcc -dumpversion) | $(rustc --version) | zig $(zig version)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: native-speed (runtime — the ratio claim under test)
+        run: |
+          {
+            echo '## native-speed'
+            echo '```'
+            ( cd bench/native-speed && ./run.sh 2>&1 | tail -20 )
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: compile-speed (build time + binary size)
+        run: |
+          {
+            echo '## compile-speed'
+            echo '```'
+            ( cd bench/compile-speed && python3 measure.py 2>&1 )
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: evidence (verdicts, not timings — must be machine-independent)
+        run: |
+          {
+            echo '## evidence'
+            echo '```'
+            ( cd bench/evidence && ./run.sh 2>&1 | tail -40 )
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
