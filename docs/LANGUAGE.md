@@ -275,9 +275,30 @@ xs = append(xs, 42)    // grow
 v := xs[0]             // index (0-based)
 xs[1] = 7              // assign element
 n := len(xs)           // length
+ys := sort(xs)         // ascending; returns a NEW slice
+zs := sort_by(xs, func(a, b) { return a > b })   // your own ordering
 ```
 
 `len` also returns the length of a `string`.
+
+`sort` works on `[]int`, `[]float` and `[]string`; any other element type is
+refused at compile time and points you at `sort_by`, where you say how to
+compare. Both are **stable** — elements that compare equal keep their input
+order, so sorting by one key and then another composes the way you expect.
+
+Both return a **new** slice rather than reordering in place. Slices share
+backing storage (`b := a` makes an alias, and so does passing one to a
+function), so an in-place sort would silently reorder every alias; copying
+matches slice-range, which also always returns a fresh copy.
+
+```go
+// order map keys by their value, then alphabetically — the comparator is an
+// ordinary closure and may capture
+ks := sort_by(keys(counts), func(a, b) {
+    if counts[a] != counts[b] { return counts[a] > counts[b] }
+    return a < b
+})
+```
 
 ---
 
@@ -304,6 +325,8 @@ for i < len(ks) {
 - `make(map[K]V)` constructs a map. Keys are `int` or `string`; values are any type.
 - `m[k]` reads (returning the value type's zero value if absent) and `m[k] = v` writes.
 - `len(m)`, `has(m, k)`, `delete(m, k)`, and `keys(m)` (a `[]K` slice) round out the API.
+- `keys(m)` has no defined order. To iterate deterministically, sort it:
+  `for _, k := range sort(keys(m))`, or `sort_by(keys(m), ...)` to order by value.
 - Iteration order is unspecified.
 
 ---
@@ -392,6 +415,8 @@ first := users[0]                                // value copy
 | `has(m, k)`                 | whether map `m` contains key `k`             |
 | `delete(m, k)`              | remove key `k` from map `m`                  |
 | `keys(m)`                   | a slice of map `m`'s keys                    |
+| `sort(xs)`                  | ascending sort of an `[]int`/`[]float`/`[]string` → a **new** slice; stable |
+| `sort_by(xs, less)`         | sort by your own `less(a, b) bool` → a **new** slice; stable; the comparator may capture |
 | `json(x)`                   | serialize any value to a JSON string         |
 | `parse(s, T{})`             | parse a JSON string into a value of `T`'s type |
 | `json_get(json, path)`      | value at a jq-style path → `(value, err)`; `err` is `""`/`"notfound"`/`"path"`/`"parse"` — **multi-assign only** |

@@ -2,6 +2,77 @@
 
 ## Unreleased
 
+## v0.126.0
+
+A missing builtin, and a benchmark suite that stopped flattering itself. Both
+came out of asking a plain question — "do we actually beat Rust and Zig at
+anything?" — and taking the unflattering answers seriously.
+
+**`sort` / `sort_by`** (PR #581, issue #580). machin had no sort at all — not a
+builtin, not in any of the 16 framework modules — so every program needing
+ordered output hand-rolled one. That cost real tokens on the axis machin is
+positioned on: the same word-frequency program was **218 tokens in machin
+against Rust's 180** before, and **151 after**, turning a 21% loss into a 16%
+win. Worse than the tokens, what an agent writes under time pressure is an
+O(n²) selection sort with an easy-to-get-wrong tie-break.
+
+```
+sort(xs)            // ascending, for []int / []float / []string
+sort_by(xs, less)   // your own less(a, b) bool; the comparator may capture
+```
+
+Both **return a new slice** rather than sorting in place. MFL slices share
+backing storage (`b := a` aliases, and so does passing one to a function), so an
+in-place sort would silently reorder every alias — the same hazard that made
+in-place `realloc` unsound in #578. Both are **stable**, via a bottom-up merge
+sort; the comparator is asked "must b precede a?", which needs one call per
+comparison instead of two and makes stability fall out for free. `sort()` on an
+element type with no ordering is refused at compile time with a message naming
+`sort_by`.
+
+**Two benchmark claims were wrong and have been corrected.** They shipped inside
+`machin guide`, so every coding agent had been reading them.
+
+- The 10⁹ integer loop was published as a **~20–25% win over Rust**. The harness
+  timed language-by-language — all N machin samples, then all N Rust, then all N
+  Zig — which on a laptop that down-clocks mid-kernel penalizes whoever runs
+  last. Interleaved and rotated, the margin is **3%: a tie**. The harness now
+  reports anything inside 3% as a tie, because the worst run-to-run spread
+  measured was 41% of the min sample.
+- The sieve loss was explained as machin's "slice indexing/layout" being worse
+  than a Rust `Vec`. Phase timing disproves it: the sieve loop **ties Rust
+  exactly** (110 ms vs 111 ms) and the entire gap is `append` growing the array.
+  Tracked in #578, along with why the obvious fix (hand the arena's newest block
+  to `realloc`) is unsound.
+
+**Three new benchmarks**, each stating its losses as prominently as its wins,
+indexed from the new [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md):
+
+- `bench/evidence` — which toolchain tells you about a bug, and when. A
+  guaranteed deadlock: machin reports `DL001` at compile time and exits 2 at
+  runtime with the wait-cycle; `rustc` and `zig` accept it silently and hang
+  forever. An out-of-range index: `machin falsify` returns a concrete failing
+  input before the program runs; neither of the others says anything. **Rust
+  wins the runtime row** — it traps by default where machin's default build, like
+  Zig's `ReleaseFast`, does not.
+- `bench/compile-speed` — build time and binary size. **Rust wins build time
+  outright** (~57 ms vs machin's ~95–116 ms). machin's binary-size advantage is a
+  **fixed ~320 kB offset**, not the 24× ratio a first pass suggested: machin's
+  hello world and its fib(40) are byte-identical in size, so both numbers measure
+  each toolchain's floor.
+- `bench/rest-sqlite` gained a **Rust** implementation: 727 tokens against
+  machin's 388 (**1.87×**) and 37 transitive crates against zero. Paired with the
+  word-frequency result above, the honest claim is "machin is terser than Rust
+  **exactly where machin has batteries**", not in general.
+
+**Zig's build times are now reported against 0.15.2.** An earlier note dismissed
+a ~13 s figure as "a 0.16.0 beta from snap". 0.16.0 is the current **stable**
+release, and the official ziglang.org binaries reproduce it exactly — what it
+actually is is a **~45× warm-build caching regression** between 0.15.2 (0.28 s)
+and 0.16.0 (13.3 s). Against 0.15.2, machin builds ~3× faster warm and ~35×
+faster cold. Quoting 0.16.0 would have credited machin with a ~130× win that is
+really someone else's bug.
+
 ## v0.125.0
 
 Two new compile-time findings, a new builtin pair, and three diagnostics that
