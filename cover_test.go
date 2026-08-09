@@ -197,3 +197,77 @@ func main() {
 		t.Fatalf("pct %v inconsistent with %d/%d", c.Pct, c.Covered, c.Total)
 	}
 }
+
+// Statement coverage (#589 stage B2) exists because function coverage can read
+// 100% while whole branches go unexercised. This is that case: classify() is
+// called, so it is "covered" at function level, but two of its branches never
+// run — and only the statement block says so.
+func TestCoverStatementsCatchUnexecutedBranch(t *testing.T) {
+	dir := t.TempDir()
+	f := writeSrc(t, dir, "branch.src", `func classify(n) (r) {
+    r = "zero"
+    if n > 0 {
+        r = "positive"
+        if n > 100 {
+            r = "big"
+        }
+    }
+    if n < 0 {
+        r = "negative"
+    }
+}
+
+func main() {
+    assert_eq_str(classify(5), "positive", "positive")
+    test_summary()
+}`)
+	res, _, err := runMFLTests([]string{f}, true)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	fc := fileCov(t, res.Coverage, f)
+	if fc.Covered != fc.Total {
+		t.Fatalf("classify and main both ran; function coverage should be full, got %d/%d", fc.Covered, fc.Total)
+	}
+	sc := res.Coverage.Statements
+	if sc == nil {
+		t.Fatal("--cover produced no statement block")
+	}
+	if sc.Kind != "statement" {
+		t.Fatalf("statement block must name its kind, got %q", sc.Kind)
+	}
+	if !hasName(sc.Uncovered, "classify") {
+		t.Fatalf("classify has two unexecuted branches and must be listed, got %v", sc.Uncovered)
+	}
+	if sc.Covered >= sc.Total {
+		t.Fatalf("unexecuted branches must lower statement coverage: %d/%d", sc.Covered, sc.Total)
+	}
+	if sc.Total <= res.Coverage.Total {
+		t.Fatalf("statements should outnumber functions, got %d statements vs %d functions", sc.Total, res.Coverage.Total)
+	}
+}
+
+// A function whose every statement runs must NOT be listed as having unexecuted
+// statements — otherwise the list is noise and gets ignored.
+func TestCoverFullyExercisedFunctionNotListed(t *testing.T) {
+	dir := t.TempDir()
+	f := writeSrc(t, dir, "full.src", `func double(n) (r) {
+    r = n * 2
+}
+
+func main() {
+    assert_eq_int(double(4), 8, "double")
+    test_summary()
+}`)
+	res, _, err := runMFLTests([]string{f}, true)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	sc := res.Coverage.Statements
+	if sc == nil {
+		t.Fatal("no statement block")
+	}
+	if hasName(sc.Uncovered, "double") {
+		t.Fatalf("double's only statement ran; it must not be listed: %v", sc.Uncovered)
+	}
+}

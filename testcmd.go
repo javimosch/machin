@@ -38,11 +38,29 @@ type TestRunResult struct {
 // was ENTERED at least once, which is much weaker than statement or branch
 // coverage and must never be quoted as if it were either.
 type Coverage struct {
-	Kind    string          `json:"kind"` // always "function" in B1
-	Covered int             `json:"covered"`
-	Total   int             `json:"total"`
-	Pct     float64         `json:"pct"`
-	Files   []FileCoverage  `json:"files"`
+	Kind       string         `json:"kind"` // "function"
+	Covered    int            `json:"covered"`
+	Total      int            `json:"total"`
+	Pct        float64        `json:"pct"`
+	Files      []FileCoverage `json:"files"`
+	Statements *StmtCoverage  `json:"statements,omitempty"`
+}
+
+// StmtCoverage is the statement-level report (#589 stage B2). It is a SEPARATE
+// block with its own Kind rather than a replacement for the function numbers,
+// because the two answer different questions and conflating them is how a weak
+// number gets quoted as a strong one: function coverage says "was this ever
+// called", statement coverage says "did this code run".
+//
+// Uncovered lists the functions containing at least one unexecuted statement —
+// a function can be 100% "covered" at function level and still have a branch
+// nothing exercises, which is exactly what this block exists to surface.
+type StmtCoverage struct {
+	Kind      string   `json:"kind"` // "statement"
+	Covered   int      `json:"covered"`
+	Total     int      `json:"total"`
+	Pct       float64  `json:"pct"`
+	Uncovered []string `json:"uncovered"` // function names with unexecuted statements
 }
 
 // FileCoverage is one source file's share of the report. Uncovered names are
@@ -132,6 +150,24 @@ func readCoverage(path string, prog *Program, files []string) (*Coverage, error)
 			}
 		}
 	}
+	// statement slots: owner function name -> (hit, total)
+	stmtHit, stmtTotal := map[string]int{}, map[string]int{}
+	if data, err := os.ReadFile(path); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			rest, ok := strings.CutPrefix(line, "stmt ")
+			if !ok {
+				continue
+			}
+			f := strings.SplitN(strings.TrimSpace(rest), " ", 2)
+			if len(f) != 2 {
+				continue
+			}
+			stmtTotal[f[1]]++
+			if f[0] == "1" {
+				stmtHit[f[1]]++
+			}
+		}
+	}
 	owners := declOwners(files)
 	cov := &Coverage{Kind: "function"}
 	byFile := map[string]*FileCoverage{}
@@ -164,6 +200,24 @@ func readCoverage(path string, prog *Program, files []string) (*Coverage, error)
 	}
 	if cov.Total > 0 {
 		cov.Pct = float64(cov.Covered) / float64(cov.Total) * 100
+	}
+	if len(stmtTotal) > 0 {
+		sc := &StmtCoverage{Kind: "statement"}
+		for _, fn := range prog.Funcs {
+			if fn.IsLambda {
+				continue
+			}
+			tot, hit := stmtTotal[fn.Name], stmtHit[fn.Name]
+			sc.Total += tot
+			sc.Covered += hit
+			if tot > hit {
+				sc.Uncovered = append(sc.Uncovered, fn.Name)
+			}
+		}
+		if sc.Total > 0 {
+			sc.Pct = float64(sc.Covered) / float64(sc.Total) * 100
+		}
+		cov.Statements = sc
 	}
 	return cov, nil
 }
@@ -244,6 +298,12 @@ func cmdTest(args []string) error {
 				fmt.Fprintf(os.Stderr, "  %-40s %d/%d\n", f.File, f.Covered, f.Total)
 				if len(f.Uncovered) > 0 {
 					fmt.Fprintf(os.Stderr, "      uncovered: %s\n", strings.Join(f.Uncovered, ", "))
+				}
+			}
+			if sc := c.Statements; sc != nil {
+				fmt.Fprintf(os.Stderr, "\nstatement coverage: %d/%d (%.1f%%)\n", sc.Covered, sc.Total, sc.Pct)
+				if len(sc.Uncovered) > 0 {
+					fmt.Fprintf(os.Stderr, "  functions with unexecuted statements: %s\n", strings.Join(sc.Uncovered, ", "))
 				}
 			}
 		}
