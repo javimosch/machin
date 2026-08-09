@@ -17,7 +17,50 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
+      # fetch-depth 0: the guard below needs main's history to prove the tag is on it.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # RELEASE GUARD. A tag push is not a protected operation: `git push origin
+      # vX.Y.Z` succeeds even when a push to main was just rejected, and this
+      # workflow used to build whatever it was handed. That made "the release is
+      # green and reproducible from main" a matter of the releaser's discipline
+      # rather than something enforced.
+      #
+      # Two checks, both hard failures:
+      #   1. the tagged commit is contained in origin/main — no releases from a
+      #      branch, a fork point, or a commit that never merged;
+      #   2. the CI run for that exact commit concluded success — no releases from
+      #      a red or never-tested tree.
+      #
+      # Overriding either is deliberate: delete the tag, fix the problem, re-tag.
+      - name: Verify the tag is on main and CI passed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          SHA="${GITHUB_SHA}"
+          echo "tagged commit: $SHA"
+
+          # A tag checkout does not necessarily carry origin/main (verified: a
+          # `clone --branch <tag>` has no such ref), and without it the ancestry
+          # check below would fail for the wrong reason and block a good release.
+          git fetch --quiet origin main
+
+          if ! git merge-base --is-ancestor "$SHA" origin/main; then
+            echo "::error::$SHA is not contained in origin/main — refusing to release a commit that is not on the default branch."
+            exit 1
+          fi
+          echo "  on main: yes"
+
+          CONCLUSION=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${SHA}&status=completed" \
+            --jq '[.workflow_runs[] | select(.name == "ci")] | first | .conclusion // "none"')
+          echo "  ci conclusion: $CONCLUSION"
+          if [ "$CONCLUSION" != "success" ]; then
+            echo "::error::CI for $SHA is '${CONCLUSION}', not 'success' — refusing to release an unverified commit. Wait for CI, or fix it, then re-tag."
+            exit 1
+          fi
 
       - uses: actions/setup-go@v5
         with:

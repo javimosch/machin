@@ -166,11 +166,19 @@ GitHub release.
 > like everything else, and the tag is applied to the **squashed commit on `main`**
 > afterwards.
 >
-> **A tag push is NOT protected.** `git push origin vX.Y.Z` succeeds even when the
-> branch push was just rejected, and it immediately triggers the release workflow —
-> so it is easy to end up with a tag pointing at a commit that is not on `main`,
-> building a release nobody can reproduce from the default branch. Tag **last**,
-> and only after the release PR has merged.
+> **A tag push is still not a protected operation** — `git push origin vX.Y.Z`
+> succeeds even when a push to `main` was just rejected — but since v0.127.0 the
+> release workflow **refuses to build an unverified tag**. Before compiling
+> anything it checks that:
+>
+> 1. the tagged commit is contained in `origin/main`, and
+> 2. the `ci` run for that exact commit concluded `success`.
+>
+> Either failing stops the release with an explicit error. So a mis-tag now costs
+> you a failed workflow instead of a published binary nobody can reproduce from
+> the default branch. Still tag **last**, after the release PR has merged and its
+> CI is green — that is now the only sequence that works, rather than merely the
+> recommended one.
 
 **To cut a release:**
 
@@ -183,6 +191,11 @@ GitHub release.
    silently (`SPEC.md` had fallen three releases behind by v0.124.0):
    - the `Version` line in `SPEC.md`
    - a new section at the top of `CHANGELOG.md` (newest first)
+
+   CI also enforces an **MFL coverage floor** (`make mfl-cov-floor`, #589): a
+   ratchet set just under what the MFL suites measure today. If you added tests,
+   raise it; lowering it is allowed but must be deliberate and explained in the
+   commit.
 
    If you touched a **bundled skill** under `skills/`, also run
    `tools/sync-plugin-skills.sh` — `TestPluginSkillsInSync` requires
