@@ -68,10 +68,10 @@ As produced / stripped:
 
 | kernel | machin | Rust | Zig |
 |---|--:|--:|--:|
-| fib | 17 kB / **14 kB** `[dyn]` | 4291 kB / 335 kB `[dyn]` | 3508 kB / 491 kB `[static]` |
-| mandel | 17 kB / **14 kB** `[dyn]` | 4291 kB / 336 kB `[dyn]` | 3511 kB / 491 kB `[static]` |
-| sieve | 17 kB / **14 kB** `[dyn]` | 4292 kB / 336 kB `[dyn]` | 3527 kB / 498 kB `[static]` |
-| intsum | 17 kB / **14 kB** `[dyn]` | 4291 kB / 335 kB `[dyn]` | 3510 kB / 491 kB `[static]` |
+| fib | 17 kB / **14 kB** `[dyn]` | 4291 kB / 335 kB `[dyn]` | 874 kB / **16 kB** `[static]` |
+| mandel | 17 kB / **14 kB** `[dyn]` | 4291 kB / 336 kB `[dyn]` | 874 kB / **16 kB** `[static]` |
+| sieve | 17 kB / **14 kB** `[dyn]` | 4292 kB / 336 kB `[dyn]` | 874 kB / **16 kB** `[static]` |
+| intsum | 17 kB / **14 kB** `[dyn]` | 4291 kB / 335 kB `[dyn]` | 874 kB / **16 kB** `[static]` |
 
 **Compare like with like.** machin and Rust both link dynamically against the
 system libc, so their stripped numbers are directly comparable: **14 kB vs
@@ -104,9 +104,31 @@ The as-produced column (17 kB vs 4291 kB, ~250×) is a much bigger number and a
 much worse comparison — it mostly measures how much debug info each toolchain
 leaves in by default. It's shown for completeness, not as the headline.
 
-Zig links statically here, so it carries libc the other two borrow. That is not a
-loss for Zig: **fully static, Zig wins.** `machin build --static` produces
-940 kB against Zig's 491 kB, because machin's static build bundles SQLite.
+Zig links statically here, so it carries libc the other two borrow — and it still
+comes out at **16 kB**, about the size of machin's *dynamic* binary while needing
+nothing on the target at all.
+
+**This corrects an earlier version of this file**, which reported Zig at 491 kB
+static and concluded "fully static, Zig wins" by a mere 2x. That 491 kB was
+measured on Zig **0.16.0**, which inflates it ~32x — the same release whose build
+cache regressed. On 0.15.2:
+
+```
+zig 0.15.2    873,760 B as-produced ->   15,760 B stripped  [static]
+zig 0.16.0  3,594,056 B as-produced ->  503,256 B stripped  [static]
+machin                                   14,544 B stripped  [dynamic]
+machin --static                         940,000 B           [static]
+```
+
+So the honest ranking on size is:
+
+- **vs Rust, machin wins** — 14 kB against 335 kB, both dynamic. That holds
+  everywhere it has been measured.
+- **vs Zig, machin does not win.** Zig 0.15.2's *fully static* 16 kB is
+  effectively the same size as machin's *dynamic* 14 kB, and **~60x smaller than
+  machin's own static build** (940 kB, which bundles SQLite). For shipping a
+  self-contained artifact — a container, a copied binary — Zig is simply better
+  at this than machin is.
 
 ## The honest read
 
