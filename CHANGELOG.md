@@ -2,6 +2,51 @@
 
 ## Unreleased
 
+## v0.126.1
+
+No compiler changes. This ships a **correction** that was living only in the repo:
+`machin guide` had been telling every agent that machin beats Zig on static binary
+size, and it does not.
+
+**The Zig binary-size claim was wrong** (PR #588). We reported "fully static, Zig
+wins" by about 2x — 491 kB against machin's 940 kB. That 491 kB was measured on
+zig **0.16.0**, which inflates it ~32x. Measured on 0.15.2:
+
+```
+zig 0.15.2    873,760 B as-produced ->   15,760 B stripped  [static]
+zig 0.16.0  3,594,056 B as-produced ->  503,256 B stripped  [static]
+machin                                   14,544 B stripped  [dynamic]
+machin --static                         940,000 B           [static]
+```
+
+Zig's **fully static** binary is ~16 kB — about the size of machin's *dynamic*
+one, needing nothing on the target — and **~60x smaller than machin's own
+`--static` build**. So machin's binary-size win is over **Rust, not over Zig**;
+for shipping a self-contained artifact Zig is simply better at this. Corrected in
+`machin guide`, the README, `docs/BENCHMARKS.md` and `bench/compile-speed`.
+
+**The benchmark suite was verified on a second machine** (PR #588), which is how
+that error was found. `docs/BENCHMARKS.md` had been telling readers that absolute
+milliseconds are machine-specific but the *ratios* are portable — an assertion
+never tested, since every number came from one laptop with 41% worst-case
+run-to-run spread. Re-run on a GitHub runner (AMD EPYC 7763, gcc 13, rustc 1.97.1,
+zig 0.15.2, 15% spread):
+
+- **Verdicts are portable.** machin still wins recursion (26% -> 28%); mandelbrot
+  and intsum are still ties; the sieve is still a loss; every `evidence` verdict
+  (DL001, FALS001, who hangs, who traps) reproduces identically.
+- **Precise ratios are not.** The sieve gap moved 1.46x -> 1.32x, which fits its
+  cause: `append` faulting in fresh pages (#578) is the most
+  memory-subsystem-sensitive thing in the suite.
+
+Read a verdict as portable and a precise ratio as machine-specific; where the docs
+quote a ratio it is the laptop's.
+
+**A manual `bench` workflow** (PRs #586, #587) runs the suite on demand
+(`gh workflow run bench.yml`) and writes the tables to both the log and the job
+summary, so the second machine is one nobody involved controls and anyone can
+re-check the numbers.
+
 ## v0.126.0
 
 A missing builtin, and a benchmark suite that stopped flattering itself. Both
