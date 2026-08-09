@@ -47,15 +47,15 @@ func CompileToCTarget(p *Program, safe bool, target string) (string, []string, e
 // channels via winpthreads, math, file I/O); Phase N added TCP sockets
 // (dial/listen/accept/read/write) via winsock2; Phase TLS added HTTPS/TLS + the
 // OpenSSL crypto builtins, which link a user-supplied mingw OpenSSL (see
-// BuildWindows / MACHIN_WIN_OPENSSL). Still not wired: XEdDSA (libsodium),
-// terminal raw mode, SQLite, POSIX regex. Failing here — rather than emitting C
-// that dies deep in the linker — keeps the error actionable.
+// BuildWindows / MACHIN_WIN_OPENSSL); Phase TTY added raw_mode/read_key via
+// conio's _kbhit/_getch. Still not wired: XEdDSA (libsodium), SQLite, POSIX
+// regex, zlib. Failing here — rather than emitting C that dies deep in the
+// linker — keeps the error actionable.
 func windowsUnsupported(g *cgen) error {
 	for _, u := range []struct {
 		used bool
 		what string
 	}{
-		{g.usesTTY, "terminal raw mode (raw_mode/read_key)"},
 		{g.usesSelect, "select"},
 		{g.usesXEdDSA, "XEdDSA (xeddsa_* — needs libsodium for Windows, not yet wired)"},
 		{g.usesSQLite, "SQLite (sqlite_*)"},
@@ -63,7 +63,7 @@ func windowsUnsupported(g *cgen) error {
 		{g.usesZlib, "zlib (zlib_compress/zlib_decompress — needs a mingw libz, not yet wired)"},
 	} {
 		if u.used {
-			return fmt.Errorf("the windows target does not yet support %s — see issue #517 (supported: the stdio/compute core, TCP sockets, and HTTPS/TLS+crypto via a user-supplied OpenSSL)", u.what)
+			return fmt.Errorf("the windows target does not yet support %s — see issue #517 (supported: the stdio/compute core, TCP sockets, HTTPS/TLS+crypto via a user-supplied OpenSSL, and terminal input via raw_mode/read_key)", u.what)
 		}
 	}
 	return nil
@@ -125,7 +125,7 @@ type cgen struct {
 	usesMath     bool            // program calls math builtins (sin/cos/sqrt/...) -> emit math runtime + link -lm
 	usesNoise    bool            // program calls noise2/noise3 -> emit Perlin noise runtime + link -lm
 	usesNet      bool            // program calls dial/listen/accept/read/write/close(fd) -> emit POSIX socket runtime
-	usesTTY      bool            // program calls raw_mode/read_key -> emit termios/select runtime
+	usesTTY      bool            // program calls raw_mode/read_key -> emit termios/select or conio runtime
 	usesZlib     bool            // program calls zlib_* -> emit zlib runtime + link -lz
 	target       string          // "" or "native" (default) -> cc; "wasm" -> zig cc, lean runtime, FFI as imports, exports
 	globals      map[string]bool // package-global names (emitted as C statics, mfl_g_<name>)
@@ -2392,14 +2392,16 @@ static int64_t mfl_write_bytes(int64_t fd, mfl_bytes b) {
 static void mfl_close(int64_t fd) { MFL_CLOSESOCK(fd); }
 `
 
-// ttyRuntime is terminal raw mode + non-blocking single-key reads (termios +
-// select), for TUIs and terminal games. Always-on for native; under wasm emitted
-// only when raw_mode/read_key is used (a browser app references neither).
+// ttyRuntime is terminal raw mode + non-blocking single-key reads for TUIs and
+// terminal games. POSIX targets use termios + select; the Windows target uses
+// conio's _kbhit/_getch (no extra link dependency). Emitted for native always,
+// and for wasm/windows only when raw_mode/read_key is used.
 const ttyRuntime = `/* terminal raw mode + non-blocking single-key read (for TUIs and games).
    raw_mode(1) puts the tty in cbreak + no-echo with VMIN=0/VTIME=0 so reads
    never block; raw_mode(0) restores the saved settings. */
-static struct termios mfl_tty_saved;
 static int mfl_tty_raw = 0;
+#ifndef _WIN32
+static struct termios mfl_tty_saved;
 static int64_t mfl_raw_mode(int64_t on) {
     if (on) {
         if (mfl_tty_raw) return 0;
@@ -2436,6 +2438,24 @@ static char* mfl_read_key(void) {
     }
     return buf;
 }
+#else
+#include <conio.h>
+static int64_t mfl_raw_mode(int64_t on) {
+    mfl_tty_raw = on ? 1 : 0;
+    return 0;
+}
+/* non-blocking read of one key; a 1-char string, or "" if nothing is waiting.
+   _kbhit tells us whether a key is ready; _getch reads it without echo. */
+static char* mfl_read_key(void) {
+    char* buf = mfl_alloc(2);
+    buf[0] = 0; buf[1] = 0;
+    if (_kbhit()) {
+        int c = _getch();
+        buf[0] = (char)c;
+    }
+    return buf;
+}
+#endif
 `
 
 // zlibRuntime provides zlib compression/decompression over the bytes type.

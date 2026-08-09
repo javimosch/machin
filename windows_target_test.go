@@ -19,8 +19,8 @@ func TestWindowsPreflightRejects(t *testing.T) {
 		src     string
 		mentions string
 	}{
-		{"tty", `func main() { raw_mode(1)  println(read_key()) }`, "terminal raw mode"},
 		{"sqlite", `func main() { sqlite_open("x.db") }`, "SQLite"},
+		{"regex", `func main() { regex_match("a", "b") }`, "regex"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -177,6 +177,50 @@ func TestWindowsTLSCompiles(t *testing.T) {
 	b, _ := os.ReadFile(out)
 	if len(b) < 2 || b[0] != 'M' || b[1] != 'Z' {
 		t.Fatal("TLS output is not a PE executable")
+	}
+}
+
+// #517 Phase TTY: raw_mode/read_key now compile for the Windows target via
+// conio's _kbhit/_getch, so a TTY program must pass the preflight and the
+// emitted C must include <conio.h> and call _kbhit.
+func TestWindowsTTYCompiles(t *testing.T) {
+	src := `func main() {
+	raw_mode(1)
+	k := read_key()
+	if k == "q" { println("bye") }
+	raw_mode(0)
+}`
+	prog, err := ParseProgram([]string{normalize(src)})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	winC, _, err := CompileToCTarget(prog, false, targetWindows)
+	if err != nil {
+		t.Fatalf("windows TTY compile should succeed (Phase TTY), got: %v", err)
+	}
+	if !strings.Contains(winC, "#include <conio.h>") {
+		t.Fatal("windows TTY C should include <conio.h>")
+	}
+	if !strings.Contains(winC, "_kbhit()") {
+		t.Fatal("windows TTY C should call _kbhit")
+	}
+	if !strings.Contains(winC, "_getch()") {
+		t.Fatal("windows TTY C should call _getch")
+	}
+	// End-to-end link, gated on a runnable zig.
+	if err := exec.Command(zigPath(), "version").Run(); err != nil {
+		t.Skipf("zig not runnable (%v) — skipping windows TTY PE build", err)
+	}
+	out := t.TempDir() + "/tty.exe"
+	if err := BuildWindows(prog, out, false); err != nil {
+		t.Fatalf("BuildWindows (TTY): %v", err)
+	}
+	b, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(b) < 2 || b[0] != 'M' || b[1] != 'Z' {
+		t.Fatal("TTY output is not a PE executable")
 	}
 }
 

@@ -572,13 +572,13 @@ id(42); id("hi"); id(3.14)   // → three native functions
   stdio, strings/maps/slices, `json()`, arena blocks + `arena_reset()`,
   goroutines/channels (winpthreads), math, file I/O — plus TCP sockets
   (`dial`/`listen`/`accept`/`read`/`write`/`close`) via winsock2, plus HTTPS/TLS
-  (`https_*`/`wss_*`) and the OpenSSL crypto builtins. Portability is handled by
-  `#ifdef _WIN32` guards in the emitted runtime (so the same C still builds native
-  and wasm). TLS/crypto link a mingw OpenSSL the caller supplies via
-  `MACHIN_WIN_OPENSSL=/path` (a dir with `include/` and `lib/`); the CA root
-  bundle is compiled in so certificates verify with no external files. XEdDSA
-  (libsodium), terminal raw mode, SQLite, and regex remain unsupported and are
-  rejected at build time.
+  (`https_*`/`wss_*`) and the OpenSSL crypto builtins, plus terminal input
+  (`raw_mode`/`read_key`) via conio. Portability is handled by `#ifdef _WIN32`
+  guards in the emitted runtime (so the same C still builds native and wasm).
+  TLS/crypto link a mingw OpenSSL the caller supplies via `MACHIN_WIN_OPENSSL=/path`
+  (a dir with `include/` and `lib/`); the CA root bundle is compiled in so
+  certificates verify with no external files. XEdDSA (libsodium), SQLite, POSIX
+  regex, and zlib remain unsupported and are rejected at build time.
 
 ---
 

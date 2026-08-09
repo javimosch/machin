@@ -276,9 +276,10 @@ func BuildWasm(prog *Program, outPath string, safe bool) error {
 
 // BuildWindows cross-compiles the program to a Windows x86-64 .exe via
 // `zig cc -target x86_64-windows-gnu` (mingw-w64 + winpthreads, a single-binary
-// cross toolchain like the wasm path). Covers #517 Phases 0+N+TLS: the
-// POSIX-independent core, TCP sockets (winsock2), and HTTPS/TLS + OpenSSL crypto
-// builtins. The preflight still rejects XEdDSA, terminal raw mode, SQLite, regex.
+// cross toolchain like the wasm path). Covers #517 Phases 0+N+TLS+TTY: the
+// POSIX-independent core, TCP sockets (winsock2), HTTPS/TLS + OpenSSL crypto
+// builtins, and terminal input (raw_mode/read_key) via conio. The preflight still
+// rejects XEdDSA, SQLite, regex, and zlib.
 //
 // zig alone suffices EXCEPT for TLS/crypto, which link OpenSSL: zig does not ship
 // an OpenSSL for the windows-gnu target, so the caller must point MACHIN_WIN_OPENSSL
