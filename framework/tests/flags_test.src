@@ -1,8 +1,12 @@
 // flags_test — exercises framework/flags.src's parser directly, in MFL, via
 // `machin test`. Run from the repo root:
-//   machin test framework/tests/flags_test.src
-// (machin test composes framework/test.src automatically; flags.src is
-// composed explicitly below since machin test only auto-adds test.src.)
+//   machin test framework/flags.src framework/tests/flags_test.src
+// or `make mfl-test`, which is what CI runs.
+//
+// flags.src MUST be listed explicitly: `machin test` auto-composes only
+// framework/test.src (the assert helpers), not the module under test. An earlier
+// version of this header documented the invocation without it, which fails with
+// `call to undefined function "new_flags"`.
 
 func main() {
     fs := new_flags("mytool")

@@ -4,7 +4,7 @@ BIN     := bin/machin
 PREFIX  ?= /usr/local
 GOFLAGS ?= -trimpath
 
-.PHONY: all build test cover examples bench cov-floor install uninstall clean
+.PHONY: all build test mfl-test mfl-cover cover examples bench cov-floor install uninstall clean
 
 all: build
 
@@ -14,9 +14,27 @@ build:
 	go build $(GOFLAGS) -o $(BIN) .
 	@echo "built $(BIN)"
 
-# Run the Go test suite (compiles + executes MFL programs natively).
-test:
+# Run the Go test suite (compiles + executes MFL programs natively), then the MFL
+# suites written in machin itself.
+test: mfl-test
 	go test ./...
+
+# Run the MFL test suites — the ones written IN machin, via `machin test`, rather
+# than through the Go harness. Each suite is one invocation: `machin test`
+# composes its inputs into a single program, so separate suites must not share one.
+#
+# This exists because framework/tests/flags_test.src sat in the repo unexecuted by
+# anything: the Go test that appears to cover flags.src actually writes its own
+# inline snippet. Nothing would have noticed if the .src suite broke — and its own
+# documented invocation had in fact stopped working.
+mfl-test: build
+	$(BIN) test framework/flags.src framework/tests/flags_test.src
+
+# Same suites with function + statement coverage (#589). Not wired into `test`:
+# coverage is a report to read, not a gate, and there is no threshold to enforce
+# yet — 15 of 16 framework modules have no MFL tests at all (see the tracking issue).
+mfl-cover: build
+	$(BIN) test --cover framework/flags.src framework/tests/flags_test.src
 
 # Statement coverage of the compiler. `make cover` prints the % and writes an
 # HTML report to coverage.html (open it to see which lines are unhit). The corpus
