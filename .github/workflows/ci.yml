@@ -63,6 +63,15 @@ jobs:
       - name: MFL coverage floor
         run: make mfl-cov-floor
 
+      # main only: a release PR legitimately carries an untagged version bump, so
+      # this would fail every such PR. On main it catches the version bump that
+      # merged and never got tagged — the v0.123.0 failure, which was invisible.
+      - name: Released-version check
+        if: github.ref == 'refs/heads/main'
+        run: |
+          git fetch --tags --quiet
+          make version-check
+
       - name: Run every example (integration smoke test)
         run: ./examples/run.sh
 

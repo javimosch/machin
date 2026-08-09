@@ -4,7 +4,7 @@ BIN     := bin/machin
 PREFIX  ?= /usr/local
 GOFLAGS ?= -trimpath
 
-.PHONY: all build test mfl-test mfl-cover mfl-cov-floor cover examples bench cov-floor install uninstall clean
+.PHONY: all build test mfl-test mfl-cover mfl-cov-floor version-check cover examples bench cov-floor install uninstall clean
 
 all: build
 
@@ -42,6 +42,11 @@ mfl-cover: build
 # Raise these as #593 adds suites for the other pure modules. Lowering one is
 # allowed but must be deliberate and explained in the commit — that is the whole
 # point of a floor being a number in a file rather than a habit.
+# Fail if main advertises a version that was never released — see the script for
+# the v0.123.0 incident this exists to prevent recurring.
+version-check:
+	@./tools/version-check.sh
+
 MFL_FUNC_FLOOR ?= 90
 MFL_STMT_FLOOR ?= 75
 
