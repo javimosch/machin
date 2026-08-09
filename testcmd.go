@@ -24,10 +24,53 @@ import (
 // tally, matching the "N passed, M failed" a Go `go test` run reports for one
 // package.
 type TestRunResult struct {
-	OK     bool     `json:"ok"`
-	Passed int      `json:"passed"`
-	Failed int      `json:"failed"`
-	Files  []string `json:"files"`
+	OK       bool      `json:"ok"`
+	Passed   int       `json:"passed"`
+	Failed   int       `json:"failed"`
+	Files    []string  `json:"files"`
+	Coverage *Coverage `json:"coverage,omitempty"`
+}
+
+// Coverage is `machin test --cover`'s report (#589, #236 stage B1).
+//
+// Kind is stated explicitly and is not optional. A coverage number that cannot
+// say what it measured is worse than no number: "function" here means a function
+// was ENTERED at least once, which is much weaker than statement or branch
+// coverage and must never be quoted as if it were either.
+type Coverage struct {
+	Kind       string         `json:"kind"` // "function"
+	Covered    int            `json:"covered"`
+	Total      int            `json:"total"`
+	Pct        float64        `json:"pct"`
+	Files      []FileCoverage `json:"files"`
+	Statements *StmtCoverage  `json:"statements,omitempty"`
+}
+
+// StmtCoverage is the statement-level report (#589 stage B2). It is a SEPARATE
+// block with its own Kind rather than a replacement for the function numbers,
+// because the two answer different questions and conflating them is how a weak
+// number gets quoted as a strong one: function coverage says "was this ever
+// called", statement coverage says "did this code run".
+//
+// Uncovered lists the functions containing at least one unexecuted statement —
+// a function can be 100% "covered" at function level and still have a branch
+// nothing exercises, which is exactly what this block exists to surface.
+type StmtCoverage struct {
+	Kind      string   `json:"kind"` // "statement"
+	Covered   int      `json:"covered"`
+	Total     int      `json:"total"`
+	Pct       float64  `json:"pct"`
+	Uncovered []string `json:"uncovered"` // function names with unexecuted statements
+}
+
+// FileCoverage is one source file's share of the report. Uncovered names are
+// listed rather than merely counted — the point of the number is to say WHICH
+// functions no test reaches.
+type FileCoverage struct {
+	File      string   `json:"file"`
+	Covered   int      `json:"covered"`
+	Total     int      `json:"total"`
+	Uncovered []string `json:"uncovered"`
 }
 
 // runMFLTests is the pure core of `machin test` — no exit, no direct I/O — so
@@ -36,15 +79,20 @@ type TestRunResult struct {
 // program, and parses its TEST_SUMMARY tally. programOutput is the test
 // program's own stdout+stderr (FAIL lines etc.) — the caller decides where it
 // goes; keeping it out of TestRunResult keeps --json output pure JSON.
-func runMFLTests(files []string) (res TestRunResult, programOutput string, err error) {
+func runMFLTests(files []string, cover bool) (res TestRunResult, programOutput string, err error) {
 	if len(files) == 0 {
 		return res, "", fmt.Errorf("test: need at least one .src/.mfl test file")
 	}
 	res.Files = files
 
-	prog, _, err := composeSources(append([]string{"framework/test.src"}, files...))
+	all := append([]string{"framework/test.src"}, files...)
+	prog, _, err := composeSources(all)
 	if err != nil {
 		return res, "", err
+	}
+	if cover {
+		coverFuncs = true
+		defer func() { coverFuncs = false }()
 	}
 	bin, err := os.CreateTemp("", "mfl-test-*")
 	if err != nil {
@@ -55,28 +103,174 @@ func runMFLTests(files []string) (res TestRunResult, programOutput string, err e
 	if err := BuildBinary(prog, bin.Name(), false); err != nil {
 		return res, "", err
 	}
-	out, _ := exec.Command(bin.Name()).CombinedOutput() // exit code is redundant with the parsed tally
+	cmd := exec.Command(bin.Name())
+	var covPath string
+	if cover {
+		cf, ferr := os.CreateTemp("", "mfl-cov-*")
+		if ferr != nil {
+			return res, "", ferr
+		}
+		cf.Close()
+		covPath = cf.Name()
+		defer os.Remove(covPath)
+		cmd.Env = append(os.Environ(), "MFL_COVER_OUT="+covPath)
+	}
+	out, _ := cmd.CombinedOutput() // exit code is redundant with the parsed tally
 	programOutput = string(out)
 	passed, failed, ok := parseTestSummary(programOutput)
 	if !ok {
 		return res, programOutput, fmt.Errorf("test: no TEST_SUMMARY line in output — did the test call test_summary()?")
 	}
 	res.Passed, res.Failed, res.OK = passed, failed, failed == 0
+	if cover {
+		cov, cerr := readCoverage(covPath, prog, all)
+		if cerr != nil {
+			return res, programOutput, cerr
+		}
+		res.Coverage = cov
+	}
 	return res, programOutput, nil
 }
 
+// readCoverage turns the counter dump into a per-file report.
+//
+// The dump only carries names, so file attribution comes from a separate scan of
+// the composed sources (declOwners). A function present in the AST but missing
+// from the dump is a MISS, not an omission: machin instantiates only functions
+// something calls, so an unreached function never gets a counter emitted at all.
+// That is the case the report most needs to show, so absence is treated as
+// uncovered rather than skipped.
+func readCoverage(path string, prog *Program, files []string) (*Coverage, error) {
+	hits := map[string]bool{}
+	if data, err := os.ReadFile(path); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			name, ok := strings.CutPrefix(line, "hit ")
+			if ok {
+				hits[strings.TrimSpace(name)] = true
+			}
+		}
+	}
+	// statement slots: owner function name -> (hit, total)
+	stmtHit, stmtTotal := map[string]int{}, map[string]int{}
+	if data, err := os.ReadFile(path); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			rest, ok := strings.CutPrefix(line, "stmt ")
+			if !ok {
+				continue
+			}
+			f := strings.SplitN(strings.TrimSpace(rest), " ", 2)
+			if len(f) != 2 {
+				continue
+			}
+			stmtTotal[f[1]]++
+			if f[0] == "1" {
+				stmtHit[f[1]]++
+			}
+		}
+	}
+	owners := declOwners(files)
+	cov := &Coverage{Kind: "function"}
+	byFile := map[string]*FileCoverage{}
+	var order []string
+	for _, fn := range prog.Funcs {
+		if fn.IsLambda {
+			continue
+		}
+		file := owners[fn.Name]
+		if file == "" {
+			file = "(unknown)"
+		}
+		fc, seen := byFile[file]
+		if !seen {
+			fc = &FileCoverage{File: file}
+			byFile[file] = fc
+			order = append(order, file)
+		}
+		fc.Total++
+		cov.Total++
+		if hits[fn.Name] {
+			fc.Covered++
+			cov.Covered++
+		} else {
+			fc.Uncovered = append(fc.Uncovered, fn.Name)
+		}
+	}
+	for _, f := range order {
+		cov.Files = append(cov.Files, *byFile[f])
+	}
+	if cov.Total > 0 {
+		cov.Pct = float64(cov.Covered) / float64(cov.Total) * 100
+	}
+	if len(stmtTotal) > 0 {
+		sc := &StmtCoverage{Kind: "statement"}
+		for _, fn := range prog.Funcs {
+			if fn.IsLambda {
+				continue
+			}
+			tot, hit := stmtTotal[fn.Name], stmtHit[fn.Name]
+			sc.Total += tot
+			sc.Covered += hit
+			if tot > hit {
+				sc.Uncovered = append(sc.Uncovered, fn.Name)
+			}
+		}
+		if sc.Total > 0 {
+			sc.Pct = float64(sc.Covered) / float64(sc.Total) * 100
+		}
+		cov.Statements = sc
+	}
+	return cov, nil
+}
+
+// declOwners maps a declared function name to the file it came from.
+// composeSources concatenates every input into one string before parsing, so the
+// AST cannot say which file a function came from; this re-reads each input and
+// records the `func <name>` declarations it opens. Text-level on purpose — it
+// needs only the names, and reproducing the parser here would be worse.
+func declOwners(files []string) map[string]string {
+	owners := map[string]string{}
+	for _, path := range files {
+		data, err := readModule(path)
+		if err != nil {
+			continue
+		}
+		blocks, err := splitFunctions(string(data))
+		if err != nil {
+			continue
+		}
+		for _, b := range blocks {
+			rest, ok := strings.CutPrefix(strings.TrimSpace(normalize(b)), "func ")
+			if !ok {
+				continue
+			}
+			if i := strings.IndexAny(rest, "("); i > 0 {
+				name := strings.TrimSpace(rest[:i])
+				if name != "" {
+					if _, dup := owners[name]; !dup {
+						owners[name] = path
+					}
+				}
+			}
+		}
+	}
+	return owners
+}
+
 func cmdTest(args []string) error {
-	jsonOut := false
+	jsonOut, cover := false, false
 	var files []string
 	for _, a := range args {
-		if a == "--json" {
+		switch a {
+		case "--json":
 			jsonOut = true
-		} else {
+		case "--cover":
+			cover = true
+		default:
 			files = append(files, a)
 		}
 	}
 
-	res, programOutput, err := runMFLTests(files)
+	res, programOutput, err := runMFLTests(files, cover)
 	// The test program's own output (FAIL lines, the TEST_SUMMARY line) is
 	// diagnostic detail, not the answer — stderr always, so --json's stdout
 	// stays pure JSON (machin check's same agent-first convention).
@@ -96,6 +290,23 @@ func cmdTest(args []string) error {
 		}
 	} else {
 		fmt.Fprintf(os.Stderr, "\n%d passed, %d failed\n", res.Passed, res.Failed)
+		if c := res.Coverage; c != nil {
+			// "function coverage" spelled out every time: this counts functions
+			// ENTERED, not statements or branches, and must not be quoted as either.
+			fmt.Fprintf(os.Stderr, "\nfunction coverage: %d/%d (%.1f%%)\n", c.Covered, c.Total, c.Pct)
+			for _, f := range c.Files {
+				fmt.Fprintf(os.Stderr, "  %-40s %d/%d\n", f.File, f.Covered, f.Total)
+				if len(f.Uncovered) > 0 {
+					fmt.Fprintf(os.Stderr, "      uncovered: %s\n", strings.Join(f.Uncovered, ", "))
+				}
+			}
+			if sc := c.Statements; sc != nil {
+				fmt.Fprintf(os.Stderr, "\nstatement coverage: %d/%d (%.1f%%)\n", sc.Covered, sc.Total, sc.Pct)
+				if len(sc.Uncovered) > 0 {
+					fmt.Fprintf(os.Stderr, "  functions with unexecuted statements: %s\n", strings.Join(sc.Uncovered, ", "))
+				}
+			}
+		}
 	}
 	if !res.OK {
 		os.Exit(1)

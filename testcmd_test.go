@@ -29,7 +29,7 @@ func TestRunMFLTestsAllPass(t *testing.T) {
     assert_eq_str("a", "a", "str eq")
     test_summary()
 }`)
-	res, _, err := runMFLTests([]string{f})
+	res, _, err := runMFLTests([]string{f}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -46,7 +46,7 @@ func TestRunMFLTestsSomeFail(t *testing.T) {
     assert_eq_int(1, 2, "another deliberate failure")
     test_summary()
 }`)
-	res, out, err := runMFLTests([]string{f})
+	res, out, err := runMFLTests([]string{f}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestRunMFLTestsSomeFail(t *testing.T) {
 func TestRunMFLTestsComposeError(t *testing.T) {
 	dir := t.TempDir()
 	f := writeSrc(t, dir, "t.src", `func main() { undefined_thing_xyz() }`)
-	_, _, err := runMFLTests([]string{f})
+	_, _, err := runMFLTests([]string{f}, false)
 	if err == nil {
 		t.Fatal("expected a compose/typecheck error, got nil")
 	}
@@ -72,7 +72,7 @@ func TestRunMFLTestsMissingSummary(t *testing.T) {
 	// A test that asserts but never calls test_summary() — no TEST_SUMMARY
 	// line, so runMFLTests must report an error, not silently claim 0/0 ok.
 	f := writeSrc(t, dir, "t.src", `func main() { assert(true, "ok") }`)
-	_, _, err := runMFLTests([]string{f})
+	_, _, err := runMFLTests([]string{f}, false)
 	if err == nil {
 		t.Fatal("expected an error for a test that never calls test_summary()")
 	}
@@ -86,7 +86,7 @@ func TestRunMFLTestsComposesFrameworkModule(t *testing.T) {
     assert_eq_int(flag_int_val(fs, "n"), 1, "default")
     test_summary()
 }`)
-	res, _, err := runMFLTests([]string{"framework/flags.src", f})
+	res, _, err := runMFLTests([]string{"framework/flags.src", f}, false)
 	if err != nil {
 		t.Fatalf("unexpected error composing flags.src ahead of the test: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestRunMFLTestsComposesFrameworkModule(t *testing.T) {
 }
 
 func TestRunMFLTestsNoFiles(t *testing.T) {
-	if _, _, err := runMFLTests(nil); err == nil {
+	if _, _, err := runMFLTests(nil, false); err == nil {
 		t.Fatal("expected an error with no files given")
 	}
 }
@@ -178,7 +178,7 @@ func TestCmdTestJSONWithFailures(t *testing.T) {
 		test_summary()
 	}`)
 
-	res, _, err := runMFLTests([]string{f})
+	res, _, err := runMFLTests([]string{f}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

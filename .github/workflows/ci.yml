@@ -45,6 +45,18 @@ jobs:
       - name: Test
         run: go test ./...
 
+      # The MFL test suites — the ones written IN machin and run through the
+      # `machin test` CLI, not the Go harness. Its own step so a failure here is
+      # attributable to the framework module rather than to the compiler.
+      #
+      # framework/tests/flags_test.src previously sat in the repo executed by
+      # nothing: the Go test that appears to cover flags.src writes its own inline
+      # snippet instead. Its documented invocation had silently stopped working.
+      - name: MFL test suites (machin test)
+        run: |
+          go build -o /tmp/machin-ci .
+          /tmp/machin-ci test framework/flags.src framework/tests/flags_test.src
+
       - name: Run every example (integration smoke test)
         run: ./examples/run.sh
 

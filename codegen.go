@@ -28,7 +28,7 @@ func CompileToCTarget(p *Program, safe bool, target string) (string, []string, e
 	if err != nil {
 		return "", nil, err
 	}
-	g := &cgen{c: c, safe: safe, target: target, probeVars: debugProbeVars, jsonMemo: map[string]string{}, parseMemo: map[string]string{}, sortMemo: map[string]string{}, chanJSONMemo: map[string][2]string{}}
+	g := &cgen{c: c, safe: safe, target: target, probeVars: debugProbeVars, cover: coverFuncs, covIdx: map[string]int{}, covStmt: map[Stmt]int{}, jsonMemo: map[string]string{}, parseMemo: map[string]string{}, sortMemo: map[string]string{}, chanJSONMemo: map[string][2]string{}}
 	src, err := g.program(p)
 	if err != nil {
 		return "", nil, err
@@ -102,6 +102,11 @@ type cgen struct {
 	tramp        strings.Builder // goroutine trampolines
 	goID         int
 	jsonFns      strings.Builder      // generated per-type JSON serializers + parsers
+	cover        bool                 // emit function-entry coverage counters (#589)
+	covIdx       map[string]int       // source function name -> counter slot
+	covNames     []string             // counter slot -> source function name
+	covStmt      map[Stmt]int         // statement -> counter slot (#589 stage B2)
+	covStmtOwner []string             // statement slot -> owning source function name
 	sortFns      strings.Builder      // generated per-element-type sort_by comparators (#580)
 	sortMemo     map[string]string    // element C type -> comparator function name
 	sortID       int
@@ -137,6 +142,18 @@ type cgen struct {
 // program, so codegen instruments the named variables. It is empty for every normal build,
 // so `machin run`/`build` and the cgentest oracle-diff emit no probes and pay nothing.
 var debugProbeVars []string
+
+// coverFuncs is set by `machin test --cover` just before it builds, and turns on
+// function-entry coverage instrumentation (#589 / #236 stage B1). Package-level
+// for the same reason debugProbeVars is: threading a flag through CompileToC ->
+// CompileToCTarget -> BuildBinaryStatic touches every caller for a mode only one
+// command uses.
+//
+// The DENOMINATOR is deliberately taken from the parsed AST, not from the
+// functions codegen actually emits. machin only instantiates functions something
+// calls, so counting emitted functions would report 100% while silently excluding
+// every function no test reaches — exactly the code the number exists to find.
+var coverFuncs bool
 
 // wantsProbe reports whether `name` is being watched by `machin replay --print`.
 func (g *cgen) wantsProbe(name string) bool {
@@ -4223,6 +4240,22 @@ func (g *cgen) program(p *Program) (string, error) {
 	for _, name := range g.c.GlobalOrder() {
 		g.globals[name] = true
 	}
+	// Coverage slots come from the PARSED program, so a function nothing calls
+	// still occupies a slot and reports as a miss. Lambdas are excluded: they are
+	// lifted compiler artifacts, not functions anyone declared or can test by name.
+	if g.cover {
+		for _, fn := range p.Funcs {
+			if fn.IsLambda {
+				continue
+			}
+			if _, seen := g.covIdx[fn.Name]; seen {
+				continue
+			}
+			g.covIdx[fn.Name] = len(g.covNames)
+			g.covNames = append(g.covNames, fn.Name)
+			g.assignStmtSlots(fn.Name, fn.Body)
+		}
+	}
 	// emit one function body per instance (monomorphization); this also fills
 	// g.tramp via any go statements.
 	for _, inst := range g.c.Reps() {
@@ -4423,6 +4456,39 @@ func (g *cgen) program(p *Program) (string, error) {
 		out.WriteString(g.jsonFns.String())
 		out.WriteByte('\n')
 	}
+	// coverage counters (#589): a byte per declared function, dumped at exit to
+	// the path in MFL_COVER_OUT. A file, not stdout/stderr, because the test
+	// program's own output is parsed for TEST_SUMMARY and must stay clean.
+	if g.cover {
+		fmt.Fprintf(&out, "static unsigned char mfl_cov[%d];\n", len(g.covNames))
+		fmt.Fprintf(&out, "static const char* const mfl_cov_names[%d] = {\n", len(g.covNames))
+		for _, n := range g.covNames {
+			fmt.Fprintf(&out, "    %s,\n", cStringLit(n))
+		}
+		out.WriteString("};\n")
+		fmt.Fprintf(&out, "static unsigned char mfl_covs[%d];\n", max(len(g.covStmtOwner), 1))
+		fmt.Fprintf(&out, "static const char* const mfl_covs_owner[%d] = {\n", max(len(g.covStmtOwner), 1))
+		for _, n := range g.covStmtOwner {
+			fmt.Fprintf(&out, "    %s,\n", cStringLit(n))
+		}
+		if len(g.covStmtOwner) == 0 {
+			out.WriteString("    0,\n")
+		}
+		out.WriteString("};\n")
+		out.WriteString(`static void mfl_cov_dump(void) {
+    const char* p = getenv("MFL_COVER_OUT");
+    if (!p) return;
+    FILE* f = fopen(p, "w");
+    if (!f) return;
+    for (int i = 0; i < ` + fmt.Sprint(len(g.covNames)) + `; i++)
+        fprintf(f, "%s %s\n", mfl_cov[i] ? "hit" : "miss", mfl_cov_names[i]);
+    for (int i = 0; i < ` + fmt.Sprint(len(g.covStmtOwner)) + `; i++)
+        fprintf(f, "stmt %d %s\n", mfl_covs[i] ? 1 : 0, mfl_covs_owner[i]);
+    fclose(f);
+}
+`)
+		out.WriteByte('\n')
+	}
 	// sort_by comparators (generated on demand); reference struct typedefs too
 	if g.sortFns.Len() > 0 {
 		out.WriteString(g.sortFns.String())
@@ -4500,6 +4566,9 @@ func (g *cgen) program(p *Program) (string, error) {
 		// SIGPIPE doesn't exist on Windows (#517), so guard the signal() call there.
 		out.WriteString("int main(int argc, char** argv) {\n")
 		out.WriteString("#ifndef _WIN32\n    signal(SIGPIPE, SIG_IGN);\n#endif\n")
+		if g.cover {
+			out.WriteString("    atexit(mfl_cov_dump);\n")
+		}
 		out.WriteString("    mfl_argc = argc; mfl_argv = argv; mfl_rr_init(); mfl_main(); mfl_rr_finish(); return 0; }\n")
 	}
 	return out.String(), nil
@@ -4540,10 +4609,46 @@ func (g *cgen) signature(inst string) string {
 	return fmt.Sprintf("%s %s(%s)", g.retType(inst), g.c.CName(inst), params)
 }
 
+// assignStmtSlots gives every statement in a body its own counter slot (#589
+// stage B2). Keyed by AST pointer identity, so a generic's monomorphized
+// instances all mark the one statement the author wrote — the same collapsing
+// the function-level counters do.
+func (g *cgen) assignStmtSlots(owner string, body []Stmt) {
+	for _, st := range body {
+		if _, seen := g.covStmt[st]; !seen {
+			g.covStmt[st] = len(g.covStmtOwner)
+			g.covStmtOwner = append(g.covStmtOwner, owner)
+		}
+		switch n := st.(type) {
+		case *IfStmt:
+			g.assignStmtSlots(owner, n.Then)
+			g.assignStmtSlots(owner, n.Else)
+		case *WhileStmt:
+			g.assignStmtSlots(owner, n.Body)
+		case *RangeStmt:
+			g.assignStmtSlots(owner, n.Body)
+		case *ArenaStmt:
+			g.assignStmtSlots(owner, n.Body)
+		case *SelectStmt:
+			for _, c := range n.Cases {
+				g.assignStmtSlots(owner, c.Body)
+			}
+			g.assignStmtSlots(owner, n.Default)
+		}
+	}
+}
+
 func (g *cgen) function(inst string) error {
 	fn := g.c.SrcFunc(inst)
 	g.curFn = inst
 	g.buf.WriteString(g.signature(inst) + " {\n")
+	// Function-entry coverage (#589). Keyed by SOURCE name, so every
+	// monomorphized instance of a generic marks the one function the author wrote.
+	if g.cover {
+		if slot, ok := g.covIdx[fn.Name]; ok {
+			fmt.Fprintf(&g.buf, "    mfl_cov[%d] = 1;\n", slot)
+		}
+	}
 	// unpack captured variables from the closure environment. Each is a pointer
 	// to the shared heap box; the lambda accesses it by reference (varRef).
 	if fn.IsLambda && fn.NumCaptures > 0 {
@@ -4640,6 +4745,14 @@ func (g *cgen) emitProbe(name string, kind Kind, depth int) {
 }
 
 func (g *cgen) stmt(s Stmt, depth int) error {
+	if g.cover {
+		// Every call site of stmt() is inside a C block, so an extra statement
+		// here is always legal.
+		if slot, ok := g.covStmt[s]; ok {
+			indentC(&g.buf, depth)
+			fmt.Fprintf(&g.buf, "mfl_covs[%d] = 1;\n", slot)
+		}
+	}
 	indentC(&g.buf, depth)
 	switch st := s.(type) {
 	case *ExprStmt:
