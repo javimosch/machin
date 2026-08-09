@@ -57,6 +57,12 @@ jobs:
           go build -o /tmp/machin-ci .
           /tmp/machin-ci test framework/flags.src framework/tests/flags_test.src
 
+      # Coverage FLOOR, not a report: a ratchet set just under what the suites
+      # measure today, so a regression fails here rather than being noticed later.
+      # Raise it as #593 adds suites; lowering it must be deliberate and explained.
+      - name: MFL coverage floor
+        run: make mfl-cov-floor
+
       - name: Run every example (integration smoke test)
         run: ./examples/run.sh
 
