@@ -2,6 +2,66 @@
 
 ## Unreleased
 
+## v0.127.0
+
+`machin test` gained coverage, and the repo started actually running its own MFL
+tests — which turned out not to be happening at all.
+
+**`machin test --cover`** (PR #592, issues #589 / #236 stage B1+B2). Two blocks,
+each naming its own granularity:
+
+```
+machin test --cover framework/flags.src framework/tests/flags_test.src
+
+function coverage: 15/16 (93.8%)
+  framework/flags.src   10/11   uncovered: flag_usage
+statement coverage: 92/112 (82.1%)
+  functions with unexecuted statements: parse_flags, flag_usage
+```
+
+Two properties make the number honest rather than flattering, and both are pinned
+by tests:
+
+- **The denominator comes from the parsed AST, not from emitted code.** machin
+  instantiates only functions something calls, so counting emitted functions would
+  report 100% while silently excluding every function no test reaches — precisely
+  the code the number exists to find.
+- **Entry, not instantiation.** A function called only from a branch that never
+  runs *is* compiled and emitted, and still reports uncovered.
+
+A generic's monomorphized instances collapse to the one function the author wrote.
+Statement coverage is a **separate** block rather than a replacement, because the
+two answer different questions — "was this ever called" vs "did this code run" —
+and `parse_flags` above is exactly the case where the first says 100% and the
+second does not. Conflating them is how a weak number gets quoted as a strong one.
+
+`--cover` changes instrumentation only: the pass/fail tally is identical with and
+without it, and no `coverage` key appears at all unless it is passed. Counters
+dump via `atexit` to `MFL_COVER_OUT` — a file, not stdout/stderr, because the test
+program's own output is parsed for `TEST_SUMMARY`.
+
+Stage B3 (`.src` source mapping) is deliberately not done: it is a prerequisite
+for annotated human output, not for the measurement, which is why `uncovered`
+lists function names rather than slot indices.
+
+**The MFL test suite now actually runs** (PR #592). The repo shipped exactly one
+`.src` test file and **nothing executed it** — the Go test that appears to cover
+`flags.src` writes its own inline snippet instead. It had already rotted quietly:
+its own header documented an invocation that fails, because `machin test`
+auto-composes only `framework/test.src`, never the module under test.
+
+New `make mfl-test` and `make mfl-cover`; `make test` depends on the former, and
+CI runs it as its own step so a failure is attributable to the framework module
+rather than to the compiler. The gate was verified to actually fail — a
+deliberately wrong assert exits 1 — because a gate that cannot fail is worse than
+no gate, which is what this one had been.
+
+This also dogfoods the `machin test` CLI, exercised until now only through the Go
+API and never as the command a user types.
+
+15 of 16 framework modules still have no MFL test; the four pure ones (`xml`,
+`bson`, `reactive`, `router` — 78 functions) are tracked in #593.
+
 ## v0.126.1
 
 No compiler changes. This ships a **correction** that was living only in the repo:
