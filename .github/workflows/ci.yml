@@ -59,6 +59,7 @@ jobs:
           /tmp/machin-ci test framework/bson.src framework/tests/bson_test.src
           /tmp/machin-ci test framework/xml.src framework/tests/xml_test.src
           /tmp/machin-ci test framework/reactive.src framework/tests/reactive_test.src
+          /tmp/machin-ci test framework/reactive.src framework/router.src framework/tests/router_test.src
 
       # Coverage FLOOR, not a report: a ratchet set just under what the suites
       # measure today, so a regression fails here rather than being noticed later.

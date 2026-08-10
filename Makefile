@@ -32,6 +32,7 @@ mfl-test: build
 	$(BIN) test framework/bson.src framework/tests/bson_test.src
 	$(BIN) test framework/xml.src framework/tests/xml_test.src
 	$(BIN) test framework/reactive.src framework/tests/reactive_test.src
+	$(BIN) test framework/reactive.src framework/router.src framework/tests/router_test.src
 
 # Same suites with function + statement coverage (#589), as a human-readable report.
 mfl-cover: build
@@ -39,6 +40,7 @@ mfl-cover: build
 	$(BIN) test --cover framework/bson.src framework/tests/bson_test.src
 	$(BIN) test --cover framework/xml.src framework/tests/xml_test.src
 	$(BIN) test --cover framework/reactive.src framework/tests/reactive_test.src
+	$(BIN) test --cover framework/reactive.src framework/router.src framework/tests/router_test.src
 
 # MFL coverage floors — a RATCHET, like cov-floor is for the Go side. Set just
 # under what the suites measure today (flags.src: 90.9% function, 82.1% statement
@@ -65,6 +67,11 @@ XML_FUNC_FLOOR ?= 100
 # property of the module, not a gap in the suite — raising this floor requires a
 # native stub or a wasm test path (#593), not more tests.
 REACTIVE_FUNC_FLOOR ?= 76
+# router.src is fully covered (9/9) via framework/tests/router_stub.c, which
+# supplies no-op natives for its wasm DOM imports. Its STATEMENT floor is lower
+# than the shared one because its composed program drags in all of reactive.src,
+# most of which this suite does not exercise.
+ROUTER_FUNC_FLOOR ?= 100
 
 mfl-cov-floor: build
 	@$(BIN) test --cover --json framework/flags.src framework/tests/flags_test.src 2>/dev/null \
@@ -79,6 +86,9 @@ mfl-cov-floor: build
 	@$(BIN) test --cover --json framework/reactive.src framework/tests/reactive_test.src 2>/dev/null \
 		| python3 tools/cov-floor.py --module framework/reactive.src \
 			--func $(REACTIVE_FUNC_FLOOR) --stmt $(MFL_STMT_FLOOR)
+	@$(BIN) test --cover --json framework/reactive.src framework/router.src framework/tests/router_test.src 2>/dev/null \
+		| python3 tools/cov-floor.py --module framework/router.src \
+			--func $(ROUTER_FUNC_FLOOR) --stmt 60
 
 # Statement coverage of the compiler. `make cover` prints the % and writes an
 # HTML report to coverage.html (open it to see which lines are unhit). The corpus
