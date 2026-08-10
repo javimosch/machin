@@ -2,6 +2,54 @@
 
 ## Unreleased
 
+## v0.127.1
+
+A BSON decode fix, found by writing the tests for it. `framework/*.src` is
+embedded in the binary, so a release is the only way the fix reaches anyone.
+
+**BSON int32 decoded every negative value as a large positive** (PR #596, issue
+#593). `{"n":-5}` read back as `{"n":4294967291}`. `bs_le32` ORs four bytes
+together, so its result is always unsigned; int64 escapes the same bug by accident,
+because its top byte shifts into the sign bit. `framework/mongo.src` decodes
+documents through this path, so any Mongo document carrying a negative int32 field
+was read wrong.
+
+The obvious fix — sign-extend `bs_le32` — is **wrong**, and there is now a test
+pinning why. That function also reads document/string/binary lengths *and forms
+`bs_le64`'s low half*, where sign extension corrupts any 64-bit value whose low
+word has the top bit set: `0x00000000FFFFFFFF` would decode as `-1` instead of
+`4294967295`. The sign therefore lives in a new `bs_i32` used only at the int32
+decode site.
+
+**MFL test suites for three framework modules** (#593), all running in
+`make mfl-test` and CI, each gated by its own coverage floor:
+
+| module | assertions | function coverage |
+|---|--:|--:|
+| `bson.src` | 43 | 24/24 (100%) |
+| `xml.src` | 75 | 31/31 (100%) |
+| `reactive.src` | 45 | 13/17 (76.5%) |
+
+reactive's ceiling is the module's own: `bind`/`each`/`hydrate`/`mount` call the
+`extern "env"` DOM imports, which have no native definition, so calling one makes
+the test program fail to LINK rather than fail an assertion. `router.src` is
+excluded entirely for the same reason plus `export func nav`, which is *always*
+instantiated and drags the extern in whether a test touches it or not.
+
+**The TLS/SMTP test "flakes" were a real bug, now fixed.** Three `connection
+refused` failures across recent work, twice dismissed as flakes, had one cause:
+18 hardcoded test ports sat inside the Linux ephemeral range (32768-60999), so any
+unrelated outbound connection could hold one as its *source* port and the server
+under test could then not bind. Caught in the act:
+
+```
+ESTAB  192.168.1.101:47662 -> 34.160.81.0:443
+```
+
+Two of them were also shared by different tests. All moved below 32768 and
+de-duplicated; the mechanism was confirmed by occupying a port and reproducing the
+failure exactly.
+
 ## v0.127.0
 
 `machin test` gained coverage, and the repo started actually running its own MFL
