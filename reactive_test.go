@@ -212,9 +212,8 @@ func main() {
 	}
 }
 
-// path_index resolves a path to its registered index (and defaults to 0 for an
-// unknown path); navigate(path_index(p)) is the by-path entry the host uses for
-// link clicks and popstate.
+// path_index resolves a path to its registered index and returns -1 for an
+// unknown path; navigate() ignores -1 so an unrecognised path is a no-op.
 func TestRouterPathIndex(t *testing.T) {
 	rv, err := os.ReadFile("framework/reactive.src")
 	if err != nil {
@@ -257,7 +256,7 @@ func main() {
 	for _, want := range []string{
 		"idx /users=1",
 		"idx /settings=2",
-		"idx /missing=0", // unknown path defaults to the first route
+		"idx /missing=-1", // unknown path returns not-found
 		"OUT 2\nURL /settings",
 		"OUT 0\nURL /",
 	} {
