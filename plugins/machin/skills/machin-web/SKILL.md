@@ -161,7 +161,11 @@ the router too. The active route is a signal (an int index): `router_init(0)`,
 `current_route()` reads the active index, and `outlet(id, render)` re-renders the
 active page (a reaction over a `dom_html` host import) and syncs the address bar.
 `page()` switches on `current_route()` and must be a **pure render** (read signals,
-never `set` — that loops). The host adds `dom_html`/`nav_url`, forwards `[data-nav]`
+never `set` — that loops). `path_index(path)` returns **-1** for an unregistered
+path, so a `page()` can render a real 404 instead of silently showing route 0;
+`navigate` ignores an out-of-range index (either end), so an unknown link is inert
+rather than a crash. `router_init` also **clears** the route table, so calling it
+again gives a clean slate. The host adds `dom_html`/`nav_url`, forwards `[data-nav]`
 clicks to `nav(path)` (path in via `ptr_str`) + `popstate`, and a catch-all server
 serves the shell for any path (deep-links). See [machin-web-demo-router](https://github.com/javimosch/machin-web-demo-router).
 

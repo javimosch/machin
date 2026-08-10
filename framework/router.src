@@ -64,6 +64,12 @@ func current_route() (i) { i = get(route_now) }
 // navigate switches to a route index and syncs the address bar.
 func navigate(i) {
     if i < 0 { return }
+    // Upper bound too: navigate is public API an app calls with an index of its
+    // own, and route_paths[i] past the end reads out of bounds. #606 guarded the
+    // -1 that path_index now returns; this covers a stale or off-by-one index,
+    // which panics with "index out of range [99] with length 2" under --safe and
+    // reads garbage without it.
+    if i >= route_n { return }
     set(route_now, i)
     nav_url(route_paths[i])
 }
