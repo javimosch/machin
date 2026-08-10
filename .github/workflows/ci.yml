@@ -56,6 +56,9 @@ jobs:
         run: |
           go build -o /tmp/machin-ci .
           /tmp/machin-ci test framework/flags.src framework/tests/flags_test.src
+          /tmp/machin-ci test framework/bson.src framework/tests/bson_test.src
+          /tmp/machin-ci test framework/xml.src framework/tests/xml_test.src
+          /tmp/machin-ci test framework/reactive.src framework/tests/reactive_test.src
 
       # Coverage FLOOR, not a report: a ratchet set just under what the suites
       # measure today, so a regression fails here rather than being noticed later.

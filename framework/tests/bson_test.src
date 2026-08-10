@@ -1,0 +1,187 @@
+// bson_test — exercises framework/bson.src's codec in MFL, via `machin test`.
+// Run from the repo root:
+//   machin test framework/bson.src framework/tests/bson_test.src
+// or `make mfl-test`, which is what CI runs.
+//
+// bson.src MUST be listed explicitly: `machin test` auto-composes only
+// framework/test.src (the assert helpers), never the module under test.
+//
+// The codec is a round-trip pair, so most assertions encode a document and decode
+// it back rather than pinning byte sequences. Byte-level expectations are kept for
+// the little-endian helpers, because that is where a width or sign mistake hides
+// without changing any round-trip.
+
+// ---- little-endian helpers: exact bytes, not round-trips ----
+
+func test_hex_byte() {
+    assert_eq_str(bs_hx2(0), "00", "hx2 zero")
+    assert_eq_str(bs_hx2(255), "ff", "hx2 max, lowercase")
+    assert_eq_str(bs_hx2(16), "10", "hx2 high nibble only")
+    assert_eq_str(bs_hx2(10), "0a", "hx2 pads to two digits")
+}
+
+func test_le_hex_is_little_endian() {
+    // 1 must land in the FIRST byte — a big-endian mistake still round-trips
+    // through the matching reader, so only the literal bytes catch it.
+    assert_eq_str(bs_le32h(1), "01000000", "le32h puts the low byte first")
+    assert_eq_str(bs_le32h(258), "02010000", "le32h 0x0102 spans two bytes")
+    assert_eq_str(bs_le64h(1), "0100000000000000", "le64h low byte first")
+    assert_eq_str(bs_le32h(-1), "ffffffff", "le32h of -1 is all ones")
+}
+
+func test_le_readers_round_trip() {
+    assert_eq_int(bs_le32(from_hex(bs_le32h(0)), 0), 0, "le32 zero")
+    assert_eq_int(bs_le32(from_hex(bs_le32h(1)), 0), 1, "le32 one")
+    assert_eq_int(bs_le32(from_hex(bs_le32h(305419896)), 0), 305419896, "le32 0x12345678")
+    assert_eq_int(bs_le64(from_hex(bs_le64h(0)), 0), 0, "le64 zero")
+    assert_eq_int(bs_le64(from_hex(bs_le64h(-1)), 0), -1, "le64 -1 sign-extends")
+    assert_eq_int(bs_le64(from_hex(bs_le64h(1099511627776)), 0), 1099511627776, "le64 beyond 32 bits")
+}
+
+// bs_le32 is deliberately UNSIGNED: it reads lengths and forms bs_le64's low half.
+// Pinning that keeps someone from "fixing" it and silently breaking 64-bit values
+// whose low word has the top bit set.
+func test_le32_is_unsigned_on_purpose() {
+    assert_eq_int(bs_le32(from_hex("ffffffff"), 0), 4294967295, "le32 stays unsigned")
+    assert_eq_int(bs_i32(from_hex("ffffffff"), 0), -1, "bs_i32 is the signed reader")
+    assert_eq_int(bs_i32(from_hex(bs_le32h(-42)), 0), -42, "bs_i32 round-trips a negative")
+    assert_eq_int(bs_i32(from_hex(bs_le32h(2147483647)), 0), 2147483647, "bs_i32 keeps max positive")
+    // The exact case a global sign-extension of bs_le32 would corrupt.
+    assert_eq_int(bs_le64(from_hex("ffffffff00000000"), 0), 4294967295, "le64 low word high bit is not a sign")
+}
+
+// ---- documents: encode then decode ----
+
+func test_string_field() {
+    d := bson_finish(bson_str(bson_new(), "s", "hello"))
+    assert_eq_str(bson_to_json(d), "{\"s\":\"hello\"}", "string round-trip")
+}
+
+func test_empty_string_and_empty_document() {
+    e := bson_finish(bson_str(bson_new(), "s", ""))
+    assert_eq_str(bson_to_json(e), "{\"s\":\"\"}", "empty string value")
+    assert_eq_str(bson_to_json(bson_finish(bson_new())), "{}", "empty document")
+}
+
+func test_int32_including_negatives() {
+    a := bson_finish(bson_i32(bson_new(), "n", 42))
+    assert_eq_str(bson_to_json(a), "{\"n\":42}", "int32 positive")
+    // Regression: this decoded as 4294967291 before bs_i32 existed. Any negative
+    // int32 in a Mongo document read back as a large positive.
+    b := bson_finish(bson_i32(bson_new(), "n", -5))
+    assert_eq_str(bson_to_json(b), "{\"n\":-5}", "int32 negative")
+    c := bson_finish(bson_i32(bson_new(), "n", 0))
+    assert_eq_str(bson_to_json(c), "{\"n\":0}", "int32 zero")
+}
+
+func test_int64_including_negatives_and_large() {
+    a := bson_finish(bson_i64(bson_new(), "n", -5))
+    assert_eq_str(bson_to_json(a), "{\"n\":-5}", "int64 negative")
+    b := bson_finish(bson_i64(bson_new(), "n", 4294967295))
+    assert_eq_str(bson_to_json(b), "{\"n\":4294967295}", "int64 past 32 bits")
+}
+
+func test_bool_and_null() {
+    t := bson_finish(bson_bool(bson_new(), "b", 1))
+    assert_eq_str(bson_to_json(t), "{\"b\":true}", "bool true")
+    f := bson_finish(bson_bool(bson_new(), "b", 0))
+    assert_eq_str(bson_to_json(f), "{\"b\":false}", "bool false")
+    n := bson_finish(bson_null(bson_new(), "z"))
+    assert_eq_str(bson_to_json(n), "{\"z\":null}", "null")
+}
+
+func test_double() {
+    d := bson_finish(bson_double(bson_new(), "d", 1.5))
+    assert_eq_str(bson_to_json(d), "{\"d\":1.5}", "double round-trip through f64_bits")
+}
+
+func test_object_id_decodes_to_hex() {
+    hex := "0123456789abcdef01234567"
+    d := bson_finish(bson_oid(bson_new(), "_id", hex))
+    assert_eq_str(bson_to_json(d), "{\"_id\":\"" + hex + "\"}", "ObjectId decodes back to its hex")
+}
+
+func test_multiple_fields_keep_insertion_order() {
+    acc := bson_str(bson_new(), "a", "x")
+    acc = bson_i32(acc, "b", 2)
+    acc = bson_bool(acc, "c", 1)
+    d := bson_finish(acc)
+    assert_eq_str(bson_to_json(d), "{\"a\":\"x\",\"b\":2,\"c\":true}", "fields decode in the order added")
+}
+
+func test_subdocument() {
+    inner := bson_finish(bson_i32(bson_new(), "n", 7))
+    d := bson_finish(bson_subdoc(bson_new(), "sub", inner))
+    assert_eq_str(bson_to_json(d), "{\"sub\":{\"n\":7}}", "embedded document")
+}
+
+func test_nested_subdocument_two_deep() {
+    deep := bson_finish(bson_str(bson_new(), "s", "v"))
+    mid := bson_finish(bson_subdoc(bson_new(), "in", deep))
+    d := bson_finish(bson_subdoc(bson_new(), "out", mid))
+    assert_eq_str(bson_to_json(d), "{\"out\":{\"in\":{\"s\":\"v\"}}}", "two levels of nesting")
+}
+
+func test_array() {
+    // A BSON array is a document whose keys are "0", "1", ...
+    arr := bson_i32(bson_new(), "0", 10)
+    arr = bson_i32(arr, "1", 20)
+    d := bson_finish(bson_subarr(bson_new(), "xs", bson_finish(arr)))
+    assert_eq_str(bson_to_json(d), "{\"xs\":[10,20]}", "array decodes to a JSON list")
+}
+
+func test_binary_field() {
+    d := bson_finish(bson_binary(bson_new(), "p", bytes("abc")))
+    assert_eq_str(bson_to_json(d), "{\"p\":\"abc\"}", "binary payload (SCRAM's case)")
+}
+
+func test_json_string_escaping() {
+    d := bson_finish(bson_str(bson_new(), "s", "a\"b"))
+    assert_eq_str(bson_to_json(d), "{\"s\":\"a\\\"b\"}", "a quote in a value is escaped")
+}
+
+// BSON datetime (type 0x09) has no encoder in bson.src, so no round-trip can reach
+// its decode branch — but MongoDB returns dates constantly, so the branch matters.
+// Hand-build the element: type byte, key, NUL, then 8 bytes of little-endian ms.
+func test_datetime_decodes_as_a_number() {
+    ms := 1700000000000
+    d := bson_finish(bytes_concat(bson_new(), bs_el(9, "at", from_hex(bs_le64h(ms)))))
+    assert_eq_str(bson_to_json(d), "{\"at\":" + str(ms) + "}", "datetime decodes to epoch ms")
+    // Dates before 1970 are negative ms — the int64 path must keep the sign.
+    neg := 0 - 86400000
+    d2 := bson_finish(bytes_concat(bson_new(), bs_el(9, "at", from_hex(bs_le64h(neg)))))
+    assert_eq_str(bson_to_json(d2), "{\"at\":" + str(neg) + "}", "pre-epoch datetime stays negative")
+}
+
+func test_document_length_prefix_is_correct() {
+    // A wrong length prefix still decodes here but corrupts the wire protocol, so
+    // check the header rather than trusting the round-trip.
+    d := bson_finish(bson_new())
+    assert_eq_int(bs_le32(d, 0), 5, "empty document is 5 bytes: length + terminator")
+    assert_eq_int(bs_le32(d, 0), len(d), "declared length matches actual length")
+    d2 := bson_finish(bson_i32(bson_new(), "n", 1))
+    assert_eq_int(bs_le32(d2, 0), len(d2), "declared length matches for a populated document")
+}
+
+func main() {
+    test_hex_byte()
+    test_le_hex_is_little_endian()
+    test_le_readers_round_trip()
+    test_le32_is_unsigned_on_purpose()
+    test_string_field()
+    test_empty_string_and_empty_document()
+    test_int32_including_negatives()
+    test_int64_including_negatives_and_large()
+    test_bool_and_null()
+    test_double()
+    test_object_id_decodes_to_hex()
+    test_multiple_fields_keep_insertion_order()
+    test_subdocument()
+    test_nested_subdocument_two_deep()
+    test_array()
+    test_binary_field()
+    test_json_string_escaping()
+    test_datetime_decodes_as_a_number()
+    test_document_length_prefix_is_correct()
+    test_summary()
+}

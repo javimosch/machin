@@ -1,0 +1,251 @@
+// reactive_test — exercises framework/reactive.src's signal graph in MFL, via
+// `machin test`. Run from the repo root:
+//   machin test framework/reactive.src framework/tests/reactive_test.src
+// or `make mfl-test`, which is what CI runs.
+//
+// reactive.src MUST be listed explicitly: `machin test` auto-composes only
+// framework/test.src (the assert helpers), never the module under test.
+//
+// WHAT THIS SUITE CAN AND CANNOT REACH
+//
+// bind / each / mount / hydrate call the `extern "env"` DOM imports (dom_patch,
+// dom_mount, list_insert, ...), which have no native definition — calling one
+// makes the program fail to LINK, not fail an assertion. They are excluded here,
+// so 13 of 17 functions are reachable and the module's floor is set accordingly.
+// That is a property of the module (it is half a DOM binding), not a gap in the
+// tests. See #593.
+//
+// The interesting behaviour here is ORDERING, not values: does a reaction re-run
+// exactly when it should, and does the dependency graph forget edges it should
+// forget. Counters, not return values, are what those assertions look at.
+
+var runs_a = 0
+var runs_b = 0
+var runs_cond = 0
+
+// ---- signals ---------------------------------------------------------------
+
+func test_signal_get_set() {
+    s := signal(1)
+    assert_eq_int(get(s), 1, "signal holds its initial value")
+    set(s, 5)
+    assert_eq_int(get(s), 5, "set updates it")
+}
+
+func test_signals_are_independent() {
+    a := signal(1)
+    b := signal(2)
+    set(a, 10)
+    assert_eq_int(get(a), 10, "a changed")
+    assert_eq_int(get(b), 2, "b untouched")
+}
+
+// ---- reactions -------------------------------------------------------------
+
+func test_reaction_runs_once_on_registration() {
+    runs_a = 0
+    s := signal(0)
+    reaction(func() { get(s)  runs_a = runs_a + 1 })
+    assert_eq_int(runs_a, 1, "a reaction runs immediately when registered")
+}
+
+func test_reaction_reruns_when_its_dependency_changes() {
+    runs_a = 0
+    s := signal(0)
+    reaction(func() { get(s)  runs_a = runs_a + 1 })
+    assert_eq_int(runs_a, 1, "initial run")
+    set(s, 1)
+    assert_eq_int(runs_a, 2, "re-ran after its signal changed")
+    set(s, 2)
+    assert_eq_int(runs_a, 3, "and again")
+}
+
+func test_reaction_ignores_unrelated_signals() {
+    runs_a = 0
+    mine := signal(0)
+    other := signal(0)
+    reaction(func() { get(mine)  runs_a = runs_a + 1 })
+    assert_eq_int(runs_a, 1, "initial run")
+    set(other, 99)
+    assert_eq_int(runs_a, 1, "a signal it never read must not wake it")
+}
+
+// set() returns early when the value is unchanged. That is an optimization with
+// OBSERVABLE semantics: writing the same value must not re-run anything.
+func test_setting_an_equal_value_is_a_no_op() {
+    runs_a = 0
+    s := signal(7)
+    reaction(func() { get(s)  runs_a = runs_a + 1 })
+    assert_eq_int(runs_a, 1, "initial run")
+    set(s, 7)
+    assert_eq_int(runs_a, 1, "writing the same value does not re-run")
+    set(s, 8)
+    assert_eq_int(runs_a, 2, "a real change still does")
+}
+
+// THE DEPENDENCY-TRACKING TEST. Edges are re-recorded on every run (clear_edges
+// then re-track), so a reaction that STOPS reading a signal must stop waking on
+// it. Get this wrong and reactions fire forever on inputs they no longer use —
+// a leak that is invisible in output and only shows up as wasted work.
+func test_stale_dependencies_are_dropped() {
+    runs_cond = 0
+    flag := signal(1)
+    watched := signal(0)
+    reaction(func() {
+        runs_cond = runs_cond + 1
+        if get(flag) == 1 {
+            get(watched)
+        }
+    })
+    assert_eq_int(runs_cond, 1, "initial run, reading both")
+
+    set(watched, 1)
+    assert_eq_int(runs_cond, 2, "while the branch is live, watched wakes it")
+
+    // Turn the branch off. This run re-tracks and no longer reads `watched`.
+    set(flag, 0)
+    assert_eq_int(runs_cond, 3, "flipping the flag re-runs it")
+
+    set(watched, 2)
+    assert_eq_int(runs_cond, 3, "watched is no longer a dependency and must NOT wake it")
+
+    // Turning the branch back on must re-acquire the edge.
+    set(flag, 1)
+    assert_eq_int(runs_cond, 4, "flag still wakes it")
+    set(watched, 3)
+    assert_eq_int(runs_cond, 5, "the dropped edge is re-acquired, not lost forever")
+}
+
+func test_two_reactions_on_one_signal_both_run() {
+    runs_a = 0
+    runs_b = 0
+    s := signal(0)
+    reaction(func() { get(s)  runs_a = runs_a + 1 })
+    reaction(func() { get(s)  runs_b = runs_b + 1 })
+    set(s, 1)
+    assert_eq_int(runs_a, 2, "first reaction re-ran")
+    assert_eq_int(runs_b, 2, "second reaction re-ran")
+}
+
+// ---- computed --------------------------------------------------------------
+
+func test_computed_derives_and_tracks() {
+    src := signal(2)
+    dbl := computed(func() { return get(src) * 2 })
+    assert_eq_int(get(dbl), 4, "computed has its derived value immediately")
+    set(src, 5)
+    assert_eq_int(get(dbl), 10, "and follows its source")
+}
+
+func test_computed_chain_propagates() {
+    a := signal(1)
+    b := computed(func() { return get(a) + 1 })
+    c := computed(func() { return get(b) * 10 })
+    assert_eq_int(get(c), 20, "a -> b -> c resolves on creation")
+    set(a, 2)
+    assert_eq_int(get(c), 30, "a change propagates the whole chain")
+}
+
+// commit() runs dirty reactions to a FIXPOINT, so a computed that dirties another
+// computed must settle within the same set(), not leave a stale value behind.
+func test_computed_settles_within_one_set() {
+    a := signal(1)
+    b := computed(func() { return get(a) + 1 })
+    c := computed(func() { return get(b) + 1 })
+    set(a, 10)
+    assert_eq_int(get(b), 11, "first hop settled")
+    assert_eq_int(get(c), 12, "second hop settled in the same commit")
+}
+
+// A reaction that writes a signal re-enters commit(); the flushing guard must
+// keep that from recursing. If the guard were missing this would not return.
+func test_writing_a_signal_inside_a_reaction_terminates() {
+    runs_a = 0
+    src := signal(0)
+    out := signal(0)
+    reaction(func() {
+        runs_a = runs_a + 1
+        set(out, get(src) + 100)
+    })
+    assert_eq_int(get(out), 100, "the nested write took effect")
+    set(src, 1)
+    assert_eq_int(get(out), 101, "and again after a change")
+    assert_eq_int(runs_a, 2, "the reaction ran twice, not unboundedly")
+}
+
+// ---- helpers ---------------------------------------------------------------
+
+// in_list returns an INT flag (1/0), not a bool — pinned so a later change to a
+// real bool is a deliberate, visible break rather than a silent truthiness shift.
+func test_in_list() {
+    xs := []string{"a", "b"}
+    assert_eq_int(in_list(xs, "a"), 1, "finds the first")
+    assert_eq_int(in_list(xs, "b"), 1, "finds the last")
+    assert_eq_int(in_list(xs, "z"), 0, "absent key is 0")
+    empty := []string{}
+    assert_eq_int(in_list(empty, "a"), 0, "empty list finds nothing")
+}
+
+// The keyed-list keys are INTEGERS carried as a CSV string: csv() stringifies and
+// joins, parse_csv() splits and parse_int()s back to []int. That is why item
+// closures are indexed by int, and it is not obvious from the names alone.
+func test_csv_round_trip() {
+    xs := []int{1, 2, 3}
+    assert_eq_str(csv(xs), "1,2,3", "joined with commas")
+    back := parse_csv("1,2,3")
+    assert_eq_int(len(back), 3, "split back into three")
+    assert_eq_int(back[0], 1, "first")
+    assert_eq_int(back[2], 3, "last")
+    one := parse_csv("7")
+    assert_eq_int(len(one), 1, "a single field has no separator")
+    assert_eq_int(one[0], 7, "and survives intact")
+}
+
+func test_csv_of_empty_inputs() {
+    empty := []int{}
+    assert_eq_str(csv(empty), "", "empty list joins to empty string")
+    // The explicit early return in parse_csv: "" must be zero keys, not one
+    // bogus key of 0 — a list rendering one phantom row is the visible symptom.
+    assert_eq_int(len(parse_csv("")), 0, "empty string parses to no keys")
+}
+
+// ---- markup builders (no DOM calls) ---------------------------------------
+
+func test_slot_markup() {
+    m := slot("greeting", func() { return "hi" })
+    assert(contains(m, "greeting"), "slot markup carries its name")
+}
+
+// list's shape is easy to get wrong and the types spell it out: the key function
+// returns the keys CSV-ENCODED as one string (which is what csv/parse_csv in this
+// module are for), and the item function is indexed by INT, not by key.
+//   pend_lk : func() -> string        (csv keys)
+//   pend_li : func(int) -> string     (item html)
+func test_list_markup() {
+    m := list("items",
+        func() { return csv([]int{1, 2}) },
+        func(i) { return "<li>" + str(i) + "</li>" })
+    assert(contains(m, "items"), "list markup carries its container name")
+    assert(contains(m, "<div"), "and is a container element")
+}
+
+func main() {
+    test_signal_get_set()
+    test_signals_are_independent()
+    test_reaction_runs_once_on_registration()
+    test_reaction_reruns_when_its_dependency_changes()
+    test_reaction_ignores_unrelated_signals()
+    test_setting_an_equal_value_is_a_no_op()
+    test_stale_dependencies_are_dropped()
+    test_two_reactions_on_one_signal_both_run()
+    test_computed_derives_and_tracks()
+    test_computed_chain_propagates()
+    test_computed_settles_within_one_set()
+    test_writing_a_signal_inside_a_reaction_terminates()
+    test_in_list()
+    test_csv_round_trip()
+    test_csv_of_empty_inputs()
+    test_slot_markup()
+    test_list_markup()
+    test_summary()
+}

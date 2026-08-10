@@ -17,6 +17,15 @@ func bs_le64h(n) (h) { h = bs_le32h(n) + bs_le32h(n >> 32) }
 func bs_le32(b, i) (v) {
     v = byte_at(b, i) | (byte_at(b, i + 1) << 8) | (byte_at(b, i + 2) << 16) | (byte_at(b, i + 3) << 24)
 }
+// bs_i32 reads a SIGNED 32-bit int. bs_le32 is deliberately left unsigned: it also
+// reads document/string/binary lengths (always small positives) and forms bs_le64's
+// LOW HALF, where sign-extending would corrupt any 64-bit value whose low word has
+// the top bit set — e.g. 0x00000000FFFFFFFF would decode as -1 instead of
+// 4294967295. So the sign lives at the int32 decode site, not in the byte reader.
+func bs_i32(b, i) (v) {
+    v = bs_le32(b, i)
+    if v > 2147483647 { v = v - 4294967296 }
+}
 func bs_le64(b, i) (v) {
     v = bs_le32(b, i) | (byte_at(b, i + 4) << 32) | (byte_at(b, i + 5) << 40) | (byte_at(b, i + 6) << 48) | (byte_at(b, i + 7) << 56)
 }
@@ -74,7 +83,7 @@ func bs_val(b, i, t) (vj, nxt) {
         vj = bs_jstr(bytes_str(bytes_sub(b, i + 4, i + 4 + slen - 1)))
         nxt = i + 4 + slen
     }
-    if t == 16 { vj = str(bs_le32(b, i))  nxt = i + 4 }          // int32
+    if t == 16 { vj = str(bs_i32(b, i))  nxt = i + 4 }           // int32 (SIGNED — see bs_i32)
     if t == 18 { vj = str(bs_le64(b, i))  nxt = i + 8 }          // int64
     if t == 9  { vj = str(bs_le64(b, i))  nxt = i + 8 }          // datetime (ms) -> number
     if t == 8  { vj = "false"  if byte_at(b, i) == 1 { vj = "true" }  nxt = i + 1 }

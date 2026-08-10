@@ -33,7 +33,7 @@ func read_all(c) (s) {
 func TestMachwebReadRequestMultiSegment(t *testing.T) {
 	app := loopbackHelpers + `
 func main() {
-    port := 48231
+    port := 18231
     srv := listen(port)
     if srv < 0 { println("listen-failed")  return }
     go serve_one(srv, func(req) { return ok_text("got[" + req.method + " " + req.path + "]=" + req.body) })
@@ -74,7 +74,7 @@ func handle(req) (res) {
     res = set_session(ok_text("saw=" + got), "secret", "sid", "user:7")
 }
 func main() {
-    port := 48235
+    port := 18235
     srv := listen(port)
     if srv < 0 { println("listen-failed")  return }
     go serve_one(srv, func(req) { return handle(req) })
@@ -117,7 +117,7 @@ func handle(req) (res) {
     res = ok_text("title=" + title + " ok=" + str(ok) + " name=" + f.filename + " ct=" + f.ctype + " len=" + str(len(f.data)) + " hex=" + to_hex(f.data))
 }
 func main() {
-    port := 48236
+    port := 18236
     srv := listen(port)
     if srv < 0 { println("listen-failed")  return }
     go serve_one(srv, func(req) { return handle(req) })
@@ -162,7 +162,7 @@ func handle(req) (res) {
 func main() {
     set_trust_proxy(1)
     set_secure_cookies(1)
-    port := 48238
+    port := 18238
     srv := listen(port)
     if srv < 0 { println("listen-failed")  return }
     go serve_one(srv, func(req) { return handle(req) })
@@ -201,7 +201,7 @@ func TestMachwebMaxBody(t *testing.T) {
 	app := loopbackHelpers + `
 func main() {
     set_max_body(100)
-    port := 48239
+    port := 18239
     srv := listen(port)
     if srv < 0 { println("listen-failed")  return }
     go serve_one(srv, func(req) { return ok_text("ok") })
@@ -244,7 +244,7 @@ func handle(req) (res) {
     res = ok_text("home")
 }
 func main() {
-    port := 48237
+    port := 18237
     srv := listen(port)
     if srv < 0 { println("listen-failed")  return }
     go serve_one(srv, func(req) { return handle(req) })
@@ -282,7 +282,7 @@ func main() {
 func TestMachwebBinaryResponse(t *testing.T) {
 	app := loopbackHelpers + `
 func main() {
-    port := 48232
+    port := 18232
     srv := listen(port)
     if srv < 0 { println("listen-failed")  return }
     go serve_one(srv, func(req) { return ok_bytes("application/octet-stream", from_hex("00ff0042")) })

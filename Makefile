@@ -29,10 +29,16 @@ test: mfl-test
 # documented invocation had in fact stopped working.
 mfl-test: build
 	$(BIN) test framework/flags.src framework/tests/flags_test.src
+	$(BIN) test framework/bson.src framework/tests/bson_test.src
+	$(BIN) test framework/xml.src framework/tests/xml_test.src
+	$(BIN) test framework/reactive.src framework/tests/reactive_test.src
 
 # Same suites with function + statement coverage (#589), as a human-readable report.
 mfl-cover: build
 	$(BIN) test --cover framework/flags.src framework/tests/flags_test.src
+	$(BIN) test --cover framework/bson.src framework/tests/bson_test.src
+	$(BIN) test --cover framework/xml.src framework/tests/xml_test.src
+	$(BIN) test --cover framework/reactive.src framework/tests/reactive_test.src
 
 # MFL coverage floors — a RATCHET, like cov-floor is for the Go side. Set just
 # under what the suites measure today (flags.src: 90.9% function, 82.1% statement
@@ -49,11 +55,30 @@ version-check:
 
 MFL_FUNC_FLOOR ?= 90
 MFL_STMT_FLOOR ?= 75
+# bson.src is fully covered (24/24); hold it there rather than at the shared floor.
+BSON_FUNC_FLOOR ?= 100
+# xml.src is fully covered too (31/31).
+XML_FUNC_FLOOR ?= 100
+# reactive.src tops out at 13/17 (76.5%): bind/each/hydrate/mount call the
+# extern "env" DOM imports, which have no native definition, so calling one makes
+# the test program fail to LINK rather than fail an assertion. The ceiling is a
+# property of the module, not a gap in the suite — raising this floor requires a
+# native stub or a wasm test path (#593), not more tests.
+REACTIVE_FUNC_FLOOR ?= 76
 
 mfl-cov-floor: build
 	@$(BIN) test --cover --json framework/flags.src framework/tests/flags_test.src 2>/dev/null \
 		| python3 tools/cov-floor.py --module framework/flags.src \
 			--func $(MFL_FUNC_FLOOR) --stmt $(MFL_STMT_FLOOR)
+	@$(BIN) test --cover --json framework/bson.src framework/tests/bson_test.src 2>/dev/null \
+		| python3 tools/cov-floor.py --module framework/bson.src \
+			--func $(BSON_FUNC_FLOOR) --stmt $(MFL_STMT_FLOOR)
+	@$(BIN) test --cover --json framework/xml.src framework/tests/xml_test.src 2>/dev/null \
+		| python3 tools/cov-floor.py --module framework/xml.src \
+			--func $(XML_FUNC_FLOOR) --stmt $(MFL_STMT_FLOOR)
+	@$(BIN) test --cover --json framework/reactive.src framework/tests/reactive_test.src 2>/dev/null \
+		| python3 tools/cov-floor.py --module framework/reactive.src \
+			--func $(REACTIVE_FUNC_FLOOR) --stmt $(MFL_STMT_FLOOR)
 
 # Statement coverage of the compiler. `make cover` prints the % and writes an
 # HTML report to coverage.html (open it to see which lines are unhit). The corpus

@@ -69,7 +69,12 @@ func genSelfSignedCert(t *testing.T, dir, cn string) (certPath, keyPath string) 
 // the code under test relaxing verification) drives it end-to-end: handshake,
 // write a request, read the response.
 func TestServerTLS(t *testing.T) {
-	const port = 47660
+	// Ports are deliberately BELOW the ephemeral range (see
+	// /proc/sys/net/ipv4/ip_local_port_range, typically 32768-60999): a port
+	// inside it can be taken as the SOURCE port of any unrelated outbound
+	// connection, and then this server cannot bind and the test fails with
+	// "connection refused" for reasons that have nothing to do with the code.
+	const port = 17660
 	dir := t.TempDir()
 	certPath, keyPath := genSelfSignedCert(t, dir, "localhost")
 
@@ -147,7 +152,12 @@ func TestServerTLS(t *testing.T) {
 // https_get's isn't (see #283's PR description for that manual verification —
 // tls_client_fd shares mfl_tls_dial_e's already-proven handshake code exactly).
 func TestSTARTTLS(t *testing.T) {
-	const port = 47661
+	// Ports are deliberately BELOW the ephemeral range (see
+	// /proc/sys/net/ipv4/ip_local_port_range, typically 32768-60999): a port
+	// inside it can be taken as the SOURCE port of any unrelated outbound
+	// connection, and then this server cannot bind and the test fails with
+	// "connection refused" for reasons that have nothing to do with the code.
+	const port = 17661
 	dir := t.TempDir()
 	certPath, keyPath := genSelfSignedCert(t, dir, "localhost")
 	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
@@ -212,7 +222,12 @@ func TestServeTLS(t *testing.T) {
 	if err != nil {
 		t.Skip("framework/machweb.src not found")
 	}
-	const port = 47662
+	// Ports are deliberately BELOW the ephemeral range (see
+	// /proc/sys/net/ipv4/ip_local_port_range, typically 32768-60999): a port
+	// inside it can be taken as the SOURCE port of any unrelated outbound
+	// connection, and then this server cannot bind and the test fails with
+	// "connection refused" for reasons that have nothing to do with the code.
+	const port = 17662
 	dir := t.TempDir()
 	certPath, keyPath := genSelfSignedCert(t, dir, "localhost")
 
