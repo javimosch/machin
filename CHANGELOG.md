@@ -2,6 +2,52 @@
 
 ## Unreleased
 
+## v0.129.0
+
+**SQLite works on the windows target** (PR #604, issue #517) — and unlike the last
+two Windows releases, that claim is backed by a machine that ran it.
+
+It needed bundling, not porting. machin's SQLite glue is pure `sqlite3` API with
+zero POSIX in it, and the amalgamation carries its own Win32 VFS, so the same
+vendored source the native `--static` build compiles in works unchanged for
+`x86_64-windows-gnu`. No external library, no DLL, nothing for a user to install.
+
+```
+machin build app.mfl --target windows -o app.exe
+```
+
+**Verified by execution.** CI cross-compiles a SQLite program on Linux, uploads
+the `.exe`, and a `windows-latest` job runs it and asserts the query result:
+
+```
+output: [{"id":1,"name":"windows"}]
+```
+
+That job exists because of this repo's own history: the windows target was broken
+across two releases while CI happily compiled it (#549), and the pre-existing
+smoke step only checked that the file was non-empty. A PE that links is not
+evidence of a PE that works.
+
+**The issue's bookkeeping was wrong and is corrected.** Its title says four gaps;
+the preflight had six — `select` and zlib had been added since without updating
+it. Five remain: tty raw mode, `select`, XEdDSA (needs a mingw libsodium), regex
+(POSIX `<regex.h>` has no Windows equivalent), and zlib (needs a mingw libz).
+
+Each still fails loudly at compile time with a #517 message naming the subsystem,
+which is exactly why they are safe to leave open — nobody is silently broken.
+
+The preflight test that asserted SQLite is *rejected* was the gap encoded as a
+rule; it is now a positive test, with regex and XEdDSA taking its place among the
+rejection cases.
+
+**Three more test ports moved out of the ephemeral range**, and one cross-file
+collision fixed. v0.127.1 swept the hardcoded ports that could be stolen by an
+unrelated outbound connection (Linux ephemeral range 32768-60999), but that sweep
+matched on `port = NNNNN` and missed ports passed as bare arguments inside MFL
+source strings — `serve_mock(48310, …)` in the Redis test, plus the SSO and wire
+tests. A full-suite run caught the Redis one; the fix this time greps the NUMBERS
+rather than the syntax, and additionally checks no two test files share a port.
+
 ## v0.128.0
 
 The last loss in `bench/native-speed` is gone: **the array-heavy sieve now ties

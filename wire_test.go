@@ -42,10 +42,10 @@ func TestReadBytesBinarySocket(t *testing.T) {
 	prog := progFromSrc(t, `
 func serve_one(srv) { conn := accept(srv)  write_bytes(conn, from_hex("00ff0042"))  close(conn) }
 func main() {
-    srv := listen(48234)
+    srv := listen(18234)
     go serve_one(srv)
     sleep(50)
-    c := dial("127.0.0.1", 48234)
+    c := dial("127.0.0.1", 18234)
     rb := read_bytes(c)
     println("len=" + str(len(rb)) + " b0=" + str(byte_at(rb,0)) + " b1=" + str(byte_at(rb,1)) + " b3=" + str(byte_at(rb,3)))
     close(c)
@@ -85,10 +85,10 @@ func serve_big(srv, n) {
 }
 func main() {
     n := 100000   // well over the 65535-byte single-read(2) cap
-    srv := listen(18235)
+    srv := listen(18501)
     go serve_big(srv, n)
     sleep(100)
-    c := dial("127.0.0.1", 18235)
+    c := dial("127.0.0.1", 18501)
     total := bytes("")
     reads := 0
     for {
