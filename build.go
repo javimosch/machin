@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/tar"
 	"bytes"
 	"compress/gzip"
 	_ "embed"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -30,6 +32,13 @@ var sqliteHdrGz []byte
 //
 //go:embed vendor/certs/cacert.pem.gz
 var caBundleGz []byte
+
+// The deflate/inflate subset of zlib, so the WINDOWS target can compile it in
+// rather than requiring a mingw libz the user has to find. Native builds still
+// link the system -lz and are unaffected. See vendor/zlib/README.md and #517.
+//
+//go:embed vendor/zlib/zlib-src.tar.gz
+var zlibSrcTarGz []byte
 
 func gunzip(b []byte) ([]byte, error) {
 	r, err := gzip.NewReader(bytes.NewReader(b))
@@ -66,6 +75,60 @@ func ccPath() string {
 		return cc
 	}
 	return "cc"
+}
+
+// unpackZlibSources extracts the vendored zlib subset into a fresh temp dir and
+// returns (dir, the .c files to compile). The caller removes dir.
+//
+// A tarball rather than SQLite's single gzipped amalgamation because zlib has no
+// amalgamation: it is a dozen translation units that expect to be compiled
+// separately, and concatenating them is a portability gamble for no benefit.
+func unpackZlibSources() (dir string, csrcs []string, err error) {
+	dir, err = os.MkdirTemp("", "mfl-zlib-*")
+	if err != nil {
+		return "", nil, err
+	}
+	gz, err := gzip.NewReader(bytes.NewReader(zlibSrcTarGz))
+	if err != nil {
+		os.RemoveAll(dir)
+		return "", nil, fmt.Errorf("zlib sources: %w", err)
+	}
+	defer gz.Close()
+	tr := tar.NewReader(gz)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			os.RemoveAll(dir)
+			return "", nil, fmt.Errorf("zlib sources: %w", err)
+		}
+		if hdr.Typeflag != tar.TypeReg {
+			continue
+		}
+		// Flatten: the archive is a flat list of .c/.h, and refusing any path
+		// separator keeps a crafted archive from writing outside dir.
+		name := filepath.Base(hdr.Name)
+		if name != hdr.Name {
+			continue
+		}
+		data, err := io.ReadAll(tr)
+		if err != nil {
+			os.RemoveAll(dir)
+			return "", nil, fmt.Errorf("zlib sources: %w", err)
+		}
+		out := filepath.Join(dir, name)
+		if err := os.WriteFile(out, data, 0o644); err != nil {
+			os.RemoveAll(dir)
+			return "", nil, err
+		}
+		if strings.HasSuffix(name, ".c") {
+			csrcs = append(csrcs, out)
+		}
+	}
+	sort.Strings(csrcs) // deterministic command line
+	return dir, csrcs, nil
 }
 
 // unpackSqliteAmalgamation decompresses the embedded SQLite amalgamation into a
@@ -318,6 +381,7 @@ func BuildWindows(prog *Program, outPath string, safe bool) error {
 	usesCrypto := strings.Contains(csrc, "mfl_crypto_")
 	usesNet := strings.Contains(csrc, "WSAStartup")
 	usesSqlite := strings.Contains(csrc, "mfl_sqlite_")
+	usesZlib := strings.Contains(csrc, "mfl_zlib_")
 	usesOpenSSL := usesTLS || usesCrypto
 
 	// TLS/crypto need a mingw OpenSSL the caller supplies out of band.
@@ -375,6 +439,18 @@ func BuildWindows(prog *Program, outPath string, safe bool) error {
 		defer os.RemoveAll(dir)
 		args = append(args, sqliteBundleFlags(dir)...)
 		srcs = append(srcs, cpath)
+	}
+	// zlib: the vendored deflate/inflate subset, compiled in. Windows has no
+	// system libz, and requiring a mingw one would push a dependency onto every
+	// program that calls zlib_compress.
+	if usesZlib {
+		dir, csrcs, err := unpackZlibSources()
+		if err != nil {
+			return err
+		}
+		defer os.RemoveAll(dir)
+		args = append(args, "-I"+dir)
+		srcs = append(srcs, csrcs...)
 	}
 	args = append(args, "-o", outPath, tmp.Name())
 	args = append(args, srcs...)

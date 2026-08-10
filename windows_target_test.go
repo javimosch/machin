@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -66,6 +67,51 @@ func TestWindowsAcceptsSqlite(t *testing.T) {
 	// The glue must reach SQLite through its own header, not a POSIX shim.
 	if !strings.Contains(csrc, "sqlite3.h") {
 		t.Fatal("emitted C should include sqlite3.h so the bundled amalgamation satisfies it")
+	}
+}
+
+// zlib is SUPPORTED on windows as of #517: the vendored deflate/inflate subset is
+// compiled in, so there is no mingw libz for a user to find. As with SQLite, this
+// checks the preflight only — that the .exe RUNS is verified by CI executing it on
+// a windows-latest runner.
+func TestWindowsAcceptsZlib(t *testing.T) {
+	prog, err := ParseProgram([]string{normalize(`func main() {
+    c := zlib_compress(bytes("hello hello"), 6)
+    println(len(zlib_decompress(c)))
+}`)})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	csrc, _, err := CompileToCTarget(prog, false, targetWindows)
+	if err != nil {
+		t.Fatalf("windows preflight must accept zlib now: %v", err)
+	}
+	if !strings.Contains(csrc, "mfl_zlib_compress") {
+		t.Fatal("emitted C should contain the zlib glue")
+	}
+}
+
+// The vendored archive must contain exactly what the windows build compiles, and
+// nothing that drags in the gz* file API. A silently truncated tarball would only
+// show up as a link error inside a cross-compile.
+func TestVendoredZlibSourcesAreComplete(t *testing.T) {
+	dir, csrcs, err := unpackZlibSources()
+	if err != nil {
+		t.Fatalf("unpack: %v", err)
+	}
+	defer os.RemoveAll(dir)
+	if len(csrcs) != 9 {
+		t.Fatalf("expected 9 .c files, got %d: %v", len(csrcs), csrcs)
+	}
+	for _, want := range []string{"zlib.h", "zconf.h", "gzguts.h", "inffixed.h"} {
+		if _, err := os.Stat(filepath.Join(dir, want)); err != nil {
+			t.Fatalf("vendored zlib is missing %s: %v", want, err)
+		}
+	}
+	for _, unwanted := range []string{"gzread.c", "gzwrite.c", "gzlib.c", "infback.c"} {
+		if _, err := os.Stat(filepath.Join(dir, unwanted)); err == nil {
+			t.Fatalf("%s should not be vendored — machin exposes no gz*/infback API", unwanted)
+		}
 	}
 }
 
