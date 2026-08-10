@@ -36,9 +36,9 @@ func mock(req) (res) {
     }
 }
 func main() {
-    go serve(48306, func(req) { return mock(req) })
+    go serve(18306, func(req) { return mock(req) })
     sleep(120)
-    p := OAuthProvider{auth_url: "http://localhost:48306/auth", token_url: "http://localhost:48306/token", userinfo_url: "http://localhost:48306/userinfo", client_id: "cid", client_secret: "sec", redirect_uri: "http://app/cb", scope: "openid email"}
+    p := OAuthProvider{auth_url: "http://localhost:18306/auth", token_url: "http://localhost:18306/token", userinfo_url: "http://localhost:18306/userinfo", client_id: "cid", client_secret: "sec", redirect_uri: "http://app/cb", scope: "openid email"}
     println("login=" + sso_login_url(p, "st8"))
     secret := "shh"
     state := "deadbeef"
@@ -65,7 +65,7 @@ func main() {
 		t.Fatalf("run: %v", err)
 	}
 	for _, want := range []string{
-		"login=http://localhost:48306/auth?response_type=code&client_id=cid", // url built
+		"login=http://localhost:18306/auth?response_type=code&client_id=cid", // url built
 		"redirect_uri=http%3A%2F%2Fapp%2Fcb",                                 // url-encoded
 		`ok=1 email="ada@x.com"`,                                             // exchange + userinfo succeeded
 		"csrf_ok=0",                                                          // state mismatch blocked

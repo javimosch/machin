@@ -41,9 +41,9 @@ func serve_mock(port, replies) {
 }
 func main() {
     replies := []string{"+OK\r\n", "$5\r\nhello\r\n", "$-1\r\n", ":7\r\n", "*2\r\n$1\r\na\r\n$3\r\nbbb\r\n"}
-    go serve_mock(48310, replies)
+    go serve_mock(18310, replies)
     sleep(80)
-    redis_connect("127.0.0.1", 48310)
+    redis_connect("127.0.0.1", 18310)
     println("set=" + str(redis_set("k", "v")))           // +OK -> ok 1
     g, ok := redis_get("k")
     println("get=" + g + ":" + str(ok))                  // $5 hello -> "hello":1
