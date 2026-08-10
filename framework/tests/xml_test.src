@@ -1,0 +1,267 @@
+// xml_test — exercises framework/xml.src (parser + exclusive C14N + SAML DSig)
+// in MFL, via `machin test`. Run from the repo root:
+//   machin test framework/xml.src framework/tests/xml_test.src
+// or `make mfl-test`, which is what CI runs.
+//
+// xml.src MUST be listed explicitly: `machin test` auto-composes only
+// framework/test.src (the assert helpers), never the module under test.
+//
+// The parser is a lexer over a global node store, so most assertions parse a
+// document and read it back through the public accessors. Canonicalization is
+// asserted on its exact output string — C14N's whole purpose is that two
+// byte-different-but-equivalent documents canonicalize identically, so an
+// approximate check would defeat the point.
+
+// ---- lexing helpers --------------------------------------------------------
+
+func test_is_space() {
+    assert(xml_is_space(" "), "space")
+    assert(xml_is_space("\t"), "tab")
+    assert(xml_is_space("\n"), "newline")
+    assert(xml_is_space("\r"), "carriage return")
+    assert(xml_is_space("x") == false, "a letter is not space")
+    assert(xml_is_space("") == false, "empty is not space")
+}
+
+func test_entity_decoding() {
+    assert_eq_str(xml_decode("plain"), "plain", "no entities passes through")
+    assert_eq_str(xml_decode("a&lt;b"), "a<b", "lt")
+    assert_eq_str(xml_decode("a&gt;b"), "a>b", "gt")
+    assert_eq_str(xml_decode("a&amp;b"), "a&b", "amp")
+    assert_eq_str(xml_decode("a&quot;b"), "a\"b", "quot")
+    assert_eq_str(xml_decode("a&apos;b"), "a'b", "apos")
+    assert_eq_str(xml_decode("&lt;&gt;&amp;"), "<>&", "adjacent entities")
+    assert_eq_str(xml_decode(""), "", "empty string")
+}
+
+// The header promises numeric character references are NOT decoded, and that a
+// document using them fails closed rather than being silently mangled. Pin the
+// documented behaviour so a future "improvement" is a deliberate decision.
+func test_undecoded_forms_are_left_alone() {
+    assert_eq_str(xml_decode("a&#65;b"), "a&#65;b", "numeric refs are not decoded (documented)")
+    assert_eq_str(xml_decode("a&unknown;b"), "a&unknown;b", "unknown entity left intact")
+    assert_eq_str(xml_decode("a&b"), "a&b", "bare ampersand with no semicolon")
+}
+
+func test_strip_ws_removes_all_whitespace() {
+    // Removes all four whitespace characters, spaces included. That is what a
+    // base64 blob wrapped across lines in a certificate element needs.
+    assert_eq_str(xml_strip_ws("a\nb"), "ab", "newline removed")
+    assert_eq_str(xml_strip_ws("a\tb"), "ab", "tab removed")
+    assert_eq_str(xml_strip_ws("a\rb"), "ab", "carriage return removed")
+    assert_eq_str(xml_strip_ws("a b"), "ab", "spaces removed too")
+    assert_eq_str(xml_strip_ws("MIIB\n  ad\tQ"), "MIIBadQ", "a wrapped base64 blob rejoins")
+}
+
+// ---- parsing ---------------------------------------------------------------
+
+func test_parse_single_element() {
+    r := xml_parse("<a></a>")
+    assert(r >= 0, "root parsed")
+    assert_eq_str(g_xn[r].name, "a", "root name")
+    assert_eq_int(len(g_xn[r].kids), 0, "no children")
+}
+
+func test_parse_nesting_and_text() {
+    r := xml_parse("<a><b>hi</b></a>")
+    assert_eq_str(g_xn[r].name, "a", "root")
+    b := xml_find_local(r, "b")
+    assert(b > 0, "found child by local name")
+    assert_eq_str(xml_text(b), "hi", "child text")
+}
+
+func test_parse_self_closing() {
+    r := xml_parse("<a><c/></a>")
+    assert_eq_int(len(g_xn[r].kids), 1, "self-closing tag is one child")
+    c := xml_find_local(r, "c")
+    assert(c > 0, "self-closing element is findable")
+    assert_eq_str(xml_text(c), "", "self-closing element has no text")
+}
+
+func test_parse_attributes() {
+    r := xml_parse("<a x=\"1\" y=\"two\"></a>")
+    assert_eq_str(xml_attr(r, "x"), "1", "first attribute")
+    assert_eq_str(xml_attr(r, "y"), "two", "second attribute")
+    assert_eq_str(xml_attr(r, "missing"), "", "absent attribute is empty, not an error")
+}
+
+func test_attribute_values_are_entity_decoded() {
+    r := xml_parse("<a x=\"a&amp;b\"></a>")
+    assert_eq_str(xml_attr(r, "x"), "a&b", "attribute values decode entities")
+}
+
+func test_text_concatenates_across_children() {
+    r := xml_parse("<a>one<b/>two</a>")
+    assert_eq_str(xml_text(r), "onetwo", "text nodes either side of an element")
+}
+
+// Prolog, comments and DOCTYPE must be skipped rather than parsed as elements —
+// otherwise the root is wrong and every downstream offset shifts.
+func test_prolog_comment_and_doctype_are_skipped() {
+    r := xml_parse("<?xml version=\"1.0\"?><a></a>")
+    assert_eq_str(g_xn[r].name, "a", "XML declaration skipped")
+    r2 := xml_parse("<!-- a comment --><b></b>")
+    assert_eq_str(g_xn[r2].name, "b", "comment skipped")
+    r3 := xml_parse("<!DOCTYPE x><c></c>")
+    assert_eq_str(g_xn[r3].name, "c", "DOCTYPE skipped")
+    r4 := xml_parse("<?xml version=\"1.0\"?><!-- c --><d></d>")
+    assert_eq_str(g_xn[r4].name, "d", "several skippable prologue items")
+}
+
+func test_namespaced_names_are_kept_qualified() {
+    r := xml_parse("<ds:Signature xmlns:ds=\"urn:x\"></ds:Signature>")
+    assert_eq_str(g_xn[r].name, "ds:Signature", "qualified name kept verbatim")
+    assert_eq_str(c14n_local(g_xn[r].name), "Signature", "local part")
+    assert_eq_str(c14n_prefix(g_xn[r].name), "ds", "prefix part")
+}
+
+func test_find_local_ignores_prefix() {
+    r := xml_parse("<a><ds:Sig xmlns:ds=\"urn:x\">v</ds:Sig></a>")
+    n := xml_find_local(r, "Sig")
+    assert(n > 0, "found by LOCAL name regardless of prefix")
+    assert_eq_str(xml_text(n), "v", "and it is the right node")
+}
+
+func test_find_local_missing_returns_negative() {
+    r := xml_parse("<a><b/></a>")
+    assert_eq_int(xml_find_local(r, "nope"), -1, "absent local name returns -1")
+}
+
+func test_find_by_id() {
+    xml_parse("<a><b ID=\"x1\">v</b></a>")
+    n := xml_find_id("x1")
+    assert(n > 0, "found element by ID attribute")
+    assert_eq_str(xml_text(n), "v", "the right element")
+    assert_eq_int(xml_find_id("nosuch"), -1, "absent ID returns -1")
+}
+
+// ---- name / prefix splitting ----------------------------------------------
+
+func test_prefix_and_local_on_unprefixed_names() {
+    assert_eq_str(c14n_prefix("Plain"), "", "no prefix is empty")
+    assert_eq_str(c14n_local("Plain"), "Plain", "local of an unprefixed name is itself")
+}
+
+// ---- escaping --------------------------------------------------------------
+
+func test_text_escaping() {
+    assert_eq_str(c14n_text_escape("a<b"), "a&lt;b", "text escapes <")
+    assert_eq_str(c14n_text_escape("a>b"), "a&gt;b", "text escapes >")
+    assert_eq_str(c14n_text_escape("a&b"), "a&amp;b", "text escapes &")
+    assert_eq_str(c14n_text_escape("plain"), "plain", "nothing to escape")
+}
+
+func test_attribute_escaping() {
+    assert_eq_str(c14n_attr_escape("a\"b"), "a&quot;b", "attribute escapes the quote")
+    assert_eq_str(c14n_attr_escape("a&b"), "a&amp;b", "attribute escapes &")
+    assert_eq_str(c14n_attr_escape("a<b"), "a&lt;b", "attribute escapes <")
+}
+
+// ---- canonicalization ------------------------------------------------------
+
+func test_c14n_expands_self_closing_tags() {
+    // The defining property: a self-closing tag and an empty pair are the SAME
+    // document and must canonicalize to identical bytes, or a signature over one
+    // will not verify against the other.
+    a := c14n_subtree(xml_parse("<a><c/></a>"))
+    b := c14n_subtree(xml_parse("<a><c></c></a>"))
+    assert_eq_str(a, b, "self-closing and empty-pair canonicalize identically")
+    assert_eq_str(a, "<a><c></c></a>", "and the canonical form is the expanded pair")
+}
+
+func test_c14n_keeps_text_and_escapes_it() {
+    out := c14n_subtree(xml_parse("<a>x&lt;y</a>"))
+    assert_eq_str(out, "<a>x&lt;y</a>", "entity survives the decode/re-escape round trip")
+}
+
+func test_c14n_of_nested_document() {
+    out := c14n_subtree(xml_parse("<a><b>1</b><c>2</c></a>"))
+    assert_eq_str(out, "<a><b>1</b><c>2</c></a>", "children in document order")
+}
+
+func test_c14n_attributes_are_sorted() {
+    // Exclusive C14N sorts attributes; two documents differing only in attribute
+    // order must produce the same bytes.
+    x := c14n_subtree(xml_parse("<a b=\"1\" a=\"2\"></a>"))
+    y := c14n_subtree(xml_parse("<a a=\"2\" b=\"1\"></a>"))
+    assert_eq_str(x, y, "attribute order does not change the canonical form")
+    assert_eq_str(x, "<a a=\"2\" b=\"1\"></a>", "attributes come out sorted by name")
+}
+
+// ---- SAML signature verification: it must FAIL CLOSED ----------------------
+//
+// A real signed assertion needs a fixture and a private key, which this suite
+// does not carry. What it CAN pin — and what actually matters for a security
+// primitive — is that verification never returns success for input it did not
+// verify. The module's header promises exactly that: "a doc using them will fail
+// closed (verification returns 0), never falsely pass."
+
+// A prefix declared on an ancestor must resolve for a descendant that uses it —
+// this is what c14n_ctx_lookup / ns_resolve exist for, and getting it wrong makes
+// a signature over nested content fail for the wrong reason.
+func test_inherited_namespace_prefix_resolves() {
+    doc := "<r xmlns:ds=\"urn:x\"><ds:Inner>v</ds:Inner></r>"
+    r := xml_parse(doc)
+    inner := xml_find_local(r, "Inner")
+    assert(inner > 0, "descendant using an ancestor's prefix parses")
+    assert_eq_str(xml_text(inner), "v", "and keeps its text")
+    // EXCLUSIVE C14N moves the declaration to the element that actually uses the
+    // prefix, rather than leaving it on the ancestor that wrote it:
+    //   <r xmlns:ds="urn:x"><ds:Inner>v</ds:Inner></r>
+    //     -> <r><ds:Inner xmlns:ds="urn:x">v</ds:Inner></r>
+    out := c14n_subtree(r)
+    assert_eq_str(out, "<r><ds:Inner xmlns:ds=\"urn:x\">v</ds:Inner></r>",
+        "the declaration migrates to the element that uses it")
+
+    // ...and that is the whole point: a subtree canonicalizes to the SAME bytes
+    // whether or not you have its ancestors, which is what lets a signature over
+    // <ds:Inner> be verified independently of the document it was lifted from.
+    assert_eq_str(c14n_subtree(inner), "<ds:Inner xmlns:ds=\"urn:x\">v</ds:Inner>",
+        "canonicalizing the subtree alone gives identical bytes")
+}
+
+// saml_signing_cert pulls the base64 out of <X509Certificate>, which in real
+// assertions is wrapped across lines — so the whitespace stripping is load-bearing.
+func test_signing_cert_extraction() {
+    assert_eq_str(saml_signing_cert("<a></a>"), "", "no certificate element yields empty")
+    assert_eq_str(saml_signing_cert("not xml"), "", "unparseable input yields empty, not a crash")
+    doc := "<a><X509Certificate>MIIB\n  adQ\n</X509Certificate></a>"
+    assert_eq_str(saml_signing_cert(doc), "MIIBadQ", "wrapped base64 is rejoined")
+}
+
+func test_saml_verify_fails_closed() {
+    assert_eq_int(saml_verify("", ""), 0, "empty input does not verify")
+    assert_eq_int(saml_verify("not xml at all", "notacert"), 0, "garbage does not verify")
+    assert_eq_int(saml_verify("<a></a>", ""), 0, "well-formed but unsigned does not verify")
+    assert_eq_int(saml_verify("<a><ds:Signature xmlns:ds=\"urn:x\"></ds:Signature></a>", "x"),
+        0, "a Signature element alone does not verify")
+}
+
+func main() {
+    test_is_space()
+    test_entity_decoding()
+    test_undecoded_forms_are_left_alone()
+    test_strip_ws_removes_all_whitespace()
+    test_parse_single_element()
+    test_parse_nesting_and_text()
+    test_parse_self_closing()
+    test_parse_attributes()
+    test_attribute_values_are_entity_decoded()
+    test_text_concatenates_across_children()
+    test_prolog_comment_and_doctype_are_skipped()
+    test_namespaced_names_are_kept_qualified()
+    test_find_local_ignores_prefix()
+    test_find_local_missing_returns_negative()
+    test_find_by_id()
+    test_prefix_and_local_on_unprefixed_names()
+    test_text_escaping()
+    test_attribute_escaping()
+    test_c14n_expands_self_closing_tags()
+    test_c14n_keeps_text_and_escapes_it()
+    test_c14n_of_nested_document()
+    test_c14n_attributes_are_sorted()
+    test_inherited_namespace_prefix_resolves()
+    test_signing_cert_extraction()
+    test_saml_verify_fails_closed()
+    test_summary()
+}
