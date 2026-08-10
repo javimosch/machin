@@ -31,6 +31,13 @@ var sqliteHdrGz []byte
 //go:embed vendor/certs/cacert.pem.gz
 var caBundleGz []byte
 
+// The Remimu single-header regex engine (public domain), embedded so the Windows
+// target can bundle it instead of relying on the missing POSIX <regex.h>. See
+// vendor/regex/README.md.
+//
+//go:embed vendor/regex/remimu.h
+var regexEngineH []byte
+
 func gunzip(b []byte) ([]byte, error) {
 	r, err := gzip.NewReader(bytes.NewReader(b))
 	if err != nil {
@@ -107,6 +114,21 @@ func unpackSqliteAmalgamation() (dir string, cpath string, err error) {
 // machweb's per-connection goroutines.
 func sqliteBundleFlags(dir string) []string {
 	return []string{"-I" + dir, "-DSQLITE_OMIT_LOAD_EXTENSION", "-DSQLITE_THREADSAFE=1"}
+}
+
+// unpackRegexBundle writes the bundled Remimu regex header into a fresh temp dir
+// and returns the dir. The caller removes dir. Used by the Windows target, which
+// has no POSIX <regex.h>; the generated C includes "remimu.h" under #ifdef _WIN32.
+func unpackRegexBundle() (dir string, err error) {
+	dir, err = os.MkdirTemp("", "mfl-regex-*")
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(filepath.Join(dir, "remimu.h"), regexEngineH, 0o644); err != nil {
+		os.RemoveAll(dir)
+		return "", err
+	}
+	return dir, nil
 }
 
 // BuildBinary compiles the program to a native executable at outPath via cc -O2.
@@ -299,8 +321,9 @@ func BuildWasm(prog *Program, outPath string, safe bool) error {
 // BuildWindows cross-compiles the program to a Windows x86-64 .exe via
 // `zig cc -target x86_64-windows-gnu` (mingw-w64 + winpthreads, a single-binary
 // cross toolchain like the wasm path). Covers #517 Phases 0+N+TLS: the
-// POSIX-independent core, TCP sockets (winsock2), and HTTPS/TLS + OpenSSL crypto
-// builtins. The preflight still rejects XEdDSA, terminal raw mode, SQLite, regex.
+// POSIX-independent core, TCP sockets (winsock2), HTTPS/TLS + OpenSSL crypto
+// builtins, SQLite, and regex. The preflight still rejects XEdDSA, terminal raw
+// mode, and zlib.
 //
 // zig alone suffices EXCEPT for TLS/crypto, which link OpenSSL: zig does not ship
 // an OpenSSL for the windows-gnu target, so the caller must point MACHIN_WIN_OPENSSL
@@ -318,6 +341,7 @@ func BuildWindows(prog *Program, outPath string, safe bool) error {
 	usesCrypto := strings.Contains(csrc, "mfl_crypto_")
 	usesNet := strings.Contains(csrc, "WSAStartup")
 	usesSqlite := strings.Contains(csrc, "mfl_sqlite_")
+	usesRegex := strings.Contains(csrc, "mfl_regex_")
 	usesOpenSSL := usesTLS || usesCrypto
 
 	// TLS/crypto need a mingw OpenSSL the caller supplies out of band.
@@ -375,6 +399,17 @@ func BuildWindows(prog *Program, outPath string, safe bool) error {
 		defer os.RemoveAll(dir)
 		args = append(args, sqliteBundleFlags(dir)...)
 		srcs = append(srcs, cpath)
+	}
+	// Regex: the Windows target has no POSIX <regex.h>, so we bundle the Remimu
+	// single-header engine and point the compiler at it. The generated C includes
+	// "remimu.h" under #ifdef _WIN32 and links no extra library.
+	if usesRegex {
+		dir, err := unpackRegexBundle()
+		if err != nil {
+			return err
+		}
+		defer os.RemoveAll(dir)
+		args = append(args, "-I"+dir)
 	}
 	args = append(args, "-o", outPath, tmp.Name())
 	args = append(args, srcs...)

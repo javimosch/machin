@@ -20,7 +20,6 @@ func TestWindowsPreflightRejects(t *testing.T) {
 		mentions string
 	}{
 		{"tty", `func main() { raw_mode(1)  println(read_key()) }`, "terminal raw mode"},
-		{"regex", `func main() { println(regex_match("a", "a")) }`, "regex"},
 		{"xeddsa", `func main() { println(len(xeddsa_sign(bytes(""), bytes(""), bytes("")))) }`, "XEdDSA"},
 	}
 	for _, c := range cases {
@@ -66,6 +65,27 @@ func TestWindowsAcceptsSqlite(t *testing.T) {
 	// The glue must reach SQLite through its own header, not a POSIX shim.
 	if !strings.Contains(csrc, "sqlite3.h") {
 		t.Fatal("emitted C should include sqlite3.h so the bundled amalgamation satisfies it")
+	}
+}
+
+// Regex is SUPPORTED on windows as of #517: the generated C uses the bundled
+// Remimu engine under #ifdef _WIN32, so the preflight must let it through.
+func TestWindowsAcceptsRegex(t *testing.T) {
+	prog, err := ParseProgram([]string{normalize(`func main() {
+    if regex_match("a@b.co", "^[a-z]+@[a-z]+\\.[a-z]+$") { println("ok") }
+}`)})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	csrc, _, err := CompileToCTarget(prog, false, targetWindows)
+	if err != nil {
+		t.Fatalf("windows preflight must accept regex now: %v", err)
+	}
+	if !strings.Contains(csrc, "mfl_regex_match") {
+		t.Fatal("emitted C should contain the regex glue")
+	}
+	if !strings.Contains(csrc, "remimu.h") {
+		t.Fatal("emitted C should include remimu.h so the bundled engine satisfies it")
 	}
 }
 
@@ -237,5 +257,31 @@ func TestWindowsBuildsPE(t *testing.T) {
 	}
 	if len(b) < 2 || b[0] != 'M' || b[1] != 'Z' {
 		t.Fatalf("output is not a PE executable (missing MZ header): first bytes %q", b[:min(8, len(b))])
+	}
+}
+
+// End-to-end: cross-compile a regex-using program to a Windows PE. Verifies that
+// the bundled Remimu engine links and the generated C #include "remimu.h" resolves.
+func TestWindowsRegexBuildsPE(t *testing.T) {
+	if err := exec.Command(zigPath(), "version").Run(); err != nil {
+		t.Skipf("zig not runnable (%v) — skipping windows regex PE build", err)
+	}
+	prog, err := ParseProgram([]string{normalize(`func main() {
+	if regex_match("a@b.co", "^[a-z]+@[a-z]+\\.[a-z]+$") { println("ok") }
+	println(regex_find("id 4821 x", "[0-9]+"))
+}`)})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	out := t.TempDir() + "/regex.exe"
+	if err := BuildWindows(prog, out, false); err != nil {
+		t.Fatalf("BuildWindows (regex): %v", err)
+	}
+	b, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(b) < 2 || b[0] != 'M' || b[1] != 'Z' {
+		t.Fatalf("regex output is not a PE executable: first bytes %q", b[:min(8, len(b))])
 	}
 }

@@ -47,9 +47,9 @@ func CompileToCTarget(p *Program, safe bool, target string) (string, []string, e
 // channels via winpthreads, math, file I/O); Phase N added TCP sockets
 // (dial/listen/accept/read/write) via winsock2; Phase TLS added HTTPS/TLS + the
 // OpenSSL crypto builtins, which link a user-supplied mingw OpenSSL (see
-// BuildWindows / MACHIN_WIN_OPENSSL). Still not wired: XEdDSA (libsodium),
-// terminal raw mode, SQLite, POSIX regex. Failing here — rather than emitting C
-// that dies deep in the linker — keeps the error actionable.
+// BuildWindows / MACHIN_WIN_OPENSSL); SQLite and regex are now bundled. Still
+// not wired: XEdDSA (libsodium), terminal raw mode, zlib. Failing here — rather
+// than emitting C that dies deep in the linker — keeps the error actionable.
 func windowsUnsupported(g *cgen) error {
 	for _, u := range []struct {
 		used bool
@@ -58,11 +58,10 @@ func windowsUnsupported(g *cgen) error {
 		{g.usesTTY, "terminal raw mode (raw_mode/read_key)"},
 		{g.usesSelect, "select"},
 		{g.usesXEdDSA, "XEdDSA (xeddsa_* — needs libsodium for Windows, not yet wired)"},
-		{g.usesRegex, "regex (regex_*)"},
 		{g.usesZlib, "zlib (zlib_compress/zlib_decompress — needs a mingw libz, not yet wired)"},
 	} {
 		if u.used {
-			return fmt.Errorf("the windows target does not yet support %s — see issue #517 (supported: the stdio/compute core, TCP sockets, SQLite, and HTTPS/TLS+crypto via a user-supplied OpenSSL)", u.what)
+			return fmt.Errorf("the windows target does not yet support %s — see issue #517 (supported: the stdio/compute core, TCP sockets, SQLite, regex, and HTTPS/TLS+crypto via a user-supplied OpenSSL)", u.what)
 		}
 	}
 	return nil
@@ -3309,11 +3308,115 @@ static double mfl_math_hypot(double a,double b){return hypot(a,b);}
 static double mfl_math_pi(void){return M_PI;}
 `
 
-// regexRuntime is POSIX extended-regex (ERE) support via libc's <regex.h>,
-// emitted only when a program calls regex_*. match/find/groups/replace operate
-// on the subject first (like the other string builtins). A bad pattern fails
-// safe: match=false, find/replace return the input/empty, groups returns [].
-const regexRuntime = `#include <regex.h>
+// regexRuntime is ERE support: POSIX <regex.h> on native/wasm, bundled Remimu on
+// Windows. match/find/groups/replace operate on the subject first (like the other
+// string builtins). A bad pattern fails safe: match=false, find/replace return the
+// input/empty, groups returns [].
+const regexRuntime = `
+#ifdef _WIN32
+#define REMIMU_LOG_ERROR(X) ((void)0)
+#define REMIMU_ASSERT(X) ((void)0)
+#include "remimu.h"
+
+static int mfl_regex_match(const char* s, const char* pat) {
+    RegexToken tokens[1024];
+    int16_t token_count = 1024;
+    if (regex_parse(pat, tokens, &token_count, 0) != 0) return 0;
+    size_t n = strlen(s);
+    for (size_t i = 0; i <= n; i++) {
+        int64_t end = regex_match(tokens, s, i, 0, NULL, NULL);
+        if (end >= 0 && (size_t)end >= i) return 1;
+    }
+    return 0;
+}
+static char* mfl_regex_find(const char* s, const char* pat) {
+    RegexToken tokens[1024];
+    int16_t token_count = 1024;
+    if (regex_parse(pat, tokens, &token_count, 0) != 0) return mfl_dup_arena("", 0);
+    size_t n = strlen(s);
+    for (size_t i = 0; i <= n; i++) {
+        int64_t end = regex_match(tokens, s, i, 0, NULL, NULL);
+        if (end >= 0 && (size_t)end >= i) {
+            size_t len = (size_t)end - i;
+            return mfl_dup_arena(s + i, len);
+        }
+    }
+    return mfl_dup_arena("", 0);
+}
+static int mfl_regex_count_open(RegexToken* tokens) {
+    int c = 0;
+    for (int k = 0; tokens[k].kind != REMIMU_KIND_END; k++)
+        if (tokens[k].kind == REMIMU_KIND_OPEN) c++;
+    return c;
+}
+static mfl_slice mfl_regex_groups(const char* s, const char* pat) {
+    mfl_slice out = {0};
+    RegexToken tokens[1024];
+    int16_t token_count = 1024;
+    if (regex_parse(pat, tokens, &token_count, 0) != 0) return out;
+    int ng = mfl_regex_count_open(tokens);
+    if (ng == 0) return out;
+    size_t n = strlen(s);
+    int64_t* rpos = (int64_t*)malloc(ng * sizeof(int64_t));
+    int64_t* rspan = (int64_t*)malloc(ng * sizeof(int64_t));
+    if (!rpos || !rspan) { free(rpos); free(rspan); return out; }
+    for (size_t i = 0; i <= n; i++) {
+        for (int j = 0; j < ng; j++) { rpos[j] = -1; rspan[j] = -1; }
+        int64_t end = regex_match(tokens, s, i, (uint16_t)ng, rpos, rspan);
+        if (end >= 0 && (size_t)end >= i) {
+            for (int j = 0; j < ng; j++) {
+                char* g;
+                if (rpos[j] >= 0 && rspan[j] >= 0) g = mfl_dup_arena(s + rpos[j], (size_t)rspan[j]);
+                else g = mfl_dup_arena("", 0);
+                out = mfl_append(out, &g, sizeof(char*));
+            }
+            break;
+        }
+    }
+    free(rpos);
+    free(rspan);
+    return out;
+}
+static char* mfl_regex_replace(const char* s, const char* pat, const char* repl) {
+    RegexToken tokens[1024];
+    int16_t token_count = 1024;
+    if (regex_parse(pat, tokens, &token_count, 0) != 0) return mfl_dup_arena(s, strlen(s));
+    size_t cap = strlen(s) + 64, len = 0, rl = strlen(repl);
+    char* out = (char*)malloc(cap);
+    const char* p = s;
+    size_t n = strlen(s);
+    for (size_t start_i = 0; start_i <= n; ) {
+        int64_t end = regex_match(tokens, s, start_i, 0, NULL, NULL);
+        if (end >= 0 && (size_t)end >= start_i) {
+            size_t prefix = start_i - (p - s);
+            while (len + prefix + rl + 2 >= cap) { cap *= 2; out = (char*)realloc(out, cap); }
+            memcpy(out + len, p, prefix); len += prefix;
+            memcpy(out + len, repl, rl); len += rl;
+            if (end == start_i) {
+                if (s[end] == 0) { p = s + end; break; }
+                while (len + 1 >= cap) { cap *= 2; out = (char*)realloc(out, cap); }
+                out[len++] = s[end];
+                p = s + end + 1;
+                start_i = p - s;
+            } else {
+                p = s + end;
+                start_i = p - s;
+            }
+        } else {
+            start_i++;
+        }
+    }
+    size_t rest = strlen(p);
+    while (len + rest + 1 >= cap) { cap *= 2; out = (char*)realloc(out, cap); }
+    memcpy(out + len, p, rest); len += rest;
+    out[len] = 0;
+    char* r = mfl_dup_arena(out, len);
+    free(out);
+    return r;
+}
+
+#else
+#include <regex.h>
 
 static int mfl_regex_match(const char* s, const char* pat) {
     regex_t re;
@@ -3384,6 +3487,7 @@ static char* mfl_regex_replace(const char* s, const char* pat, const char* repl)
     free(out);
     return r;
 }
+#endif
 `
 
 // sqliteRuntime is a thin SQLite client over libsqlite3, emitted (and linked
