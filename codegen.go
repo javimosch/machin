@@ -102,6 +102,7 @@ type cgen struct {
 	tramp        strings.Builder // goroutine trampolines
 	goID         int
 	jsonFns      strings.Builder      // generated per-type JSON serializers + parsers
+	unaliased    map[string]bool      // "inst\x00var" -> append may grow in place (#578)
 	cover        bool                 // emit function-entry coverage counters (#589)
 	covIdx       map[string]int       // source function name -> counter slot
 	covNames     []string             // counter slot -> source function name
@@ -401,6 +402,55 @@ static int64_t mfl_narrow(int64_t v, int64_t lo, int64_t hi, const char* label) 
     return v;
 }
 
+/* mfl_realloc_owned / mfl_append_owned — the in-place growth path (#578).
+   Emitted ONLY at append sites where 'machin alias' proved the slice has no other
+   live reference across the append (see alias.go). With that proof, moving the
+   array cannot invalidate anything, so the block can be handed to realloc()
+   instead of being copied into a fresh one and abandoned.
+
+   TWO GUARDS, because the static proof alone is not enough:
+
+   1. HEAD ONLY. The arena is a singly-linked list, so growing a mid-list block
+      would need its predecessor. Only the most recent allocation is grown in
+      place; anything else falls back to the copy path. That is not much of a
+      restriction in practice — a tight append loop allocates nothing in between,
+      which is exactly when this matters.
+
+   2. STRLEN CACHE INVALIDATION. mfl_strlen_cached keys on pointer identity, sound
+      only while the arena frees nothing mid-life. realloc hands an address back to
+      the allocator, where a later malloc may reuse it — so the cache must be
+      dropped on this path or a future substr() could read a stale length. */
+static void* mfl_realloc_owned(void* old, size_t sz) {
+    if (sz == 0) sz = 1;
+    if (old) {
+        if (!mfl_arena_cur) mfl_arena_cur = &mfl_main_arena;
+        mfl_blk* b = (mfl_blk*)old - 1;
+        if (mfl_arena_cur->head == b) {
+            size_t oldsz = b->size;
+            mfl_blk* nb = (mfl_blk*)realloc(b, sizeof(mfl_blk) + sz);
+            if (nb) {
+                nb->size = sz;
+                mfl_arena_cur->head = nb;
+                mfl_arena_cur->bytes = mfl_arena_cur->bytes - oldsz + sz;
+                mfl_strlen_cache_s = NULL; /* see guard 2 above */
+                return (void*)(nb + 1);
+            }
+            /* realloc failed: b is still valid, fall through to the copy path */
+        }
+    }
+    void* p = mfl_alloc(sz);
+    if (old) { size_t o = ((mfl_blk*)old - 1)->size; memcpy(p, old, o < sz ? o : sz); }
+    return p;
+}
+static mfl_slice mfl_append_owned(mfl_slice s, const void* elem, int64_t es) {
+    if (s.len >= s.cap) {
+        int64_t nc = s.cap ? s.cap * 2 : 4;
+        s.data = mfl_realloc_owned(s.data, nc * es); s.cap = nc;
+    }
+    memcpy((char*)s.data + s.len * es, elem, es);
+    s.len++;
+    return s;
+}
 static mfl_slice mfl_append(mfl_slice s, const void* elem, int64_t es) {
     if (s.len >= s.cap) {
         int64_t nc = s.cap ? s.cap * 2 : 4;
@@ -4240,6 +4290,15 @@ func (g *cgen) program(p *Program) (string, error) {
 	for _, name := range g.c.GlobalOrder() {
 		g.globals[name] = true
 	}
+	// Which local slices no other live reference observes. Computed once for the
+	// whole program; consulted only at self-append sites (see stmt()). An empty map
+	// means every append keeps today's copy-and-abandon behaviour.
+	g.unaliased = map[string]bool{}
+	for _, a := range analyzeSliceAliasing(p, g.c) {
+		if a.Unaliased && a.Appends > 0 {
+			g.unaliased[a.Fn+"\x00"+a.Var] = true
+		}
+	}
 	// Coverage slots come from the PARSED program, so a function nothing calls
 	// still occupies a slot and reports as a miss. Lambdas are excluded: they are
 	// lifted compiler artifacts, not functions anyone declared or can test by name.
@@ -4694,6 +4753,30 @@ func (g *cgen) function(inst string) error {
 	return nil
 }
 
+// ownedAppend renders `v = append(v, x)` through the in-place growth path when the
+// analysis proved v has no other live reference across this append (#578). Returns
+// ok=false for every other shape, so the caller falls back to normal emission.
+func (g *cgen) ownedAppend(st *AssignStmt) (string, bool, error) {
+	if !g.unaliased[g.curFn+"\x00"+st.Name] {
+		return "", false, nil
+	}
+	call, ok := st.Val.(*Call)
+	if !ok || call.Callee != "append" || call.Spread || len(call.Args) != 2 {
+		return "", false, nil
+	}
+	self, ok := call.Args[0].(*Ident)
+	if !ok || self.Name != st.Name {
+		return "", false, nil
+	}
+	val, err := g.expr(call.Args[1])
+	if err != nil {
+		return "", false, err
+	}
+	ct := g.c.ElemCType(g.curFn, call.Args[0])
+	return fmt.Sprintf("mfl_append_owned(%s, &((%s[1]){%s})[0], sizeof(%s))",
+		g.varRef(st.Name), ct, val, ct), true, nil
+}
+
 // emitNamedReturn writes a return of the function's named return locals.
 func (g *cgen) emitNamedReturn(inst string) {
 	names := g.c.RetNames(inst)
@@ -4765,6 +4848,17 @@ func (g *cgen) stmt(s Stmt, depth int) error {
 		}
 		g.buf.WriteString(e + ";\n")
 	case *AssignStmt:
+		// v = append(v, x) where the alias analysis proved v unaliased across this
+		// append: grow the block in place instead of copying into a fresh one.
+		// Everything else, including every append the analysis did not clear, keeps
+		// the copy-and-abandon path.
+		if e, ok, err := g.ownedAppend(st); err != nil {
+			return err
+		} else if ok {
+			fmt.Fprintf(&g.buf, "%s = %s;\n", g.varRef(st.Name), e)
+			g.emitProbe(st.Name, g.c.NodeKind(g.curFn, st.Val), depth)
+			return nil
+		}
 		e, err := g.expr(st.Val)
 		if err != nil {
 			return err

@@ -169,7 +169,7 @@ func machinGuide() guideCatalog {
 				},
 				{
 					Axis:      "native runtime speed",
-					Result:    "vs Rust -O3 / Zig ReleaseFast on 4 kernels with byte-identical output, timed interleaved (not language-by-language, which lets thermal drift penalize whoever runs last): wins recursive fib(40) by ~26%, ties a 10^9 integer-sum loop and a float-heavy mandelbrot within a few percent, trails an array-heavy sieve by ~1.46x. That last gap is NOT slice indexing — phase timing shows the sieve loop itself ties Rust exactly (110ms vs 111ms); the whole difference is building the 10M-element array by append, because a growing slice cannot be realloc'd in place (see issue #578)",
+					Result:    "vs Rust -O3 / Zig ReleaseFast on 4 kernels with byte-identical output, timed interleaved (not language-by-language, which lets thermal drift penalize whoever runs last): wins recursive fib(40) by ~26%, ties a 10^9 integer-sum loop and a float-heavy mandelbrot within a few percent, and the array-heavy sieve now TIES Rust (1.01x, was 1.41x) though it still trails Zig by ~1.19x. That gap was never slice indexing — phase timing showed the sieve loop itself tying Rust exactly (110ms vs 111ms); the whole difference was building the 10M-element array by append, which copied into a fresh block on every growth. FIXED in #578: `machin alias` proves fail-closed that a local slice has no other live reference across an append, and only then does codegen grow the block in place, guarded at runtime by an arena-head check. An adversarial suite of live-alias shapes runs under AddressSanitizer in CI and was verified to catch the unsound version of the same optimization",
 					Reproduce: "bench/native-speed: ./run.sh (needs machin, cc, rustc, zig, python3)",
 				},
 				{
