@@ -29,10 +29,12 @@ test: mfl-test
 # documented invocation had in fact stopped working.
 mfl-test: build
 	$(BIN) test framework/flags.src framework/tests/flags_test.src
+	$(BIN) test framework/bson.src framework/tests/bson_test.src
 
 # Same suites with function + statement coverage (#589), as a human-readable report.
 mfl-cover: build
 	$(BIN) test --cover framework/flags.src framework/tests/flags_test.src
+	$(BIN) test --cover framework/bson.src framework/tests/bson_test.src
 
 # MFL coverage floors — a RATCHET, like cov-floor is for the Go side. Set just
 # under what the suites measure today (flags.src: 90.9% function, 82.1% statement
@@ -49,11 +51,16 @@ version-check:
 
 MFL_FUNC_FLOOR ?= 90
 MFL_STMT_FLOOR ?= 75
+# bson.src is fully covered (24/24); hold it there rather than at the shared floor.
+BSON_FUNC_FLOOR ?= 100
 
 mfl-cov-floor: build
 	@$(BIN) test --cover --json framework/flags.src framework/tests/flags_test.src 2>/dev/null \
 		| python3 tools/cov-floor.py --module framework/flags.src \
 			--func $(MFL_FUNC_FLOOR) --stmt $(MFL_STMT_FLOOR)
+	@$(BIN) test --cover --json framework/bson.src framework/tests/bson_test.src 2>/dev/null \
+		| python3 tools/cov-floor.py --module framework/bson.src \
+			--func $(BSON_FUNC_FLOOR) --stmt $(MFL_STMT_FLOOR)
 
 # Statement coverage of the compiler. `make cover` prints the % and writes an
 # HTML report to coverage.html (open it to see which lines are unhit). The corpus

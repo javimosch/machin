@@ -16,7 +16,12 @@ import (
 // including an embedded NUL — proving the byte path doesn't truncate at NUL
 // the way a C-string-based tls_read/tls_write would.
 func TestTLSReadWriteBytesRoundTrip(t *testing.T) {
-	const port = 47662
+	// Ports are deliberately BELOW the ephemeral range (see
+	// /proc/sys/net/ipv4/ip_local_port_range, typically 32768-60999): a port
+	// inside it can be taken as the SOURCE port of any unrelated outbound
+	// connection, and then this server cannot bind and the test fails with
+	// "connection refused" for reasons that have nothing to do with the code.
+	const port = 17663
 	dir := t.TempDir()
 	certPath, keyPath := genSelfSignedCert(t, dir, "localhost")
 
