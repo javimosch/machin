@@ -134,6 +134,36 @@ func TestCmdTestWithJSONOutput(t *testing.T) {
 	}
 }
 
+func TestCmdTestWithCoverOutput(t *testing.T) {
+	dir := t.TempDir()
+	f := writeSrc(t, dir, "t.src", `func main() {
+    assert(1 + 1 == 2, "addition")
+    test_summary()
+}`)
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	err = cmdTest([]string{"--json", "--cover", f})
+	w.Close()
+	os.Stdout = old
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	buf := make([]byte, 4096)
+	n, _ := r.Read(buf)
+	output := string(buf[:n])
+	if !strings.Contains(output, "\"coverage\"") {
+		t.Fatalf("JSON output with --cover should include coverage, got %q", output)
+	}
+	if !strings.Contains(output, "\"kind\"") {
+		t.Fatalf("coverage should name its kind, got %q", output)
+	}
+}
+
 func TestCmdTestJSONFlagPosition(t *testing.T) {
 	dir := t.TempDir()
 	f := writeSrc(t, dir, "t.src", `func main() {

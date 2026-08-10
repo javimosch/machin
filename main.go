@@ -134,7 +134,7 @@ usage:
   machin build|run <file.mfl> --safe  insert bounds / div-zero / overflow checks
   machin build|run <file.mfl> --race-safe  refuse to build if a data race is inferred
   machin check <src...>|--stdin      lex+parse+typecheck only (no cc); add --json for machine-readable diagnostics
-  machin test [--json] <src...>      run MFL test files (framework/test.src: assert/assert_eq_int/assert_eq_str)
+  machin test [--json] [--cover] <src...>  run MFL test files (framework/test.src: assert/assert_eq_int/assert_eq_str; --cover adds function/statement coverage)
   machin encode <src>                mint canonical MFL from loose Go-like text (framework/*.src resolve from the binary)
   machin framework list|<name>|--vendor   the embedded framework modules (machweb, db drivers, …)
   machin pack  <file.mfl>            emit the dense base64 form (distribution)
