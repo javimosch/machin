@@ -2,6 +2,50 @@
 
 ## Unreleased
 
+## v0.130.0
+
+**A BEHAVIOUR CHANGE in `framework/router.src`**, not a silent bug fix — read this
+if you ship a machin web app (PRs #606, #609, issue #598).
+
+**`path_index(path)` now returns -1 for an unregistered path.** It returned **0**,
+with no not-found signal at all, so a typo'd or stale deep link silently rendered
+whatever route was registered first — usually home — while the address bar showed
+the bad URL. No caller could tell "matched route 0" from "no such route".
+
+*If you relied on the old fallback*, an unknown path is now inert rather than
+landing on route 0. That is the point: you can render a real 404 by checking for
+-1. Nothing crashes either way.
+
+**`navigate(i)` ignores an out-of-range index at BOTH ends.** It has to: with
+`path_index` returning -1, `route_paths[-1]` would read out of bounds. #606 guarded
+the negative side; #609 added the upper bound, because `navigate` is public API an
+app calls with an index of its own and a stale or off-by-one one still read past
+the table:
+
+```
+panic: index out of range [99] with length 2
+```
+
+Under `--safe` that was a panic; without it, a silent garbage read.
+
+**`router_init(initial)` now clears the route table.** It only created the active
+signal, so `route_paths`/`route_n` grew for the life of the process and a second
+call gave no clean slate — which made the name a lie. Its documented contract was
+already "call first", so resetting is what it always implied.
+
+**First registration wins.** `path_index` had no early exit, so it returned the
+LAST match and a duplicate registration silently shadowed the original.
+
+All four came out of writing router's MFL test suite (#593), where they were
+deliberately pinned as current behaviour rather than "fixed" inside a test, since
+routing semantics are a product decision. The suite now asserts the new
+guarantees: -1 distinct from route 0, duplicate registration, `navigate` inert at
+both ends, and `nav()` leaving the route alone for an unknown path. 33 assertions,
+router at 9/9 function coverage.
+
+The `machin-web` skill documents all of it, so an agent building a router app gets
+the 404 idiom rather than rediscovering the old fallback.
+
 ## v0.129.0
 
 **SQLite works on the windows target** (PR #604, issue #517) — and unlike the last
