@@ -38,6 +38,8 @@ func main() {
 		err = cmdEncode(os.Args[2:])
 	case "check":
 		err = cmdCheck(os.Args[2:]) // agent-native diagnostics (lex/parse/typecheck + advisory falsify, JSON)
+	case "alias":
+		err = cmdAlias(os.Args[2:]) // which local slices are provably unaliased (#578 step 1; a report, no codegen)
 	case "falsify":
 		err = cmdFalsify(os.Args[2:]) // bounded counterexamples: the exact input that breaks a function
 	case "certify":
