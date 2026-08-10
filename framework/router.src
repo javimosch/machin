@@ -6,7 +6,7 @@
 //
 // Usage in a component:
 //   export func start() {
-//       router_init(0)                     // active route is a signal
+//       router_init(0)                     // active route is a signal; also clears routes
 //       route("/")  route("/users")        // register paths, in index order
 //       mount("app", nav_bar() + "<div id=outlet></div>")
 //       outlet("outlet", func() { return page() })   // page() switches on current_route()
@@ -31,8 +31,13 @@ var route_now = 0           // signal id: the active route index
 var route_paths = []string{}
 var route_n = 0
 
-// router_init creates the active-route signal (call first, with the initial index).
+// router_init creates the active-route signal AND clears the route table (call
+// first, with the initial index). It resets: previously it only made the signal,
+// so a second router_init left the old paths in place and indices kept climbing —
+// which made its name a lie and broke any test or app that set up twice (#598).
 func router_init(initial) {
+    route_paths = []string{}
+    route_n = 0
     route_now = signal(initial)
 }
 
@@ -43,11 +48,20 @@ func route(path) (i) {
     route_n = route_n + 1
 }
 
+// path_index returns a registered path's index, or -1 when the path is unknown.
+//
+// It used to return 0 for an unregistered path, with no not-found signal at all —
+// so a typo'd or stale deep link silently rendered whatever route was registered
+// first, usually home, while the address bar showed the bad URL. Callers can now
+// tell "matched route 0" from "no such route" (#598).
+//
+// FIRST match wins. Without the break the loop kept scanning and returned the LAST
+// match, so a duplicate registration silently shadowed the original.
 func path_index(path) (i) {
-    i = 0
+    i = 0 - 1
     j := 0
     while j < route_n {
-        if route_paths[j] == path { i = j }
+        if route_paths[j] == path { i = j  break }
         j = j + 1
     }
 }
@@ -56,8 +70,14 @@ func path_index(path) (i) {
 // re-renders on navigation.
 func current_route() (i) { i = get(route_now) }
 
-// navigate switches to a route index and syncs the address bar.
+// navigate switches to a route index and syncs the address bar. An out-of-range
+// index is IGNORED: path_index now returns -1 for an unknown path, and
+// route_paths[-1] would read out of bounds. An unrecognised link is inert — the
+// current route and the address bar are both left alone — which is the least
+// surprising of the options and never crashes.
 func navigate(i) {
+    if i < 0 { return }
+    if i >= route_n { return }
     set(route_now, i)
     nav_url(route_paths[i])
 }

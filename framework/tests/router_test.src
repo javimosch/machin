@@ -36,13 +36,16 @@ func test_route_registration_is_index_ordered() {
     assert_eq_int(c, b + 1, "and keep incrementing")
 }
 
-// The sharp edge itself, pinned: calling router_init again does not clear routes.
-func test_router_init_does_not_reset_the_route_table() {
+// router_init RESETS the table (#598). It previously only created the signal, so
+// a second call left the old paths in place and indices kept climbing.
+func test_router_init_resets_the_route_table() {
     router_init(0)
-    first := route("/reset/one")
+    route("/reset/one")
+    route("/reset/two")
     router_init(0)
-    second := route("/reset/two")
-    assert_eq_int(second, first + 1, "the table carries over across router_init")
+    fresh := route("/reset/three")
+    assert_eq_int(fresh, 0, "a second router_init starts indices from 0 again")
+    assert_eq_int(path_index("/reset/one"), -1, "and the old paths are gone")
 }
 
 func test_path_index_finds_registered_paths() {
@@ -55,17 +58,40 @@ func test_path_index_finds_registered_paths() {
     assert_eq_int(path_index("/find/about"), c, "last")
 }
 
-// PINNING A SHARP EDGE, not endorsing it. path_index has no not-found signal: an
-// unregistered path yields 0, so a typo'd or stale deep link silently lands on
-// whatever route was registered first rather than 404-ing. Changing that is a
-// product decision (navigate(-1) would index out of range), so it is tracked
-// separately rather than "fixed" inside a test suite.
-func test_unknown_path_falls_back_to_route_zero() {
+// An unknown path is now DISTINGUISHABLE from route 0 (#598). It used to return 0,
+// so a typo'd deep link silently rendered home while the address bar showed the
+// bad URL, and no caller could tell the difference.
+func test_unknown_path_returns_negative_one() {
     router_init(0)
     route("/unk/a")
     route("/unk/b")
-    assert_eq_int(path_index("/nope"), 0, "unknown path yields 0, NOT -1")
-    assert_eq_int(path_index(""), 0, "empty path yields 0 too")
+    assert_eq_int(path_index("/nope"), -1, "unknown path is -1, not 0")
+    assert_eq_int(path_index(""), -1, "empty path too")
+    assert_eq_int(path_index("/unk/a"), 0, "and route 0 still reports 0 — the two are now distinct")
+}
+
+// First registration wins. Without the early exit the loop returned the LAST
+// match, so a duplicate silently shadowed the original.
+func test_duplicate_registration_first_wins() {
+    router_init(0)
+    first := route("/dup")
+    route("/other")
+    route("/dup")
+    assert_eq_int(path_index("/dup"), first, "the first registration wins")
+}
+
+// navigate must IGNORE an out-of-range index rather than indexing route_paths[-1].
+// An unrecognised link is inert: current route and address bar both unchanged.
+func test_navigate_ignores_unknown_routes() {
+    router_init(0)
+    route("/g/a")
+    b := route("/g/b")
+    navigate(b)
+    assert_eq_int(current_route(), b, "navigated normally")
+    navigate(-1)
+    assert_eq_int(current_route(), b, "a -1 index changes nothing")
+    navigate(99)
+    assert_eq_int(current_route(), b, "an out-of-range index changes nothing")
 }
 
 func test_path_matching_is_exact() {
@@ -161,6 +187,20 @@ func test_nav_from_a_host_buffer() {
     assert_eq_int(current_route(), target, "the host's path string routed to the right index")
 }
 
+// The host calls nav() for a link click; an unknown path must not move the route
+// and must not read out of bounds.
+func test_nav_with_an_unknown_path_is_inert() {
+    router_init(0)
+    route("/known/a")
+    target := route("/known/b")
+    navigate(target)
+    path := "/not/registered"
+    p := nav_buf(len(path))
+    write_cstr(p, path)
+    nav(p)
+    assert_eq_int(current_route(), target, "an unregistered path leaves the route alone")
+}
+
 func test_link_markup() {
     h := link("/users", "Users")
     assert_eq_str(h, "<a href=\"/users\" data-nav=\"/users\">Users</a>",
@@ -178,15 +218,18 @@ func test_link_escapes_nothing_by_design() {
 func main() {
     router_stub_link()
     test_route_registration_is_index_ordered()
-    test_router_init_does_not_reset_the_route_table()
+    test_router_init_resets_the_route_table()
     test_path_index_finds_registered_paths()
-    test_unknown_path_falls_back_to_route_zero()
+    test_unknown_path_returns_negative_one()
+    test_duplicate_registration_first_wins()
+    test_navigate_ignores_unknown_routes()
     test_path_matching_is_exact()
     test_current_route_reflects_navigation()
     test_router_init_sets_the_initial_route()
     test_navigation_wakes_a_reaction()
     test_outlet_renders_on_navigation()
     test_nav_from_a_host_buffer()
+    test_nav_with_an_unknown_path_is_inert()
     test_link_markup()
     test_link_escapes_nothing_by_design()
     test_summary()

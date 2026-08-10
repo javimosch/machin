@@ -257,7 +257,7 @@ func main() {
 	for _, want := range []string{
 		"idx /users=1",
 		"idx /settings=2",
-		"idx /missing=0", // unknown path defaults to the first route
+		"idx /missing=-1", // -1, not 0: an unknown path is now distinguishable from route 0 (#598)
 		"OUT 2\nURL /settings",
 		"OUT 0\nURL /",
 	} {
