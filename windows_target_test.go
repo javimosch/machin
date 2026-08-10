@@ -15,12 +15,13 @@ import (
 // actionable, #517-referencing message — before any C is handed to a compiler.
 func TestWindowsPreflightRejects(t *testing.T) {
 	cases := []struct {
-		name    string
-		src     string
+		name     string
+		src      string
 		mentions string
 	}{
 		{"tty", `func main() { raw_mode(1)  println(read_key()) }`, "terminal raw mode"},
-		{"sqlite", `func main() { sqlite_open("x.db") }`, "SQLite"},
+		{"regex", `func main() { println(regex_match("a", "a")) }`, "regex"},
+		{"xeddsa", `func main() { println(len(xeddsa_sign(bytes(""), bytes(""), bytes("")))) }`, "XEdDSA"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -36,6 +37,35 @@ func TestWindowsPreflightRejects(t *testing.T) {
 				t.Fatalf("error should mention %q and #517, got: %v", c.mentions, err)
 			}
 		})
+	}
+}
+
+// SQLite is SUPPORTED on windows as of #517: the same bundled amalgamation the
+// native --static build uses, which carries its own Win32 VFS. The preflight must
+// therefore let it through — the rejection this replaces was the gap, not a rule.
+//
+// This checks the preflight and the emitted C only; that the produced .exe
+// actually RUNS is verified by CI executing it on a windows-latest runner, since
+// compiling a PE proves nothing about whether it works (#549).
+func TestWindowsAcceptsSqlite(t *testing.T) {
+	prog, err := ParseProgram([]string{normalize(`func main() {
+    db := sqlite_open("x.db")
+    sqlite_exec(db, "CREATE TABLE IF NOT EXISTS t(id INTEGER PRIMARY KEY)")
+    sqlite_close(db)
+}`)})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	csrc, _, err := CompileToCTarget(prog, false, targetWindows)
+	if err != nil {
+		t.Fatalf("windows preflight must accept SQLite now: %v", err)
+	}
+	if !strings.Contains(csrc, "mfl_sqlite_open") {
+		t.Fatal("emitted C should contain the sqlite glue")
+	}
+	// The glue must reach SQLite through its own header, not a POSIX shim.
+	if !strings.Contains(csrc, "sqlite3.h") {
+		t.Fatal("emitted C should include sqlite3.h so the bundled amalgamation satisfies it")
 	}
 }
 

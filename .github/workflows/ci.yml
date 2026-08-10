@@ -113,3 +113,44 @@ jobs:
           /tmp/machin encode /tmp/win_smoke.src > /tmp/win_smoke.mfl
           /tmp/machin build /tmp/win_smoke.mfl --target windows -o /tmp/win_smoke.exe
           test -s /tmp/win_smoke.exe && echo "windows smoke build OK ($(wc -c < /tmp/win_smoke.exe) bytes)"
+
+      # Cross-compile a SQLite program for Windows and hand it to a REAL Windows
+      # runner below. Building a PE is not evidence it works: this target was
+      # broken for two releases while CI happily compiled it (#549), because
+      # nothing ever executed the result.
+      - name: build the windows SQLite exe (for the run job)
+        run: |
+          printf 'func main() {\n    db := sqlite_open("ci.db")\n    sqlite_exec(db, "CREATE TABLE IF NOT EXISTS t(id INTEGER PRIMARY KEY, name TEXT)")\n    sqlite_exec(db, "DELETE FROM t")\n    sqlite_exec(db, "INSERT INTO t(name) VALUES(?)", []string{"windows"})\n    println(sqlite_query(db, "SELECT id,name FROM t"))\n    sqlite_close(db)\n}\n' > /tmp/win_sql.src
+          /tmp/machin encode /tmp/win_sql.src > /tmp/win_sql.mfl
+          /tmp/machin build /tmp/win_sql.mfl --target windows -o /tmp/win_sql.exe
+          mkdir -p /tmp/winart && cp /tmp/win_sql.exe /tmp/winart/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-sqlite-exe
+          path: /tmp/winart/win_sql.exe
+          retention-days: 1
+
+  # Execute the cross-compiled binary on actual Windows. Compiling a PE proves
+  # nothing about whether it runs — which is exactly how the windows target stayed
+  # broken across two releases (#549, #517).
+  windows-run:
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-sqlite-exe
+
+      - name: run the cross-compiled SQLite binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          out=$(./win_sql.exe)
+          echo "output: $out"
+          expected='[{"id":1,"name":"windows"}]'
+          if [ "$out" != "$expected" ]; then
+            echo "::error::windows SQLite binary produced $out, expected $expected"
+            exit 1
+          fi
+          echo "SQLite works on Windows: bundled amalgamation, no external DLL"

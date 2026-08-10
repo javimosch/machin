@@ -58,12 +58,11 @@ func windowsUnsupported(g *cgen) error {
 		{g.usesTTY, "terminal raw mode (raw_mode/read_key)"},
 		{g.usesSelect, "select"},
 		{g.usesXEdDSA, "XEdDSA (xeddsa_* — needs libsodium for Windows, not yet wired)"},
-		{g.usesSQLite, "SQLite (sqlite_*)"},
 		{g.usesRegex, "regex (regex_*)"},
 		{g.usesZlib, "zlib (zlib_compress/zlib_decompress — needs a mingw libz, not yet wired)"},
 	} {
 		if u.used {
-			return fmt.Errorf("the windows target does not yet support %s — see issue #517 (supported: the stdio/compute core, TCP sockets, and HTTPS/TLS+crypto via a user-supplied OpenSSL)", u.what)
+			return fmt.Errorf("the windows target does not yet support %s — see issue #517 (supported: the stdio/compute core, TCP sockets, SQLite, and HTTPS/TLS+crypto via a user-supplied OpenSSL)", u.what)
 		}
 	}
 	return nil
