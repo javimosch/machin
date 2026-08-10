@@ -21,12 +21,9 @@ extern "router_stub" {
     fn router_stub_link()
 }
 
-// NOTE ON STATE. router_init creates a fresh active-route SIGNAL but does NOT
-// reset the route table: route_paths/route_n accumulate for the life of the
-// process. A real app registers its routes once, so this is not a production bug —
-// but it means indices are only meaningful RELATIVE to what a test registered, and
-// a second router_init does not give you a clean slate. Every test below therefore
-// registers uniquely-named paths and compares against the indices route() returned.
+// NOTE ON STATE. router_init resets the route table, so each test starts from a
+// clean slate. Tests can rely on absolute indices for the routes they register in
+// a single call.
 func test_route_registration_is_index_ordered() {
     router_init(0)
     a := route("/reg/a")
@@ -36,13 +33,13 @@ func test_route_registration_is_index_ordered() {
     assert_eq_int(c, b + 1, "and keep incrementing")
 }
 
-// The sharp edge itself, pinned: calling router_init again does not clear routes.
-func test_router_init_does_not_reset_the_route_table() {
+func test_router_init_resets_the_route_table() {
     router_init(0)
     first := route("/reset/one")
     router_init(0)
     second := route("/reset/two")
-    assert_eq_int(second, first + 1, "the table carries over across router_init")
+    assert_eq_int(second, 0, "a second router_init starts the table at 0")
+    assert_eq_int(second, first, "indices after reset match a fresh table")
 }
 
 func test_path_index_finds_registered_paths() {
@@ -55,17 +52,23 @@ func test_path_index_finds_registered_paths() {
     assert_eq_int(path_index("/find/about"), c, "last")
 }
 
-// PINNING A SHARP EDGE, not endorsing it. path_index has no not-found signal: an
-// unregistered path yields 0, so a typo'd or stale deep link silently lands on
-// whatever route was registered first rather than 404-ing. Changing that is a
-// product decision (navigate(-1) would index out of range), so it is tracked
-// separately rather than "fixed" inside a test suite.
-func test_unknown_path_falls_back_to_route_zero() {
+func test_unknown_path_returns_not_found() {
     router_init(0)
     route("/unk/a")
     route("/unk/b")
-    assert_eq_int(path_index("/nope"), 0, "unknown path yields 0, NOT -1")
-    assert_eq_int(path_index(""), 0, "empty path yields 0 too")
+    assert_eq_int(path_index("/nope"), 0 - 1, "unknown path yields -1")
+    assert_eq_int(path_index(""), 0 - 1, "empty path yields -1 too")
+}
+
+// nav() uses path_index, so an unknown host path leaves the current route alone.
+func test_nav_ignores_unknown_path() {
+    router_init(0)
+    route("/nav/a")
+    route("/nav/b")
+    p := nav_buf(len("/nope"))
+    write_cstr(p, "/nope")
+    nav(p)
+    assert_eq_int(current_route(), 0, "unknown path does not change the active route")
 }
 
 func test_path_matching_is_exact() {
@@ -79,6 +82,13 @@ func test_path_matching_is_exact() {
     pab := route("/pre/ab")
     assert_eq_int(path_index("/pre/ab"), pab, "/pre/ab is not matched as a prefix of /pre/a")
     assert_eq_int(path_index("/pre/a"), pa, "and /pre/a still resolves to itself")
+}
+
+func test_path_index_first_match_wins() {
+    router_init(0)
+    first := route("/dup/a")
+    route("/dup/a")
+    assert_eq_int(path_index("/dup/a"), first, "first registration wins when routes are duplicated")
 }
 
 func test_current_route_reflects_navigation() {
@@ -178,14 +188,16 @@ func test_link_escapes_nothing_by_design() {
 func main() {
     router_stub_link()
     test_route_registration_is_index_ordered()
-    test_router_init_does_not_reset_the_route_table()
+    test_router_init_resets_the_route_table()
     test_path_index_finds_registered_paths()
-    test_unknown_path_falls_back_to_route_zero()
+    test_unknown_path_returns_not_found()
     test_path_matching_is_exact()
+    test_path_index_first_match_wins()
     test_current_route_reflects_navigation()
     test_router_init_sets_the_initial_route()
     test_navigation_wakes_a_reaction()
     test_outlet_renders_on_navigation()
+    test_nav_ignores_unknown_path()
     test_nav_from_a_host_buffer()
     test_link_markup()
     test_link_escapes_nothing_by_design()
