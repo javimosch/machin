@@ -171,6 +171,37 @@ func test_nav_from_a_host_buffer() {
     assert_eq_int(current_route(), target, "the host's path string routed to the right index")
 }
 
+// navigate must ignore BOTH ends. #606 guarded the -1 that path_index returns;
+// the upper bound matters because navigate is public API an app calls with an
+// index of its own — a stale or off-by-one one used to read past the table
+// ("index out of range [99] with length 2" under --safe).
+func test_navigate_ignores_out_of_range_indices() {
+    router_init(0)
+    route("/g/a")
+    b := route("/g/b")
+    navigate(b)
+    assert_eq_int(current_route(), b, "navigated normally")
+    navigate(-1)
+    assert_eq_int(current_route(), b, "a negative index changes nothing")
+    navigate(99)
+    assert_eq_int(current_route(), b, "an index past the table changes nothing")
+    navigate(route_n)
+    assert_eq_int(current_route(), b, "exactly one past the end changes nothing")
+}
+
+// The host entry point inherits the guard: an unregistered path is inert.
+func test_nav_with_an_unknown_path_is_inert() {
+    router_init(0)
+    route("/known/a")
+    target := route("/known/b")
+    navigate(target)
+    path := "/not/registered"
+    p := nav_buf(len(path))
+    write_cstr(p, path)
+    nav(p)
+    assert_eq_int(current_route(), target, "an unregistered path leaves the route alone")
+}
+
 func test_link_markup() {
     h := link("/users", "Users")
     assert_eq_str(h, "<a href=\"/users\" data-nav=\"/users\">Users</a>",
@@ -199,6 +230,8 @@ func main() {
     test_outlet_renders_on_navigation()
     test_nav_ignores_unknown_path()
     test_nav_from_a_host_buffer()
+    test_navigate_ignores_out_of_range_indices()
+    test_nav_with_an_unknown_path_is_inert()
     test_link_markup()
     test_link_escapes_nothing_by_design()
     test_summary()
