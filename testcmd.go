@@ -239,7 +239,11 @@ func declOwners(files []string) map[string]string {
 			continue
 		}
 		for _, b := range blocks {
-			rest, ok := strings.CutPrefix(strings.TrimSpace(normalize(b)), "func ")
+			decl := strings.TrimSpace(normalize(b))
+			// `export func` is still a declaration this file owns — matching only
+			// "func " filed every exported function under "(unknown)".
+			decl = strings.TrimPrefix(decl, "export ")
+			rest, ok := strings.CutPrefix(decl, "func ")
 			if !ok {
 				continue
 			}

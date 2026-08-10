@@ -1,0 +1,193 @@
+// router_test — exercises framework/router.src's path logic in MFL, via
+// `machin test`. Run from the repo root (the stub path below is relative to it):
+//   machin test framework/reactive.src framework/router.src framework/tests/router_test.src
+// or `make mfl-test`, which is what CI runs.
+//
+// reactive.src comes first because router's signals are reactive's.
+//
+// WHY THE STUB. router.src is half a wasm binding: dom_html and nav_url are
+// `extern "env"` imports the browser host provides, and natively they resolve to
+// nothing. Worse, `export func nav` is ALWAYS instantiated, so it pulls
+// navigate -> nav_url into the link whether or not a test calls them — the module
+// could not be built under `machin test` at all. framework/tests/router_stub.c
+// supplies no-op natives so the pure routing logic can be reached. The stub
+// records nothing on purpose: asserting on DOM side effects would be testing the
+// stub, not router.src.
+
+var nav_runs = 0
+
+extern "router_stub" {
+    cflags "framework/tests/router_stub.c"
+    fn router_stub_link()
+}
+
+// NOTE ON STATE. router_init creates a fresh active-route SIGNAL but does NOT
+// reset the route table: route_paths/route_n accumulate for the life of the
+// process. A real app registers its routes once, so this is not a production bug —
+// but it means indices are only meaningful RELATIVE to what a test registered, and
+// a second router_init does not give you a clean slate. Every test below therefore
+// registers uniquely-named paths and compares against the indices route() returned.
+func test_route_registration_is_index_ordered() {
+    router_init(0)
+    a := route("/reg/a")
+    b := route("/reg/b")
+    c := route("/reg/c")
+    assert_eq_int(b, a + 1, "indices are consecutive")
+    assert_eq_int(c, b + 1, "and keep incrementing")
+}
+
+// The sharp edge itself, pinned: calling router_init again does not clear routes.
+func test_router_init_does_not_reset_the_route_table() {
+    router_init(0)
+    first := route("/reset/one")
+    router_init(0)
+    second := route("/reset/two")
+    assert_eq_int(second, first + 1, "the table carries over across router_init")
+}
+
+func test_path_index_finds_registered_paths() {
+    router_init(0)
+    a := route("/find/root")
+    b := route("/find/users")
+    c := route("/find/about")
+    assert_eq_int(path_index("/find/root"), a, "first")
+    assert_eq_int(path_index("/find/users"), b, "middle")
+    assert_eq_int(path_index("/find/about"), c, "last")
+}
+
+// PINNING A SHARP EDGE, not endorsing it. path_index has no not-found signal: an
+// unregistered path yields 0, so a typo'd or stale deep link silently lands on
+// whatever route was registered first rather than 404-ing. Changing that is a
+// product decision (navigate(-1) would index out of range), so it is tracked
+// separately rather than "fixed" inside a test suite.
+func test_unknown_path_falls_back_to_route_zero() {
+    router_init(0)
+    route("/unk/a")
+    route("/unk/b")
+    assert_eq_int(path_index("/nope"), 0, "unknown path yields 0, NOT -1")
+    assert_eq_int(path_index(""), 0, "empty path yields 0 too")
+}
+
+func test_path_matching_is_exact() {
+    router_init(0)
+    short := route("/exact/u")
+    long := route("/exact/u/new")
+    assert_eq_int(path_index("/exact/u"), short, "exact match wins over the longer path")
+    assert_eq_int(path_index("/exact/u/new"), long, "the longer path is its own route")
+    // A prefix-matching implementation would resolve "/pre/ab" to "/pre/a".
+    pa := route("/pre/a")
+    pab := route("/pre/ab")
+    assert_eq_int(path_index("/pre/ab"), pab, "/pre/ab is not matched as a prefix of /pre/a")
+    assert_eq_int(path_index("/pre/a"), pa, "and /pre/a still resolves to itself")
+}
+
+func test_current_route_reflects_navigation() {
+    router_init(0)
+    route("/nav/a")
+    route("/nav/b")
+    assert_eq_int(current_route(), 0, "starts at the initial index")
+    navigate(1)
+    assert_eq_int(current_route(), 1, "navigate moves the active route")
+    navigate(0)
+    assert_eq_int(current_route(), 0, "and back")
+}
+
+func test_router_init_sets_the_initial_route() {
+    router_init(2)
+    route("/init/a")
+    route("/init/b")
+    route("/init/c")
+    assert_eq_int(current_route(), 2, "the initial index is honoured, not forced to 0")
+}
+
+// current_route reads a signal, so a reaction that calls it must re-run on
+// navigation — that is what makes an outlet re-render.
+func test_navigation_wakes_a_reaction() {
+    router_init(0)
+    route("/wake/a")
+    route("/wake/b")
+    // Count in a plain global, NOT a signal. A reaction that both reads and writes
+    // the same signal dirties itself, and commit() re-runs to a fixpoint that never
+    // arrives — the process is OOM-killed rather than failing an assertion.
+    nav_runs = 0
+    reaction(func() { current_route()  nav_runs = nav_runs + 1 })
+    assert_eq_int(nav_runs, 1, "the reaction ran once when registered")
+    navigate(1)
+    assert_eq_int(nav_runs, 2, "navigating re-runs a reaction that read the route")
+    navigate(1)
+    assert_eq_int(nav_runs, 2, "navigating to the SAME route does not re-run it")
+}
+
+// outlet wires a render closure to a container through a reaction. The stub's
+// dom_html swallows the output, so what is asserted is the WIRING: the render
+// closure runs on registration and again on navigation.
+func test_outlet_renders_on_navigation() {
+    router_init(0)
+    route("/out/a")
+    route("/out/b")
+    nav_runs = 0
+    outlet("app", func() { nav_runs = nav_runs + 1  return "page " + str(current_route()) })
+    assert_eq_int(nav_runs, 1, "outlet renders once when mounted")
+    navigate(1)
+    assert_eq_int(nav_runs, 2, "and re-renders when the route changes")
+}
+
+// write_cstr fills a host buffer the way the browser host does: raw bytes then a
+// NUL terminator, which is what ptr_str reads back.
+func write_cstr(p, s) {
+    b := bytes(s)
+    i := 0
+    while i < len(b) {
+        poke_u8(p, i, byte_at(b, i))
+        i = i + 1
+    }
+    poke_u8(p, len(b), 0)
+}
+
+// The HOST INTERFACE, exercised natively. nav_buf/nav are the pair the browser
+// calls for a link click or popstate: allocate a buffer, write the path into wasm
+// memory, hand back the pointer. alloc/poke_u8/ptr_str/free all work natively, so
+// the whole round trip is testable without a browser — nav() frees the buffer, so
+// this must not free it again.
+func test_nav_from_a_host_buffer() {
+    router_init(0)
+    route("/host/a")
+    target := route("/host/b")
+    path := "/host/b"
+    p := nav_buf(len(path))
+    assert(p != 0, "nav_buf returns a usable buffer")
+    write_cstr(p, path)
+    nav(p)
+    assert_eq_int(current_route(), target, "the host's path string routed to the right index")
+}
+
+func test_link_markup() {
+    h := link("/users", "Users")
+    assert_eq_str(h, "<a href=\"/users\" data-nav=\"/users\">Users</a>",
+        "anchor carries both href and the data-nav hook the host intercepts")
+}
+
+func test_link_escapes_nothing_by_design() {
+    // Paths and labels are author-supplied constants in this router, not user
+    // input, so link does no escaping. Pinned so that if it ever renders untrusted
+    // text, the change is deliberate rather than assumed-safe.
+    h := link("/a", "<b>")
+    assert(contains(h, "<b>"), "label is emitted verbatim")
+}
+
+func main() {
+    router_stub_link()
+    test_route_registration_is_index_ordered()
+    test_router_init_does_not_reset_the_route_table()
+    test_path_index_finds_registered_paths()
+    test_unknown_path_falls_back_to_route_zero()
+    test_path_matching_is_exact()
+    test_current_route_reflects_navigation()
+    test_router_init_sets_the_initial_route()
+    test_navigation_wakes_a_reaction()
+    test_outlet_renders_on_navigation()
+    test_nav_from_a_host_buffer()
+    test_link_markup()
+    test_link_escapes_nothing_by_design()
+    test_summary()
+}
