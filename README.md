@@ -173,9 +173,11 @@ Zig `ReleaseFast` (min of 9 rounds, this machine):
 | Rust `-O3` | 289.7 ms | 720.1 ms | 142.9 ms | 3223.8 ms |
 | Zig fast | 292.9 ms | **702.8 ms** | **137.9 ms** | 3189.7 ms |
 
-**Wins 1 clearly, ties 2, loses 1.** Unboxed values, no interpreter, no VM.
-The sieve gap is *not* slice indexing — that loop ties Rust exactly (110 ms vs
-111 ms); it's `append`'s growth path ([#578](https://github.com/javimosch/machin/issues/578)).
+**Wins 1, ties 2, and the sieve now ties Rust too** (it still trails Zig by ~1.19×).
+Unboxed values, no interpreter, no VM. The sieve gap was never slice indexing —
+that loop always tied Rust; it was `append` copying into a fresh block on every
+growth, fixed in [#578](https://github.com/javimosch/machin/issues/578) by proving
+a slice unaliased and then growing it in place. The table above predates that fix.
 
 Where machin beats **Rust**: **binary size** — 14 kB stripped vs 335 kB, both dynamic.
 Read that as a fixed offset (Rust starts ~320 kB ahead), not a ratio: machin's hello

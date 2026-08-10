@@ -23,7 +23,7 @@ marketing, not evidence.
 | recursion (`fib 40`) | **26% faster** | **27% faster** | [native-speed](../bench/native-speed) |
 | float loop (mandelbrot) | tie | tie (1.03×) | [native-speed](../bench/native-speed) |
 | integer loop (`intsum 10⁹`) | tie (+3%) | tie (+3%) | [native-speed](../bench/native-speed) |
-| array build + sieve | **1.41× slower** | **1.46× slower** | [native-speed](../bench/native-speed) |
+| array build + sieve | **tie** (1.01×, was 1.41×) | 1.19× slower (was 1.46×) | [native-speed](../bench/native-speed) |
 | build time | **slower** (~100 ms vs ~57 ms) | **~3x faster** warm, ~35x cold (Zig 0.15.2) | [compile-speed](../bench/compile-speed) |
 | binary size floor, stripped, dynamic | **~320 kB smaller** (14 kB vs 335 kB) | tie (Zig 16 kB, and static) | [compile-speed](../bench/compile-speed) |
 | binary size, fully static | — | **~60× larger** (940 kB vs 16 kB) | [compile-speed](../bench/compile-speed) |
@@ -153,7 +153,7 @@ than Rust"*. Earlier is worth a lot — a bug caught at build time with a concre
 input costs minutes, and the same bug reaching production as a hung process costs
 far more — but it is a different claim, and it does not replace Rust's.
 
-### The sieve — 1.46× slower, and the published reason was wrong
+### The sieve — fixed, and the published reason had been wrong
 
 The benchmark long explained this as machin's "slice indexing/layout" being worse
 than a Rust `Vec`. Phase-timing disproves that:
@@ -168,11 +168,20 @@ Indexing ties exactly. The whole gap is `append`'s growth path: an arena frees
 nothing mid-life, so `mfl_realloc` can only ever allocate fresh and memcpy, never
 extend in place the way `Vec::push` does via `mremap`.
 
-The obvious fix — hand the arena's newest block straight to `realloc` — was
-implemented, tested, and **rejected as unsound**: MFL slices share backing storage
-(`b := a` aliases, and so does passing a slice to a function), so in-place growth
-would turn every existing alias into a use-after-free. Tracked with sound
-alternatives in [#578](https://github.com/javimosch/machin/issues/578).
+The obvious fix — hand the arena's newest block straight to `realloc` — is
+**unsound**: MFL slices share backing storage (`b := a` aliases, and so does
+passing a slice to a function), so unconditional in-place growth turns every
+existing alias into a use-after-free.
+
+**#578 fixed it properly.** `machin alias` proves, fail-closed, that a local slice
+has no other live reference across an append; only then does codegen grow the
+block in place. An adversarial suite of live-alias shapes runs under
+AddressSanitizer in CI, and was verified to catch the unsound version.
+
+Measured on the CI runner before and after, normalized against Rust because the
+runner drifted ~15% between sessions: **machin/Rust went 1.10× → 1.01×** on the
+sieve. It now ties Rust. It still trails **Zig** by ~1.19× (down from 1.32×) —
+a real remaining gap, reported as one.
 
 ## Verified on a second machine
 
