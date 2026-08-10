@@ -126,7 +126,7 @@ usage:
   machin run   <file.mfl>            compile to native + execute
   machin build <file.mfl> [-o out]   compile to a native binary
   machin build <file.mfl> --target wasm  compile to a WebAssembly module (needs zig; mark exports with export func)
-  machin build <file.mfl> --target windows  cross-compile to a Windows .exe (needs zig; stdio/compute core, no net/TLS yet — #517)
+  machin build <file.mfl> --target windows  cross-compile to a Windows .exe (needs zig; see machin guide windows-target)
   machin build <file.mfl> --static   fully static binary (bundles SQLite; pair with CC=musl-gcc for FROM scratch)
   machin build <file.mfl> --emit-c   print the generated C and stop
   machin build|run <file.mfl> --safe  insert bounds / div-zero / overflow checks
