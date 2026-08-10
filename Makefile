@@ -43,20 +43,20 @@ mfl-cover: build
 	$(BIN) test --cover framework/reactive.src framework/router.src framework/tests/router_test.src
 
 # MFL coverage floors — a RATCHET, like cov-floor is for the Go side. Set just
-# under what the suites measure today (flags.src: 90.9% function, 82.1% statement
-# for the whole composed program), so a regression fails CI without the repo
-# claiming a number it has not earned.
+# under the lowest measured suite (flags.src: 90.9% function, 82.1% statement for
+# the whole composed program), so a regression fails CI without the repo claiming
+# a number it has not earned.
 #
-# Raise these as #593 adds suites for the other pure modules. Lowering one is
-# allowed but must be deliberate and explained in the commit — that is the whole
-# point of a floor being a number in a file rather than a habit.
+# Raised as #593's suites for the four pure framework modules landed. Lowering
+# one is allowed but must be deliberate and explained in the commit — that is the
+# whole point of a floor being a number in a file rather than a habit.
 # Fail if main advertises a version that was never released — see the script for
 # the v0.123.0 incident this exists to prevent recurring.
 version-check:
 	@./tools/version-check.sh
 
 MFL_FUNC_FLOOR ?= 90
-MFL_STMT_FLOOR ?= 75
+MFL_STMT_FLOOR ?= 80
 # bson.src is fully covered (24/24); hold it there rather than at the shared floor.
 BSON_FUNC_FLOOR ?= 100
 # xml.src is fully covered too (31/31).
