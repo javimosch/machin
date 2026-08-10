@@ -55,7 +55,7 @@ func read_some(c) (s) {
     }
 }
 func main() {
-    port := 48241
+    port := 18241
     srv := listen(port)
     if srv < 0 { println("listen-failed")  return }
     go serve_one(srv, func(req) { return echo(req) })

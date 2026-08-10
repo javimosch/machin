@@ -252,7 +252,7 @@ func TestNetworkingExampleCompiles(t *testing.T) {
 // accepts one connection, reads the request, writes a reply and exits. A Go
 // client drives it and verifies the bytes make the full round trip.
 func TestNetworkingRoundTrip(t *testing.T) {
-	const port = 47654
+	const port = 17654
 	fns := parseFuncs(t,
 		`func main() { s := listen(`+itoa(port)+`) conn := accept(s) read(conn) write(conn, "pong") close(conn) }`)
 	bin, err := os.CreateTemp("", "mfl-srv-*")
@@ -306,7 +306,7 @@ func TestNetworkingRoundTrip(t *testing.T) {
 // TestDialOutbound exercises client networking: a Go server listens, an MFL
 // program dials it with dial(host, port), writes a request, reads the reply.
 func TestDialOutbound(t *testing.T) {
-	const port = 47656
+	const port = 17656
 	ln, err := net.Listen("tcp", "127.0.0.1:"+itoa(port))
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -347,7 +347,7 @@ func TestDialOutbound(t *testing.T) {
 // server must be able to read back the client's remote IP via getpeername,
 // which is what lets a handler log or rate-limit by caller address.
 func TestPeerAddr(t *testing.T) {
-	const port = 47657
+	const port = 17657
 	fns := parseFuncs(t,
 		`func main() { s := listen(`+itoa(port)+`) conn := accept(s) print(peer_addr(conn)) close(conn) }`)
 	bin, err := os.CreateTemp("", "mfl-peeraddr-*")
@@ -401,7 +401,7 @@ func TestPeerAddr(t *testing.T) {
 // configured timeout instead of blocking forever, which is the whole point of
 // the builtin (bounding a slow/hostile client's hold on a connection).
 func TestSocketTimeout(t *testing.T) {
-	const port = 47658
+	const port = 17658
 	fns := parseFuncs(t,
 		`func main() { s := listen(`+itoa(port)+`) conn := accept(s) socket_timeout(conn, 200) r := read(conn) print("["+r+"]") close(conn) }`)
 	bin, err := os.CreateTemp("", "mfl-socktimeout-*")

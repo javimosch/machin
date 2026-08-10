@@ -39,7 +39,7 @@ func catch(srv) {
     }
 }
 func main() {
-    port := 48261
+    port := 18261
     srv := listen(port)
     if srv < 0 { println("listen-failed")  return }
     go catch(srv)
@@ -86,7 +86,7 @@ func TestSMTPSendStartTLS(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	const port = 48262
+	const port = 18262
 	ln, err := net.Listen("tcp", "127.0.0.1:"+itoa(port))
 	if err != nil {
 		t.Fatal(err)

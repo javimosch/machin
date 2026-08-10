@@ -85,10 +85,10 @@ func serve_big(srv, n) {
 }
 func main() {
     n := 100000   // well over the 65535-byte single-read(2) cap
-    srv := listen(48235)
+    srv := listen(18235)
     go serve_big(srv, n)
     sleep(100)
-    c := dial("127.0.0.1", 48235)
+    c := dial("127.0.0.1", 18235)
     total := bytes("")
     reads := 0
     for {
