@@ -2,6 +2,65 @@
 
 ## Unreleased
 
+## v0.128.0
+
+The last loss in `bench/native-speed` is gone: **the array-heavy sieve now ties
+Rust**. Getting there took a proof, a safety net, and only then a codegen change —
+in that order, and the order is why it worked.
+
+**`append` grows in place where it is proven safe** (PR #602, issue #578). At a
+`v = append(v, x)` site where the new analysis proves `v` has no other live
+reference across that append, the block is handed to `realloc` instead of being
+copied into a fresh arena block and abandoned. Every other append is untouched.
+
+Measured on the CI runner (19% run-to-run spread) before and after, normalized
+against Rust because the runner itself drifted ~15% slower between sessions:
+
+```
+              machin      rust       zig    machin/rust
+  before      96.7ms    87.7ms    73.0ms       1.10x
+  after      101.9ms   100.6ms    86.0ms       1.01x
+```
+
+It ties **Rust**. It does **not** tie **Zig**, still ~1.19x faster on this kernel
+(down from 1.32x) — a real remaining gap, reported rather than rounded away.
+
+This also corrects an explanation that had stood in the README, the benchmark and
+`machin guide` for months: the sieve gap was **never slice indexing**. That loop
+always tied Rust exactly (110ms vs 111ms). It was `append` copying the whole array
+on every doubling and never releasing the old buffer.
+
+**`machin alias`** (PR #600) — a new verb, and the proof the optimization is gated
+on. It reports which local slices provably have no other live reference, and names
+the disqualifying construct for the rest. **Fail-closed by construction**: every
+operation on a candidate must be on a whitelist of forms that cannot leak a
+reference, and an AST node the analysis does not recognise refuses the slice. The
+rejected alternative was a dynamic `shared` bit on the slice header — less code,
+but it fails OPEN, and an unmarked alias is silent memory corruption.
+
+It is **flow-sensitive**, and that is not a nicety. A first flow-insensitive
+version was sound and nearly useless — it fired on almost nothing real, because
+"build it, then use it" is the dominant shape and the aliasing use comes *after*
+the last append, where it cannot observe a moved array:
+
+| module | flow-insensitive | flow-sensitive |
+|---|--:|--:|
+| bson.src | ~0 | 2 of 2 |
+| xml.src | ~0 | 5 of 10 |
+| reactive.src | ~0 | 3 of 10 |
+
+**An adversarial alias suite under AddressSanitizer** (PR #601) runs in CI as its
+own step that fails if it *skips* — a safety net that silently skips is not a net.
+Seven programs keep a live alias across an append; it was verified to catch a
+deliberately unsound version of this same optimization, rather than assumed to.
+
+Two runtime guards sit on top of the static proof, neither expressible in the
+analysis: growth is attempted only on the arena's **head block** (the list is
+singly-linked), and the `substr` **strlen cache is invalidated** on that path,
+because it keys on pointer identity and `realloc` hands an address back to the
+allocator. Missing the second would have been a silent wrong-length bug in
+`substr()`, nowhere near anything resembling `append`.
+
 ## v0.127.1
 
 A BSON decode fix, found by writing the tests for it. `framework/*.src` is
