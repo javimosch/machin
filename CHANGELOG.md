@@ -2,6 +2,50 @@
 
 ## Unreleased
 
+## v0.131.0
+
+**zlib works on the windows target** (PR #611, issue #517) — the second of six gaps
+closed, and like SQLite before it, a bundling problem rather than a port.
+
+machin's zlib glue is pure `z_stream` API with no POSIX in it, and zlib is
+portable C with its own Windows support. Windows has no system libz, and requiring
+a mingw one would push a dependency onto every program that calls
+`zlib_compress`, so `vendor/zlib` now carries the deflate/inflate subset —
+9 `.c` files plus headers, 333 kB gzipped:
+
+```
+adler32 crc32 deflate inflate inffast inftrees trees zutil compress
+```
+
+The `gz*` file API is deliberately excluded (machin exposes none of it, and it
+drags in stdio plumbing), as is `infback.c`. `gzguts.h` IS included — `zutil.c`
+includes it, which the first packaging attempt found the hard way as a
+cross-compile error.
+
+A tarball rather than SQLite's single gzipped amalgamation, because zlib has no
+amalgamation: it is a dozen translation units meant to be compiled separately, and
+concatenating them is a portability gamble for no benefit. The extractor refuses
+any archive entry containing a path separator.
+
+**Native builds are unchanged** — they still link the system `-lz`.
+
+**Verified by execution, not compilation.** CI cross-compiles a compress/decompress
+round trip and a `windows-latest` job runs it, asserting the payload survives:
+
+```
+47:47:hello hello hello hello compress me compress me
+```
+
+A test also pins the vendored archive's contents — exactly 9 `.c` files, the
+headers present, and none of `gzread`/`gzwrite`/`gzlib`/`infback` — because a
+silently truncated tarball would otherwise surface only as a link error inside a
+cross-compile, far from the change that caused it.
+
+Four #517 gaps remain: tty raw mode, `select`, XEdDSA (needs a mingw libsodium),
+and regex (POSIX `<regex.h>` has no Windows equivalent). Each still fails loudly at
+compile time with a message naming the subsystem. The two closed so far were both
+the "vendor it" kind; the rest are genuine ports.
+
 ## v0.130.0
 
 **A BEHAVIOUR CHANGE in `framework/router.src`**, not a silent bug fix — read this
