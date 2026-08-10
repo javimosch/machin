@@ -67,6 +67,20 @@ jobs:
       - name: MFL coverage floor
         run: make mfl-cov-floor
 
+      # The adversarial alias suite under AddressSanitizer (#578 step 2). It runs
+      # as part of `go test ./...` above too, but it SKIPS when libasan is missing —
+      # and a safety net that silently skips is not a net. This step runs it
+      # explicitly and fails if it skipped, so the coverage is real.
+      - name: Alias suite under AddressSanitizer
+        run: |
+          out=$(go test -count=1 -v -run TestAliasAdversarialUnderASan . 2>&1)
+          echo "$out" | tail -25
+          if echo "$out" | grep -q -- "--- SKIP"; then
+            echo "::error::the ASan alias suite SKIPPED — libasan is missing on this runner, so the net is not actually running"
+            exit 1
+          fi
+          echo "$out" | grep -q "^ok" || { echo "::error::ASan alias suite failed"; exit 1; }
+
       # main only: a release PR legitimately carries an untagged version bump, so
       # this would fail every such PR. On main it catches the version bump that
       # merged and never got tagged — the v0.123.0 failure, which was invisible.
