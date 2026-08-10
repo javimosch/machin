@@ -68,6 +68,47 @@ func ccPath() string {
 	return "cc"
 }
 
+// unpackSqliteAmalgamation decompresses the embedded SQLite amalgamation into a
+// fresh temp dir and returns (dir, path-to-sqlite3.c). The caller removes dir.
+//
+// Shared by the --static native path and the windows target: SQLite has its own
+// Win32 VFS and machin's glue is pure sqlite3 API with no POSIX in it, so the
+// same amalgamation compiles for both — bundling is the whole port (#517).
+func unpackSqliteAmalgamation() (dir string, cpath string, err error) {
+	dir, err = os.MkdirTemp("", "mfl-sqlite-*")
+	if err != nil {
+		return "", "", err
+	}
+	hdr, err := gunzip(sqliteHdrGz)
+	if err != nil {
+		os.RemoveAll(dir)
+		return "", "", fmt.Errorf("sqlite amalgamation: %w", err)
+	}
+	amalg, err := gunzip(sqliteAmalgGz)
+	if err != nil {
+		os.RemoveAll(dir)
+		return "", "", fmt.Errorf("sqlite amalgamation: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "sqlite3.h"), hdr, 0o644); err != nil {
+		os.RemoveAll(dir)
+		return "", "", err
+	}
+	cpath = filepath.Join(dir, "sqlite3.c")
+	if err := os.WriteFile(cpath, amalg, 0o644); err != nil {
+		os.RemoveAll(dir)
+		return "", "", err
+	}
+	return dir, cpath, nil
+}
+
+// sqliteBundleFlags are the compile flags for a bundled amalgamation: point the
+// generated `#include <sqlite3.h>` at our header, drop extension loading (no
+// dlopen, so the binary stays self-contained), and keep it threadsafe for
+// machweb's per-connection goroutines.
+func sqliteBundleFlags(dir string) []string {
+	return []string{"-I" + dir, "-DSQLITE_OMIT_LOAD_EXTENSION", "-DSQLITE_THREADSAFE=1"}
+}
+
 // BuildBinary compiles the program to a native executable at outPath via cc -O2.
 // When safe is set, runtime bounds, division-by-zero, and overflow checks are
 // inserted.
@@ -117,31 +158,12 @@ func BuildBinaryStatic(prog *Program, outPath string, safe, static bool) error {
 		args = append(args, "-static")
 	}
 	if bundleSqlite {
-		// Decompress the embedded amalgamation into a temp dir, compile sqlite3.c in,
-		// and point the generated `#include <sqlite3.h>` at our bundled header.
-		dir, err := os.MkdirTemp("", "mfl-sqlite-*")
+		dir, cpath, err := unpackSqliteAmalgamation()
 		if err != nil {
 			return err
 		}
 		defer os.RemoveAll(dir)
-		hdr, err := gunzip(sqliteHdrGz)
-		if err != nil {
-			return fmt.Errorf("sqlite amalgamation: %w", err)
-		}
-		amalg, err := gunzip(sqliteAmalgGz)
-		if err != nil {
-			return fmt.Errorf("sqlite amalgamation: %w", err)
-		}
-		if err := os.WriteFile(filepath.Join(dir, "sqlite3.h"), hdr, 0o644); err != nil {
-			return err
-		}
-		cpath := filepath.Join(dir, "sqlite3.c")
-		if err := os.WriteFile(cpath, amalg, 0o644); err != nil {
-			return err
-		}
-		args = append(args, "-I"+dir,
-			"-DSQLITE_OMIT_LOAD_EXTENSION", // no dlopen -> no -ldl, stays static
-			"-DSQLITE_THREADSAFE=1")        // safe across machweb's per-connection goroutines
+		args = append(args, sqliteBundleFlags(dir)...)
 		srcs = append(srcs, cpath)
 	}
 	bundleCABundle := static && usesTLS
@@ -295,6 +317,7 @@ func BuildWindows(prog *Program, outPath string, safe bool) error {
 	usesTLS := strings.Contains(csrc, "mfl_tls_dial")
 	usesCrypto := strings.Contains(csrc, "mfl_crypto_")
 	usesNet := strings.Contains(csrc, "WSAStartup")
+	usesSqlite := strings.Contains(csrc, "mfl_sqlite_")
 	usesOpenSSL := usesTLS || usesCrypto
 
 	// TLS/crypto need a mingw OpenSSL the caller supplies out of band.
@@ -340,6 +363,17 @@ func BuildWindows(prog *Program, outPath string, safe bool) error {
 			return err
 		}
 		args = append(args, "-DMFL_HAS_CABUNDLE")
+		srcs = append(srcs, cpath)
+	}
+	// SQLite: same bundled amalgamation the --static native build uses. It carries
+	// its own Win32 VFS, so nothing else is needed — no external library, no DLL.
+	if usesSqlite {
+		dir, cpath, err := unpackSqliteAmalgamation()
+		if err != nil {
+			return err
+		}
+		defer os.RemoveAll(dir)
+		args = append(args, sqliteBundleFlags(dir)...)
 		srcs = append(srcs, cpath)
 	}
 	args = append(args, "-o", outPath, tmp.Name())
