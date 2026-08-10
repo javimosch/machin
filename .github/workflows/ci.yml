@@ -124,11 +124,17 @@ jobs:
           /tmp/machin encode /tmp/win_sql.src > /tmp/win_sql.mfl
           /tmp/machin build /tmp/win_sql.mfl --target windows -o /tmp/win_sql.exe
           mkdir -p /tmp/winart && cp /tmp/win_sql.exe /tmp/winart/
+          # zlib: same treatment — a vendored subset compiled in, so there is no
+          # mingw libz for a user to find. Also executed on Windows below.
+          printf 'func main() {\n    orig := "hello hello hello hello compress me compress me"\n    c := zlib_compress(bytes(orig), 6)\n    d := zlib_decompress(c)\n    println(str(len(bytes(orig))) + ":" + str(len(d)) + ":" + bytes_str(d))\n}\n' > /tmp/win_zlib.src
+          /tmp/machin encode /tmp/win_zlib.src > /tmp/win_zlib.mfl
+          /tmp/machin build /tmp/win_zlib.mfl --target windows -o /tmp/win_zlib.exe
+          cp /tmp/win_zlib.exe /tmp/winart/
 
       - uses: actions/upload-artifact@v4
         with:
-          name: windows-sqlite-exe
-          path: /tmp/winart/win_sql.exe
+          name: windows-exes
+          path: /tmp/winart/
           retention-days: 1
 
   # Execute the cross-compiled binary on actual Windows. Compiling a PE proves
@@ -140,7 +146,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: windows-sqlite-exe
+          name: windows-exes
 
       - name: run the cross-compiled SQLite binary
         shell: bash
@@ -154,3 +160,16 @@ jobs:
             exit 1
           fi
           echo "SQLite works on Windows: bundled amalgamation, no external DLL"
+
+      - name: run the cross-compiled zlib binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          out=$(./win_zlib.exe)
+          echo "output: $out"
+          expected='47:47:hello hello hello hello compress me compress me'
+          if [ "$out" != "$expected" ]; then
+            echo "::error::windows zlib binary produced $out, expected $expected"
+            exit 1
+          fi
+          echo "zlib works on Windows: vendored deflate/inflate, no external libz"
