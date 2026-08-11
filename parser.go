@@ -1292,7 +1292,38 @@ func (p *Parser) parseMake() (Expr, error) {
 		}
 		return &MakeMap{Key: key, Val: val}, nil
 	}
-	return nil, fmt.Errorf("make: expected chan or map, got %q", p.peek().Val)
+	if p.peek().Kind == TPunct && p.peek().Val == "[" {
+		// make([]T, n) / make([]T, len, cap)
+		p.next()
+		if _, err := p.expect(TPunct, "]"); err != nil {
+			return nil, err
+		}
+		elem, err := p.parseTypeName()
+		if err != nil {
+			return nil, err
+		}
+		if _, err := p.expect(TPunct, ","); err != nil {
+			return nil, err
+		}
+		length, err := p.parseExpr()
+		if err != nil {
+			return nil, err
+		}
+		ms := &MakeSlice{Elem: elem, Len: length}
+		if p.peek().Kind == TPunct && p.peek().Val == "," {
+			p.next()
+			capacity, err := p.parseExpr()
+			if err != nil {
+				return nil, err
+			}
+			ms.Cap = capacity
+		}
+		if _, err := p.expect(TPunct, ")"); err != nil {
+			return nil, err
+		}
+		return ms, nil
+	}
+	return nil, fmt.Errorf("make: expected chan, map or []T, got %q", p.peek().Val)
 }
 
 // parseStructLit parses Point{x: 1, y: 2} (keyed) or Point{1, 2} (positional).

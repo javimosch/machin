@@ -1645,6 +1645,24 @@ func (c *Checker) genExprInner(fn *FuncDecl, e Expr) (int, error) {
 			return 0, err
 		}
 		return newChanSlot(c, eslot), nil
+	case *MakeSlice:
+		eslot, err := c.typeSlot(ex.Elem)
+		if err != nil {
+			return 0, err
+		}
+		lslot, err := c.genExpr(fn, ex.Len)
+		if err != nil {
+			return 0, err
+		}
+		c.addPair(lslot, c.cInt)
+		if ex.Cap != nil {
+			cslot, err := c.genExpr(fn, ex.Cap)
+			if err != nil {
+				return 0, err
+			}
+			c.addPair(cslot, c.cInt)
+		}
+		return newSliceSlot(c, eslot), nil
 	case *Recv:
 		cs, err := c.genExpr(fn, ex.Ch)
 		if err != nil {
