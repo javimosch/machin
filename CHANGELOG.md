@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+## v0.133.0
+
+**`select` works on the windows target** (PR #619, issue #517) — the third gap
+closed, and this one needed no code at all: the rejection was stale.
+
+machin's `select` is the CHANNEL select statement, not POSIX `select(2)`. It lowers
+to a poll over `tryrecv` with a 1 ms sleep and never touches an `fd_set`. The
+emitted C does carry `<sys/select.h>`, but inside `#ifndef _WIN32` — dead text on
+this target. Deleting one preflight entry was the whole fix.
+
+**The more important half is what now runs in CI.** The windows target has claimed
+goroutines and channels since the port landed, and nothing had ever executed one:
+both existing execution gates (SQLite, zlib) are single-threaded, so winpthreads
+was an untested claim sitting in `machin guide`. CI now cross-compiles a program
+that fans 8 goroutines into a channel *and* takes a select, and the
+`windows-latest` job runs it:
+
+```
+select=42 fanin=336
+```
+
+Deterministic by construction — the select polls until the worker's send lands and
+the fan-in reads exactly 8 values.
+
+The preflight test asserts the property that matters: no `FD_SET`, no `fd_set`, no
+`select(` in the emitted C, and the select really does lower to `tryrecv`. A first
+version asserted the raw text contained no `sys/select.h` and failed — correctly,
+since the guarded include is there. Checking for the include was checking the wrong
+thing; checking for its *use* is the invariant.
+
+Three #517 gaps remain — tty raw mode, XEdDSA (needs a mingw libsodium), and regex
+(POSIX `<regex.h>` has no Windows equivalent) — each still failing loudly at
+compile time with a message naming the subsystem.
+
 ## v0.132.0
 
 **`make([]T, n)` and `make([]T, len, cap)`** (PR #617, issue #584) — preallocation,
