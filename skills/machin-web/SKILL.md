@@ -86,7 +86,10 @@ func main() { serve(48080, func(req) { return handle(req) }) }
   `ws_send_bytes(c.fd, b)` send. A connection that also receives broadcasts wants **two
   goroutines** — the handler loop reads, a spawned `go writer(c.fd, ch)` drains an outbound
   channel (read + write are independent on the fd). Fan-out is the same hub-goroutine
-  pattern as SSE. See [machin-rooms](https://github.com/javimosch/machin-rooms).
+  pattern as SSE. See [machin-rooms](https://github.com/javimosch/machin-rooms) and
+  [machin-tinystats](https://github.com/javimosch/machin-tinystats) (a 71 KB metrics
+  dashboard: HTTP + WS + hub broadcast + a `getState chan chan string` for REST endpoints
+  that need the current state synchronously without waiting for the next broadcast).
 - **A database:** machin has SQLite builtins — `sqlite_open(path)` / `sqlite_exec(db,
   sql)` / `sqlite_exec(db, sql, []string params)` (`?`-bind, injection-safe) /
   `sqlite_query(db, sql[, params]) -> string` (a **JSON-array-of-rows string**) /
