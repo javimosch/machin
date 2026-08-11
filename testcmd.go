@@ -182,7 +182,7 @@ func readCoverage(path string, prog *Program, files []string) (*Coverage, error)
 		}
 		fc, seen := byFile[file]
 		if !seen {
-			fc = &FileCoverage{File: file}
+			fc = &FileCoverage{File: file, Uncovered: []string{}}
 			byFile[file] = fc
 			order = append(order, file)
 		}
@@ -202,7 +202,7 @@ func readCoverage(path string, prog *Program, files []string) (*Coverage, error)
 		cov.Pct = float64(cov.Covered) / float64(cov.Total) * 100
 	}
 	if len(stmtTotal) > 0 {
-		sc := &StmtCoverage{Kind: "statement"}
+		sc := &StmtCoverage{Kind: "statement", Uncovered: []string{}}
 		for _, fn := range prog.Funcs {
 			if fn.IsLambda {
 				continue

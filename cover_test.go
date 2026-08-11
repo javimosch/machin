@@ -271,3 +271,28 @@ func main() {
 		t.Fatalf("double's only statement ran; it must not be listed: %v", sc.Uncovered)
 	}
 }
+
+// A fully covered file must still emit an empty [] for Uncovered, not null.
+// Null is a shape bug for consumers that expect an array; `null` also makes it
+// impossible to tell "no uncovered functions" from "this field is missing".
+func TestCoverUncoveredListsAreEmptyNotNull(t *testing.T) {
+	dir := t.TempDir()
+	f := writeSrc(t, dir, "t.src", `func main() {
+    test_summary()
+}`)
+	res, _, err := runMFLTests([]string{f}, true)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if res.Coverage == nil {
+		t.Fatal("no coverage report")
+	}
+	for _, fc := range res.Coverage.Files {
+		if fc.Uncovered == nil {
+			t.Fatalf("file %q: Uncovered is nil, want []", fc.File)
+		}
+	}
+	if sc := res.Coverage.Statements; sc != nil && sc.Uncovered == nil {
+		t.Fatal("statement coverage Uncovered is nil, want []")
+	}
+}
