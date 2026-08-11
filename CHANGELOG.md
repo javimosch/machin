@@ -2,6 +2,46 @@
 
 ## Unreleased
 
+## v0.132.0
+
+**`make([]T, n)` and `make([]T, len, cap)`** (PR #617, issue #584) — preallocation,
+the natural companion to v0.128.0's in-place append. That change made growing
+cheap; this one lets you not grow at all.
+
+```go
+xs := make([]int, 3)       // 3 ZEROED elements — not 3 slots of garbage
+ys := make([]int, 0, 100)  // empty, room for 100 — the append loop never reallocates
+```
+
+Elements are zeroed, so a caller can index straight in without writing first.
+Reach for the three-argument form whenever you know roughly how many elements you
+are about to append.
+
+**A capacity below the length is raised to the length rather than trusted**, and a
+negative size clamps to 0. The alternative is a slice whose `len` exceeds its
+allocation, which makes the very next index a *silent* heap overrun — nothing else
+would notice. Both cases are tested.
+
+**The alias analysis learned about it**, which mattered twice. A `make()`d slice is
+the most clearly-owned way to start one, yet it was being refused for in-place
+append as "assigned a value other than append(v, …) or a slice literal" — exactly
+backwards. And because `MakeSlice` was an AST node `alias.go` did not recognise,
+its fail-closed default refused every *other* candidate in any function containing
+one. That is the design behaving correctly (it degraded to no optimization, never
+to corruption), and it is the concrete reason a new node type has to be taught to
+the analysis rather than merely added.
+
+**`bench/native-speed/machin/sieve.src` is deliberately NOT rewritten to use it.**
+Two earlier automated drafts for this feature did. It would make the benchmark
+faster and the comparison dishonest: Rust's sieve uses `Vec::new()` + `push`, so
+machin's must too. That benchmark compares idiomatic growth, not who remembered to
+preallocate.
+
+Written fresh rather than salvaged — #583/#584 were AutoMaintainer drafts whose
+verification hung (118 minutes in IO wait) on a base predating `sort`, the alias
+analysis and in-place append. Both are closed as superseded, as is #585 (SQLite
+for windows), which v0.129.0 shipped.
+
 ## v0.131.0
 
 **zlib works on the windows target** (PR #611, issue #517) — the second of six gaps
