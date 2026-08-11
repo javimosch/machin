@@ -134,6 +134,45 @@ func TestCmdTestWithJSONOutput(t *testing.T) {
 	}
 }
 
+func TestCmdTestWithCoverFlag(t *testing.T) {
+	dir := t.TempDir()
+	f := writeSrc(t, dir, "t.src", `func main() {
+    assert(1 + 1 == 2, "addition")
+    test_summary()
+}`)
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	err = cmdTest([]string{"--json", "--cover", f})
+	w.Close()
+	os.Stdout = old
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	buf := make([]byte, 4096)
+	n, _ := r.Read(buf)
+	var res TestRunResult
+	if err := json.Unmarshal(buf[:n], &res); err != nil {
+		t.Fatalf("JSON decode: %v", err)
+	}
+	if res.Coverage == nil {
+		t.Fatal("JSON output with --cover should include coverage")
+	}
+	if res.Coverage.Kind != "function" {
+		t.Fatalf("coverage kind should be 'function', got %q", res.Coverage.Kind)
+	}
+	if res.Coverage.Total == 0 {
+		t.Fatal("coverage total should be > 0")
+	}
+	if res.Coverage.Statements == nil || res.Coverage.Statements.Kind != "statement" {
+		t.Fatal("JSON output with --cover should include statement coverage")
+	}
+}
+
 func TestCmdTestJSONFlagPosition(t *testing.T) {
 	dir := t.TempDir()
 	f := writeSrc(t, dir, "t.src", `func main() {

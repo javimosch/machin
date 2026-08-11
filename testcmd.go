@@ -1,6 +1,6 @@
 package main
 
-// `machin test [--json] <src...>` — Stage A of #236 (native MFL test runner).
+// `machin test [--json] [--cover] <src...>` — Stage A of #236 (native MFL test runner).
 // Composes framework/test.src ahead of the given sources (same multi-file
 // compose `machin encode` already does — so testing a framework module means
 // passing it alongside its test file: `machin test framework/flags.src
@@ -8,8 +8,8 @@ package main
 // it, and reports the "TEST_SUMMARY passed=N failed=M" line framework/test.src's
 // test_summary() prints. Sugar over the same compose->build->run path
 // `machin encode`/`machin build` already use — a way to write and run
-// framework/app tests in MFL, without the Go harness (RunCaptured). Not a new
-// measurement: run separate `machin test` invocations for separate suites.
+// framework/app tests in MFL, without the Go harness (RunCaptured). --cover
+// adds function/statement coverage (#589); otherwise the tally is the only output.
 
 import (
 	"encoding/json"
