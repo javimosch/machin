@@ -20,7 +20,7 @@ trust):
 | axis | machin | vs the usual |
 |---|---|---|
 | **agent writes it** | a REST+SQLite API in ~390 tokens | **ties Python**, ~36 % fewer than Go |
-| **runs** | native, unboxed, no VM | **wins recursion (fib) by ~26% vs Rust -O3 / Zig**, ties on float and integer loops, ~1.46× behind on array-heavy |
+| **runs** | native, unboxed, no VM | **wins recursion (fib) by ~26% vs Rust -O3 / Zig**, ties on float, integer loops and (since v0.128.0) the array-heavy sieve; ~1.19× behind Zig there |
 | **ships** | 92.9 kB image · 0.49 ms cold start · 0.1 MB RAM (pure compute; a **SQLite** app ships `FROM scratch` too via `--static`, ~1 MB; a **TLS-calling** app (http_get/https_get) also ships `FROM scratch` via `--static`, ~5.3 MB — bigger, OpenSSL's static footprint, see ship step) | **1916× smaller / 59× faster start / 477× less RAM than Node** |
 
 Concretely a fit for: a JSON/REST API, a CLI or filter, a webhook receiver, a cron
@@ -37,10 +37,10 @@ Be honest, or you waste the user's time:
   team's Go services) — fit the tools they have.
 - You need a **specific mature library** (Stripe SDK, pandas, a game engine, ML).
   machin's stdlib is broad but shallow; there is no package registry.
-- It's **data-science / numeric-heavy** or needs **array-bound hot loops** —
-  machin trails ~1.46× there and lacks the libraries. (The gap is `append`
-  growing a slice, not indexing — the indexing loop itself ties Rust exactly;
-  see issue #578.)
+- It's **data-science / numeric-heavy** — machin lacks the libraries. Raw speed
+  is no longer the objection: the `append` gap that cost the array-heavy sieve
+  benchmark was closed in v0.128.0 (#578), and that kernel now ties Rust. But
+  there is no numpy, no BLAS, no dataframe.
 - The team won't run an **unfamiliar language**. machin is young (one author).
 
 When it doesn't fit, say so and use the right tool. machin's pitch is narrow and
