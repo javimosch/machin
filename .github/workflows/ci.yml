@@ -130,6 +130,15 @@ jobs:
           /tmp/machin encode /tmp/win_zlib.src > /tmp/win_zlib.mfl
           /tmp/machin build /tmp/win_zlib.mfl --target windows -o /tmp/win_zlib.exe
           cp /tmp/win_zlib.exe /tmp/winart/
+          # Concurrency: goroutines, channels and select. The windows target has
+          # claimed these since the port landed, but every execution gate so far
+          # (sqlite, zlib) is single-threaded, so winpthreads has never actually
+          # been exercised on Windows. Deterministic by construction: the select
+          # polls until the worker's send lands.
+          printf 'func worker(ch) {\n    ch <- 42\n}\n\nfunc collect(ch, n) {\n    i := 0\n    total := 0\n    while i < n { total = total + <-ch  i = i + 1 }\n    return total\n}\n\nfunc main() {\n    a := make(chan int)\n    b := make(chan int)\n    go worker(a)\n    got := 0\n    select {\n    case v := <-a:\n        got = v\n    case v := <-b:\n        got = v + 1000\n    }\n    fan := make(chan int)\n    i := 0\n    while i < 8 { go worker(fan)  i = i + 1 }\n    println("select=" + str(got) + " fanin=" + str(collect(fan, 8)))\n}\n' > /tmp/win_conc.src
+          /tmp/machin encode /tmp/win_conc.src > /tmp/win_conc.mfl
+          /tmp/machin build /tmp/win_conc.mfl --target windows -o /tmp/win_conc.exe
+          cp /tmp/win_conc.exe /tmp/winart/
 
       - uses: actions/upload-artifact@v4
         with:
@@ -173,3 +182,16 @@ jobs:
             exit 1
           fi
           echo "zlib works on Windows: vendored deflate/inflate, no external libz"
+
+      - name: run the cross-compiled concurrency binary (goroutines + channels + select)
+        shell: bash
+        run: |
+          set -euo pipefail
+          out=$(./win_conc.exe)
+          echo "output: $out"
+          expected='select=42 fanin=336'
+          if [ "$out" != "$expected" ]; then
+            echo "::error::windows concurrency binary produced $out, expected $expected"
+            exit 1
+          fi
+          echo "goroutines, channels and select work on Windows (winpthreads)"

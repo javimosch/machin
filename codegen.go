@@ -56,7 +56,6 @@ func windowsUnsupported(g *cgen) error {
 		what string
 	}{
 		{g.usesTTY, "terminal raw mode (raw_mode/read_key)"},
-		{g.usesSelect, "select"},
 		{g.usesXEdDSA, "XEdDSA (xeddsa_* — needs libsodium for Windows, not yet wired)"},
 		{g.usesRegex, "regex (regex_*)"},
 	} {
