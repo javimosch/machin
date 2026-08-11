@@ -115,6 +115,51 @@ func TestVendoredZlibSourcesAreComplete(t *testing.T) {
 	}
 }
 
+// select is the CHANNEL select statement, not POSIX select(2) — it compiles to a
+// poll over tryrecv with a 1ms sleep, and touches no fd_set, no <sys/select.h>.
+// The preflight rejected it anyway; that was over-cautious, not a real blocker
+// (#517). Whether the resulting .exe actually runs is verified by CI executing a
+// goroutines+channels+select program on a windows-latest runner — the first time
+// winpthreads is exercised there, since the sqlite and zlib gates are both
+// single-threaded.
+func TestWindowsAcceptsSelect(t *testing.T) {
+	prog, err := ParseProgram([]string{
+		normalize(`func worker(ch) { ch <- 42 }`),
+		normalize(`func main() {
+    a := make(chan int)
+    b := make(chan int)
+    go worker(a)
+    got := 0
+    select {
+    case v := <-a:
+        got = v
+    case v := <-b:
+        got = v
+    }
+    println(got)
+}`)})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	csrc, _, err := CompileToCTarget(prog, false, targetWindows)
+	if err != nil {
+		t.Fatalf("windows preflight must accept select now: %v", err)
+	}
+	// It must not USE the POSIX select machinery to do it. The <sys/select.h>
+	// include is present but sits inside `#ifndef _WIN32`, so it is dead text on
+	// this target — asserting on the raw include would be checking the wrong
+	// thing. What matters is that no fd_set is ever manipulated.
+	for _, posix := range []string{"FD_SET(", "fd_set ", "select("} {
+		if strings.Contains(csrc, posix) {
+			t.Fatalf("windows select emitted POSIX %q — it should be a channel poll only", posix)
+		}
+	}
+	// And it really is a channel poll: the select lowers to tryrecv.
+	if !strings.Contains(csrc, "tryrecv") {
+		t.Fatal("expected the select to lower to a channel tryrecv poll")
+	}
+}
+
 // A stdio/compute/goroutine/json program must pass the windows preflight, and
 // the emitted C must NOT pull in the POSIX socket/tty runtime (which native
 // always emits) — that's what lets it cross-compile without winsock/termios.
