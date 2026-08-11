@@ -206,6 +206,7 @@ startup (before `main`; at `_initialize` for a wasm reactor).
   type accepts it yet (no slice/map/chan/func-optional support). See §16.
 - **Composite literals:** `[]T{...}`, `T{f: v, ...}` / `T{v, ...}`.
 - **Construction:** `make(map[K]V)`, `make(chan T)`, `func(params){...}`.
+- `make([]T, n)` / `make([]T, len, cap)` — a preallocated slice; elements zeroed, capacity clamped to at least the length.
 - **Operators**, by increasing precedence:
   `||` · `&&` · `== != < <= > >=` · `+ - | ^` · `* / % << >> &` · unary `- ! ^ <-`.
 - **Bitwise** `& | ^ << >>` (and unary `^`, complement) are **`int`-only** —

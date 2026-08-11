@@ -171,6 +171,20 @@ type MakeClosure struct {
 // MakeChan constructs a channel: make(chan T).
 type MakeChan struct{ Elem string }
 
+// MakeSlice preallocates a slice: make([]T, n) or make([]T, len, cap).
+//
+// Elements are ZEROED, so make([]int, n) is n zeros — not n slots of garbage.
+// Cap is nil for the two-argument form, where capacity equals length.
+//
+// The point of the three-argument form is to skip append's growth entirely: an
+// append loop into a slice with room to spare never reallocates, which is the
+// cost #578's in-place growth reduces but cannot remove.
+type MakeSlice struct {
+	Elem string
+	Len  Expr
+	Cap  Expr // nil for make([]T, n)
+}
+
 // MakeMap constructs a map: make(map[K]V).
 type MakeMap struct{ Key, Val string }
 
@@ -195,6 +209,7 @@ func (FuncLit) node()     {}
 func (CallValue) node()   {}
 func (MakeClosure) node() {}
 func (MakeChan) node()    {}
+func (MakeSlice) node()   {}
 func (MakeMap) node()     {}
 func (Recv) node()        {}
 

@@ -271,6 +271,8 @@ operators yield `bool`.
 
 ```go
 xs := []int{}          // empty
+ys := make([]int, 3)   // 3 ZEROED elements
+zs := make([]int, 0, 100) // empty, room for 100 — append never reallocates
 xs = append(xs, 42)    // grow
 v := xs[0]             // index (0-based)
 xs[1] = 7              // assign element
@@ -280,6 +282,18 @@ zs := sort_by(xs, func(a, b) { return a > b })   // your own ordering
 ```
 
 `len` also returns the length of a `string`.
+
+`make([]T, n)` gives n zeroed elements — not n slots of garbage — so you can index
+straight into it. `make([]T, len, cap)` reserves capacity as well, which is worth
+reaching for whenever you know roughly how many elements you are about to append:
+the loop then never reallocates at all. (Growing an unaliased slice is already
+done in place where it can be — see [#578] — but not growing is cheaper still.)
+
+A capacity below the length is raised to the length rather than trusted: a slice
+whose `len` exceeds its allocation turns the next index into a heap overrun.
+Negative sizes clamp to 0.
+
+[#578]: https://github.com/javimosch/machin/issues/578
 
 `sort` works on `[]int`, `[]float` and `[]string`; any other element type is
 refused at compile time and points you at `sort_by`, where you say how to

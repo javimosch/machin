@@ -449,6 +449,24 @@ static mfl_slice mfl_append_owned(mfl_slice s, const void* elem, int64_t es) {
     s.len++;
     return s;
 }
+/* make([]T, n) / make([]T, len, cap) — preallocate instead of growing.
+   Elements are ZEROED, so make([]int, n) is n zeros rather than n slots of
+   garbage; callers index straight into it.
+
+   A capacity below the length is raised to the length rather than trusted: the
+   alternative is a slice whose len exceeds its allocation, which turns the very
+   next index into a heap overrun. Negative values clamp to 0 for the same
+   reason. */
+static mfl_slice mfl_make_slice(int64_t len, int64_t cap, int64_t es) {
+    if (len < 0) len = 0;
+    if (cap < len) cap = len;
+    mfl_slice s;
+    s.len = len;
+    s.cap = cap;
+    s.data = cap ? mfl_alloc((size_t)(cap * es)) : NULL;
+    if (s.data && len) memset(s.data, 0, (size_t)(len * es));
+    return s;
+}
 static mfl_slice mfl_append(mfl_slice s, const void* elem, int64_t es) {
     if (s.len >= s.cap) {
         int64_t nc = s.cap ? s.cap * 2 : 4;
@@ -5733,6 +5751,19 @@ func (g *cgen) expr(e Expr) (string, error) {
 		}
 		params, ret := g.c.NodeFuncSig(g.curFn, ex.Fn)
 		return g.closureCall(clos, params, ret, args), nil
+	case *MakeSlice:
+		length, err := g.expr(ex.Len)
+		if err != nil {
+			return "", err
+		}
+		capacity := length
+		if ex.Cap != nil {
+			if capacity, err = g.expr(ex.Cap); err != nil {
+				return "", err
+			}
+		}
+		ct := g.c.ElemCType(g.curFn, ex)
+		return fmt.Sprintf("mfl_make_slice(%s, %s, sizeof(%s))", length, capacity, ct), nil
 	case *MakeChan:
 		ect := g.c.ElemCType(g.curFn, ex)
 		et := g.c.ElemTypeString(g.curFn, ex)

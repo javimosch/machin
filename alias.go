@@ -89,6 +89,11 @@ func (s *aliasScan) scanExpr(e Expr) {
 		return
 	case *IntLit, *FloatLit, *StringLit, *BoolLit, *NilLit, *MakeChan, *MakeMap:
 		return
+	case *MakeSlice:
+		// A fresh allocation cannot alias anything; only its length/capacity
+		// expressions can mention a candidate.
+		s.scanExpr(t.Len)
+		s.scanExpr(t.Cap)
 	case *Ident:
 		s.disq(t.Name, "used as a bare value, which copies the slice header and aliases the array")
 	case *Index:
@@ -186,6 +191,14 @@ func (s *aliasScan) scanStmt(st Stmt) {
 			for _, el := range lit.Elems {
 				s.scanExpr(el)
 			}
+			return
+		}
+		// So does make([]T, …): a fresh allocation nothing else has seen. This is
+		// the MOST clearly-owned way to start a slice, so refusing it would have
+		// been exactly backwards.
+		if mk, ok := t.Val.(*MakeSlice); ok && s.isCand(t.Name) {
+			s.scanExpr(mk.Len)
+			s.scanExpr(mk.Cap)
 			return
 		}
 		// Any other assignment INTO a candidate makes it share whatever it was given.
