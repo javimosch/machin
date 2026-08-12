@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.134.0
+
 **The self-hosted compiler had silently drifted, and nothing was checking**
 (issues #625, #626) — the README leads with *"compiles itself — fixpoint"*, but
 no workflow ran any of the twelve `selfhost/verify-*.sh` gates. They were all
