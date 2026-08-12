@@ -949,6 +949,15 @@ func gen_builtin(callee, argslots) (handled, slot) {
         if callee == "sqlite_query" { slot = c_string } else { slot = c_int }
         return handled, slot
     }
+    // wss_open takes an optional []string of header lines, so it cannot be
+    // described by the fixed-arity signature table below
+    if callee == "wss_open" {
+        if len(argslots) != 1 && len(argslots) != 2 { g_check_err = 1  return handled, slot }
+        add_pair(argslots[0], c_string)
+        if len(argslots) == 2 { add_pair(argslots[1], new_slice_slot(c_string)) }
+        slot = c_int
+        return handled, slot
+    }
     // multi-return builtins are invalid in expression position
     if callee == "http_get" || callee == "http_request" || callee == "json_get" || callee == "exec" || callee == "mmap_file" {
         g_check_err = 1
@@ -1091,8 +1100,7 @@ func bspec(name) (s) {
     if name == "hmac_sha256" { s = "ss>s"  return s }
     if name == "sqlite_open" { s = "s>i"  return s }
     if name == "sqlite_close" { s = "i>i"  return s }
-    // websockets
-    if name == "wss_open" { s = "s>i"  return s }
+    // websockets (wss_open is variable-arity — handled in gen_builtin)
     if name == "wss_send" { s = "is>i"  return s }
     if name == "wss_recv" { s = "i>s"  return s }
     if name == "wss_send_bin" { s = "iy>i"  return s }

@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+**`wss_open` accepts custom headers** (issue #622) — a WebSocket upgrade is an
+HTTP/1.1 request, so servers authenticate it. Until now MFL could not send an
+`Authorization` header on the handshake, which made any such endpoint (the
+remotecmd relay, for one) simply unreachable.
+
+```
+h := wss_open("wss://relay.example.com:3032", []string{"Authorization: Bearer " + secret})
+```
+
+The second argument is optional and mirrors `http_request`'s `[]string` of
+`"Key: Value"` lines; the one-argument form is unchanged. A header line
+containing CR or LF is **refused** — `wss_open` returns 0 without dialling
+rather than sanitizing it, since embedding CRLF in a token would otherwise forge
+additional headers or smuggle a second request. Fixed alongside: the handshake
+request was built in a fixed 4 kB buffer that would have silently truncated once
+callers could append to it.
+
+Verified end-to-end against a real TLS server that reads the upgrade request —
+including that the one-argument form still sends no such header, and that a
+6 kB header arrives intact.
+
 ## v0.133.0
 
 **`select` works on the windows target** (PR #619, issue #517) — the third gap
