@@ -3107,7 +3107,10 @@ static void mfl_ws_frame(mfl_ws* w, int opcode, const unsigned char* payload, si
     free(buf);
 }
 
-static int64_t mfl_wss_open_real(const char* url) {
+/* extra: pre-joined "Name: Value\r\n" lines to append to the handshake, or "".
+   The caller has already rejected any line containing CR or LF, so this cannot
+   inject headers or smuggle a second request. */
+static int64_t mfl_wss_open_real(const char* url, const char* extra) {
     char host[256] = {0}, path[2048] = {0};
     int port = 443;
     const char* p = url;
@@ -3128,11 +3131,16 @@ static int64_t mfl_wss_open_real(const char* url) {
     RAND_bytes(rnd, 16);
     char key[32];
     mfl_b64(rnd, 16, key);
-    char req[4096];
-    int rl = snprintf(req, sizeof(req),
-        "GET %s HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\nUser-Agent: machin/0.9\r\n\r\n",
-        path, host, key);
+    /* sized to fit: a fixed 4k request buffer truncated silently once callers
+       could append their own header lines, producing a malformed handshake */
+    size_t reqcap = 512 + strlen(path) + strlen(host) + strlen(key) + strlen(extra);
+    char* req = (char*)malloc(reqcap);
+    if (!req) { mfl_tls_hangup(ssl); return 0; }
+    int rl = snprintf(req, reqcap,
+        "GET %s HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\nUser-Agent: machin/0.9\r\n%s\r\n",
+        path, host, key, extra);
     SSL_write(ssl, req, rl);
+    free(req);
 
     /* read the handshake response one byte at a time so we stop exactly at the
        blank line and never swallow the first data frame */
@@ -3155,7 +3163,33 @@ static int64_t mfl_wss_open_real(const char* url) {
    sentinel (no real connect); record logs whatever the real open returned. */
 static int64_t mfl_wss_open(const char* url) {
     if (mfl_rr_mode == 2) return mfl_rr_io_pop_i64();
-    int64_t r = mfl_wss_open_real(url);
+    int64_t r = mfl_wss_open_real(url, "");
+    if (mfl_rr_mode == 1) mfl_rr_io_log_i64(r);
+    return r;
+}
+
+/* wss_open(url, headers): same handshake, plus caller-supplied header lines --
+   e.g. an Authorization: Bearer line a server checks during the upgrade. A line
+   holding CR or LF is REFUSED (returns 0) rather than sent: embedding CRLF would
+   let a token forge additional headers or a second request. Fails closed. */
+static int64_t mfl_wss_open_h(const char* url, mfl_slice headers) {
+    if (mfl_rr_mode == 2) return mfl_rr_io_pop_i64();
+    size_t tot = 1;
+    for (int64_t i = 0; i < headers.len; i++) { char* h = ((char**)headers.data)[i]; if (h) tot += strlen(h) + 2; }
+    char* hb = (char*)malloc(tot);
+    if (!hb) return 0;
+    size_t o = 0;
+    int bad = 0;
+    for (int64_t i = 0; i < headers.len; i++) {
+        char* h = ((char**)headers.data)[i];
+        if (!h || !*h) continue;
+        if (strpbrk(h, "\r\n")) { bad = 1; break; }
+        size_t l = strlen(h);
+        memcpy(hb + o, h, l); o += l; hb[o++] = '\r'; hb[o++] = '\n';
+    }
+    hb[o] = 0;
+    int64_t r = bad ? 0 : mfl_wss_open_real(url, hb);
+    free(hb);
     if (mfl_rr_mode == 1) mfl_rr_io_log_i64(r);
     return r;
 }
@@ -6904,6 +6938,9 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("mfl_https_post(%s, %s)", args[0], args[1]), nil
 	case "wss_open":
 		g.usesWSS = true
+		if len(args) == 2 {
+			return fmt.Sprintf("mfl_wss_open_h(%s, %s)", args[0], args[1]), nil
+		}
 		return fmt.Sprintf("mfl_wss_open(%s)", args[0]), nil
 	case "wss_send":
 		g.usesWSS = true

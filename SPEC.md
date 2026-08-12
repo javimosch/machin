@@ -365,7 +365,7 @@ An invalid ERE pattern (a `regcomp` failure) is not an error — there's no erro
 | `https_post` | `(string, string) -> string` | HTTPS POST (JSON body) over TLS; response body |
 | `http_get` | `(string) -> (int, string, string)` | GET (plain `http://` or `https://`) returning `(status, body, err)`; `err==""` ⇒ a response, else `"dns"`/`"connect"`/`"tls"`. Multi-assign only. |
 | `http_request` | `(string, string, []string, string) -> (int, string, string)` | authenticated HTTPS: `(method, url, header lines, body)` → `(status, body, err)`. Each header is a `"Key: Value"` line (e.g. `"Authorization: Bearer …"`); caller owns `Content-Type`. Multi-assign only. |
-| `wss_open` | `(string) -> int` | open a `wss://` WebSocket; a connection handle, or 0 on failure |
+| `wss_open` | `(string[, []string]) -> int` | open a `wss://` WebSocket; a connection handle, or 0 on failure. The optional second argument is `"Key: Value"` header lines added to the HTTP/1.1 upgrade request (e.g. `"Authorization: Bearer …"` for a server that authenticates the handshake); a line containing CR or LF is refused, returning 0 without dialling |
 | `wss_send` | `(int, string) -> int` | send a text message on a WebSocket |
 | `wss_recv` | `(int) -> string` | next message (blocks); `""` on close (auto ping/pong) |
 | `wss_send_bin` | `(int, bytes) -> int` | send a binary message (opcode `0x2`) — NUL-safe |

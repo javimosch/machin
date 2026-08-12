@@ -393,7 +393,7 @@ func machinGuide() guideCatalog {
 			{"http_get", "(string) -> (int, string, string)", "GET (http:// or https://) -> (status, body, err); err \"\"/dns/connect/tls. MULTI-ASSIGN ONLY", "net"},
 			{"http_request", "(string, string, []string, string) -> (int, string, string)", "auth'd HTTP(S): (method, url [http/https], header lines like \"Authorization: Bearer x\", body) -> (status, body, err). MULTI-ASSIGN ONLY", "net"},
 			// websocket
-			{"wss_open", "(string) -> int", "open a wss:// WebSocket -> handle (0 on fail)", "ws"},
+			{"wss_open", "(string[, []string]) -> int", "open a wss:// WebSocket -> handle (0 on fail). Optional header lines like \"Authorization: Bearer x\" are sent on the upgrade request; a line containing CR/LF is refused (0)", "ws"},
 			{"wss_send", "(int, string) -> int", "send a text message", "ws"},
 			{"wss_recv", "(int) -> string", "next message (blocks; \"\" on close; auto ping/pong)", "ws"},
 			{"wss_send_bin", "(int, bytes) -> int", "send a binary message (opcode 0x2) — NUL-safe, for binary protocols", "ws"},

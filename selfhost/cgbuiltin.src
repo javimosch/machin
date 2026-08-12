@@ -215,6 +215,10 @@ func cg_builtin(iid, call_idx, callee, names) (out) {
         if len(names) == 3 { out = "mfl_sqlite_query_p(" + join(names, ", ") + ")" } else { out = "mfl_sqlite_query(" + join(names, ", ") + ")" }
         return out
     }
+    if callee == "wss_open" {
+        if len(names) == 2 { out = "mfl_wss_open_h(" + join(names, ", ") + ")" } else { out = "mfl_wss_open(" + join(names, ", ") + ")" }
+        return out
+    }
     if is_math1(callee) {
         fn := callee
         if fn == "abs" { fn = "fabs" }

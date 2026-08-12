@@ -2800,10 +2800,13 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 	case "x509_pubkey":
 		return 0, fmt.Errorf("x509_pubkey returns 2 values; use: n, e := x509_pubkey(cert_der)")
 	case "wss_open":
-		if len(argSlots) != 1 {
-			return 0, fmt.Errorf("wss_open: 1 arg (url string)")
+		if len(argSlots) != 1 && len(argSlots) != 2 {
+			return 0, fmt.Errorf("wss_open: 1 or 2 args (url string[, headers []string])")
 		}
 		c.addPair(argSlots[0], c.cString)
+		if len(argSlots) == 2 {
+			c.addPair(argSlots[1], newSliceSlot(c, c.cString))
+		}
 		return c.cInt, nil
 	case "wss_send":
 		if len(argSlots) != 2 {
