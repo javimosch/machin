@@ -50,9 +50,10 @@ func c_quote(v) (out) {
         if c == 10 { parts = append(parts, "\\n") } else {
         if c == 9 { parts = append(parts, "\\t") } else {
         if c == 13 { parts = append(parts, "\\r") } else {
+        if c == 63 { parts = append(parts, "\\?") } else {   // '?': keeps adjacent ones from forming a trigraph
         if (c >= 32 && c < 127) || c >= 128 { parts = append(parts, substr(v, i, i + 1)) } else {
             parts = append(parts, "\\" + oct3(c))   // control byte (0-31, 127): octal escape
-        }}}}}}
+        }}}}}}}
         i = i + 1
     }
     parts = append(parts, "\"")
@@ -224,7 +225,9 @@ func c_float(lex) (s) {
 func cg_expr(iid, idx) (out) {
     n := nodes[idx]
     k := n.kind
-    if k == K_INT { out = str(n.ival)  return out }
+    // the LL suffix keeps a literal wider than 32 bits from being typed as int
+    // by the C compiler before it is used
+    if k == K_INT { out = str(n.ival) + "LL"  return out }
     if k == K_FLOAT { out = c_float(n.s)  return out }
     if k == K_STR { out = c_quote(n.s)  return out }
     if k == K_BOOL { if n.ival == 1 { out = "1" } else { out = "0" }  return out }
@@ -461,6 +464,15 @@ func binary_combine(iid, idx, l, r) (out) {
 
 func cg_binary(iid, idx) (out) {
     n := nodes[idx]
+    // #437: && and || must SHORT-CIRCUIT. seq_operands hoists BOTH operands into
+    // temporaries as soon as either has a side effect, which evaluates the right
+    // operand unconditionally — so `i < len(xs) && xs[i] == 0` would index out of
+    // bounds. C's && / || already sequence left-to-right with a sequence point
+    // between them, so emit them directly.
+    if n.s == "&&" || n.s == "||" {
+        out = "(" + cg_expr(iid, n.a) + " " + n.s + " " + cg_expr(iid, n.b) + ")"
+        return out
+    }
     idxs := []int{n.a, n.b}
     names, decls, wrapped := seq_operands(iid, idxs)
     combined := binary_combine(iid, idx, names[0], names[1])
@@ -487,7 +499,14 @@ func cg_stmt(iid, idx, depth) {
     }
     if k == K_MULTI { indent(depth)  cg_multi_assign(iid, idx, depth)  return }
     indent(depth)
-    if k == K_ASSIGN { cemit(var_ref(iid, n.s) + " = " + cg_expr(iid, n.a) + ";\n")  return }
+    if k == K_ASSIGN {
+        // #578: grow in place where the alias analysis proves nothing else
+        // observes the backing array
+        owned := al_owned_append(iid, idx)
+        if owned != "" { cemit(var_ref(iid, n.s) + " = " + owned + ";\n")  return }
+        cemit(var_ref(iid, n.s) + " = " + cg_expr(iid, n.a) + ";\n")
+        return
+    }
     if k == K_RETURN {
         if len(n.kids) == 0 { emit_named_return(iid)  return }
         if len(n.kids) == 1 { cemit("return (" + cg_expr(iid, n.kids[0]) + ");\n")  return }

@@ -323,6 +323,12 @@ What was ported (the compute-heavy frontend/codegen were already self-hosted):
   `--emit-c` (+ the `--program`/`--full` oracle modes), composing every `selfhost/`
   module. The shared compile pipeline lives in `compile.src` (also used by the oracle
   driver `cgmain.src`).
+- **unaliased-slice analysis** (`alias.src`) — the port of `alias.go` (#578): which local
+  slices `append` may grow in place. Fail-closed, same as the reference; an unmodelled
+  node kind disqualifies every candidate. It is here because *the two compilers must
+  agree*: while it was missing, the self-hosted compiler emitted the copying
+  `mfl_append` where Go emitted `mfl_append_owned`, so both compilers built observably
+  different programs from the same source (#625).
 - **feature-gated runtime prelude** (`gen-prelude.py` → `cgprelude.src`) — the prelude is
   split into blocks (core + tls/wss/math/noise/regex/sqlite/crypto/xeddsa), recovered by
   subtraction from the Go compiler, and emitted **gated by `g_uses_*` flags** set per

@@ -130,7 +130,9 @@ func json_serializer(t) (name) {
         elem := substr(t, 2, len(t))
         es := json_serializer(elem)
         ect := ctype_name(elem)
-        body = "char* out = mfl_dup(\"[\");\n    for (int64_t i = 0; i < v.len; i++) {\n        if (i) out = mfl_cat(out, \",\");\n        out = mfl_cat(out, " + es + "(((" + ect + "*)v.data)[i]));\n    }\n    return mfl_cat(out, \"]\");"
+        // a string builder, not repeated mfl_cat: concatenating per element made
+        // json() O(n^2) on big values (#520)
+        body = "mfl_sb sb; mfl_sb_init(&sb); mfl_sb_puts(&sb, \"[\");\n    for (int64_t i = 0; i < v.len; i++) {\n        if (i) mfl_sb_puts(&sb, \",\");\n        mfl_sb_puts(&sb, " + es + "(((" + ect + "*)v.data)[i]));\n    }\n    mfl_sb_puts(&sb, \"]\");\n    return mfl_sb_done(&sb);"
     }
     if body == "" && has_prefix(t, "map[") {
         kt, vt := split_map_type(t)
@@ -140,22 +142,23 @@ func json_serializer(t) (name) {
         keyjson := "mfl_json_str(mfl_str_i(_k))"
         getcall := "mfl_map_get(v, _k, NULL, &_val);"
         if kt == "string" { keyjson = "mfl_json_str(_k)"  getcall = "mfl_map_get(v, 0, _k, &_val);" }
-        body = "mfl_slice _ks = mfl_map_keys(v);\n    char* out = mfl_dup(\"{\");\n    for (int64_t i = 0; i < _ks.len; i++) {\n        if (i) out = mfl_cat(out, \",\");\n        " + kct + " _k = ((" + kct + "*)_ks.data)[i];\n        " + vct + " _val; " + getcall + "\n        out = mfl_cat(out, " + keyjson + ");\n        out = mfl_cat(out, \":\");\n        out = mfl_cat(out, " + vs + "(_val));\n    }\n    return mfl_cat(out, \"}\");"
+        body = "mfl_slice _ks = mfl_map_keys(v);\n    mfl_sb sb; mfl_sb_init(&sb); mfl_sb_puts(&sb, \"{\");\n    for (int64_t i = 0; i < _ks.len; i++) {\n        if (i) mfl_sb_puts(&sb, \",\");\n        " + kct + " _k = ((" + kct + "*)_ks.data)[i];\n        " + vct + " _val; " + getcall + "\n        mfl_sb_puts(&sb, " + keyjson + ");\n        mfl_sb_puts(&sb, \":\");\n        mfl_sb_puts(&sb, " + vs + "(_val));\n    }\n    mfl_sb_puts(&sb, \"}\");\n    return mfl_sb_done(&sb);"
     }
     if body == "" {
         di := struct_def_idx(t)
         d := g_structdefs[di]
-        b := "char* out = mfl_dup(\"{\");\n"
+        b := "mfl_sb sb; mfl_sb_init(&sb); mfl_sb_puts(&sb, \"{\");\n"
         j := 0
         for j < len(d.fnames) {
             fs := json_serializer(d.ftypes[j])
             prefix := "\"\\\"" + d.fnames[j] + "\\\":\""
             if j > 0 { prefix = "\",\\\"" + d.fnames[j] + "\\\":\"" }
-            b = b + "    out = mfl_cat(out, " + prefix + ");\n"
-            b = b + "    out = mfl_cat(out, " + fs + "(v.f_" + d.fnames[j] + "));\n"
+            b = b + "    mfl_sb_puts(&sb, " + prefix + ");\n"
+            b = b + "    mfl_sb_puts(&sb, " + fs + "(v.f_" + d.fnames[j] + "));\n"
             j = j + 1
         }
-        b = b + "    return mfl_cat(out, \"}\");"
+        b = b + "    mfl_sb_puts(&sb, \"}\");\n"
+        b = b + "    return mfl_sb_done(&sb);"
         body = b
     }
     jsonfn_emit("static char* " + name + "(" + ct + " v) {\n    " + body + "\n}\n")
@@ -179,7 +182,7 @@ func json_parser(t) (name) {
         elem := substr(t, 2, len(t))
         ep := json_parser(elem)
         ect := ctype_name(elem)
-        body = "mfl_slice s = {0};\n    mfl_js_ws(p);\n    if (**p == '[') {\n        (*p)++; mfl_js_ws(p);\n        if (**p != ']') {\n            while (1) {\n                " + ect + " _e = " + ep + "(p);\n                s = mfl_append(s, &_e, sizeof(" + ect + "));\n                if (mfl_js_more(p)) continue;\n                break;\n            }\n        }\n        mfl_js_ws(p); if (**p == ']') (*p)++;\n    }\n    return s;"
+        body = "mfl_slice s = {0};\n    if (mfl_js_null(p)) return s;\n    mfl_js_ws(p);\n    if (**p == '[') {\n        (*p)++; mfl_js_ws(p);\n        if (**p != ']') {\n            while (1) {\n                " + ect + " _e = " + ep + "(p);\n                s = mfl_append(s, &_e, sizeof(" + ect + "));\n                if (mfl_js_more(p)) continue;\n                break;\n            }\n        }\n        mfl_js_ws(p); if (**p == ']') (*p)++;\n    }\n    return s;"
     }
     if body == "" && has_prefix(t, "map[") {
         kt, vt := split_map_type(t)
@@ -188,7 +191,7 @@ func json_parser(t) (name) {
         keyisstr := 0
         setcall := "mfl_map_set(m, strtoll(_k, 0, 10), 0, &_val);"
         if kt == "string" { keyisstr = 1  setcall = "mfl_map_set(m, 0, _k, &_val);" }
-        body = "mfl_map* m = mfl_make_map(" + str(keyisstr) + ", sizeof(" + vct + "));\n    mfl_js_ws(p);\n    if (**p == '{') {\n        (*p)++; mfl_js_ws(p);\n        if (**p != '}') {\n            while (1) {\n                char* _k = mfl_js_str(p); mfl_js_ws(p); if (**p == ':') (*p)++;\n                " + vct + " _val = " + vp + "(p);\n                " + setcall + "\n                if (mfl_js_more(p)) continue;\n                break;\n            }\n        }\n        mfl_js_ws(p); if (**p == '}') (*p)++;\n    }\n    return m;"
+        body = "mfl_map* m = mfl_make_map(" + str(keyisstr) + ", sizeof(" + vct + "));\n    if (mfl_js_null(p)) return m;\n    mfl_js_ws(p);\n    if (**p == '{') {\n        (*p)++; mfl_js_ws(p);\n        if (**p != '}') {\n            while (1) {\n                char* _k = mfl_js_str(p); mfl_js_ws(p); if (**p == ':') (*p)++;\n                " + vct + " _val = " + vp + "(p);\n                " + setcall + "\n                if (mfl_js_more(p)) continue;\n                break;\n            }\n        }\n        mfl_js_ws(p); if (**p == '}') (*p)++;\n    }\n    return m;"
     }
     if body == "" {
         di := struct_def_idx(t)
@@ -198,7 +201,7 @@ func json_parser(t) (name) {
         b := ct + " out = {0};\n"
         szi := string_zero_inits(t)
         if len(szi) > 0 { b = ct + " out = {" + join(szi, ", ") + "};\n" }
-        b = b + "    mfl_js_ws(p);\n    if (**p == '{') {\n        (*p)++; mfl_js_ws(p);\n        if (**p != '}') {\n            while (1) {\n                char* _k = mfl_js_str(p); mfl_js_ws(p); if (**p == ':') (*p)++;\n"
+        b = b + "    if (mfl_js_null(p)) return out;\n    mfl_js_ws(p);\n    if (**p == '{') {\n        (*p)++; mfl_js_ws(p);\n        if (**p != '}') {\n            while (1) {\n                char* _k = mfl_js_str(p); mfl_js_ws(p); if (**p == ':') (*p)++;\n"
         j := 0
         for j < len(d.fnames) {
             fp := json_parser(d.ftypes[j])

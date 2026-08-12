@@ -22,7 +22,7 @@ CCFLAGS="-O2 -fno-strict-aliasing -std=c11 -pthread -w"
 echo "building Go machin (oracle) + MFL codegen…"
 $N go build -trimpath -o bin/machin . || { echo "go build failed"; exit 1; }
 $N "$MACHIN" encode selfhost/lex.src selfhost/parse.src selfhost/check.src \
-    selfhost/checkgen.src selfhost/cgen.src selfhost/cgbuiltin.src selfhost/cgagg.src selfhost/cgffi.src selfhost/cgprelude.src selfhost/cgprog.src selfhost/compile.src selfhost/cgmain.src > /tmp/shc-cgen.mfl
+    selfhost/checkgen.src selfhost/cgen.src selfhost/cgbuiltin.src selfhost/alias.src selfhost/cgagg.src selfhost/cgffi.src selfhost/cgprelude.src selfhost/cgprog.src selfhost/compile.src selfhost/cgmain.src > /tmp/shc-cgen.mfl
 $N "$MACHIN" build /tmp/shc-cgen.mfl -o selfhost/mfl-cgen
 
 T=$(mktemp -d); pass=0; fail=0

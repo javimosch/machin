@@ -180,7 +180,8 @@ func cg_builtin(iid, call_idx, callee, names) (out) {
         k := node_kind(iid, argn[0])
         if k == 7 || k == 12 { out = "((" + names[0] + ").len)"  return out }
         if k == 10 { out = "mfl_map_len(" + names[0] + ")"  return out }
-        out = "((int64_t)strlen(" + names[0] + "))"
+        // mfl_s guards a NULL char*: strlen(NULL) is a segfault, len("") is 0
+        out = "((int64_t)strlen(mfl_s(" + names[0] + ")))"
         return out
     }
     if callee == "str" {

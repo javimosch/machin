@@ -90,6 +90,39 @@ jobs:
           git fetch --tags --quiet
           make version-check
 
+      # The README leads with "compiles itself — fixpoint". Nothing enforced that
+      # claim until now: every selfhost/verify-*.sh was manual-only, and BOTH the
+      # embedded prelude and the codegen had silently drifted from the Go
+      # reference for an unknown number of commits (#625, #626).
+
+      - name: Selfhost prelude is regenerated (#626)
+        run: |
+          python3 selfhost/gen-prelude.py
+          if ! git diff --quiet selfhost/cgprelude.src; then
+            echo "::error::selfhost/cgprelude.src is stale — the C runtime changed without re-running selfhost/gen-prelude.py. The self-hosted compiler embeds its OWN copy of the runtime, so a stale prelude means it builds programs against an OLDER runtime than the Go compiler does. Run: python3 selfhost/gen-prelude.py"
+            git diff --stat selfhost/cgprelude.src
+            exit 1
+          fi
+          echo "prelude matches the Go runtime"
+
+      - name: Selfhost codegen oracle-diff (#625)
+        run: |
+          out=$(bash selfhost/verify-cgen.sh 2>&1)
+          echo "$out" | tail -20
+          echo "$out" | grep -q "FAIL 0" || {
+            echo "::error::the self-hosted compiler emits different C than the Go reference. Either port the codegen change to selfhost/, or the two compilers build observably different programs."
+            exit 1
+          }
+
+      - name: Selfhost fixpoint (#625)
+        run: |
+          out=$(bash selfhost/verify-fixpoint.sh 2>&1)
+          echo "$out" | tail -12
+          echo "$out" | grep -q "SELF-HOSTING FIXPOINT: PASS" || {
+            echo "::error::the self-hosting fixpoint FAILED — the compiler no longer reproduces itself byte-for-byte, or its codegen diverged from the Go reference"
+            exit 1
+          }
+
       - name: Run every example (integration smoke test)
         run: ./examples/run.sh
 

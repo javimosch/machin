@@ -138,6 +138,7 @@ var g_glob_inits = []int{}   // global-init expr node indices (parallel to g_glo
 func cg_program() {
     compute_reps()
     cg_nslot_init()   // O(1) node->slot direct index (sized to the node count)
+    al_compute()      // #578: which local slices append may grow in place
 
     // -1. function bodies are generated FIRST, into a temp buffer, so everything they
     //     lazily trigger as a side effect — goroutine trampolines (g_tramp) AND, #293,
@@ -232,6 +233,9 @@ func cg_program() {
     cemit("static int mfl_rr_prog_boundary(void) { return " + str(rr_boundary) + "; }\n")
     // 7. native entry point (only when the program defines main)
     if func_root("main") >= 0 {
-        cemit("int main(int argc, char** argv) { signal(SIGPIPE, SIG_IGN); mfl_argc = argc; mfl_argv = argv; mfl_rr_init(); mfl_main(); mfl_rr_finish(); return 0; }\n")
+        // SIGPIPE does not exist on Windows (#517), so the signal() call is guarded
+        cemit("int main(int argc, char** argv) {\n")
+        cemit("#ifndef _WIN32\n    signal(SIGPIPE, SIG_IGN);\n#endif\n")
+        cemit("    mfl_argc = argc; mfl_argv = argv; mfl_rr_init(); mfl_main(); mfl_rr_finish(); return 0; }\n")
     }
 }
