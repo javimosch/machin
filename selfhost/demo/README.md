@@ -8,7 +8,7 @@ outputs are byte-for-byte identical — then a note that it runs as fast as the 
 ```bash
 # from repo root: build the toolchain, then record
 GOMAXPROCS=4 ./bin/machin encode selfhost/lex.src selfhost/parse.src selfhost/check.src \
-  selfhost/checkgen.src selfhost/cgen.src selfhost/cgbuiltin.src selfhost/cgagg.src \
+  selfhost/checkgen.src selfhost/cgen.src selfhost/cgbuiltin.src selfhost/alias.src selfhost/cgagg.src \
   selfhost/cgffi.src selfhost/cgprelude.src selfhost/cgprog.src selfhost/cgmain.src > compiler.mfl
 ./bin/machin build compiler.mfl -o mfl-cgen
 # copy the 10 hand-written sources into ./src/, place compiler.mfl + mfl-cgen alongside record-demo.sh, then:

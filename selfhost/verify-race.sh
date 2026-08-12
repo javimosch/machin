@@ -12,7 +12,7 @@ pass=0; fail=0
 echo "building Go machin (oracle) + MFL race pass…"
 $N go build -trimpath -o bin/machin . || { echo "go build failed"; exit 1; }
 $N "$MACHIN" encode selfhost/lex.src selfhost/parse.src selfhost/check.src \
-    selfhost/checkgen.src selfhost/cgen.src selfhost/cgbuiltin.src selfhost/cgagg.src \
+    selfhost/checkgen.src selfhost/cgen.src selfhost/cgbuiltin.src selfhost/alias.src selfhost/cgagg.src \
     selfhost/cgffi.src selfhost/cgprelude.src selfhost/cgprog.src selfhost/compile.src \
     selfhost/racecheck.src selfhost/racemain.src > "$T/sh-race.mfl" || { echo "encode failed"; exit 1; }
 $N "$MACHIN" build "$T/sh-race.mfl" -o selfhost/mfl-race || { echo "build failed"; exit 1; }

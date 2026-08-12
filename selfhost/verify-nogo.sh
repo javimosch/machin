@@ -15,7 +15,7 @@ MACHIN="${MACHIN:-./bin/machin}"
 export GOMAXPROCS="${GOMAXPROCS:-4}"
 N="nice -n 15"
 SRCS="selfhost/lex.src selfhost/parse.src selfhost/check.src selfhost/checkgen.src \
-selfhost/cgen.src selfhost/cgbuiltin.src selfhost/cgagg.src selfhost/cgffi.src \
+selfhost/cgen.src selfhost/cgbuiltin.src selfhost/alias.src selfhost/cgagg.src selfhost/cgffi.src \
 selfhost/cgprelude.src selfhost/cgprog.src selfhost/compile.src selfhost/encode.src \
 selfhost/build.src selfhost/machin.src"
 T=$(mktemp -d); fail=0

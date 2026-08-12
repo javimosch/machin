@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+**The self-hosted compiler had silently drifted, and nothing was checking**
+(issues #625, #626) — the README leads with *"compiles itself — fixpoint"*, but
+no workflow ran any of the twelve `selfhost/verify-*.sh` gates. They were all
+manual-only. Two of them had been failing for an unknown number of commits.
+
+Six codegen changes had landed in the Go compiler and never been ported, so the
+two compilers built **observably different programs** from the same source:
+
+| unported | effect on a self-hosted build |
+|---|---|
+| `mfl_s` NULL guard on `len` (string) | `strlen(NULL)` **segfaults** instead of returning 0 |
+| short-circuit `&&` / `||` (#437) | both operands evaluated — `i < len(xs) && xs[i] == 0` reads out of bounds |
+| `mfl_js_null` guard in parsers (#533) | every field after a JSON `null` silently dropped |
+| `mfl_sb` string builder in `json()` (#520) | `json()` quadratic instead of linear |
+| `mfl_append_owned` (#578) | every `append` copies; never grows in place |
+| `LL` suffix on int literals | a literal wider than 32 bits typed as `int` |
+
+All six are now ported, including the full unaliased-slice analysis as
+[`selfhost/alias.src`](selfhost/alias.src). The codegen oracle goes from
+**384/415 to 415/415**, and `verify-fixpoint.sh` passes for the first time in
+this arc. `selfhost/cgprelude.src` — the embedded copy of the C runtime — had
+also gone stale in four blocks.
+
+Three CI gates now enforce all of it: the prelude must be regenerated, the
+codegen oracle must be clean, and the fixpoint must hold. Each was
+mutation-tested — reverting any one of the six fixes turns its gate red.
+
 **`wss_open` accepts custom headers** (issue #622) — a WebSocket upgrade is an
 HTTP/1.1 request, so servers authenticate it. Until now MFL could not send an
 `Authorization` header on the handshake, which made any such endpoint (the

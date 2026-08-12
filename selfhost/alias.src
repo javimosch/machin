@@ -1,0 +1,329 @@
+// Unaliased-slice analysis — the self-hosted port of alias.go (#578), so that
+// `append` lowers to mfl_append_owned here exactly where the reference compiler
+// lowers it. Until this existed the two compilers emitted DIFFERENT C for the
+// same program: Go grew the array in place, the self-hosted compiler always
+// copied (#625).
+//
+// Answers one question per local slice variable: does any OTHER live reference
+// observe this slice's backing array? If not, append may grow it in place
+// instead of allocating a fresh block and copying.
+//
+// FAIL-CLOSED BY CONSTRUCTION, same posture as the reference. Every operation on
+// a candidate must be on an explicit whitelist of forms that provably cannot
+// leak a reference to the backing array; anything else — including a node kind
+// this analysis does not recognise — disqualifies the variable. The cost of a
+// case nobody thought of is a missed optimization, never a dangling pointer.
+//
+// Flow sensitivity is what makes it useful rather than merely sound: the
+// dominant shape is "build it, then use it", where the aliasing use comes AFTER
+// the last append and cannot observe a moved array. Top-level statements run in
+// order, so an aliasing use at a strictly greater top-level index provably runs
+// after every append. Events inside a nested block carry that block's top-level
+// index, so an alias and an append in the SAME loop collide and disqualify.
+
+var g_al_names = []string{}   // candidate slice variables in the function being scanned
+var g_al_isparam = []int{}    // 1 if that candidate is a parameter
+var g_al_appat = []int{}      // highest top-level index holding an append (-2 = none)
+var g_al_alias = []int{}      // lowest top-level index holding an aliasing use (-2 = none)
+var g_al_apps = []int{}       // self-append sites
+var g_al_top = 0              // top-level statement index being scanned
+var g_al_ok = []string{}      // qualifying "iid|name" keys, the analysis's whole output
+
+func al_add(name, isparam) {
+    i := str_index(g_al_names, name)
+    if i >= 0 {
+        if isparam == 1 { g_al_isparam[i] = 1 }
+        return
+    }
+    g_al_names = append(g_al_names, name)
+    g_al_isparam = append(g_al_isparam, isparam)
+    g_al_appat = append(g_al_appat, -2)
+    g_al_alias = append(g_al_alias, -2)
+    g_al_apps = append(g_al_apps, 0)
+}
+
+// al_disq records an ALIASING USE at the current top-level index. Whether it
+// actually disqualifies is decided later, against where the appends are.
+func al_disq(name) {
+    i := str_index(g_al_names, name)
+    if i < 0 { return }
+    if g_al_alias[i] == -2 { g_al_alias[i] = g_al_top  return }
+    if g_al_top < g_al_alias[i] { g_al_alias[i] = g_al_top }
+}
+
+func al_note_append(name) {
+    i := str_index(g_al_names, name)
+    if i < 0 { return }
+    g_al_apps[i] = g_al_apps[i] + 1
+    if g_al_appat[i] == -2 { g_al_appat[i] = g_al_top  return }
+    if g_al_top > g_al_appat[i] { g_al_appat[i] = g_al_top }
+}
+
+// the fail-closed hammer: an unmodelled form could do anything with any of them
+func al_disq_all() {
+    i := 0
+    for i < len(g_al_names) { al_disq(g_al_names[i])  i = i + 1 }
+}
+
+func al_is_cand(idx) (yes) {
+    yes = 0
+    n := nodes[idx]
+    if n.kind != K_ID { return yes }
+    if str_index(g_al_names, n.s) >= 0 { yes = 1 }
+}
+
+// al_scan_expr walks an expression allowing ONLY the read forms that cannot leak
+// a reference to a candidate's backing array. A bare mention copies the slice
+// header, which is exactly what creates an alias, so it disqualifies.
+func al_scan_expr(iid, idx) {
+    if idx < 0 { return }
+    n := nodes[idx]
+    k := n.kind
+    if k == K_INT || k == K_FLOAT || k == K_STR || k == K_BOOL || k == K_NIL { return }
+    if k == K_MAKECHAN || k == K_MAKEMAP { return }
+    if k == K_ID { al_disq(n.s)  return }
+    if k == K_INDEX {
+        // v[i] yields an ELEMENT. For a struct or nested-slice element that is a
+        // copy of the element, not a pointer into the outer array, so the outer
+        // array may still move.
+        if al_is_cand(n.a) == 0 { al_scan_expr(iid, n.a) }
+        al_scan_expr(iid, n.b)
+        return
+    }
+    if k == K_CALL {
+        if n.s == "len" {
+            if len(n.kids) == 1 {
+                if al_is_cand(n.kids[0]) == 1 { return }   // reads the header field only
+            }
+        }
+        for _, a := range n.kids { al_scan_expr(iid, a) }
+        return
+    }
+    if k == K_CALLV {
+        al_scan_expr(iid, n.a)
+        for _, a := range n.kids { al_scan_expr(iid, a) }
+        return
+    }
+    if k == K_BIN { al_scan_expr(iid, n.a)  al_scan_expr(iid, n.b)  return }
+    if k == K_UNARY { al_scan_expr(iid, n.a)  return }
+    if k == K_FIELD { al_scan_expr(iid, n.a)  return }
+    if k == K_SLICE { for _, e := range n.kids { al_scan_expr(iid, e) }  return }
+    if k == K_STRUCT { for _, e := range n.kids { al_scan_expr(iid, e) }  return }
+    if k == K_RECV { al_scan_expr(iid, n.a)  return }
+    if k == K_FUNCLIT {
+        // a captured variable is shared by reference with the closure, which may
+        // outlive this frame. The lambda instance's leading params ARE its
+        // captures (#308 Phase 2), which is the same set the reference compiler
+        // sees on a lifted MakeClosure.
+        lid := funclit_inst(iid, idx)
+        if lid < 0 { al_disq_all()  return }
+        li := g_insts[lid]
+        j := 0
+        for j < li.ncap {
+            al_disq(li.pnames[j])
+            j = j + 1
+        }
+        return
+    }
+    al_disq_all()
+}
+
+func al_scan_stmts(iid, kids) {
+    for _, s := range kids { al_scan_stmt(iid, s) }
+}
+
+func al_scan_stmt(iid, idx) {
+    if idx < 0 { return }
+    n := nodes[idx]
+    k := n.kind
+    if k == K_ASSIGN {
+        vn := nodes[n.a]
+        // the one shape that keeps a candidate alive: v = append(v, ...)
+        if vn.kind == K_CALL {
+            if vn.s == "append" {
+                if len(vn.kids) >= 1 {
+                    a0 := nodes[vn.kids[0]]
+                    if a0.kind == K_ID && a0.s == n.s && str_index(g_al_names, n.s) >= 0 {
+                        // a spread append is not modelled
+                        if vn.ival == 1 { al_disq(n.s) } else { al_note_append(n.s) }
+                        j := 1
+                        for j < len(vn.kids) {
+                            al_scan_expr(iid, vn.kids[j])   // appending a candidate stores ITS header
+                            j = j + 1
+                        }
+                        return
+                    }
+                }
+            }
+        }
+        // initialization from a slice literal keeps it a candidate
+        if vn.kind == K_SLICE && str_index(g_al_names, n.s) >= 0 {
+            for _, e := range vn.kids { al_scan_expr(iid, e) }
+            return
+        }
+        // any other assignment INTO a candidate makes it share whatever it was given
+        if str_index(g_al_names, n.s) >= 0 { al_disq(n.s) }
+        al_scan_expr(iid, n.a)
+        return
+    }
+    if k == K_MULTI {
+        for _, nm := range n.names { al_disq(nm) }
+        for _, r := range n.kids { al_scan_expr(iid, r) }
+        return
+    }
+    if k == K_IDXASSIGN {
+        ixn := nodes[n.a]
+        // v[i] = e writes THROUGH the array; no reference escapes
+        if al_is_cand(ixn.a) == 0 { al_scan_expr(iid, ixn.a) }
+        al_scan_expr(iid, ixn.b)
+        al_scan_expr(iid, n.b)
+        return
+    }
+    if k == K_FLDASSIGN {
+        // v[i].f = e — the base is an index over the candidate
+        fdn := nodes[n.a]
+        bn := nodes[fdn.a]
+        if bn.kind == K_INDEX {
+            if al_is_cand(bn.a) == 1 {
+                al_scan_expr(iid, bn.b)
+                al_scan_expr(iid, n.b)
+                return
+            }
+        }
+        al_scan_expr(iid, fdn.a)
+        al_scan_expr(iid, n.b)
+        return
+    }
+    if k == K_EXPRSTMT { al_scan_expr(iid, n.a)  return }
+    if k == K_RETURN {
+        for _, v := range n.kids { al_scan_expr(iid, v) }   // hands the array to the caller
+        return
+    }
+    if k == K_IF {
+        al_scan_expr(iid, n.a)
+        al_scan_stmts(iid, n.kids)
+        al_scan_stmts(iid, n.kids2)
+        return
+    }
+    if k == K_WHILE {
+        al_scan_expr(iid, n.a)
+        al_scan_stmts(iid, n.kids)
+        return
+    }
+    if k == K_RANGE {
+        if al_is_cand(n.a) == 0 { al_scan_expr(iid, n.a) }   // ranges by value
+        al_scan_stmts(iid, n.kids)
+        return
+    }
+    if k == K_SEND {
+        // the runtime deep-copies values crossing a channel, so a send arguably
+        // does not alias. Disqualified anyway for v1, matching the reference.
+        al_scan_expr(iid, n.a)
+        vn := nodes[n.b]
+        if vn.kind == K_ID { al_disq(vn.s) } else { al_scan_expr(iid, n.b) }
+        return
+    }
+    if k == K_GO {
+        cn := nodes[n.a]
+        for _, a := range cn.kids { al_scan_expr(iid, a) }
+        return
+    }
+    if k == K_ARENA { al_scan_stmts(iid, n.kids)  return }
+    if k == K_SELECT {
+        for _, ci := range n.kids {
+            cn := nodes[ci]
+            al_scan_expr(iid, cn.a)
+            if cn.ival == 1 { al_scan_expr(iid, cn.b) }
+            al_scan_stmts(iid, cn.kids)
+        }
+        al_scan_stmts(iid, n.kids2)
+        return
+    }
+    if k == K_BREAK || k == K_CONTINUE { return }
+    al_disq_all()
+}
+
+// al_compute runs the analysis over every representative instantiation and
+// records the qualifying (instance, variable) pairs. Called once per program,
+// before any function body is emitted.
+func al_compute() {
+    g_al_ok = []string{}
+    ri := 0
+    for ri < len(g_reps) {
+        iid := g_reps[ri]
+        ri = ri + 1
+        ins := g_insts[iid]
+        g_al_names = []string{}
+        g_al_isparam = []int{}
+        g_al_appat = []int{}
+        g_al_alias = []int{}
+        g_al_apps = []int{}
+        // parameters are candidates too — not because they can ever qualify, but
+        // so a function that appends to one is refused explicitly
+        i := 0
+        for i < len(ins.pnames) {
+            if kind_of(ins.pslots[i]) == 7 { al_add(ins.pnames[i], 1) }
+            i = i + 1
+        }
+        i = 0
+        for i < len(ins.lnames) {
+            if kind_of(ins.lslots[i]) == 7 { al_add(ins.lnames[i], 0) }
+            i = i + 1
+        }
+        if len(g_al_names) == 0 { continue }
+        // a parameter is a slice the CALLER already holds, so the alias exists
+        // before the body runs — index -1, ahead of every append
+        g_al_top = -1
+        i = 0
+        for i < len(g_al_names) {
+            if g_al_isparam[i] == 1 { al_disq(g_al_names[i]) }
+            i = i + 1
+        }
+        root := func_root(ins.src)
+        if root < 0 { continue }
+        kids := nodes[root].kids
+        i = 0
+        for i < len(kids) {
+            g_al_top = i
+            al_scan_stmt(iid, kids[i])
+            i = i + 1
+        }
+        // an aliasing use only matters if it can observe an array that a LATER
+        // append moves. Equal indices mean both sit inside the same top-level
+        // statement, where order cannot be established.
+        i = 0
+        for i < len(g_al_names) {
+            unsafe := 0
+            if g_al_alias[i] != -2 {
+                if g_al_appat[i] == -2 {
+                    unsafe = 1
+                } else {
+                    if g_al_alias[i] <= g_al_appat[i] { unsafe = 1 }
+                }
+            }
+            if unsafe == 0 && g_al_apps[i] > 0 {
+                g_al_ok = append(g_al_ok, str(iid) + "|" + g_al_names[i])
+            }
+            i = i + 1
+        }
+    }
+}
+
+// al_owned_append renders `v = append(v, x)` through the in-place growth path
+// when v is provably unaliased. "" means fall back to the copying append.
+func al_owned_append(iid, idx) (out) {
+    out = ""
+    n := nodes[idx]
+    if str_index(g_al_ok, str(iid) + "|" + n.s) < 0 { return out }
+    vn := nodes[n.a]
+    if vn.kind != K_CALL { return out }
+    if vn.s != "append" { return out }
+    if vn.ival == 1 { return out }
+    if len(vn.kids) != 2 { return out }
+    a0 := nodes[vn.kids[0]]
+    if a0.kind != K_ID { return out }
+    if a0.s != n.s { return out }
+    val := cg_expr(iid, vn.kids[1])
+    ct := elem_ctype(iid, vn.kids[0])
+    out = "mfl_append_owned(" + var_ref(iid, n.s) + ", &((" + ct + "[1]){" + val + "})[0], sizeof(" + ct + "))"
+}

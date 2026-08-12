@@ -12,7 +12,7 @@ pass=0; fail=0
 echo "building Go machin (oracle) + MFL deadlock pass…"
 GOMAXPROCS=4 $N go build -trimpath -o bin/machin . || { echo "go build failed"; exit 1; }
 $N "$MACHIN" encode selfhost/lex.src selfhost/parse.src selfhost/check.src \
-    selfhost/checkgen.src selfhost/cgen.src selfhost/cgbuiltin.src selfhost/cgagg.src \
+    selfhost/checkgen.src selfhost/cgen.src selfhost/cgbuiltin.src selfhost/alias.src selfhost/cgagg.src \
     selfhost/cgffi.src selfhost/cgprelude.src selfhost/cgprog.src selfhost/compile.src \
     selfhost/deadlock.src selfhost/deadlockmain.src > "$T/sh.mfl" || { echo "encode failed"; exit 1; }
 $N "$MACHIN" build "$T/sh.mfl" -o selfhost/mfl-deadlock || { echo "build failed"; exit 1; }
