@@ -67,6 +67,22 @@ make test    # go test ./...
 Tests must pass before a PR. `make examples` (or `./examples/run.sh`) is a
 good sanity check that nothing regressed at runtime.
 
+**If you touched `codegen.go`, also run the self-hosting gates** — machin has
+two compilers (the Go one and the one written in machin under `selfhost/`), and
+CI requires them to emit identical C:
+
+```bash
+python3 selfhost/gen-prelude.py      # regenerate the embedded C runtime, commit any diff
+bash selfhost/verify-cgen.sh         # 415 programs, byte-diffed vs the Go compiler
+bash selfhost/verify-fixpoint.sh     # the compiler still reproduces itself
+```
+
+About 30 seconds in total. A codegen change that lands in only one compiler
+makes the two build observably different programs — which is exactly how four
+correctness bugs (including a `strlen(NULL)` crash and lost `&&`
+short-circuiting) reached self-hosted builds unnoticed before these gates
+existed.
+
 See [AGENTS.md](AGENTS.md) for the fuller dev workflow and standing
 constraints (in particular: the `.mfl` source of truth is canonical plain
 text, not base64).

@@ -142,6 +142,30 @@ node type: `transform.go` (lifter, `collectDeclared`, `freeIdents`), `types.go`
 and a note in `SPEC.md`, `README.md`, and `docs/LANGUAGE.md`, plus the relevant
 idiom/gotcha in the `machin guide` catalog (`guide.go`).
 
+### Touching codegen? Port it to `selfhost/` too
+
+**There are two compilers**, and CI now requires them to emit the *same C*. A
+change to `codegen.go` that is not mirrored in `selfhost/` turns the build red:
+
+| gate | what it checks | fix when it fails |
+|---|---|---|
+| prelude regenerated | `selfhost/cgprelude.src` matches the Go C runtime | `python3 selfhost/gen-prelude.py` and commit the result |
+| codegen oracle | `selfhost/verify-cgen.sh` — 415 programs, byte-diffed against the Go compiler | port the emit change into `selfhost/cg*.src` |
+| fixpoint | `selfhost/verify-fixpoint.sh` — the compiler still reproduces itself, and matches the reference | usually falls out of fixing the two above |
+
+This is not bureaucracy. Before these gates existed, **six** codegen changes had
+silently failed to land in the self-hosted compiler, and four of them were
+correctness bugs in self-hosted builds — `strlen(NULL)`, lost `&&`
+short-circuiting, JSON fields dropped after a `null`, always-copying `append`
+(#625, #626). The two compilers had been building observably different programs
+for an unknown number of commits, and the README's "compiles itself" badge was
+asserting something nothing checked.
+
+Changing the **C runtime** (any `*Runtime` string in `codegen.go`) means
+regenerating the prelude; changing an **emitter** means editing the matching
+`selfhost/cg*.src`. Run all three locally before pushing — together they take
+about 30 seconds.
+
 ### Branch → PR → merge
 
 Feature work goes on a branch, then a PR, then squash-merge + delete the branch.
