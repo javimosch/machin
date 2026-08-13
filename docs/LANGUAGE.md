@@ -472,7 +472,7 @@ first := users[0]                                // value copy
 | `https_get(url)`            | GET over TLS (or plain http://) → body string (`""` on error) |
 | `https_post(url, body)`     | POST with string body over TLS (or plain http://) → body string |
 | `http_get(url)`             | GET → `(status int, body string, err string)` — **multi-assign only** |
-| `http_request(method, url, headers, body)` | authenticated HTTP(S): headers are `[]string` of `"Key: Value"` lines; caller owns `Content-Type` → `(status int, body string, err string)` — **multi-assign only** |
+| `http_request(method, url, headers, body)` | authenticated HTTP(S): headers are `[]string` of `"Key: Value"` lines; caller owns `Content-Type` → `(status int, body string, err string)`; a header holding CR/LF is refused (`err == "header"`, nothing sent) — **multi-assign only** |
 | `wss_open(url[, headers])`  | open a `wss://` WebSocket → handle (`0` on fail); optional `[]string` of `"Key: Value"` lines sent on the upgrade request (e.g. `"Authorization: Bearer …"`) — a line containing CR/LF is refused |
 | `wss_send(h, msg)` / `wss_recv(h)` | send/receive a text message (`wss_recv` blocks; `""` on close; auto ping/pong) |
 | `wss_send_bin(h, b)` / `wss_recv_bin(h)` | send/receive a binary message, NUL-safe |

@@ -3029,17 +3029,36 @@ static mfl_http_result mfl_http_get(const char* url) {
 /* general authenticated request: caller supplies the method, any extra header
    lines (e.g. "Authorization: Bearer x", "Content-Type: application/json") as a
    []string, and a body. Returns (status, body, err) like http_get. */
+/* A header line holding CR or LF is REFUSED, not sanitized: embedding CRLF in a
+   value the caller interpolated ("Authorization: Bearer " + token) would forge
+   additional headers or smuggle a second request. The refusal is VISIBLE —
+   (0, "", "header"), alongside the existing "dns"/"connect"/"tls" — rather than
+   a silently dropped header. An empty line is skipped: it would otherwise emit a
+   bare CRLF and end the header block early. */
 static mfl_http_result mfl_http_request(const char* method, const char* url, mfl_slice headers, const char* body) {
     if (mfl_rr_mode == 2) return mfl_rr_pop_http();
     size_t tot = 1;
     for (int64_t i = 0; i < headers.len; i++) { char* h = ((char**)headers.data)[i]; if (h) tot += strlen(h) + 2; }
     char* hb = (char*)malloc(tot);
     size_t o = 0;
+    int bad = 0;
     for (int64_t i = 0; i < headers.len; i++) {
         char* h = ((char**)headers.data)[i];
-        if (h) { size_t l = strlen(h); memcpy(hb + o, h, l); o += l; hb[o++] = '\r'; hb[o++] = '\n'; }
+        if (!h || !*h) continue;
+        if (strpbrk(h, "\r\n")) { bad = 1; break; }
+        size_t l = strlen(h);
+        memcpy(hb + o, h, l); o += l; hb[o++] = '\r'; hb[o++] = '\n';
     }
     hb[o] = 0;
+    if (bad) {
+        free(hb);
+        mfl_http_result E;
+        E.status = 0;
+        E.body = mfl_dup_arena("", 0);
+        E.err = mfl_dup_arena("header", 6);
+        if (mfl_rr_mode == 1) mfl_rr_log_http(E);
+        return E;
+    }
     mfl_http_result R = mfl_http_do(method, url, body, NULL, hb, 5);
     if (mfl_rr_mode == 1) mfl_rr_log_http(R);
     free(hb);
