@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+## v0.137.0
+
+**Tooling only — the compiler is unchanged from v0.136.0.** The binaries for this
+tag are functionally identical; only `machin guide` reports a different version.
+
+Adds [`tools/regex-differential/`](tools/regex-differential/), a differential
+oracle between POSIX `<regex.h>` and a candidate regex engine, over the exact
+operations `regex_*` exposes. It exists because #517's regex gap turns on an
+empirical question, and PR #612 was closed by measuring it rather than arguing:
+**13 of 50 divergences**, in three classes.
+
+| class | example | native (POSIX) | Remimu |
+|---|---|---|---|
+| leftmost-**longest** vs leftmost-**first** | `b\|bc` on `abcd` | `bc` | `b` |
+| POSIX bracket classes unsupported | `[[:digit:]]+` on `x42y` | `42` | *no match* |
+| PCRE escapes POSIX takes literally | `\d+` on `x42y` | *no match* | `42` |
+
+The middle one is worse than a different answer: a program filtering on
+`[[:digit:]]+` finds nothing at all on Windows. The bar for any future candidate
+is now executable — leftmost-longest, POSIX bracket expressions, zero
+divergences.
+
 ## v0.136.0
 
 **Terminal raw mode works on the windows target** (issue #517) — one of the
