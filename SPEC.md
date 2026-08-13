@@ -364,7 +364,7 @@ An invalid ERE pattern (a `regcomp` failure) is not an error — there's no erro
 | `https_get` | `(string) -> string` | HTTPS GET over TLS; response body ("" on error) |
 | `https_post` | `(string, string) -> string` | HTTPS POST (JSON body) over TLS; response body |
 | `http_get` | `(string) -> (int, string, string)` | GET (plain `http://` or `https://`) returning `(status, body, err)`; `err==""` ⇒ a response, else `"dns"`/`"connect"`/`"tls"`. Multi-assign only. |
-| `http_request` | `(string, string, []string, string) -> (int, string, string)` | authenticated HTTPS: `(method, url, header lines, body)` → `(status, body, err)`. Each header is a `"Key: Value"` line (e.g. `"Authorization: Bearer …"`); caller owns `Content-Type`. Multi-assign only. |
+| `http_request` | `(string, string, []string, string) -> (int, string, string)` | authenticated HTTPS: `(method, url, header lines, body)` → `(status, body, err)`. Each header is a `"Key: Value"` line (e.g. `"Authorization: Bearer …"`); caller owns `Content-Type`. A line containing CR or LF is **refused** — nothing is sent and `err` is `"header"` — since it could forge headers or smuggle a second request; an empty line is skipped. Multi-assign only. |
 | `wss_open` | `(string[, []string]) -> int` | open a `wss://` WebSocket; a connection handle, or 0 on failure. The optional second argument is `"Key: Value"` header lines added to the HTTP/1.1 upgrade request (e.g. `"Authorization: Bearer …"` for a server that authenticates the handshake); a line containing CR or LF is refused, returning 0 without dialling |
 | `wss_send` | `(int, string) -> int` | send a text message on a WebSocket |
 | `wss_recv` | `(int) -> string` | next message (blocks); `""` on close (auto ping/pong) |

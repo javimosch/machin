@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+**`http_request` refuses CR/LF in header lines** (issue #627) — the same
+exposure `wss_open` closed in v0.134.0, in the builtin that is far more widely
+used.
+
+Header lines are joined into the request head verbatim, so a value the caller
+interpolated — `"Authorization: Bearer " + token` — that contains CR or LF
+forged additional headers, and with a doubled CRLF smuggled an entire second
+request the server would treat as genuine. That is request splitting whenever
+the token comes from anywhere the program does not fully control: an env var, a
+config file, a prior response.
+
+Such a line is now **refused**, not sanitized, and the refusal is visible:
+
+```
+st, body, err := http_request("GET", url, []string{"X-Token: " + tok}, "")
+# err == "header"  ->  the line held CR/LF; NOTHING was sent
+```
+
+`"header"` joins the existing `"dns"` / `"connect"` / `"tls"` values. Silently
+dropping the header would have left the caller believing it was sent. A bare LF
+counts too — it splits headers just as CRLF does.
+
+Fixed alongside: an **empty** header line used to emit a bare CRLF, ending the
+header block early and discarding every header after it. Empty entries are now
+skipped.
+
 ## v0.134.0
 
 **The self-hosted compiler had silently drifted, and nothing was checking**
