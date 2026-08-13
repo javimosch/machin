@@ -48,3 +48,13 @@ python3 tools/tokmin.py examples
 The lesson it encodes: minimize tokens by removing what the tokenizer charges
 for (whitespace), not by shortening what it already packs into one token
 (common keywords).
+
+## regex-differential/
+
+A differential oracle between POSIX `<regex.h>` and a candidate regex engine,
+over the exact operations `regex_*` exposes. The windows target has no
+`<regex.h>` (#517), and a replacement that answers differently would make the
+same MFL program return different results per platform — so a candidate is
+measured against this before it is considered. See
+[`regex-differential/README.md`](regex-differential/README.md) for the numbers
+that closed PR #612.
