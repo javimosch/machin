@@ -241,20 +241,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Same two stdin shapes TestTTYOffATtyContract pins on POSIX. Identical
-          # expected output: that is the cross-target claim, not "the PE links".
-          out=$(printf '' | ./win_tty.exe)
-          echo "empty stdin: $out"
-          expected=$'raw_mode=-1\nkey=[]\nrestored'
-          if [ "$out" != "$expected" ]; then
-            echo "::error::windows raw_mode/read_key on empty stdin produced [$out], expected [$expected]"
-            exit 1
-          fi
-          out=$(printf 'Z' | ./win_tty.exe)
-          echo "one byte waiting: $out"
-          expected=$'raw_mode=-1\nkey=[Z]\nrestored'
-          if [ "$out" != "$expected" ]; then
-            echo "::error::windows read_key with a byte waiting produced [$out], expected [$expected]"
-            exit 1
-          fi
+          # Same two stdin shapes TestTTYOffATtyContract pins on POSIX. Windows
+          # stdio translates \n to \r\n in text mode, which is a line-ending
+          # convention rather than part of the raw_mode contract, so \r is
+          # stripped before comparing. The raw bytes are dumped first so a real
+          # difference can never hide behind that normalisation.
+          check() {
+            printf '%s' "$2" | ./win_tty.exe > /tmp/tty_out.txt
+            echo "--- $1: raw bytes ---"
+            od -c /tmp/tty_out.txt | head -5
+            got=$(tr -d '\r' < /tmp/tty_out.txt)
+            if [ "$got" != "$3" ]; then
+              echo "::error::windows raw_mode/read_key ($1) produced [$got], expected [$3]"
+              exit 1
+            fi
+            echo "--- $1: matches the POSIX contract ---"
+          }
+          check "empty stdin"      ""  "$(printf 'raw_mode=-1\nkey=[]\nrestored')"
+          check "one byte waiting" "Z" "$(printf 'raw_mode=-1\nkey=[Z]\nrestored')"
           echo "raw_mode/read_key match the POSIX contract off a tty, and read_key never blocked"
