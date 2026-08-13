@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.135.0
+
 **`http_request` refuses CR/LF in header lines** (issue #627) — the same
 exposure `wss_open` closed in v0.134.0, in the builtin that is far more widely
 used.
