@@ -172,6 +172,14 @@ jobs:
           /tmp/machin encode /tmp/win_conc.src > /tmp/win_conc.mfl
           /tmp/machin build /tmp/win_conc.mfl --target windows -o /tmp/win_conc.exe
           cp /tmp/win_conc.exe /tmp/winart/
+          # Terminal raw mode: termios has no Windows equivalent, so this maps onto
+          # SetConsoleMode + _kbhit/_getch (#517). CI has no interactive console,
+          # but that is exactly the case worth pinning — OFF a tty both targets
+          # must agree: raw_mode fails (-1) and read_key still returns at once.
+          printf 'func main() {\n    r := raw_mode(1)\n    println("raw_mode=" + str(r))\n    k := read_key()\n    println("key=[" + k + "]")\n    raw_mode(0)\n    println("restored")\n}\n' > /tmp/win_tty.src
+          /tmp/machin encode /tmp/win_tty.src > /tmp/win_tty.mfl
+          /tmp/machin build /tmp/win_tty.mfl --target windows -o /tmp/win_tty.exe
+          cp /tmp/win_tty.exe /tmp/winart/
 
       - uses: actions/upload-artifact@v4
         with:
@@ -228,3 +236,27 @@ jobs:
             exit 1
           fi
           echo "goroutines, channels and select work on Windows (winpthreads)"
+
+      - name: run the cross-compiled raw-mode binary (console API, off a tty)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Same two stdin shapes TestTTYOffATtyContract pins on POSIX. Windows
+          # stdio translates \n to \r\n in text mode, which is a line-ending
+          # convention rather than part of the raw_mode contract, so \r is
+          # stripped before comparing. The raw bytes are dumped first so a real
+          # difference can never hide behind that normalisation.
+          check() {
+            printf '%s' "$2" | ./win_tty.exe > /tmp/tty_out.txt
+            echo "--- $1: raw bytes ---"
+            od -c /tmp/tty_out.txt | head -5
+            got=$(tr -d '\r' < /tmp/tty_out.txt)
+            if [ "$got" != "$3" ]; then
+              echo "::error::windows raw_mode/read_key ($1) produced [$got], expected [$3]"
+              exit 1
+            fi
+            echo "--- $1: matches the POSIX contract ---"
+          }
+          check "empty stdin"      ""  "$(printf 'raw_mode=-1\nkey=[]\nrestored')"
+          check "one byte waiting" "Z" "$(printf 'raw_mode=-1\nkey=[Z]\nrestored')"
+          echo "raw_mode/read_key match the POSIX contract off a tty, and read_key never blocked"

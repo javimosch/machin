@@ -47,15 +47,15 @@ func CompileToCTarget(p *Program, safe bool, target string) (string, []string, e
 // channels via winpthreads, math, file I/O); Phase N added TCP sockets
 // (dial/listen/accept/read/write) via winsock2; Phase TLS added HTTPS/TLS + the
 // OpenSSL crypto builtins, which link a user-supplied mingw OpenSSL (see
-// BuildWindows / MACHIN_WIN_OPENSSL). Still not wired: XEdDSA (libsodium),
-// terminal raw mode, SQLite, POSIX regex. Failing here — rather than emitting C
-// that dies deep in the linker — keeps the error actionable.
+// BuildWindows / MACHIN_WIN_OPENSSL). Terminal raw mode now maps onto the
+// console API. Still not wired: XEdDSA (libsodium) and POSIX regex. Failing
+// here — rather than emitting C that dies deep in the linker — keeps the error
+// actionable.
 func windowsUnsupported(g *cgen) error {
 	for _, u := range []struct {
 		used bool
 		what string
 	}{
-		{g.usesTTY, "terminal raw mode (raw_mode/read_key)"},
 		{g.usesXEdDSA, "XEdDSA (xeddsa_* — needs libsodium for Windows, not yet wired)"},
 		{g.usesRegex, "regex (regex_*)"},
 	} {
@@ -2479,7 +2479,58 @@ static void mfl_close(int64_t fd) { MFL_CLOSESOCK(fd); }
 // only when raw_mode/read_key is used (a browser app references neither).
 const ttyRuntime = `/* terminal raw mode + non-blocking single-key read (for TUIs and games).
    raw_mode(1) puts the tty in cbreak + no-echo with VMIN=0/VTIME=0 so reads
-   never block; raw_mode(0) restores the saved settings. */
+   never block; raw_mode(0) restores the saved settings.
+
+   Windows has no termios (#517). The console equivalent clears the two flags
+   that make it cook input, and a non-console handle — a pipe, a file, NUL —
+   fails the same way tcgetattr does on a non-tty, so BOTH targets return -1
+   there and read_key() still never blocks. That shared off-a-tty behaviour is
+   what the cross-target test pins. */
+#ifdef _WIN32
+#include <conio.h>
+static DWORD mfl_tty_saved_mode = 0;
+static int mfl_tty_raw = 0;
+static int64_t mfl_raw_mode(int64_t on) {
+    HANDLE h = GetStdHandle(STD_INPUT_HANDLE);
+    if (h == INVALID_HANDLE_VALUE || h == NULL) return -1;
+    if (on) {
+        if (mfl_tty_raw) return 0;
+        DWORD m;
+        if (!GetConsoleMode(h, &m)) return -1;   /* not a console: same as tcgetattr on a pipe */
+        mfl_tty_saved_mode = m;
+        m &= ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT);
+        if (!SetConsoleMode(h, m)) return -1;
+        mfl_tty_raw = 1;
+    } else {
+        if (!mfl_tty_raw) return 0;
+        SetConsoleMode(h, mfl_tty_saved_mode);
+        mfl_tty_raw = 0;
+    }
+    return 0;
+}
+/* A console goes through _kbhit/_getch. A redirected stdin is a pipe or a file,
+   where _kbhit means nothing — peek first so a read can never block, which is
+   what the select() guard does on the POSIX side. */
+static char* mfl_read_key(void) {
+    char* buf = mfl_alloc(2);
+    buf[0] = 0; buf[1] = 0;
+    HANDLE h = GetStdHandle(STD_INPUT_HANDLE);
+    if (h == INVALID_HANDLE_VALUE || h == NULL) return buf;
+    DWORD m;
+    if (GetConsoleMode(h, &m)) {
+        if (_kbhit()) { int c = _getch(); if (c > 0) buf[0] = (char)c; }
+        return buf;
+    }
+    if (GetFileType(h) == FILE_TYPE_PIPE) {
+        DWORD avail = 0;
+        if (!PeekNamedPipe(h, NULL, 0, NULL, &avail, NULL) || avail == 0) return buf;
+    }
+    DWORD got = 0;
+    char c = 0;
+    if (ReadFile(h, &c, 1, &got, NULL) && got == 1) buf[0] = c;
+    return buf;
+}
+#else
 static struct termios mfl_tty_saved;
 static int mfl_tty_raw = 0;
 static int64_t mfl_raw_mode(int64_t on) {
@@ -2518,6 +2569,7 @@ static char* mfl_read_key(void) {
     }
     return buf;
 }
+#endif
 `
 
 // zlibRuntime provides zlib compression/decompression over the bytes type.

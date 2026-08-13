@@ -20,7 +20,6 @@ func TestWindowsPreflightRejects(t *testing.T) {
 		src      string
 		mentions string
 	}{
-		{"tty", `func main() { raw_mode(1)  println(read_key()) }`, "terminal raw mode"},
 		{"regex", `func main() { println(regex_match("a", "a")) }`, "regex"},
 		{"xeddsa", `func main() { println(len(xeddsa_sign(bytes(""), bytes(""), bytes("")))) }`, "XEdDSA"},
 	}
@@ -328,5 +327,72 @@ func TestWindowsBuildsPE(t *testing.T) {
 	}
 	if len(b) < 2 || b[0] != 'M' || b[1] != 'Z' {
 		t.Fatalf("output is not a PE executable (missing MZ header): first bytes %q", b[:min(8, len(b))])
+	}
+}
+
+// Terminal raw mode is SUPPORTED on windows as of #517: termios has no Windows
+// equivalent, so raw_mode maps onto SetConsoleMode (clearing the two flags that
+// cook input) and read_key onto _kbhit/_getch, falling back to a peek so a
+// redirected stdin can never block.
+//
+// The preflight must let it through, and — this is the part worth pinning — both
+// targets must agree OFF a tty, which is the only shape CI can actually run. On
+// a pipe, tcgetattr and GetConsoleMode both fail, so raw_mode is -1 on both, and
+// read_key still returns immediately with either "" or the byte that is waiting.
+// TestTTYOffATtyContract below fixes that contract on POSIX; the windows-run CI
+// job asserts the identical output from the .exe.
+func TestWindowsAcceptsTTY(t *testing.T) {
+	prog, err := ParseProgram([]string{normalize(`func main() { r := raw_mode(1)  println(str(r) + read_key())  raw_mode(0) }`)})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	c, _, err := CompileToCTarget(prog, false, targetWindows)
+	if err != nil {
+		t.Fatalf("windows target must accept raw_mode/read_key: %v", err)
+	}
+	// The console path, not the termios one.
+	for _, want := range []string{"SetConsoleMode", "GetConsoleMode", "_kbhit", "PeekNamedPipe", "#include <conio.h>"} {
+		if !strings.Contains(c, want) {
+			t.Fatalf("emitted C is missing %q", want)
+		}
+	}
+	if strings.Contains(c, "tcsetattr(STDIN_FILENO") && !strings.Contains(c, "#ifdef _WIN32") {
+		t.Fatal("the termios path must be behind a _WIN32 guard")
+	}
+}
+
+// The cross-target contract, pinned on POSIX. CI asserts byte-identical output
+// from the windows .exe for the same two stdin shapes.
+func TestTTYOffATtyContract(t *testing.T) {
+	if testing.Short() {
+		t.Skip("compiles and runs a binary")
+	}
+	bin := filepath.Join(t.TempDir(), "tty")
+	src := `func main() {
+	r := raw_mode(1)
+	println("raw_mode=" + str(r))
+	k := read_key()
+	println("key=[" + k + "]")
+	raw_mode(0)
+	println("restored")
+}`
+	if err := BuildBinary(&Program{Funcs: parseFuncs(t, src)}, bin, false); err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	for _, c := range []struct{ name, stdin, want string }{
+		{"empty stdin", "", "raw_mode=-1\nkey=[]\nrestored\n"},
+		{"a byte waiting", "Z", "raw_mode=-1\nkey=[Z]\nrestored\n"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			cmd := exec.Command(bin)
+			cmd.Stdin = strings.NewReader(c.stdin)
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("run: %v\n%s", err, out)
+			}
+			if string(out) != c.want {
+				t.Fatalf("off a tty, got %q, want %q", out, c.want)
+			}
+		})
 	}
 }

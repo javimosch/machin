@@ -577,9 +577,13 @@ id(42); id("hi"); id(3.14)   // → three native functions
   `#ifdef _WIN32` guards in the emitted runtime (so the same C still builds native
   and wasm). TLS/crypto link a mingw OpenSSL the caller supplies via
   `MACHIN_WIN_OPENSSL=/path` (a dir with `include/` and `lib/`); the CA root
-  bundle is compiled in so certificates verify with no external files. XEdDSA
-  (libsodium), terminal raw mode, SQLite, and regex remain unsupported and are
-  rejected at build time.
+  bundle is compiled in so certificates verify with no external files. Terminal
+  raw mode works via the console API — `raw_mode` clears
+  `ENABLE_LINE_INPUT|ENABLE_ECHO_INPUT` with `SetConsoleMode`, `read_key` uses
+  `_kbhit`/`_getch` and peeks a redirected stdin so it never blocks. Off a tty the
+  two targets agree exactly: `raw_mode` returns `-1` and `read_key` returns at
+  once. XEdDSA (libsodium) and regex remain unsupported and are rejected at build
+  time.
 
 ---
 
