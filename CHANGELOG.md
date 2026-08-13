@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+**Terminal raw mode works on the windows target** (issue #517) — one of the
+three remaining gaps. `termios` has no Windows equivalent, so `raw_mode` clears
+`ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT` through `SetConsoleMode` — the two flags
+that make the console cook input — and `read_key` uses `_kbhit`/`_getch`.
+
+A redirected stdin is the case that needed care: `_kbhit` is meaningless on a
+pipe, so `read_key` peeks first and can never block, which is what the
+`select()` guard does on POSIX.
+
+That also produced something worth pinning. CI has no interactive console, but
+**off a tty both targets must agree** — `tcgetattr` and `GetConsoleMode` both
+fail there, so `raw_mode` returns `-1` on each, and `read_key` still returns
+immediately with either `""` or the byte that is waiting. `TestTTYOffATtyContract`
+fixes that on POSIX and the windows-run job asserts byte-identical output from
+the cross-compiled `.exe` for the same two stdin shapes. The claim is
+cross-target agreement, not "the PE links".
+
+`XEdDSA` and `regex` remain rejected on the windows target, and the preflight
+still names them with a #517 message.
+
 ## v0.135.0
 
 **`http_request` refuses CR/LF in header lines** (issue #627) — the same
