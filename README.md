@@ -22,7 +22,10 @@ A language **shaped for AI agents to write and edit cheaply**: zero type annotat
 > **byte-for-byte** — a genuine compiler **fixpoint** — at ~0.9× the original's speed. A
 > language mature enough to build itself from scratch, verified to the byte. Every stage
 > was built against a byte-diff oracle, which flushed out three real compiler bugs along
-> the way. See [`selfhost/`](selfhost/) and [`BOOTSTRAP.md`](selfhost/BOOTSTRAP.md).
+> the way. **CI enforces it on every push** — the fixpoint, a 415-program codegen
+> oracle diffed against the reference compiler, and the embedded runtime being in
+> sync — so this is a checked claim, not a milestone someone once reached. See
+> [`selfhost/`](selfhost/) and [`BOOTSTRAP.md`](selfhost/BOOTSTRAP.md).
 
 <p align="center">
   <img src="docs/machin-demo.gif" alt="machin: write a REST+SQLite service, compile to a tiny native binary, run it" width="760">

@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+**Docs: the self-hosting gates are now written down.** v0.134.0 made CI enforce
+that the Go compiler and the self-hosted one emit identical C, but nothing told
+a contributor that — so a `codegen.go` change would hit three unexplained red
+gates.
+
+- `CONTRIBUTING.md` and `AGENTS.md` now state the rule plainly: **touch codegen,
+  port it to `selfhost/`**, with the three commands and when each applies
+  (a `*Runtime` string means regenerating the prelude; an emitter means editing
+  the matching `cg*.src`).
+- `selfhost/BOOTSTRAP.md` records what happened when nothing enforced this: six
+  unported changes, four of them correctness bugs in self-hosted builds, and an
+  oracle sitting at 384/415.
+- The README's self-hosting claim now says CI checks it on every push, rather
+  than describing a milestone someone once reached.
+
+No code change.
+
+
 ## v0.137.0
 
 **Tooling only — the compiler is unchanged from v0.136.0.** The binaries for this

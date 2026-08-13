@@ -351,3 +351,37 @@ checks, compiles, links, and runs machin — including its own source — plus c
 Corpus `--emit-c` parity: **PASS 23, FAIL 0**, with 9 UNSUPPORTED — the remaining codegen
 skips (channels-with-structs / `select` / closures), a separate codegen effort. Other
 follow-ups: `--static` (SQLite amalgamation bundling), the wasm target, `guide`/`skill`.
+
+## ⚠️ Parity is enforced by CI, and was not always (#625, #626)
+
+Every gate here was **manual-only** until v0.134.0 — no workflow ran a single
+`verify-*.sh`. Two of them had been failing for an unknown number of commits, and
+**six** codegen changes had landed in the Go compiler and never been ported. Four
+were correctness bugs in self-hosted builds, not cosmetic drift:
+
+| unported | effect on a self-hosted build |
+|---|---|
+| `mfl_s` NULL guard on `len(string)` | `strlen(NULL)` **segfaults** instead of returning 0 |
+| short-circuit `&&` / `\|\|` (#437) | both operands evaluated — `i < len(xs) && xs[i] == 0` reads out of bounds |
+| `mfl_js_null` guard (#533) | every field after a JSON `null` silently dropped |
+| `mfl_sb` builder in `json()` (#520) | `json()` quadratic instead of linear |
+| `mfl_append_owned` (#578) | every `append` copies; never grows in place |
+| `LL` suffix on int literals | a literal wider than 32 bits typed as `int` |
+
+The codegen oracle read **384/415** at that point. It reads 415/415 now, and three
+CI steps hold it there on every push:
+
+```bash
+python3 selfhost/gen-prelude.py && git diff --exit-code selfhost/cgprelude.src
+bash selfhost/verify-cgen.sh        # expects "FAIL 0"
+bash selfhost/verify-fixpoint.sh    # expects "SELF-HOSTING FIXPOINT: PASS"
+```
+
+**If you change `codegen.go`, run these before pushing** (~30 s total). A change to
+any `*Runtime` string means regenerating the prelude — the self-hosted compiler
+embeds its *own* copy of the C runtime, so a stale prelude silently builds
+programs against an older runtime than the Go compiler does. A change to an
+emitter means editing the matching `cg*.src`.
+
+The lesson generalises past this repo: a headline claim that nothing executes is
+a claim that quietly stops being true.
