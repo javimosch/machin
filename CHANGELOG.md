@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.136.0
+
 **Terminal raw mode works on the windows target** (issue #517) — one of the
 three remaining gaps. `termios` has no Windows equivalent, so `raw_mode` clears
 `ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT` through `SetConsoleMode` — the two flags
