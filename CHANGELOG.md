@@ -19,6 +19,13 @@ fixes that on POSIX and the windows-run job asserts byte-identical output from
 the cross-compiled `.exe` for the same two stdin shapes. The claim is
 cross-target agreement, not "the PE links".
 
+Noted while wiring that up, because it surprised the check: a windows `.exe`
+writes **CRLF** line endings — msvcrt's text-mode stdio translates every `\n` —
+so `println` output is not byte-identical to a native build. Single-line
+comparisons never showed it (a trailing CRLF gets stripped like any trailing
+newline); this was the first multi-line output CI compared. Strip `\r` when
+diffing program output across targets.
+
 `XEdDSA` and `regex` remain rejected on the windows target, and the preflight
 still names them with a #517 message.
 
