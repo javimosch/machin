@@ -211,6 +211,10 @@ type fieldUse struct {
 	base   int
 	field  string
 	result int
+	// in is the function the field was touched in, kept solely so a type
+	// mismatch on it can say where. `resolveDeferred` runs long after the
+	// statement it came from, so there is nothing else left to name.
+	in string
 }
 
 func newSlot(c *Checker, k Kind) int {
@@ -577,6 +581,48 @@ func funcArity(fn *FuncDecl) int {
 		return len(fn.Returns)
 	}
 	return returnArity(fn.Body)
+}
+
+// describeSingleRHS says what the right-hand side of a multi-assignment
+// actually yields, by name where there is a name to give. The mirror-image
+// mistake — using a multi-return function as if it returned one — has always
+// produced an excellent message ("grab returns 2 values; use a
+// multi-assignment"), and this is that message's twin: the compiler knows the
+// callee and its arity at this point and used to discard both.
+func describeSingleRHS(c *Checker, rhs Expr) string {
+	call, ok := rhs.(*Call)
+	if !ok {
+		return "the right-hand side is a single value"
+	}
+	if srcFn, isUser := c.funcs[call.Callee]; isUser {
+		return fmt.Sprintf("%s returns %s", call.Callee, pluralVals(funcArity(srcFn)))
+	}
+	return fmt.Sprintf("%s yields a single value", call.Callee)
+}
+
+func pluralVars(n int) string {
+	if n == 1 {
+		return "1 variable on the left"
+	}
+	return fmt.Sprintf("%d variables on the left", n)
+}
+
+// srcFnName is a function's declared name: instantiated clones carry a "$N"
+// suffix that is an implementation detail of specialization and means nothing
+// to the person reading the error. `slotVar` already does this via instFn; a
+// message built from a *FuncDecl has to do it by hand.
+func srcFnName(name string) string {
+	if i := strings.IndexByte(name, '$'); i >= 0 {
+		return name[:i]
+	}
+	return name
+}
+
+func pluralVals(n int) string {
+	if n == 1 {
+		return "1 value"
+	}
+	return fmt.Sprintf("%d values", n)
 }
 
 // instantiate creates a fresh specialization of a function (new parameter,
@@ -983,7 +1029,7 @@ func (c *Checker) resolveDeferred() error {
 				return err
 			}
 			if _, err := c.union(fu.result, fs); err != nil {
-				return err
+				return c.annotateField(err, name, fu)
 			}
 			fieldDone[i] = true
 			progressed = true
@@ -1198,6 +1244,35 @@ func (c *Checker) annotateMismatch(err error, a, b int, src Expr) error {
 	return fmt.Errorf("type mismatch for %s: %s%s", who, detail, causeSuffix(src))
 }
 
+// annotateField names the struct field a deferred type mismatch was resolved
+// through. `resolveDeferred` unions a field-use slot with the field's declared
+// type long after the statement that produced it, so `annotateMismatch` has no
+// variable to point at and the error came out as a bare "type mismatch: float
+// vs int" — no file, no line, no name, in a compiler that reports local
+// variable mismatches beautifully. The struct, the field and the function are
+// all in hand at that point.
+//
+// If the value side does resolve to a variable, say that too: "field 'st' of P"
+// tells you what was expected and "from 'best' in \"look\"" tells you what
+// supplied it, and between them there is nothing left to bisect.
+func (c *Checker) annotateField(err error, structName string, fu fieldUse) error {
+	msg := err.Error()
+	if !strings.HasPrefix(msg, "type mismatch: ") {
+		return err
+	}
+	detail := strings.TrimPrefix(msg, "type mismatch: ")
+	where := ""
+	if fu.in != "" {
+		where = fmt.Sprintf(" (in %q)", fu.in)
+	}
+	from := ""
+	if who, _ := c.slotVar(fu.result); who != "" {
+		from = " — from " + who
+	}
+	return fmt.Errorf("type mismatch for field '%s' of %s: %s%s%s",
+		fu.field, structName, detail, from, where)
+}
+
 // causeSuffix formats the conflicting expression for an error message.
 func causeSuffix(src Expr) string {
 	if cause := mismatchCause(src); cause != "" {
@@ -1369,7 +1444,7 @@ func (c *Checker) genStmt(fn *FuncDecl, s Stmt) error {
 		if err != nil {
 			return err
 		}
-		c.fieldUses = append(c.fieldUses, fieldUse{base: xs, field: st.Target.Name, result: vs})
+		c.fieldUses = append(c.fieldUses, fieldUse{base: xs, field: st.Target.Name, result: vs, in: srcFnName(fn.Name)})
 		return nil
 	case *SendStmt:
 		cs, err := c.genExpr(fn, st.Ch)
@@ -1677,7 +1752,7 @@ func (c *Checker) genExprInner(fn *FuncDecl, e Expr) (int, error) {
 			return 0, err
 		}
 		res := newSlot(c, KVar)
-		c.fieldUses = append(c.fieldUses, fieldUse{base: xs, field: ex.Name, result: res})
+		c.fieldUses = append(c.fieldUses, fieldUse{base: xs, field: ex.Name, result: res, in: srcFnName(fn.Name)})
 		return res, nil
 	}
 	return 0, fmt.Errorf("typecheck: unknown expression %T", e)
@@ -1829,7 +1904,8 @@ func (c *Checker) genMultiAssign(fn *FuncDecl, st *MultiAssign) error {
 				c.callInst[fn.Name][call] = inst
 				rets := c.funcRets[inst]
 				if len(rets) != len(st.Names) {
-					return fmt.Errorf("%s returns %d values but %d are assigned", call.Callee, len(rets), len(st.Names))
+					return fmt.Errorf("%s returns %d values but %d are assigned (in %q)",
+						call.Callee, len(rets), len(st.Names), srcFnName(fn.Name))
 				}
 				for i := range rets {
 					c.addPair(nameSlots[i], rets[i])
@@ -1838,7 +1914,8 @@ func (c *Checker) genMultiAssign(fn *FuncDecl, st *MultiAssign) error {
 			}
 		}
 		if len(st.Names) != 1 {
-			return fmt.Errorf("%d variables but a single value on the right", len(st.Names))
+			return fmt.Errorf("%s: %s (in %q)", describeSingleRHS(c, st.Rhs[0]),
+				pluralVars(len(st.Names)), srcFnName(fn.Name))
 		}
 		vs, err := c.genExpr(fn, st.Rhs[0])
 		if err != nil {
