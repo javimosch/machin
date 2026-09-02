@@ -579,6 +579,48 @@ func funcArity(fn *FuncDecl) int {
 	return returnArity(fn.Body)
 }
 
+// describeSingleRHS says what the right-hand side of a multi-assignment
+// actually yields, by name where there is a name to give. The mirror-image
+// mistake — using a multi-return function as if it returned one — has always
+// produced an excellent message ("grab returns 2 values; use a
+// multi-assignment"), and this is that message's twin: the compiler knows the
+// callee and its arity at this point and used to discard both.
+func describeSingleRHS(c *Checker, rhs Expr) string {
+	call, ok := rhs.(*Call)
+	if !ok {
+		return "the right-hand side is a single value"
+	}
+	if srcFn, isUser := c.funcs[call.Callee]; isUser {
+		return fmt.Sprintf("%s returns %s", call.Callee, pluralVals(funcArity(srcFn)))
+	}
+	return fmt.Sprintf("%s yields a single value", call.Callee)
+}
+
+func pluralVars(n int) string {
+	if n == 1 {
+		return "1 variable on the left"
+	}
+	return fmt.Sprintf("%d variables on the left", n)
+}
+
+// srcFnName is a function's declared name: instantiated clones carry a "$N"
+// suffix that is an implementation detail of specialization and means nothing
+// to the person reading the error. `slotVar` already does this via instFn; a
+// message built from a *FuncDecl has to do it by hand.
+func srcFnName(name string) string {
+	if i := strings.IndexByte(name, '$'); i >= 0 {
+		return name[:i]
+	}
+	return name
+}
+
+func pluralVals(n int) string {
+	if n == 1 {
+		return "1 value"
+	}
+	return fmt.Sprintf("%d values", n)
+}
+
 // instantiate creates a fresh specialization of a function (new parameter,
 // return, and local slots) and generates its body's constraints. A recursive
 // call reuses the in-progress instance (monomorphic recursion). The caller
@@ -1829,7 +1871,8 @@ func (c *Checker) genMultiAssign(fn *FuncDecl, st *MultiAssign) error {
 				c.callInst[fn.Name][call] = inst
 				rets := c.funcRets[inst]
 				if len(rets) != len(st.Names) {
-					return fmt.Errorf("%s returns %d values but %d are assigned", call.Callee, len(rets), len(st.Names))
+					return fmt.Errorf("%s returns %d values but %d are assigned (in %q)",
+						call.Callee, len(rets), len(st.Names), srcFnName(fn.Name))
 				}
 				for i := range rets {
 					c.addPair(nameSlots[i], rets[i])
@@ -1838,7 +1881,8 @@ func (c *Checker) genMultiAssign(fn *FuncDecl, st *MultiAssign) error {
 			}
 		}
 		if len(st.Names) != 1 {
-			return fmt.Errorf("%d variables but a single value on the right", len(st.Names))
+			return fmt.Errorf("%s: %s (in %q)", describeSingleRHS(c, st.Rhs[0]),
+				pluralVars(len(st.Names)), srcFnName(fn.Name))
 		}
 		vs, err := c.genExpr(fn, st.Rhs[0])
 		if err != nil {
