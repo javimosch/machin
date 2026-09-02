@@ -28,7 +28,7 @@ func CompileToCTarget(p *Program, safe bool, target string) (string, []string, e
 	if err != nil {
 		return "", nil, err
 	}
-	g := &cgen{c: c, safe: safe, target: target, probeVars: debugProbeVars, cover: coverFuncs, covIdx: map[string]int{}, covStmt: map[Stmt]int{}, jsonMemo: map[string]string{}, parseMemo: map[string]string{}, sortMemo: map[string]string{}, chanJSONMemo: map[string][2]string{}}
+	g := &cgen{c: c, safe: safe, target: target, probeVars: debugProbeVars, cover: coverFuncs, covIdx: map[string]int{}, covStmt: map[Stmt]int{}, jsonMemo: map[string]string{}, parseMemo: map[string]string{}, sortMemo: map[string]string{}, copyMemo: map[string]string{}, chanJSONMemo: map[string][2]string{}}
 	src, err := g.program(p)
 	if err != nil {
 		return "", nil, err
@@ -108,6 +108,10 @@ type cgen struct {
 	sortFns      strings.Builder      // generated per-element-type sort_by comparators (#580)
 	sortMemo     map[string]string    // element C type -> comparator function name
 	sortID       int
+	copyFns      strings.Builder      // generated per-type deep copiers (#639)
+	copyProtos   strings.Builder      // ...and their prototypes, for recursive types
+	copyMemo     map[string]string    // type string -> deep-copy function name
+	copyID       int
 	jsonMemo     map[string]string    // type string -> serializer function name
 	parseMemo    map[string]string    // type string -> parser function name
 	chanJSONMemo map[string][2]string // type string -> {serWrapper, desWrapper}
@@ -4673,6 +4677,13 @@ func (g *cgen) program(p *Program) (string, error) {
 		out.WriteString(g.sortFns.String())
 		out.WriteByte('\n')
 	}
+	// deep copiers (#639), likewise generated on demand and per type;
+	// prototypes first, since a recursive type's copiers reference each other
+	if g.copyFns.Len() > 0 {
+		out.WriteString(g.copyProtos.String())
+		out.WriteString(g.copyFns.String())
+		out.WriteByte('\n')
+	}
 	// package globals: zero-initialized C statics; their MFL initializers run in a
 	// constructor (emitted after the function bodies). Declared here so function
 	// bodies that reference mfl_g_<name> compile.
@@ -6284,6 +6295,126 @@ func (g *cgen) sortComparator(elemCType string) string {
 	return name
 }
 
+// deepCopier ensures a C function exists that returns a value of the given MFL
+// type sharing no backing storage with its argument, and returns that
+// function's name. It recurses into element/field/value types, emitting
+// children before parents — the same shape as jsonSerializer, for the same
+// reason: the set of types needing a copier is only known from the call sites.
+//
+// WHAT IS AND IS NOT COPIED. Slices, maps and structs are rebuilt. Scalars are
+// returned as they are. Strings are shared, and that is not a shortcut: MFL
+// strings are immutable, so a shared char* is indistinguishable from a private
+// one, and copying every string in a large structure would make `copy` too
+// expensive to reach for. Channels and function values are refused with a
+// message that says why rather than silently producing an alias.
+//
+// The name is memoized BEFORE recursing, so a type that reaches itself — a
+// struct with a []Self field, say — terminates instead of expanding forever.
+func (g *cgen) deepCopier(typeStr string) (string, error) {
+	if name, ok := g.copyMemo[typeStr]; ok {
+		return name, nil
+	}
+	switch typeStr {
+	case "int", "float", "bool", "string", "bytes", "":
+		// nothing to rebuild: scalars are values and strings are immutable
+		return "", nil
+	}
+	if strings.HasPrefix(typeStr, "chan ") {
+		return "", fmt.Errorf("copy: a channel is a rendezvous, not a value — copying one would give you a second handle to the same queue, which is what you already have")
+	}
+	if strings.HasPrefix(typeStr, "func") {
+		return "", fmt.Errorf("copy: a function value captures its environment by reference; copying it would not copy what it captured")
+	}
+	name := fmt.Sprintf("mfl_copy_v%d", g.copyID)
+	g.copyID++
+	g.copyMemo[typeStr] = name // reserve before recursion
+	ct := cTypeName(typeStr)
+	// A PROTOTYPE, BECAUSE TYPES RECURSE. `type Node struct { kids []Node }`
+	// makes the copier for []Node reference the copier for Node, which is
+	// emitted after it — children before parents is the right order for
+	// everything else and cannot be for a cycle. Reserving the name stops the
+	// recursion; declaring it stops the C compiler complaining about an
+	// implicit declaration.
+	fmt.Fprintf(&g.copyProtos, "static %s %s(%s v);\n", ct, name, ct)
+	var body string
+
+	switch {
+	case strings.HasPrefix(typeStr, "[]"):
+		elem := typeStr[2:]
+		ep, err := g.deepCopier(elem)
+		if err != nil {
+			return "", err
+		}
+		ect := cTypeName(elem)
+		inner := ""
+		if ep != "" {
+			inner = fmt.Sprintf("\n        ((%s*)r.data)[i] = %s(((%s*)r.data)[i]);", ect, ep, ect)
+		}
+		// A fresh buffer of exactly len elements: capacity beyond the length is
+		// storage the copy has no claim on, and carrying it over would hand the
+		// copy a slice that append() could grow into shared memory.
+		body = fmt.Sprintf(`mfl_slice r = v;
+    if (v.len > 0) {
+        r.data = mfl_alloc((size_t)(v.len * (int64_t)sizeof(%s)));
+        memcpy(r.data, v.data, (size_t)(v.len * (int64_t)sizeof(%s)));
+        r.cap = v.len;
+    } else {
+        r.data = NULL; r.cap = 0;
+    }
+    for (int64_t i = 0; i < r.len; i++) {(void)i;%s}
+    return r;`, ect, ect, inner)
+	case strings.HasPrefix(typeStr, "map["):
+		kt, vt, err := splitMapType(typeStr)
+		if err != nil {
+			return "", err
+		}
+		vp, err := g.deepCopier(vt)
+		if err != nil {
+			return "", err
+		}
+		kct, vct := cTypeName(kt), cTypeName(vt)
+		keyIsStr, getCall, setCall := 0, "mfl_map_get(v, _k, NULL, &_val);", "mfl_map_set(m, _k, NULL, &_val);"
+		if kt == "string" {
+			keyIsStr, getCall, setCall = 1, "mfl_map_get(v, 0, _k, &_val);", "mfl_map_set(m, 0, _k, &_val);"
+		}
+		deep := ""
+		if vp != "" {
+			deep = fmt.Sprintf("_val = %s(_val);", vp)
+		}
+		body = fmt.Sprintf(`mfl_map* m = mfl_make_map(%d, sizeof(%s));
+    mfl_slice _ks = mfl_map_keys(v);
+    for (int64_t i = 0; i < _ks.len; i++) {
+        %s _k = ((%s*)_ks.data)[i];
+        %s _val; %s
+        %s
+        %s
+    }
+    return m;`, keyIsStr, vct, kct, kct, vct, getCall, deep, setCall)
+	default:
+		td, ok := g.c.StructTypes()[typeStr]
+		if !ok {
+			return "", fmt.Errorf("copy: cannot copy a value of type %q", typeStr)
+		}
+		var b strings.Builder
+		b.WriteString(fmt.Sprintf("%s r = v;\n", ct))
+		for _, f := range td.Fields {
+			fp, err := g.deepCopier(f.Type)
+			if err != nil {
+				return "", err
+			}
+			if fp == "" {
+				continue
+			}
+			fmt.Fprintf(&b, "    r.f_%s = %s(v.f_%s);\n", f.Name, fp, f.Name)
+		}
+		b.WriteString("    return r;")
+		body = b.String()
+	}
+
+	fmt.Fprintf(&g.copyFns, "static %s %s(%s v) {\n    %s\n}\n", ct, name, ct, body)
+	return name, nil
+}
+
 func (g *cgen) jsonSerializer(typeStr string) (string, error) {
 	if name, ok := g.jsonMemo[typeStr]; ok {
 		return name, nil
@@ -6771,6 +6902,28 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		// the duration of the sort; the comparator reads it back out of ctx.
 		return fmt.Sprintf("({ mfl_closure _sc%d = %s; mfl_sort_copy(%s, sizeof(%s), %s, &_sc%d); })",
 			id, args[1], args[0], ct, cmp, id), nil
+	case "copy":
+		// The kind check comes first because `typeStringSlot` renders neither a
+		// closure nor a channel — both fall through to "int", which would make
+		// `copy(f)` on a closure look like copying a scalar and hand back the
+		// same closure with no complaint. A struct FIELD of function type does
+		// carry its written type, so the recursion below catches those.
+		switch g.c.NodeCType(g.curFn, ex.Args[0]) {
+		case "mfl_closure":
+			return "", fmt.Errorf("copy: a function value captures its environment by reference; copying it would not copy what it captured")
+		case "mfl_chan*":
+			return "", fmt.Errorf("copy: a channel is a rendezvous, not a value — copying one would give you a second handle to the same queue, which is what you already have")
+		}
+		ts := g.c.TypeString(g.curFn, ex.Args[0])
+		fn, err := g.deepCopier(ts)
+		if err != nil {
+			return "", err
+		}
+		if fn == "" {
+			// a scalar or a string: the value already is its own copy
+			return args[0], nil
+		}
+		return fmt.Sprintf("%s(%s)", fn, args[0]), nil
 	case "sleep":
 		return fmt.Sprintf("mfl_sleep(%s)", args[0]), nil
 	case "exit":

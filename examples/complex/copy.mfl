@@ -1,0 +1,6 @@
+type Skel struct{x[]float  y[]float  n int}
+
+type Node struct{tag string  kids[]Node}
+
+func main(){a:=Skel{}a.x=[]float{1.0}a.y=[]float{2.0}a.n=7 shared:=a mine:=copy(a)shared.x[0]=99.0 mine.y[0]=42.0 println("a.x =",json(a.x),"(written through the shared alias)")println("a.y =",json(a.y),"(the copy could not touch it)")kid:=Node{}kid.tag="leaf" kid.kids=[]Node{}root:=Node{}root.tag="root" root.kids=[]Node{}root.kids=append(root.kids,kid)clone:=copy(root)clone.kids[0].tag="changed" println("tree:",root.kids[0].tag,"vs",clone.kids[0].tag)xs:=[]int{}xs=append(xs,1)xs=append(xs,2)ys:=copy(xs)ys=append(ys,3)ys[0]=50 println("xs =",json(xs)," ys =",json(ys))}
+

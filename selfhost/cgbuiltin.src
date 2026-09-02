@@ -233,6 +233,12 @@ func cg_builtin(iid, call_idx, callee, names) (out) {
     if callee == "noise2" { out = "mfl_noise2((double)(" + names[0] + "), (double)(" + names[1] + "))"  return out }
     if callee == "noise3" { out = "mfl_noise3((double)(" + names[0] + "), (double)(" + names[1] + "), (double)(" + names[2] + "))"  return out }
     if callee == "json" || callee == "parse" { g_cg_unsup = 1  out = "0"  return out }
+    // copy (#639) emits a per-type deep copier, generated on demand and placed
+    // ahead of the function bodies — the same shape as the JSON serializers,
+    // and unsupported here for the same reason. Declaring that plainly is the
+    // contract: the self-hosted compiler never emits C it cannot emit
+    // correctly, and the oracle skips what it declines.
+    if callee == "copy" { g_cg_unsup = 1  out = "0"  return out }
     cfn := builtin_cfn(callee)
     if cfn != "" { out = cfn + "(" + join(names, ", ") + ")"  return out }
     g_cg_unsup = 1   // extern FFI call / unknown -> slice 4d

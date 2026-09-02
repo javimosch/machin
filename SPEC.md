@@ -130,6 +130,31 @@ flexible numeric type that resolves to `int` unless unified with a `float`.
 `int`/`bool` → `0`, `float` → `0.0`, `string` → `""`, slice/map/chan/func → an
 empty/null value. A map read of an absent key yields the value type's zero value.
 
+### 4.2 What assignment shares
+
+A slice is a header — pointer, length, capacity — so `b := a` copies the header
+and **shares the elements**. So does passing a slice to a function, returning
+one, and assigning a struct that contains one:
+
+```
+a := []int{1, 2}
+b := a
+b[0] = 9        // a[0] is now 9
+
+type Box struct { v []int }
+p := Box{}
+p.v = a
+q := p          // q.v and p.v are the same elements
+```
+
+Maps and channels are references and behave the same way. Scalars and strings
+are values (a string is immutable, so sharing its bytes is unobservable), and a
+struct of only scalars is copied entire.
+
+This is Go's semantics and the same defaults, and it is what makes passing a
+large structure cheap. When you need a value that cannot be written through
+from elsewhere, `copy(v)` (§8) returns one.
+
 ---
 
 ## 5. Declarations
@@ -297,6 +322,7 @@ startup (before `main`; at `_initialize` for a wasm reactor).
 | `append` | `([]T, T) -> []T` | grow a slice |
 | `has`, `delete` | `(map, K) -> bool` / `-> ` | membership / removal |
 | `keys` | `(map[K]V) -> []K` | a map's keys |
+| `copy` | `(T) -> T` | a value sharing no backing storage with its argument. Slices, maps and structs are rebuilt recursively; scalars and strings are returned as they are (strings are immutable, so a shared pointer is indistinguishable from a private one). A channel or a function value is refused, because a copy of either would be an alias. **The opt-out from §4.2.** |
 | `json` | `(any) -> string` | serialize to JSON |
 | `parse` | `(string, T{}) -> T` | parse JSON into `T`'s type (witness) |
 | `json_get` | `(string, string) -> (string, string)` | value at a jq-style path → `(value, err)`; `value` is raw JSON text, `err` is `""`/`"notfound"`/`"path"`/`"parse"`. Multi-assign only. |
