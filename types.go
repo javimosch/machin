@@ -211,6 +211,10 @@ type fieldUse struct {
 	base   int
 	field  string
 	result int
+	// in is the function the field was touched in, kept solely so a type
+	// mismatch on it can say where. `resolveDeferred` runs long after the
+	// statement it came from, so there is nothing else left to name.
+	in string
 }
 
 func newSlot(c *Checker, k Kind) int {
@@ -1025,7 +1029,7 @@ func (c *Checker) resolveDeferred() error {
 				return err
 			}
 			if _, err := c.union(fu.result, fs); err != nil {
-				return err
+				return c.annotateField(err, name, fu)
 			}
 			fieldDone[i] = true
 			progressed = true
@@ -1240,6 +1244,35 @@ func (c *Checker) annotateMismatch(err error, a, b int, src Expr) error {
 	return fmt.Errorf("type mismatch for %s: %s%s", who, detail, causeSuffix(src))
 }
 
+// annotateField names the struct field a deferred type mismatch was resolved
+// through. `resolveDeferred` unions a field-use slot with the field's declared
+// type long after the statement that produced it, so `annotateMismatch` has no
+// variable to point at and the error came out as a bare "type mismatch: float
+// vs int" — no file, no line, no name, in a compiler that reports local
+// variable mismatches beautifully. The struct, the field and the function are
+// all in hand at that point.
+//
+// If the value side does resolve to a variable, say that too: "field 'st' of P"
+// tells you what was expected and "from 'best' in \"look\"" tells you what
+// supplied it, and between them there is nothing left to bisect.
+func (c *Checker) annotateField(err error, structName string, fu fieldUse) error {
+	msg := err.Error()
+	if !strings.HasPrefix(msg, "type mismatch: ") {
+		return err
+	}
+	detail := strings.TrimPrefix(msg, "type mismatch: ")
+	where := ""
+	if fu.in != "" {
+		where = fmt.Sprintf(" (in %q)", fu.in)
+	}
+	from := ""
+	if who, _ := c.slotVar(fu.result); who != "" {
+		from = " — from " + who
+	}
+	return fmt.Errorf("type mismatch for field '%s' of %s: %s%s%s",
+		fu.field, structName, detail, from, where)
+}
+
 // causeSuffix formats the conflicting expression for an error message.
 func causeSuffix(src Expr) string {
 	if cause := mismatchCause(src); cause != "" {
@@ -1411,7 +1444,7 @@ func (c *Checker) genStmt(fn *FuncDecl, s Stmt) error {
 		if err != nil {
 			return err
 		}
-		c.fieldUses = append(c.fieldUses, fieldUse{base: xs, field: st.Target.Name, result: vs})
+		c.fieldUses = append(c.fieldUses, fieldUse{base: xs, field: st.Target.Name, result: vs, in: srcFnName(fn.Name)})
 		return nil
 	case *SendStmt:
 		cs, err := c.genExpr(fn, st.Ch)
@@ -1719,7 +1752,7 @@ func (c *Checker) genExprInner(fn *FuncDecl, e Expr) (int, error) {
 			return 0, err
 		}
 		res := newSlot(c, KVar)
-		c.fieldUses = append(c.fieldUses, fieldUse{base: xs, field: ex.Name, result: res})
+		c.fieldUses = append(c.fieldUses, fieldUse{base: xs, field: ex.Name, result: res, in: srcFnName(fn.Name)})
 		return res, nil
 	}
 	return 0, fmt.Errorf("typecheck: unknown expression %T", e)
