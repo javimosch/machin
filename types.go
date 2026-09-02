@@ -2240,6 +2240,22 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		}
 		c.addPair(argSlots[1], eslot)
 		return argSlots[0], nil
+	case "copy":
+		// copy(v) -> a value that shares no backing storage with v.
+		//
+		// MFL slices are a pointer, a length and a capacity, so `b := a` — and
+		// passing one to a function, and assigning a struct that contains one —
+		// copies the header and shares the elements. That is Go's semantics and
+		// the right default, but there was no way to opt out of it: a deep copy
+		// had to be written by hand, one line per slice field, and silently went
+		// stale the moment a field was added.
+		//
+		// The result unifies with the argument, so `copy` is transparent to the
+		// type system: whatever went in comes out.
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("copy: 1 arg (the value to copy)")
+		}
+		return argSlots[0], nil
 	case "sleep":
 		if len(argSlots) != 1 {
 			return 0, fmt.Errorf("sleep: 1 arg")

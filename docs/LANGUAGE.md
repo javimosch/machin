@@ -314,6 +314,38 @@ ks := sort_by(keys(counts), func(a, b) {
 })
 ```
 
+### copy
+
+That sharing is the right default — it is what makes passing a large structure
+cheap — but it needs an opt-out, and until [#639] there was none: a deep copy
+had to be written by hand, one line per slice field, and went stale the moment
+a field was added.
+
+```go
+type Skel struct { x []float  y []float }
+
+shared := a          // shares a.x and a.y
+mine   := copy(a)    // shares nothing
+```
+
+`copy(v)` returns a value with no backing storage in common with `v`. Slices,
+maps and structs are rebuilt **recursively**, so a slice inside a struct inside
+a slice is detached all the way down, and a self-referential type
+(`type Node struct { kids []Node }`) terminates rather than expanding.
+
+Scalars and strings are returned as they are — a string is immutable, so a
+shared pointer is indistinguishable from a private one, and copying every string
+in a large structure would make `copy` too expensive to reach for. A **channel**
+or a **function value** is refused at compile time: a channel is a rendezvous,
+and a closure captures its environment by reference, so "a copy" of either would
+be the alias you already had.
+
+The copy's capacity is exactly its length. Carrying the original's spare
+capacity over would hand the copy a buffer that `append` could grow into while
+the original still pointed at it.
+
+[#639]: https://github.com/javimosch/machin/issues/639
+
 ---
 
 ## Maps
@@ -429,6 +461,7 @@ first := users[0]                                // value copy
 | `has(m, k)`                 | whether map `m` contains key `k`             |
 | `delete(m, k)`              | remove key `k` from map `m`                  |
 | `keys(m)`                   | a slice of map `m`'s keys                    |
+| `copy(v)`                   | a value sharing no backing storage with `v` — slices, maps and structs rebuilt recursively |
 | `sort(xs)`                  | ascending sort of an `[]int`/`[]float`/`[]string` → a **new** slice; stable |
 | `sort_by(xs, less)`         | sort by your own `less(a, b) bool` → a **new** slice; stable; the comparator may capture |
 | `json(x)`                   | serialize any value to a JSON string         |
