@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	_ "embed"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -481,5 +482,19 @@ func RunCaptured(prog *Program) (string, error) {
 		return "", err
 	}
 	out, err := exec.Command(bin.Name()).Output()
+	// THE CHILD'S STDERR IS PART OF THE FAILURE, and Output() already collected
+	// it — into ExitError.Stderr, where nothing ever looked. Printing the error
+	// with %v yields a bare "signal: aborted (core dumped)": no glibc message,
+	// no deadlock report, no sanitizer trace, no "bind: Address already in
+	// use". For a flake, where reproducing it is the one thing you cannot do,
+	// that is the difference between a diagnosis and a shrug.
+	//
+	// Note this deliberately does NOT set cmd.Stderr: Output already captures
+	// stderr into ExitError.Stderr, and setting it replaces that with a second
+	// pipe this function would have to drain itself, for no gain.
+	var ee *exec.ExitError
+	if errors.As(err, &ee) && len(ee.Stderr) > 0 {
+		err = fmt.Errorf("%w; stderr:\n%s", err, strings.TrimRight(string(ee.Stderr), "\n"))
+	}
 	return string(out), err
 }

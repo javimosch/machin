@@ -38,8 +38,14 @@ func cmdCGenTest(args []string) error {
 		fmt.Println("(check-error)")
 		return nil
 	}
+	// EVERY memo, or the first program to use the feature panics on a nil map
+	// rather than emitting C. This path is what the codegen oracle runs, so a
+	// missing one is a crash waiting for someone to add a program that uses
+	// sort_by or copy to the corpus.
 	g := &cgen{c: c, target: targetNative, bodyOnly: true,
-		jsonMemo: map[string]string{}, parseMemo: map[string]string{}, chanJSONMemo: map[string][2]string{}}
+		jsonMemo: map[string]string{}, parseMemo: map[string]string{},
+		sortMemo: map[string]string{}, copyMemo: map[string]string{},
+		chanJSONMemo: map[string][2]string{}}
 	src, err := g.program(prog)
 	if err != nil {
 		fmt.Println("(codegen-error)")

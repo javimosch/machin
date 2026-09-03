@@ -1,10 +1,34 @@
 package main
 
 import (
+	"fmt"
+	"net"
 	"os"
 	"strings"
 	"testing"
 )
+
+// freeLoopbackPort asks the kernel for an unused port and hands it back.
+//
+// A hard-coded port is a test that fails for a reason that has nothing to do
+// with the code under test: anything else on the machine holding it makes
+// `listen` abort the process with "bind: Address already in use", which
+// reaches the Go test as a bare exit status. There is an unavoidable window
+// between closing this listener and the MFL program binding it, but a window
+// of microseconds against a specific port is a different proposition from a
+// constant that is either free for the whole suite or never.
+func freeLoopbackPort(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("no loopback available: %v", err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	if err := ln.Close(); err != nil {
+		t.Fatalf("closing the probe listener: %v", err)
+	}
+	return port
+}
 
 // wsProg composes machweb.src + ws.src + the test app (ws.src needs machweb's hijack).
 func wsProg(t *testing.T, app string) *Program {
@@ -32,7 +56,7 @@ func wsProg(t *testing.T, app string) *Program {
 //	masked "hi": 81 82 | 01020304 (mask) | 69 6b  ('h'^01, 'i'^02)
 //	key "dGhlIHNhbXBsZSBub25jZQ==" -> accept "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=" (the RFC example)
 func TestWebSocketEchoRoundTrip(t *testing.T) {
-	app := `
+	app := fmt.Sprintf(`
 func serve_one(srv, handler) { conn := accept(srv)  machweb_handle(conn, handler) }
 func echo(req) (res) {
     res = ws(req, func(c) {
@@ -55,7 +79,7 @@ func read_some(c) (s) {
     }
 }
 func main() {
-    port := 18241
+    port := %d
     srv := listen(port)
     if srv < 0 { println("listen-failed")  return }
     go serve_one(srv, func(req) { return echo(req) })
@@ -71,7 +95,7 @@ func main() {
     close(c)
     println("HS<" + hs + ">")
     println("FRAME<" + frame + ">")
-}`
+}`, freeLoopbackPort(t))
 	out, err := RunCaptured(wsProg(t, app))
 	if err != nil {
 		t.Fatalf("run: %v", err)
