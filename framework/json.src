@@ -1,0 +1,161 @@
+// json — correct JSON string encoding and decoding for MFL.
+//
+// Compose it ahead of your app and compile:
+//   machin encode framework/json.src yourapp.src > app.mfl
+//
+// `json_get` returns the RAW JSON token, so a string value comes back quoted
+// and escaped. Its own documentation says to "strip the quotes", and the
+// obvious way to do that --
+//
+//   value = substr(raw, 1, len(raw) - 1)
+//
+// -- is wrong for every string that contains one. A tab arrives as the two
+// characters \ and t, a newline as \ and n, an accented letter as é. Feed
+// that back into a JSON document and you have produced something no parser
+// will read; feed it to a CSV writer and the rows run together. This module is
+// the pair of functions that gets it right:
+//
+//   json_unquote("\"a\\nb\"")  -> a<newline>b
+//   json_quote("a\nb")          -> "a\nb"      (with quotes, ready to embed)
+//
+// Both round-trip: json_unquote(json_quote(s)) == s for any s, including one
+// holding quotes, backslashes, control bytes, or characters outside the BMP.
+
+func json_hex_digits() (s) { s = "0123456789abcdef" }
+
+func json_hex_byte(n) (s) {
+  d := json_hex_digits()
+  s = substr(d, n / 16, n / 16 + 1) + substr(d, n % 16, n % 16 + 1)
+}
+
+func json_hex_nibble(c) (n) {
+  n = 0
+  lower := to_lower(c)
+  d := json_hex_digits()
+  i := 0
+  while i < 16 {
+    if substr(d, i, i + 1) == lower { n = i  return }
+    i = i + 1
+  }
+}
+
+// UTF-8 encodings of a code point, as hex, so from_hex can turn them into
+// bytes. MFL strings are UTF-8 bytes and there is no chr().
+func json_utf8_hex(cp) (h) {
+  if cp < 128 { h = json_hex_byte(cp)  return }
+  if cp < 2048 {
+    h = json_hex_byte(192 + cp / 64) + json_hex_byte(128 + cp % 64)
+    return
+  }
+  h = json_hex_byte(224 + cp / 4096) + json_hex_byte(128 + (cp / 64) % 64) + json_hex_byte(128 + cp % 64)
+}
+
+func json_utf8_hex4(cp) (h) {
+  h = json_hex_byte(240 + cp / 262144) + json_hex_byte(128 + (cp / 4096) % 64) + json_hex_byte(128 + (cp / 64) % 64) + json_hex_byte(128 + cp % 64)
+}
+
+// json_quote returns `s` as a JSON string literal, quotes included, ready to
+// concatenate into a document. Scans bytes rather than characters: a multi-byte
+// character needs no escaping and its bytes are all >= 128, so copying them
+// through unchanged is both correct and faster than decoding.
+func json_quote(s) (out) {
+  b := bytes(s)
+  parts := []string{}
+  i := 0
+  while i < len(b) {
+    c := byte_at(b, i)
+    if c == 34 {
+      parts = append(parts, "\\\"")
+    } else {
+      if c == 92 {
+        parts = append(parts, "\\\\")
+      } else {
+        if c == 10 {
+          parts = append(parts, "\\n")
+        } else {
+          if c == 13 {
+            parts = append(parts, "\\r")
+          } else {
+            if c == 9 {
+              parts = append(parts, "\\t")
+            } else {
+              // Everything below a space must be escaped or the document is
+              // invalid; \u00XX is the form that always works.
+              if c < 32 {
+                parts = append(parts, "\\u00" + json_hex_byte(c))
+              } else {
+                parts = append(parts, substr(s, i, i + 1))
+              }
+            }
+          }
+        }
+      }
+    }
+    i = i + 1
+  }
+  out = "\"" + join(parts, "") + "\""
+}
+
+// json_unquote turns a JSON string literal into the string it denotes. Accepts
+// the token with or without its surrounding quotes, so it can be fed straight
+// from json_get.
+func json_unquote(lit) (out) {
+  out = ""
+  s := lit
+  if len(s) >= 2 {
+    if substr(s, 0, 1) == "\"" { s = substr(s, 1, len(s) - 1) }
+  }
+  i := 0
+  while i < len(s) {
+    ch := substr(s, i, i + 1)
+    if ch != "\\" {
+      out = out + ch
+      i = i + 1
+      continue
+    }
+    nxt := substr(s, i + 1, i + 2)
+    i = i + 2
+    if nxt == "n" { out = out + bytes_str(from_hex("0a"))  continue }
+    if nxt == "r" { out = out + bytes_str(from_hex("0d"))  continue }
+    if nxt == "t" { out = out + bytes_str(from_hex("09"))  continue }
+    if nxt == "b" { out = out + bytes_str(from_hex("08"))  continue }
+    if nxt == "f" { out = out + bytes_str(from_hex("0c"))  continue }
+    if nxt == "u" {
+      cp := json_hex_nibble(substr(s, i, i + 1)) * 4096 + json_hex_nibble(substr(s, i + 1, i + 2)) * 256 + json_hex_nibble(substr(s, i + 2, i + 3)) * 16 + json_hex_nibble(substr(s, i + 3, i + 4))
+      i = i + 4
+      // A character outside the BMP is written as two escapes -- a surrogate
+      // pair. Decoding them separately yields two invalid characters instead
+      // of the one that was meant.
+      if cp >= 55296 {
+        if cp < 56320 {
+          if substr(s, i, i + 2) == "\\u" {
+            lo := json_hex_nibble(substr(s, i + 2, i + 3)) * 4096 + json_hex_nibble(substr(s, i + 3, i + 4)) * 256 + json_hex_nibble(substr(s, i + 4, i + 5)) * 16 + json_hex_nibble(substr(s, i + 5, i + 6))
+            if lo >= 56320 {
+              if lo < 57344 {
+                cp = 65536 + (cp - 55296) * 1024 + (lo - 56320)
+                i = i + 6
+                out = out + bytes_str(from_hex(json_utf8_hex4(cp)))
+                continue
+              }
+            }
+          }
+        }
+      }
+      out = out + bytes_str(from_hex(json_utf8_hex(cp)))
+      continue
+    }
+    // \/ and any other escape stand for the character itself.
+    out = out + nxt
+  }
+}
+
+// json_str is the common case in one call: read a string field out of a
+// document and get the string, not the token.
+//   name := json_str(doc, ".user.name")
+func json_str(doc, path) (out, err) {
+  out = ""
+  raw, e := json_get(doc, path)
+  if e != "" { err = e  return }
+  err = ""
+  out = json_unquote(raw)
+}
