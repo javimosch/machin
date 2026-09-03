@@ -5688,7 +5688,17 @@ func (g *cgen) goStmt(st *GoStmt) error {
 		}
 		g.buf.WriteString("        }\n")
 	}
-	fmt.Fprintf(&g.buf, "        pthread_t t; pthread_create(&t, NULL, mfl_go_run_%d, s); pthread_detach(t);\n", id)
+	// CHECK THE SPAWN. Ignoring pthread_create's result means that when the
+	// system is out of threads (EAGAIN — a real possibility under a loaded CI
+	// box or a low RLIMIT_NPROC) the goroutine silently never runs, and the
+	// program waits forever for work nobody is doing. Worse, `t` is then
+	// uninitialized and detaching it is undefined behaviour. Failing loudly
+	// turns an unreproducible hang into one line naming the cause.
+	fmt.Fprintf(&g.buf, "        pthread_t t;\n")
+	fmt.Fprintf(&g.buf, "        if (pthread_create(&t, NULL, mfl_go_run_%d, s) != 0) {\n", id)
+	g.buf.WriteString("            perror(\"go: pthread_create\"); exit(1);\n")
+	g.buf.WriteString("        }\n")
+	g.buf.WriteString("        pthread_detach(t);\n")
 	g.buf.WriteString("    }\n")
 	return nil
 }

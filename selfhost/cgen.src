@@ -739,7 +739,14 @@ func cg_go(iid, idx) {
     if len(stroffs) > 0 {
         cemit("        mfl_freeze_strs(" + str(len(stroffs)) + ", (int[]){" + join_offs(stroffs) + "}, s);\n")
     }
-    cemit("        pthread_t t; pthread_create(&t, NULL, mfl_go_run_" + ids + ", s); pthread_detach(t);\n")
+    // mirrors the Go emitter: a failed spawn is reported, not ignored — an
+    // unchecked pthread_create makes a goroutine silently not run and leaves
+    // `t` uninitialized for the detach
+    cemit("        pthread_t t;\n")
+    cemit("        if (pthread_create(&t, NULL, mfl_go_run_" + ids + ", s) != 0) {\n")
+    cemit("            perror(\"go: pthread_create\"); exit(1);\n")
+    cemit("        }\n")
+    cemit("        pthread_detach(t);\n")
     cemit("    }\n")
 }
 
