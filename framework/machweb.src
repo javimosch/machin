@@ -570,6 +570,10 @@ func machweb_handle(conn, handler) {
 // serve runs the HTTP server. Each connection is handled in its own goroutine.
 func serve(port, handler) {
     server := listen(port)
+    if server < 0 {
+        println("machweb: cannot listen on port " + str(port) + " (already in use?)")
+        return
+    }
     println("machweb on http://localhost:" + str(port))
     flush() // otherwise this line never reaches a log file/pipe (nohup, systemd, Docker) — see the stdout-buffering gotcha
     for {
@@ -672,6 +676,10 @@ func serve_tls(port, certfile, keyfile, handler) {
         return
     }
     server := listen(port)
+    if server < 0 {
+        println("machweb: cannot listen on port " + str(port) + " (already in use?)")
+        return
+    }
     println("machweb on https://localhost:" + str(port))
     flush() // otherwise this line never reaches a log file/pipe (nohup, systemd, Docker) — see the stdout-buffering gotcha
     for {

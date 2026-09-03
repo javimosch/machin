@@ -4,4 +4,4 @@ func todos(){list:=[]Todo{}list=append(list,Todo{id:1,title:"write a compiler",d
 
 func handle(conn){read(conn)body:=json(todos())resp:="HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "+str(len(body))+"\r\nConnection: close\r\n\r\n"+body write(conn,resp)close(conn)}
 
-func main(){server:=listen(48080)println("JSON API on http://localhost:48080")for{conn:=accept(server)go handle(conn)}}
+func main(){server:=listen(48080)if server<0{println("port 48080 is busy")return}println("JSON API on http://localhost:48080")for{conn:=accept(server)go handle(conn)}}
