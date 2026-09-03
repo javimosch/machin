@@ -384,7 +384,7 @@ An invalid ERE pattern (a `regcomp` failure) is not an error — there's no erro
 | `dial` | `(string, int) -> int` | connect to host:port; an fd, or -1 on failure |
 | `peer_addr` | `(int) -> string` | the remote address of a connected socket fd |
 | `socket_timeout` | `(int, int) -> int` | set a read/write timeout (milliseconds) on a socket fd |
-| `listen`, `accept` | `(int) -> int` | open / accept on a TCP socket |
+| `listen`, `accept` | `(int) -> int` | open / accept on a TCP socket; `listen` returns `-1` if the port cannot be bound |
 | `read`, `write` | `(int[, string]) -> string\|int` | socket/fd I/O — `read` is one `read(2)` of up to 65535 bytes, not a whole message; loop `read_bytes` (NUL-safe) to reassemble a complete request (see `framework/machweb.src`'s `read_request_bytes`, and issue #91) |
 | `close` | `(int\|chan) -> ` | close a socket/fd, or a channel (dispatched by argument) |
 | `https_get` | `(string) -> string` | HTTPS GET over TLS; response body ("" on error) |

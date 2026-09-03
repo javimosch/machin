@@ -2353,17 +2353,34 @@ static int64_t mfl_listen(int64_t port) {
        no bytes flow through it on replay anyway — reads are served from the I/O log). */
     if (mfl_rr_mode == 2) return mfl_rr_io_pop_i64();
     int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) { perror("listen: socket"); if (mfl_rr_mode == 1) mfl_rr_io_log_i64(-1); return -1; }
     int opt = 1; setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (const char*)&opt, sizeof(opt));
     struct sockaddr_in a; memset(&a, 0, sizeof(a));
     a.sin_family = AF_INET; a.sin_addr.s_addr = INADDR_ANY; a.sin_port = htons((uint16_t)port);
-    if (bind(fd, (struct sockaddr*)&a, sizeof(a)) < 0) { perror("bind"); exit(1); }
-    if (listen(fd, 64) < 0) { perror("listen"); exit(1); }
+    /* -1 on failure, like dial: "the port is taken" is the caller's to report or recover
+       from. The perror line stays so an unguarded caller still learns why. */
+    if (bind(fd, (struct sockaddr*)&a, sizeof(a)) < 0) {
+        perror("listen: bind"); MFL_CLOSESOCK(fd);
+        if (mfl_rr_mode == 1) mfl_rr_io_log_i64(-1);
+        return -1;
+    }
+    if (listen(fd, 64) < 0) {
+        perror("listen"); MFL_CLOSESOCK(fd);
+        if (mfl_rr_mode == 1) mfl_rr_io_log_i64(-1);
+        return -1;
+    }
     if (mfl_rr_mode == 1) mfl_rr_io_log_i64(fd);
     return fd;
 }
 static int64_t mfl_accept(int64_t fd) {
     /* replay: recorded fd, and crucially DON'T block on a real accept (no client exists). */
     if (mfl_rr_mode == 2) return mfl_rr_io_pop_i64();
+    /* A negative fd is not a transient accept failure and retrying can only spin, so say
+       what went wrong rather than burn a core in the caller's accept loop. */
+    if (fd < 0) {
+        fprintf(stderr, "accept: not a listening socket (fd %lld) -- listen() returns -1 when the port cannot be bound; check it\n", (long long)fd);
+        exit(1);
+    }
     int64_t r = accept((int)fd, NULL, NULL);
     if (mfl_rr_mode == 1) mfl_rr_io_log_i64(r);
     return r;

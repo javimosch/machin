@@ -4,4 +4,4 @@ func response(){body:=page()return "HTTP/1.1 200 OK\r\nContent-Type: text/html; 
 
 func handle(conn){read(conn)write(conn,response())close(conn)}
 
-func main(){server:=listen(48080)println("MFL http server on http://localhost:48080")for{conn:=accept(server)go handle(conn)}}
+func main(){server:=listen(48080)if server<0{println("port 48080 is busy")return}println("MFL http server on http://localhost:48080")for{conn:=accept(server)go handle(conn)}}

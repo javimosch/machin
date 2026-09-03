@@ -540,6 +540,22 @@ first := users[0]                                // value copy
 
 ### Raw sockets (`listen` / `accept` / `read` / `write`)
 
+**`listen(port)` returns `-1` when the port cannot be bound** — taken by another
+process, or privileged and you are not root. It prints the reason to stderr and
+returns, like `dial` does; it does not kill the process, so the caller decides
+whether to report, retry on another port, or fall back:
+
+```mfl
+srv := listen(port)
+if srv < 0 { println("port " + str(port) + " is busy")  return }
+```
+
+Skipping that check is not silently tolerated: `accept` on a negative fd cannot
+succeed and retrying it would only spin, so it reports and exits rather than
+burn a core in your accept loop. (Before v0.93.0 `listen` itself exited on bind
+failure, which made the guard above dead code — see
+[issue #643](https://github.com/javimosch/machin/issues/643).)
+
 **`read(fd)` is one `read(2)` syscall, returning whatever is currently in the
 socket's buffer (up to 65535 bytes) — not a whole message.** TCP is a byte
 stream: a request larger than ~64KB, or one whose bytes simply haven't all

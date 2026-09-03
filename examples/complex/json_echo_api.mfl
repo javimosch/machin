@@ -41,6 +41,7 @@ close(conn)
 
 func main(){
 server:=listen(48080)
+if server<0{println("port 48080 is busy")return}
 println("JSON echo API on http://localhost:48080  (POST a Todo)")
 for{
 conn:=accept(server)
