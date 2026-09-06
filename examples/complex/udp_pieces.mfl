@@ -1,0 +1,4 @@
+func serve_pieces(fd,pieces){n:=0 while n<len(pieces){req,addr,port:=udp_recvfrom(fd)if port==0{return}idx:=byte_at(req,0)udp_sendto(fd,addr,port,bytes(pieces[idx]))n=n+1}}
+
+func main(){path:="/tmp/mfl_udp_pieces.bin" remove(path)pieces:=[]string{"HEAD","MIDL","TAIL"}srv:=udp_socket(19740)if srv<0{println("cannot bind 19740")return}go serve_pieces(srv,pieces)cli:=udp_socket(0)socket_timeout(cli,3000)order:=[]int{2,0,1}i:=0 while i<len(order){idx:=order[i]udp_sendto(cli,"127.0.0.1",19740,from_hex("0"+str(idx)))data,_,port:=udp_recvfrom(cli)if port==0{println("timed out on piece "+str(idx))return}write_file_at(path,idx*4,data)println("piece "+str(idx)+" -> offset "+str(idx*4)+" ("+str(len(data))+" bytes)")i=i+1}close(cli)close(srv)println("assembled: "+read_file(path))println("size: "+str(file_size(path)))remove(path)}
+

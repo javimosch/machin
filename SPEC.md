@@ -384,6 +384,9 @@ An invalid ERE pattern (a `regcomp` failure) is not an error — there's no erro
 | `dial` | `(string, int) -> int` | connect to host:port; an fd, or -1 on failure |
 | `peer_addr` | `(int) -> string` | the remote address of a connected socket fd |
 | `socket_timeout` | `(int, int) -> int` | set a read/write timeout (milliseconds) on a socket fd |
+| `udp_socket` | `(int) -> int` | bind a UDP socket to a port (`0` = an ephemeral port); an fd, or -1 on failure. Shares `close`/`socket_timeout` with a TCP fd, but not `read`/`write` — a datagram socket has no fixed peer to answer |
+| `udp_sendto` | `(int, string, int, bytes) -> int` | send one datagram to host:port; bytes sent, or -1. All-or-nothing — no partial-send loop, unlike `write_bytes` |
+| `udp_recvfrom` | `(int) -> (bytes, string, int)` | receive one datagram as `(payload, sender ip, sender port)`. A timeout or error gives an empty payload with port `0`, so `port != 0` distinguishes it from a datagram that genuinely carried no payload. Multi-assign only. |
 | `listen`, `accept` | `(int) -> int` | open / accept on a TCP socket; `listen` returns `-1` if the port cannot be bound |
 | `read`, `write` | `(int[, string]) -> string\|int` | socket/fd I/O — `read` is one `read(2)` of up to 65535 bytes, not a whole message; loop `read_bytes` (NUL-safe) to reassemble a complete request (see `framework/machweb.src`'s `read_request_bytes`, and issue #91) |
 | `close` | `(int\|chan) -> ` | close a socket/fd, or a channel (dispatched by argument) |

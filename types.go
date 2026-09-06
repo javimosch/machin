@@ -1811,6 +1811,8 @@ func (c *Checker) multiRetBuiltin(name string) (args []int, rets []int, ok bool)
 		return []int{c.cString}, []int{c.cInt, c.cInt}, true
 	case "stat":
 		return []int{c.cString}, []int{c.cInt, c.cInt, c.cInt}, true
+	case "udp_recvfrom":
+		return []int{c.cInt}, []int{c.cBytes, c.cString, c.cInt}, true
 	case "rsa_generate":
 		return []int{c.cInt}, []int{c.cBytes, c.cBytes}, true
 	case "x509_pubkey":
@@ -2586,6 +2588,29 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		c.addPair(argSlots[0], c.cInt)
 		c.addPair(argSlots[1], c.cInt)
 		return c.cInt, nil
+	case "udp_socket":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("udp_socket: 1 arg (port int; 0 = ephemeral)")
+		}
+		c.addPair(argSlots[0], c.cInt)
+		return c.cInt, nil
+	case "udp_sendto":
+		if len(argSlots) != 4 {
+			return 0, fmt.Errorf("udp_sendto: 4 args (fd, host string, port int, payload bytes)")
+		}
+		c.addPair(argSlots[0], c.cInt)
+		c.addPair(argSlots[1], c.cString)
+		c.addPair(argSlots[2], c.cInt)
+		c.addPair(argSlots[3], c.cBytes)
+		return c.cInt, nil
+	case "write_file_at":
+		if len(argSlots) != 3 {
+			return 0, fmt.Errorf("write_file_at: 3 args (path string, offset int, data bytes)")
+		}
+		c.addPair(argSlots[0], c.cString)
+		c.addPair(argSlots[1], c.cInt)
+		c.addPair(argSlots[2], c.cBytes)
+		return c.cInt, nil
 	case "read":
 		if len(argSlots) != 1 {
 			return 0, fmt.Errorf("read: 1 arg")
@@ -2878,6 +2903,8 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		return newSliceSlot(c, c.cString), nil
 	case "http_get":
 		return 0, fmt.Errorf("http_get returns 3 values; use: status, body, err := http_get(url)")
+	case "udp_recvfrom":
+		return 0, fmt.Errorf("udp_recvfrom returns 3 values; use: data, addr, port := udp_recvfrom(fd)")
 	case "http_request":
 		return 0, fmt.Errorf("http_request returns 3 values; use: status, body, err := http_request(method, url, headers, body)")
 	case "json_get":

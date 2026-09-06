@@ -2036,6 +2036,31 @@ static int64_t mfl_write_file_raw(const char* path, int64_t ptr, int64_t nbytes)
     fclose(f);
     return (int64_t)w;
 }
+/* 64-bit file offsets: fseeko/off_t on POSIX, _fseeki64 on Windows. Plain fseek
+   takes a long, which is 32-bit on Windows and would cap a file at 2 GB. */
+#ifdef _WIN32
+#define MFL_FSEEK(f,o,w) _fseeki64((f),(o),(w))
+#define MFL_OFF_T __int64
+#else
+#define MFL_FSEEK(f,o,w) fseeko((f),(o),(w))
+#define MFL_OFF_T off_t
+#endif
+/* write_file_at: write bytes at a byte OFFSET inside a file, creating it if absent
+   and extending it (with a hole) when the offset is past the end. This is the
+   positional write that lets a program fill a file out of order -- a torrent
+   piece, a block in a paged store -- without buffering the whole file in memory.
+   Opens "r+b" and falls back to "w+b" so a first write creates the file; returns
+   the byte count written, -1 if the file cannot be opened or the seek fails. */
+static int64_t mfl_write_file_at(const char* path, int64_t off, mfl_bytes b) {
+    if (off < 0) return -1;
+    FILE* f = fopen(path, "r+b");
+    if (!f) f = fopen(path, "w+b");
+    if (!f) return -1;
+    if (MFL_FSEEK(f, (MFL_OFF_T)off, SEEK_SET) != 0) { fclose(f); return -1; }
+    size_t w = b.len ? fwrite(b.data, 1, (size_t)b.len, f) : 0;
+    fclose(f);
+    return (int64_t)w;
+}
 static int64_t mfl_read_file_raw(const char* path, int64_t ptr, int64_t nbytes) {
     FILE* f = fopen(path, "rb");
     if (!f) return -1;
@@ -2493,6 +2518,97 @@ static int64_t mfl_write_bytes(int64_t fd, mfl_bytes b) {
     return (int64_t)off;
 }
 static void mfl_close(int64_t fd) { MFL_CLOSESOCK(fd); }
+/* UDP. Connectionless datagrams: the peer's address travels with every packet
+   instead of being fixed by a connect(), which is what trackers (BEP 15) and the
+   DHT (BEP 5) need -- one socket talking to hundreds of hosts. A UDP fd shares
+   close() and socket_timeout() with a TCP one; it does NOT work with
+   read/write/read_bytes, which have no address to answer. */
+
+/* udp_socket: open a UDP socket bound to a port (0 = an ephemeral port the OS
+   picks, which is what a client wants). -1 on failure. */
+static int64_t mfl_udp_socket(int64_t port) {
+    if (mfl_rr_mode == 2) return mfl_rr_io_pop_i64();
+    mfl_net_init();
+    int fd = (int)socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) { if (mfl_rr_mode == 1) mfl_rr_io_log_i64(-1); return -1; }
+    struct sockaddr_in a; memset(&a, 0, sizeof(a));
+    a.sin_family = AF_INET; a.sin_addr.s_addr = htonl(INADDR_ANY);
+    a.sin_port = htons((unsigned short)port);
+    if (bind(fd, (struct sockaddr*)&a, sizeof(a)) != 0) {
+        MFL_CLOSESOCK(fd);
+        if (mfl_rr_mode == 1) mfl_rr_io_log_i64(-1);
+        return -1;
+    }
+    if (mfl_rr_mode == 1) mfl_rr_io_log_i64((int64_t)fd);
+    return (int64_t)fd;
+}
+
+/* udp_sendto: send one datagram to host:port. Returns bytes sent, -1 on error.
+   A datagram is all-or-nothing -- there is no partial-send loop as in
+   write_bytes, because the kernel either takes the whole packet or none of it. */
+static int64_t mfl_udp_sendto(int64_t fd, const char* host, int64_t port, mfl_bytes b) {
+    if (mfl_rr_mode == 2) return mfl_rr_io_pop_i64();
+    struct addrinfo hints, *res;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET; hints.ai_socktype = SOCK_DGRAM;
+    char ps[16]; snprintf(ps, sizeof(ps), "%lld", (long long)port);
+    if (getaddrinfo(host, ps, &hints, &res) != 0) { if (mfl_rr_mode == 1) mfl_rr_io_log_i64(-1); return -1; }
+    ssize_t n = sendto((int)fd, (const char*)b.data, (size_t)b.len, 0, res->ai_addr, (int)res->ai_addrlen);
+    freeaddrinfo(res);
+    int64_t r = (int64_t)n;
+    if (mfl_rr_mode == 1) mfl_rr_io_log_i64(r);
+    return r;
+}
+
+/* udp_recvfrom: receive one datagram -> (payload, sender ip, sender port).
+   Empty payload with port 0 on timeout/error, so a caller distinguishes a real
+   empty datagram (port != 0) from nothing arriving. Recorded like every other
+   external read, so a replay reproduces the exchange with no network. */
+typedef struct { mfl_bytes data; char* addr; int64_t port; } mfl_udp_result;
+static mfl_udp_result mfl_udp_recvfrom(int64_t fd) {
+    mfl_udp_result R;
+    if (mfl_rr_mode == 2) {
+        size_t L; char* s = mfl_hexdec(mfl_io_pop(), &L);
+        R.data.data = (uint8_t*)mfl_alloc(L ? L : 1); R.data.len = (int64_t)L;
+        if (L) memcpy(R.data.data, s, L);
+        free(s);
+        { size_t AL; char* a = mfl_hexdec(mfl_io_pop(), &AL); R.addr = mfl_dup_arena(a, AL); free(a); }
+        R.port = mfl_rr_io_pop_i64();
+        return R;
+    }
+    struct sockaddr_in from; socklen_t fl = sizeof(from);
+    memset(&from, 0, sizeof(from));
+    uint8_t* buf = (uint8_t*)mfl_alloc(65536);
+    mfl_dl_io_park(1);
+    ssize_t n = recvfrom((int)fd, (char*)buf, 65536, 0, (struct sockaddr*)&from, &fl);
+    mfl_dl_io_park(0);
+    if (n > 0) mfl_dl_note(); /* got a datagram = progress, not a parked reader */
+    R.data.data = buf;
+    R.data.len = n > 0 ? (int64_t)n : 0;
+    if (n < 0) {
+        R.addr = mfl_alloc(1); R.addr[0] = 0; R.port = 0;
+    } else {
+        /* format the dotted quad by hand rather than via inet_ntop: that lives in
+           <arpa/inet.h> on POSIX and <ws2tcpip.h> on Windows, and an implicit
+           declaration would truncate its char* return to an int. */
+        uint32_t ha = (uint32_t)ntohl(from.sin_addr.s_addr);
+        char ip[16];
+        int il = snprintf(ip, sizeof(ip), "%u.%u.%u.%u",
+                          (unsigned)((ha >> 24) & 0xff), (unsigned)((ha >> 16) & 0xff),
+                          (unsigned)((ha >> 8) & 0xff), (unsigned)(ha & 0xff));
+        if (il < 0) il = 0;
+        R.addr = mfl_alloc((size_t)il + 1);
+        memcpy(R.addr, ip, (size_t)il);
+        R.addr[il] = 0;
+        R.port = (int64_t)ntohs(from.sin_port);
+    }
+    if (mfl_rr_mode == 1) {
+        mfl_rr_io_log_bytes((char*)R.data.data, (size_t)R.data.len);
+        mfl_rr_io_log_bytes(R.addr, strlen(R.addr));
+        mfl_rr_io_log_i64(R.port);
+    }
+    return R;
+}
 `
 
 // ttyRuntime is terminal raw mode + non-blocking single-key reads (termios +
@@ -5171,6 +5287,8 @@ func multiRetBuiltinC(name string) (cfn, ctype string, fields []string, needsTLS
 		return "mfl_mmap_file", "mfl_mmap_result", []string{"ptr", "len"}, false, true
 	case "stat":
 		return "mfl_stat", "mfl_stat_result", []string{"kind", "size", "mtime"}, false, true
+	case "udp_recvfrom":
+		return "mfl_udp_recvfrom", "mfl_udp_result", []string{"data", "addr", "port"}, false, true
 	case "rsa_generate":
 		return "mfl_crypto_rsa_generate", "mfl_crypto_rsa_keypair", []string{"priv", "pub"}, false, true
 	case "x509_pubkey":
@@ -7111,6 +7229,12 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 	case "socket_timeout":
 		g.usesNet = true
 		return fmt.Sprintf("mfl_socket_timeout(%s, %s)", args[0], args[1]), nil
+	case "udp_socket":
+		g.usesNet = true
+		return fmt.Sprintf("mfl_udp_socket(%s)", args[0]), nil
+	case "udp_sendto":
+		g.usesNet = true
+		return fmt.Sprintf("mfl_udp_sendto(%s, %s, %s, %s)", args[0], args[1], args[2], args[3]), nil
 	case "read":
 		g.usesNet = true
 		return fmt.Sprintf("mfl_read(%s)", args[0]), nil
@@ -7159,6 +7283,8 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("mfl_write_bytes(%s, %s)", args[0], args[1]), nil
 	case "write_file":
 		return fmt.Sprintf("mfl_write_file(%s, %s)", args[0], args[1]), nil
+	case "write_file_at":
+		return fmt.Sprintf("mfl_write_file_at(%s, %s, %s)", args[0], args[1], args[2]), nil
 	case "write_file_bytes":
 		return fmt.Sprintf("mfl_write_file_bytes(%s, %s)", args[0], args[1]), nil
 	case "write_file_raw":
