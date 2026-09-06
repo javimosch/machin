@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+**UDP and positional file writes.** Two gaps that between them made a whole class
+of program impossible to write in pure MFL: anything speaking a connectionless
+protocol, and anything filling a file out of order. Both surfaced building a
+BitTorrent client — a tracker (BEP 15) and the DHT (BEP 5) are UDP, and pieces
+arrive from peers in whatever order the swarm supplies them — but neither is
+specific to it.
+
+- `udp_socket(port) -> fd` binds a UDP socket; port `0` takes an ephemeral port,
+  which is what a client wants. It shares `close()` and `socket_timeout()` with a
+  TCP fd, but not `read`/`write`, which have no address to answer.
+- `udp_sendto(fd, host, port, data) -> int` sends one datagram. All-or-nothing:
+  no partial-send loop, because the kernel takes the whole packet or none of it.
+- `udp_recvfrom(fd) -> (data, addr, port)` receives one, reporting the sender so
+  a single socket can serve hundreds of hosts. A timeout reports port `0`, so
+  `port != 0` distinguishes it from a datagram that genuinely carried no payload.
+- `write_file_at(path, offset, data) -> int` writes at a byte offset, creating
+  the file if absent and extending it (with a hole) past the end. Previously the
+  only random-access primitive was `mmap_file`, which is **read-only**, so a
+  program filling a file out of order had to buffer the whole thing in RAM or
+  write a piece per file and concatenate.
+
+All four are recorded and replayed like every other external I/O, so a program
+using them keeps a faithful `--record`/`--replay` trace.
+
+
 **Docs: the self-hosting gates are now written down.** v0.134.0 made CI enforce
 that the Go compiler and the self-hosted one emit identical C, but nothing told
 a contributor that — so a `codegen.go` change would hit three unexplained red

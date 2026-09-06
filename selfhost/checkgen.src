@@ -968,7 +968,7 @@ func gen_builtin(callee, argslots) (handled, slot) {
         return handled, slot
     }
     // multi-return builtins are invalid in expression position
-    if callee == "http_get" || callee == "http_request" || callee == "json_get" || callee == "exec" || callee == "mmap_file" {
+    if callee == "http_get" || callee == "http_request" || callee == "json_get" || callee == "exec" || callee == "mmap_file" || callee == "udp_recvfrom" {
         g_check_err = 1
         return handled, slot
     }
@@ -995,10 +995,15 @@ func gen_mrb(callee, argnodes, nameslots) (handled) {
     if callee == "http_get" || callee == "exec" || callee == "http_request" { rc = "iss" }
     if callee == "json_get" { rc = "ss" }
     if callee == "mmap_file" { rc = "ii" }
+    if callee == "udp_recvfrom" { rc = "ysi" }
     if rc == "" { handled = 0  return handled }
     if callee == "http_get" || callee == "exec" || callee == "mmap_file" {
         if len(argnodes) != 1 { g_check_err = 1  return handled }
         add_pair(gen_expr(argnodes[0]), c_string)
+    }
+    if callee == "udp_recvfrom" {
+        if len(argnodes) != 1 { g_check_err = 1  return handled }
+        add_pair(gen_expr(argnodes[0]), c_int)
     }
     if callee == "json_get" {
         if len(argnodes) != 2 { g_check_err = 1  return handled }
@@ -1077,6 +1082,8 @@ func bspec(name) (s) {
     if name == "dial" { s = "si>i"  return s }
     if name == "peer_addr" { s = "i>s"  return s }
     if name == "socket_timeout" { s = "ii>i"  return s }
+    if name == "udp_socket" { s = "i>i"  return s }
+    if name == "udp_sendto" { s = "isiy>i"  return s }
     if name == "read" { s = "i>s"  return s }
     if name == "read_bytes" { s = "i>y"  return s }
     if name == "input" || name == "read_key" || name == "read_stdin" { s = ">s"  return s }
@@ -1093,6 +1100,7 @@ func bspec(name) (s) {
     if name == "write_bytes" { s = "iy>i"  return s }
     if name == "write_file" { s = "ss>i"  return s }
     if name == "write_file_bytes" { s = "sy>i"  return s }
+    if name == "write_file_at" { s = "siy>i"  return s }
     if name == "write_file_raw" || name == "read_file_raw" { s = "sii>i"  return s }
     if name == "remove" || name == "mkdir" || name == "system" { s = "s>i"  return s }
     if name == "list_dir" { s = "s>S"  return s }

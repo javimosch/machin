@@ -442,6 +442,7 @@ first := users[0]                                // value copy
 | `read_file_bytes(path)`     | read a whole file's raw bytes, NUL-safe (empty on error) — for binary assets |
 | `write_file(path, s)`       | write a text file → `int` (`-1` on error)    |
 | `write_file_bytes(path, b)` | write raw `bytes` to a file, NUL-safe (`-1` on error) — for binary uploads/assets |
+| `write_file_at(path, off, b)` | write `bytes` at a byte **offset**, creating the file if absent and extending it (with a hole) past the end → bytes written (`-1` on error). The only random-access write — `mmap_file` is read-only — so this is how a file gets filled out of order without buffering it all in RAM |
 | `remove(path)`              | delete a file (`0` ok; `-1` error)           |
 | `list_dir(path)`            | directory entries → `[]string` (excludes `.` / `..`) |
 | `mkdir(path)`               | create a directory (`0` ok; `-1` error)      |
@@ -499,6 +500,9 @@ first := users[0]                                // value copy
 | `dial(host, port)`          | open an outbound TCP connection, return its socket fd |
 | `peer_addr(fd)`             | the remote address of a connected socket `fd` |
 | `socket_timeout(fd, ms)`    | set a read/write timeout (milliseconds) on socket `fd` |
+| `udp_socket(port)`          | bind a UDP socket (`0` = an ephemeral port) → fd (`-1` on failure) |
+| `udp_sendto(fd, host, port, b)` | send one datagram → bytes sent (`-1` on error) |
+| `udp_recvfrom(fd)`          | receive one datagram → `(payload, sender ip, sender port)`; port `0` means timeout/error. Multi-assign only |
 | `read(fd)` / `write(fd, s)` | read from / write to a socket — **one `read(2)` of up to 65535 bytes, not a whole message** (see note below) |
 | `read_bytes(fd)` / `write_bytes(fd, b)` | NUL-safe binary read/write on a socket `fd` — for binary protocols / HTTP bodies |
 | `close(fd)`                 | close a socket                               |

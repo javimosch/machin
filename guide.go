@@ -28,7 +28,7 @@ var skillDeploy string
 
 // machinVersion is the single version string for the toolchain. Bump it when
 // cutting a release (alongside README badge / SPEC / CHANGELOG).
-const machinVersion = "0.137.0"
+const machinVersion = "0.138.0"
 
 // ---- the source-of-truth feature catalog ----
 //
@@ -225,6 +225,7 @@ func machinGuide() guideCatalog {
 			{"mmap_file", "(string) -> (int, size)", "memory-map a file read-only -> (pointer-as-int, byte size), or (0,0) on error. MULTI-ASSIGN ONLY: p, n := mmap_file(path). Zero-copy: read the mapped bytes with peek_i8/peek_u8/peek_i32/peek_f32 (pages fault in lazily) instead of read_file_bytes + a copy — for large on-disk buffers like a model checkpoint. Read-only, native only; the mapping lives until the process exits", "io"},
 			{"write_file", "(string, string) -> int", "write a file (text; -1 on error)", "io"},
 			{"write_file_bytes", "(string, bytes) -> int", "write raw bytes to a file, NUL-safe (-1 on error) — for binary uploads/assets", "io"},
+			{"write_file_at", "(string, int, bytes) -> int", "write bytes at a byte OFFSET in a file, creating it if absent and extending it (with a hole) past the end -> bytes written (-1 on error). The positional write: fill a file OUT OF ORDER — a torrent piece, a block in a paged store — without buffering the whole file in RAM. Note mmap_file is read-only, so this is the only random-access write", "io"},
 			{"write_file_raw", "(string, int, int) -> int", "write a raw memory region (ptr, nbytes) to a file in one fwrite; for large buffers a bytes value cant hold (e.g. a KV-cache snapshot)", "io"},
 			{"read_file_raw", "(string, int, int) -> int", "read a file into a raw memory region (ptr, nbytes) in one fread; returns bytes read, -1 on open error", "io"},
 			{"remove", "(string) -> int", "delete a file (0 ok; -1 error)", "io"},
@@ -384,6 +385,9 @@ func machinGuide() guideCatalog {
 			{"accept", "(int) -> int", "accept a connection -> fd", "net"},
 			{"peer_addr", "(int) -> string", "remote IP of a connected socket (getpeername), \"\" on error — the real client IP when not behind a proxy", "net"},
 			{"socket_timeout", "(int, int) -> int", "cap blocking recv/send on a socket to N ms (0 = none) — anti slow-loris; 0 ok / -1 error", "net"},
+			{"udp_socket", "(int) -> int", "open a UDP socket bound to a port (0 = an ephemeral port the OS picks, what a client wants) -> fd (-1 on fail). Shares close() and socket_timeout() with a TCP fd", "net"},
+			{"udp_sendto", "(int, string, int, bytes) -> int", "send ONE datagram to host:port -> bytes sent (-1 on error). All-or-nothing: no partial-send loop, the kernel takes the whole packet or none", "net"},
+			{"udp_recvfrom", "(int) -> (bytes, string, int)", "receive one datagram -> (payload, sender ip, sender port). Empty payload with port 0 means timeout/error, so port != 0 distinguishes a genuinely empty datagram. MULTI-ASSIGN ONLY: data, addr, port := udp_recvfrom(fd)", "net"},
 			{"read", "(int) -> string", "read a chunk from an fd (blocks); a C string, so it truncates at a NUL — use read_bytes for binary", "net"},
 			{"read_bytes", "(int) -> bytes", "read a chunk from an fd as raw bytes, NUL-safe (empty at EOF) — for binary wire protocols (Postgres/MySQL/Redis)", "net"},
 			{"write", "(int, string) -> int", "write to an fd", "net"},
@@ -466,6 +470,8 @@ func handle_one(ctx, fd) { tls := tls_accept(ctx, fd)
 	tls_close(tls) }`},
 		},
 		Gotchas: []guideNote{
+			{"udp-vs-tcp-fd", "A udp_socket() fd is NOT interchangeable with a dial()/accept() one. close() and socket_timeout() work on both, but read/read_bytes/write/write_bytes do NOT work on a UDP fd — a datagram socket has no fixed peer, so the address has to travel with each packet: udp_sendto(fd, host, port, data) and data, addr, port := udp_recvfrom(fd). That is the point — ONE socket serves hundreds of hosts (a BitTorrent tracker, a DHT, a metrics sink). Distinguish nothing-arrived from an empty datagram by the PORT, not the payload length: a timeout/error reports port 0, a real sender never does. Pair it with socket_timeout(fd, ms) or a recvfrom with no packet coming blocks forever."},
+			{"positional-file-write", "To fill a file OUT OF ORDER use write_file_at(path, offset, bytes) — it creates the file if absent and extends it (with a hole) when the offset is past the end, so nothing has to be preallocated. mmap_file is READ-ONLY and is not the write path; before write_file_at the only options were buffering the whole file in RAM or writing a chunk per file and concatenating. Offsets are 64-bit, so files past 2 GB are fine; a negative offset returns -1 and writes nothing."},
 			{"struct-value-semantics", "Structs are VALUE types: passing or assigning one copies it, so a function cannot mutate a caller's struct (and a builder must return the updated struct). For shared mutable state use a map — a reference type, so m[k]=v survives the holder being passed by value (see framework/flags.src)."},
 			{"assign-func-scoped", "`:=` is FUNCTION-scoped, not block-scoped (unlike Go): a name declared with `:=` inside an `if`/`else`/`for` block does NOT shadow — every `:=` for that name in the same function binds ONE variable. So the same name given different types in disjoint branches (`steps := \"a,b,c\"` in one branch, `steps := split(s, \",\")` in the sibling) is a hard `type mismatch ...; := does not shadow — variables are function-scoped` error, even though Go would compile it as two independent block-locals. Fix: use distinct names (`stepsCsv` / `stepsList`), or declare once before the branches and only assign inside. See also package-globals (`:=` shadows a package global but not another local)."},
 			{"map-comma-ok", "There is no map comma-ok: `v, ok := m[k]` does NOT compile. A read of an absent key returns the value type's zero value; use has(m, k) to test presence. (comma-ok is for channel receives: `v, ok := <-ch`.)"},
