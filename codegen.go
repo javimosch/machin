@@ -2114,6 +2114,30 @@ static mfl_bytes mfl_read_file_bytes(const char* path) {
     if (mfl_rr_mode == 1) mfl_rr_io_log_bytes((char*)b.data, (size_t)b.len);
     return b;
 }
+/* read_file_at: read nbytes starting at a byte OFFSET -- the positional read, and
+   the missing mirror of write_file_at. Pulling one range out of a large file with
+   read_file_bytes costs a copy of the WHOLE file, so a scan over N ranges of one
+   file is quadratic in its size (verifying a 264 MB torrent piece by piece read
+   279 GB and was OOM-killed). This reads only the range asked for.
+   Short reads are normal at EOF; empty bytes on any error. */
+static mfl_bytes mfl_read_file_at(const char* path, int64_t off, int64_t nbytes) {
+    mfl_bytes b; b.len = 0; b.data = (uint8_t*)mfl_alloc(1);
+    /* same rationale as mfl_read_file_bytes: record the bytes for a replay. */
+    if (mfl_rr_mode == 2) {
+        size_t L; char* s = mfl_hexdec(mfl_io_pop(), &L);
+        b.data = (uint8_t*)mfl_alloc(L ? L : 1); b.len = (int64_t)L;
+        if (L) memcpy(b.data, s, L); free(s); return b;
+    }
+    if (off < 0 || nbytes <= 0 || mfl_is_dir(path)) { if (mfl_rr_mode == 1) mfl_rr_io_log_bytes("", 0); return b; }
+    FILE* f = fopen(path, "rb");
+    if (!f) { if (mfl_rr_mode == 1) mfl_rr_io_log_bytes("", 0); return b; }
+    if (MFL_FSEEK(f, (MFL_OFF_T)off, SEEK_SET) != 0) { fclose(f); if (mfl_rr_mode == 1) mfl_rr_io_log_bytes("", 0); return b; }
+    b.data = (uint8_t*)mfl_alloc((size_t)nbytes);
+    b.len = (int64_t)fread(b.data, 1, (size_t)nbytes, f);
+    fclose(f);
+    if (mfl_rr_mode == 1) mfl_rr_io_log_bytes((char*)b.data, (size_t)b.len);
+    return b;
+}
 static mfl_slice mfl_list_dir(const char* path) {
     mfl_slice out = {0};
     DIR* d = opendir(path);
@@ -7278,6 +7302,8 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("mfl_read_file(%s)", args[0]), nil
 	case "read_file_bytes":
 		return fmt.Sprintf("mfl_read_file_bytes(%s)", args[0]), nil
+	case "read_file_at":
+		return fmt.Sprintf("mfl_read_file_at(%s, %s, %s)", args[0], args[1], args[2]), nil
 	case "write_bytes":
 		g.usesNet = true
 		return fmt.Sprintf("mfl_write_bytes(%s, %s)", args[0], args[1]), nil

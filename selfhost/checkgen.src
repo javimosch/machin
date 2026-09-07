@@ -1100,6 +1100,7 @@ func bspec(name) (s) {
     if name == "write_bytes" { s = "iy>i"  return s }
     if name == "write_file" { s = "ss>i"  return s }
     if name == "write_file_bytes" { s = "sy>i"  return s }
+    if name == "read_file_at" { s = "sii>y"  return s }
     if name == "write_file_at" { s = "siy>i"  return s }
     if name == "write_file_raw" || name == "read_file_raw" { s = "sii>i"  return s }
     if name == "remove" || name == "mkdir" || name == "system" { s = "s>i"  return s }

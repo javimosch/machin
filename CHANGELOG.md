@@ -26,6 +26,28 @@ specific to it.
 All four are recorded and replayed like every other external I/O, so a program
 using them keeps a faithful `--record`/`--replay` trace.
 
+**`read_file_at`: the positional read.** `write_file_at` shipped without its
+mirror, so there was no way to read ONE range of a file — only `read_file_bytes`
+(a copy of the whole file) or `mmap_file` plus a peek per byte.
+
+That gap is quietly quadratic, and it bites hardest in exactly the code that
+motivated `write_file_at`. A torrent store that reads a byte range by loading the
+file and slicing it costs a full copy per call, so verifying a 264 MB torrent one
+piece at a time — 1055 pieces — read **279 GB**. The daemon doing it reached
+24 GB RSS and was OOM-killed eleven times in an afternoon, within ~25s of each
+start. Nothing in the loop looks wrong; the cost is entirely in the helper.
+
+- `read_file_at(path, offset, nbytes) -> bytes` reads only the range asked for.
+  A short read at EOF is normal and reported by the returned length; a negative
+  offset, a non-positive count, a missing path and a directory all return empty
+  bytes, matching `read_file_bytes`' "empty on error" contract. Recorded and
+  replayed like the other I/O builtins.
+
+Worth knowing alongside it: reading only the range fixed the blow-up but still
+left ~1 GB resident, because each piece buffer stayed in the arena of a goroutine
+that never returns — a daemon's main loop. An `arena { }` block around the loop
+body took it to 7 MB. A long-lived actor loop wants both.
+
 
 **Docs: the self-hosting gates are now written down.** v0.134.0 made CI enforce
 that the Go compiler and the self-hosted one emit identical C, but nothing told

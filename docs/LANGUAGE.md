@@ -440,6 +440,7 @@ first := users[0]                                // value copy
 | `flush()`                   | flush buffered stdout (prompt output through a pipe) |
 | `read_file(path)`           | read a whole file → `string` (`""` on error)  |
 | `read_file_bytes(path)`     | read a whole file's raw bytes, NUL-safe (empty on error) — for binary assets |
+| `read_file_at(path, off, n)` | read `n` bytes at a byte **offset** → `bytes` (short at EOF; empty on error). The positional **read**, mirroring `write_file_at`: take ONE range out of a large file without copying the whole thing. Reading N ranges of a file with `read_file_bytes` + a slice is quadratic in its size — verifying a 264 MB torrent piece by piece read 279 GB |
 | `write_file(path, s)`       | write a text file → `int` (`-1` on error)    |
 | `write_file_bytes(path, b)` | write raw `bytes` to a file, NUL-safe (`-1` on error) — for binary uploads/assets |
 | `write_file_at(path, off, b)` | write `bytes` at a byte **offset**, creating the file if absent and extending it (with a hole) past the end → bytes written (`-1` on error). The only random-access write — `mmap_file` is read-only — so this is how a file gets filled out of order without buffering it all in RAM |
