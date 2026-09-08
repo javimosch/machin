@@ -2584,6 +2584,50 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 			c.addPair(argSlots[i], c.cInt)
 		}
 		return c.cVoid, nil
+	case "transpose_chw_f32":
+		if len(argSlots) != 5 {
+			return 0, fmt.Errorf("transpose_chw_f32: 5 args (out, in, channels, h, w)")
+		}
+		for i := 0; i < 5; i++ {
+			c.addPair(argSlots[i], c.cInt)
+		}
+		return c.cVoid, nil
+	case "transpose_add_chw_f32":
+		if len(argSlots) != 6 {
+			return 0, fmt.Errorf("transpose_add_chw_f32: 6 args (out, residual, in, channels, h, w)")
+		}
+		for i := 0; i < 6; i++ {
+			c.addPair(argSlots[i], c.cInt)
+		}
+		return c.cVoid, nil
+	case "geglu_f32":
+		if len(argSlots) != 4 {
+			return 0, fmt.Errorf("geglu_f32: 4 args (out, in, inner, seq)")
+		}
+		for i := 0; i < 4; i++ {
+			c.addPair(argSlots[i], c.cInt)
+		}
+		return c.cVoid, nil
+	case "concat_chw_f32":
+		if len(argSlots) != 6 {
+			return 0, fmt.Errorf("concat_chw_f32: 6 args (out, a, b, a_ch, b_ch, hw)")
+		}
+		for i := 0; i < 6; i++ {
+			c.addPair(argSlots[i], c.cInt)
+		}
+		return c.cVoid, nil
+	case "layer_norm_batch_f32":
+		if len(argSlots) != 6 {
+			return 0, fmt.Errorf("layer_norm_batch_f32: 6 args (out, in, w, b, seq, channels)")
+		}
+		for i := 0; i < 6; i++ {
+			c.addPair(argSlots[i], c.cInt)
+		}
+		return c.cVoid, nil
+	case "ocl_sync":
+		return c.cVoid, nil
+	case "ocl_release":
+		return c.cVoid, nil
 	case "group_norm_f32":
 		if len(argSlots) != 9 {
 			return 0, fmt.Errorf("group_norm_f32: 9 args (out, in, w, b, channels, h, w_dim, groups, eps)")
