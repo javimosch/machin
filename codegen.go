@@ -2396,6 +2396,42 @@ static void mfl_net_init(void) {}
 `
 
 const netRuntime = `/* networking: the low-level shape of Go's net package */
+/* listen_on: bind a listening socket to a SPECIFIC address, which listen(port)
+   cannot do -- it hardcodes INADDR_ANY. A server told to serve 127.0.0.1 was
+   therefore reachable from the whole network, and had no way not to be: essaim's
+   torrent daemon accepted --host 127.0.0.1, logged it, and bound 0.0.0.0.
+
+   host "" or "0.0.0.0" means every interface, the old behaviour. Anything else
+   is resolved with getaddrinfo, like dial, so "localhost" and "::1" work and an
+   IPv6 address gets an IPv6 socket. AI_PASSIVE is what makes a NULL host mean
+   "bind everything" rather than "resolve the local hostname".
+   Returns the fd, or -1 if the address cannot be resolved or bound. */
+static int64_t mfl_listen_on(const char* host, int64_t port) {
+    if (mfl_rr_mode == 2) return mfl_rr_io_pop_i64();
+    mfl_net_init();
+    struct addrinfo hints, *res, *rp;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC; hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_PASSIVE;
+    const char* h = (host && *host && strcmp(host, "0.0.0.0") != 0) ? host : NULL;
+    char ps[16]; snprintf(ps, sizeof(ps), "%lld", (long long)port);
+    if (getaddrinfo(h, ps, &hints, &res) != 0) {
+        if (mfl_rr_mode == 1) mfl_rr_io_log_i64(-1);
+        return -1;
+    }
+    int fd = -1;
+    for (rp = res; rp; rp = rp->ai_next) {
+        fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+        if (fd < 0) continue;
+        int opt = 1; setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (const char*)&opt, sizeof(opt));
+        if (bind(fd, rp->ai_addr, (int)rp->ai_addrlen) == 0 && listen(fd, 64) == 0) break;
+        MFL_CLOSESOCK(fd); fd = -1;
+    }
+    freeaddrinfo(res);
+    if (fd < 0) perror("listen_on");
+    if (mfl_rr_mode == 1) mfl_rr_io_log_i64(fd);
+    return fd;
+}
 static int64_t mfl_listen(int64_t port) {
     mfl_net_init();
     /* replay: return the recorded fd without binding a real port (it may be taken, and
@@ -7244,6 +7280,9 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 	case "listen":
 		g.usesNet = true
 		return fmt.Sprintf("mfl_listen(%s)", args[0]), nil
+	case "listen_on":
+		g.usesNet = true
+		return fmt.Sprintf("mfl_listen_on(%s, %s)", args[0], args[1]), nil
 	case "accept":
 		g.usesNet = true
 		return fmt.Sprintf("mfl_accept(%s)", args[0]), nil

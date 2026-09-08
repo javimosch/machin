@@ -26,6 +26,19 @@ specific to it.
 All four are recorded and replayed like every other external I/O, so a program
 using them keeps a faithful `--record`/`--replay` trace.
 
+**`listen_on`: a bind address, because `listen` never had one.** `listen(port)`
+hardcodes `INADDR_ANY`. A server told to serve `127.0.0.1` therefore bound every
+interface and had no way to opt out — essaim's torrent daemon accepted
+`--host 127.0.0.1`, logged it, and left an unauthenticated control API that
+accepts magnets reachable from the whole network. The bind address is a security
+boundary, and there was no primitive to express it.
+
+- `listen_on(host, port) -> int` binds a specific address. `""` or `"0.0.0.0"`
+  keeps the old every-interface behaviour; anything else is resolved with
+  `getaddrinfo` like `dial`, so `"localhost"` and `"::1"` work and an IPv6
+  address gets an IPv6 socket. `-1` when the address cannot be resolved or
+  bound. `listen` is unchanged.
+
 **`read_file_at`: the positional read.** `write_file_at` shipped without its
 mirror, so there was no way to read ONE range of a file — only `read_file_bytes`
 (a copy of the whole file) or `mmap_file` plus a peek per byte.
