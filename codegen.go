@@ -1324,6 +1324,7 @@ static cl_command_queue mfl_ocl_queue = NULL;
 static cl_program mfl_ocl_program = NULL;
 static cl_kernel mfl_ocl_k_conv2d = NULL;
 static cl_kernel mfl_ocl_k_matmul = NULL;
+static cl_kernel mfl_ocl_k_matmul_tiled = NULL;
 static cl_kernel mfl_ocl_k_group_norm = NULL;
 static cl_kernel mfl_ocl_k_attention = NULL;
 static int mfl_ocl_ready = 0;
@@ -1386,6 +1387,25 @@ static const char* mfl_ocl_source =
 "    acc += x[b * n_in + k] * w[o * n_in + k];"
 "  }"
 "  out[b * n_out + o] = acc;"
+"}"
+"__kernel void matmul_tiled(__global const float* x, __global const float* w,"
+"  __global const float* bias, __global float* out,"
+"  int n_in, int n_out, int batch) {"
+"  int tg_o = get_group_id(0) * 16;"
+"  int tg_b = get_group_id(1) * 16;"
+"  int lo = get_local_id(0);"
+"  int lb = get_local_id(1);"
+"  __local float lx[16][17];"
+"  __local float lw[16][17];"
+"  float acc = bias[tg_o + lo];"
+"  for (int k0 = 0; k0 < n_in; k0 += 16) {"
+"    lx[lb][lo] = (tg_b + lb < batch) ? x[(tg_b + lb) * n_in + k0 + lo] : 0.0f;"
+"    lw[lo][lb] = (tg_o + lo < n_out) ? w[(tg_o + lo) * n_in + k0 + lb] : 0.0f;"
+"    barrier(CLK_LOCAL_MEM_FENCE);"
+"    for (int k = 0; k < 16; k++) acc += lx[lb][k] * lw[lo][k];"
+"    barrier(CLK_LOCAL_MEM_FENCE);"
+"  }"
+"  if (tg_o + lo < n_out && tg_b + lb < batch) out[(tg_b + lb) * n_out + tg_o + lo] = acc;"
 "}"
 "__kernel void group_norm(__global const float* input, __global const float* weight,"
 "  __global const float* bias, __global float* output,"
@@ -1502,9 +1522,10 @@ static int mfl_ocl_init(void) {
     fprintf(stderr, "ocl: program built\n");
     mfl_ocl_k_conv2d = p_clCreateKernel(mfl_ocl_program, "conv2d", &err);
     mfl_ocl_k_matmul = p_clCreateKernel(mfl_ocl_program, "matmul", &err);
+    mfl_ocl_k_matmul_tiled = p_clCreateKernel(mfl_ocl_program, "matmul_tiled", &err);
     mfl_ocl_k_group_norm = p_clCreateKernel(mfl_ocl_program, "group_norm", &err);
     mfl_ocl_k_attention = p_clCreateKernel(mfl_ocl_program, "attention_f32", &err);
-    if (!mfl_ocl_k_conv2d || !mfl_ocl_k_matmul || !mfl_ocl_k_group_norm || !mfl_ocl_k_attention) { fprintf(stderr, "ocl: CreateKernel failed\n"); return 0; }
+    if (!mfl_ocl_k_conv2d || !mfl_ocl_k_matmul || !mfl_ocl_k_matmul_tiled || !mfl_ocl_k_group_norm || !mfl_ocl_k_attention) { fprintf(stderr, "ocl: CreateKernel failed\n"); return 0; }
     fprintf(stderr, "ocl: all kernels created\n");
     mfl_ocl_ready = 1;
     return 1;
@@ -1571,15 +1592,29 @@ static void mfl_matmul_gpu(int64_t ob, int64_t xb, int64_t w, int64_t b,
     p_clEnqueueWriteBuffer(mfl_ocl_queue, d_x, CL_FALSE, 0, x_sz, (void*)(intptr_t)xb, 0, NULL, NULL);
     p_clEnqueueWriteBuffer(mfl_ocl_queue, d_w, CL_FALSE, 0, w_sz, (void*)(intptr_t)w, 0, NULL, NULL);
     int32_t ni = (int32_t)n_in, no = (int32_t)n_out, bt = (int32_t)batch;
-    p_clSetKernelArg(mfl_ocl_k_matmul, 0, sizeof(cl_mem), &d_x);
-    p_clSetKernelArg(mfl_ocl_k_matmul, 1, sizeof(cl_mem), &d_w);
-    p_clSetKernelArg(mfl_ocl_k_matmul, 2, sizeof(cl_mem), &d_b);
-    p_clSetKernelArg(mfl_ocl_k_matmul, 3, sizeof(cl_mem), &d_out);
-    p_clSetKernelArg(mfl_ocl_k_matmul, 4, sizeof(int), &ni);
-    p_clSetKernelArg(mfl_ocl_k_matmul, 5, sizeof(int), &no);
-    p_clSetKernelArg(mfl_ocl_k_matmul, 6, sizeof(int), &bt);
-    size_t global[2] = {(size_t)n_out, (size_t)batch};
-    p_clEnqueueNDRangeKernel(mfl_ocl_queue, mfl_ocl_k_matmul, 2, NULL, global, NULL, 0, NULL, NULL);
+    /* Use tiled kernel for larger matmuls (better memory coalescing) */
+    if (n_out >= 16 && batch >= 16 && n_in >= 16) {
+        p_clSetKernelArg(mfl_ocl_k_matmul_tiled, 0, sizeof(cl_mem), &d_x);
+        p_clSetKernelArg(mfl_ocl_k_matmul_tiled, 1, sizeof(cl_mem), &d_w);
+        p_clSetKernelArg(mfl_ocl_k_matmul_tiled, 2, sizeof(cl_mem), &d_b);
+        p_clSetKernelArg(mfl_ocl_k_matmul_tiled, 3, sizeof(cl_mem), &d_out);
+        p_clSetKernelArg(mfl_ocl_k_matmul_tiled, 4, sizeof(int), &ni);
+        p_clSetKernelArg(mfl_ocl_k_matmul_tiled, 5, sizeof(int), &no);
+        p_clSetKernelArg(mfl_ocl_k_matmul_tiled, 6, sizeof(int), &bt);
+        size_t local2[2] = {16, 16};
+        size_t global2[2] = {(((size_t)n_out + 15) / 16) * 16, (((size_t)batch + 15) / 16) * 16};
+        p_clEnqueueNDRangeKernel(mfl_ocl_queue, mfl_ocl_k_matmul_tiled, 2, NULL, global2, local2, 0, NULL, NULL);
+    } else {
+        p_clSetKernelArg(mfl_ocl_k_matmul, 0, sizeof(cl_mem), &d_x);
+        p_clSetKernelArg(mfl_ocl_k_matmul, 1, sizeof(cl_mem), &d_w);
+        p_clSetKernelArg(mfl_ocl_k_matmul, 2, sizeof(cl_mem), &d_b);
+        p_clSetKernelArg(mfl_ocl_k_matmul, 3, sizeof(cl_mem), &d_out);
+        p_clSetKernelArg(mfl_ocl_k_matmul, 4, sizeof(int), &ni);
+        p_clSetKernelArg(mfl_ocl_k_matmul, 5, sizeof(int), &no);
+        p_clSetKernelArg(mfl_ocl_k_matmul, 6, sizeof(int), &bt);
+        size_t global[2] = {(size_t)n_out, (size_t)batch};
+        p_clEnqueueNDRangeKernel(mfl_ocl_queue, mfl_ocl_k_matmul, 2, NULL, global, NULL, 0, NULL, NULL);
+    }
     p_clEnqueueReadBuffer(mfl_ocl_queue, d_out, CL_TRUE, 0, out_sz, (void*)(intptr_t)ob, 0, NULL, NULL);
     p_clReleaseMemObject(d_x); p_clReleaseMemObject(d_w); p_clReleaseMemObject(d_b); p_clReleaseMemObject(d_out);
 }
