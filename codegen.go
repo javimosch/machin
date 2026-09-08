@@ -196,6 +196,7 @@ const cRuntime = `#define _GNU_SOURCE
 #include <unistd.h>
 #include <time.h>
 #include <sys/time.h>
+#include <math.h>      /* sqrt, expf for group_norm_f32, silu_f32 native builtins */
 #include <pthread.h>   /* mingw-w64 provides winpthreads, so the goroutine/channel runtime compiles for the windows target too (#517) */
 #include <dirent.h>
 #include <sys/stat.h>
@@ -1259,6 +1260,516 @@ static void mfl_axpy_f32(int64_t y, double s, int64_t x, int64_t n) {
     const float* xx = (const float*)(intptr_t)x;
     float sf = (float)s;
     for (int64_t k = 0; k < n; k++) yy[k] += sf * xx[k];
+}
+/* SiLU (Sigmoid Linear Unit) in-place: x[k] = x[k] / (1 + exp(-x[k])) for k<n.
+ * Auto-vectorized C — replaces scalar MFL silu_buf. */
+static void mfl_silu_f32(int64_t buf, int64_t n) {
+    float* x = (float*)(intptr_t)buf;
+    for (int64_t k = 0; k < n; k++) {
+        float v = x[k];
+        x[k] = v / (1.0f + expf(-v));
+    }
+}
+/* ===== OpenCL GPU backend (Windows only, dynamically loads OpenCL.dll) =====
+ * Provides GPU-accelerated conv2d, matmul, group_norm for SD-Turbo inference.
+ * Falls back to CPU if OpenCL is unavailable. */
+#ifdef _WIN32
+#include <windows.h>
+
+/* Minimal OpenCL type definitions — no OpenCL headers needed for dynamic loading */
+typedef unsigned int cl_uint;
+typedef int cl_int;
+typedef unsigned long long cl_ulong;
+typedef void* cl_platform_id;
+typedef void* cl_device_id;
+typedef void* cl_context;
+typedef void* cl_command_queue;
+typedef void* cl_program;
+typedef void* cl_kernel;
+typedef void* cl_mem;
+typedef cl_uint cl_device_type;
+typedef cl_ulong cl_mem_flags;
+#define CL_MEM_READ_ONLY  (1UL << 2)
+#define CL_MEM_WRITE_ONLY (1UL << 1)
+#define CL_MEM_READ_WRITE (1UL << 0)
+#define CL_DEVICE_TYPE_GPU 4U
+#define CL_SUCCESS 0
+#define CL_TRUE 1
+#define CL_FALSE 0
+
+/* Function pointer types */
+typedef cl_int (*PFN_clGetPlatformIDs)(cl_uint, cl_platform_id*, cl_uint*);
+typedef cl_int (*PFN_clGetDeviceIDs)(cl_platform_id, cl_device_type, cl_uint, cl_device_id*, cl_uint*);
+typedef cl_context (*PFN_clCreateContext)(const void*, cl_uint, const cl_device_id*, void*, void*, cl_int*);
+typedef cl_command_queue (*PFN_clCreateCommandQueue)(cl_context, cl_device_id, cl_int, cl_int*);
+typedef cl_program (*PFN_clCreateProgramWithSource)(cl_context, cl_uint, const char**, const size_t*, cl_int*);
+typedef cl_int (*PFN_clBuildProgram)(cl_program, cl_uint, const cl_device_id*, const char*, void*, void*);
+typedef cl_kernel (*PFN_clCreateKernel)(cl_program, const char*, cl_int*);
+typedef cl_mem (*PFN_clCreateBuffer)(cl_context, cl_mem_flags, size_t, void*, cl_int*);
+typedef cl_int (*PFN_clEnqueueWriteBuffer)(cl_command_queue, cl_mem, cl_int, size_t, size_t, const void*, cl_uint, const void*, void*);
+typedef cl_int (*PFN_clEnqueueReadBuffer)(cl_command_queue, cl_mem, cl_int, size_t, size_t, void*, cl_uint, const void*, void*);
+typedef cl_int (*PFN_clSetKernelArg)(cl_kernel, cl_uint, size_t, const void*);
+typedef cl_int (*PFN_clEnqueueNDRangeKernel)(cl_command_queue, cl_kernel, cl_uint, const size_t*, const size_t*, const size_t*, cl_uint, const void*, void*);
+typedef cl_int (*PFN_clFinish)(cl_command_queue);
+typedef cl_int (*PFN_clReleaseMemObject)(cl_mem);
+typedef cl_int (*PFN_clReleaseKernel)(cl_kernel);
+typedef cl_int (*PFN_clReleaseProgram)(cl_program);
+typedef cl_int (*PFN_clReleaseCommandQueue)(cl_command_queue);
+typedef cl_int (*PFN_clReleaseContext)(cl_context);
+
+/* Global OpenCL state */
+static HMODULE mfl_ocl_dll = NULL;
+static cl_context mfl_ocl_ctx = NULL;
+static cl_command_queue mfl_ocl_queue = NULL;
+static cl_program mfl_ocl_program = NULL;
+static cl_kernel mfl_ocl_k_conv2d = NULL;
+static cl_kernel mfl_ocl_k_matmul = NULL;
+static cl_kernel mfl_ocl_k_group_norm = NULL;
+static cl_kernel mfl_ocl_k_attention = NULL;
+static int mfl_ocl_ready = 0;
+
+/* Function pointers */
+static PFN_clGetPlatformIDs p_clGetPlatformIDs;
+static PFN_clGetDeviceIDs p_clGetDeviceIDs;
+static PFN_clCreateContext p_clCreateContext;
+static PFN_clCreateCommandQueue p_clCreateCommandQueue;
+static PFN_clCreateProgramWithSource p_clCreateProgramWithSource;
+static PFN_clBuildProgram p_clBuildProgram;
+static PFN_clCreateKernel p_clCreateKernel;
+static PFN_clCreateBuffer p_clCreateBuffer;
+static PFN_clEnqueueWriteBuffer p_clEnqueueWriteBuffer;
+static PFN_clEnqueueReadBuffer p_clEnqueueReadBuffer;
+static PFN_clSetKernelArg p_clSetKernelArg;
+static PFN_clEnqueueNDRangeKernel p_clEnqueueNDRangeKernel;
+static PFN_clFinish p_clFinish;
+static PFN_clReleaseMemObject p_clReleaseMemObject;
+static PFN_clReleaseKernel p_clReleaseKernel;
+static PFN_clReleaseProgram p_clReleaseProgram;
+static PFN_clReleaseCommandQueue p_clReleaseCommandQueue;
+static PFN_clReleaseContext p_clReleaseContext;
+
+/* OpenCL kernel source — conv2d, matmul, group_norm */
+static const char* mfl_ocl_source =
+"__kernel void conv2d(__global const float* input, __global const float* weights,"
+"  __global const float* bias, __global float* output,"
+"  int c_in, int c_out, int h, int w, int kh, int kw, int pad, int stride) {"
+"  int co = get_global_id(0);"
+"  int pos = get_global_id(1);"
+"  int h_out = (h + 2*pad - kh) / stride + 1;"
+"  int w_out = (w + 2*pad - kw) / stride + 1;"
+"  if (co >= c_out || pos >= h_out * w_out) return;"
+"  int y = pos / w_out;"
+"  int x = pos % w_out;"
+"  float acc = bias[co];"
+"  int ksz = kh * kw;"
+"  for (int ci = 0; ci < c_in; ci++) {"
+"    for (int ky = 0; ky < kh; ky++) {"
+"      int iy = y * stride + ky - pad;"
+"      if (iy < 0 || iy >= h) continue;"
+"      for (int kx = 0; kx < kw; kx++) {"
+"        int ix = x * stride + kx - pad;"
+"        if (ix < 0 || ix >= w) continue;"
+"        acc += input[ci * h * w + iy * w + ix] * weights[co * c_in * ksz + ci * ksz + ky * kw + kx];"
+"      }"
+"    }"
+"  }"
+"  output[co * h_out * w_out + pos] = acc;"
+"}"
+"__kernel void matmul(__global const float* x, __global const float* w,"
+"  __global const float* bias, __global float* out,"
+"  int n_in, int n_out, int batch) {"
+"  int o = get_global_id(0);"
+"  int b = get_global_id(1);"
+"  if (o >= n_out || b >= batch) return;"
+"  float acc = bias[o];"
+"  for (int k = 0; k < n_in; k++) {"
+"    acc += x[b * n_in + k] * w[o * n_in + k];"
+"  }"
+"  out[b * n_out + o] = acc;"
+"}"
+"__kernel void group_norm(__global const float* input, __global const float* weight,"
+"  __global const float* bias, __global float* output,"
+"  int channels, int h, int w, int groups, float eps) {"
+"  int g = get_group_id(0);"
+"  int lid = get_local_id(0);"
+"  int lsize = get_local_size(0);"
+"  int cg = channels / groups;"
+"  int hw = h * w;"
+"  int count = cg * hw;"
+"  int base = g * count;"
+"  __local float lsum[256], lsqsum[256];"
+"  float psum = 0.0f, psqsum = 0.0f;"
+"  for (int i = lid; i < count; i += lsize) {"
+"    float v = input[base + i];"
+"    psum += v;"
+"    psqsum += v * v;"
+"  }"
+"  lsum[lid] = psum;"
+"  lsqsum[lid] = psqsum;"
+"  barrier(CLK_LOCAL_MEM_FENCE);"
+"  for (int s = lsize / 2; s > 0; s >>= 1) {"
+"    if (lid < s) { lsum[lid] += lsum[lid + s]; lsqsum[lid] += lsqsum[lid + s]; }"
+"    barrier(CLK_LOCAL_MEM_FENCE);"
+"  }"
+"  float mean = lsum[0] / count;"
+"  float var = lsqsum[0] / count - mean * mean;"
+"  float inv_std = 1.0f / sqrt(var + eps);"
+"  for (int i = lid; i < count; i += lsize) {"
+"    int c = i / hw;"
+"    int oc = g * cg + c;"
+"    int off = oc * hw + (i % hw);"
+"    output[off] = (input[off] - mean) * inv_std * weight[oc] + bias[oc];"
+"  }"
+"}"
+"__kernel void attention_f32(__global const float* q, __global const float* k,"
+"  __global const float* v, __global float* out,"
+"  int ctx_seq, int channels, int heads, float scale) {"
+"  int i = get_global_id(0);"
+"  int h = get_global_id(1);"
+"  int seq = get_global_size(0);"
+"  if (h >= heads) return;"
+"  int hd = channels / heads;"
+"  int off = h * hd;"
+"  float max_score = -1e30f;"
+"  float sum_exp = 0.0f;"
+"  float out_acc[128];"
+"  for (int d = 0; d < hd && d < 128; d++) out_acc[d] = 0.0f;"
+"  for (int j = 0; j < ctx_seq; j++) {"
+"    float dot = 0.0f;"
+"    for (int d = 0; d < hd; d++) {"
+"      dot += q[i * channels + off + d] * k[j * channels + off + d];"
+"    }"
+"    dot *= scale;"
+"    float m_new = fmax(max_score, dot);"
+"    float rescale = exp(max_score - m_new);"
+"    float e = exp(dot - m_new);"
+"    sum_exp = sum_exp * rescale + e;"
+"    for (int d = 0; d < hd && d < 128; d++) {"
+"      out_acc[d] = out_acc[d] * rescale + e * v[j * channels + off + d];"
+"    }"
+"    max_score = m_new;"
+"  }"
+"  float inv_sum = 1.0f / sum_exp;"
+"  for (int d = 0; d < hd && d < 128; d++) {"
+"    out[i * channels + off + d] = out_acc[d] * inv_sum;"
+"  }"
+"}";
+
+/* Initialize OpenCL — returns 1 on success, 0 on failure */
+static int mfl_ocl_init(void) {
+    if (mfl_ocl_ready) return 1;
+    mfl_ocl_dll = LoadLibraryA("OpenCL.dll");
+    if (!mfl_ocl_dll) { fprintf(stderr, "ocl: LoadLibraryA failed\n"); return 0; }
+    fprintf(stderr, "ocl: OpenCL.dll loaded\n");
+    p_clGetPlatformIDs = (PFN_clGetPlatformIDs)GetProcAddress(mfl_ocl_dll, "clGetPlatformIDs");
+    p_clGetDeviceIDs = (PFN_clGetDeviceIDs)GetProcAddress(mfl_ocl_dll, "clGetDeviceIDs");
+    p_clCreateContext = (PFN_clCreateContext)GetProcAddress(mfl_ocl_dll, "clCreateContext");
+    p_clCreateCommandQueue = (PFN_clCreateCommandQueue)GetProcAddress(mfl_ocl_dll, "clCreateCommandQueue");
+    p_clCreateProgramWithSource = (PFN_clCreateProgramWithSource)GetProcAddress(mfl_ocl_dll, "clCreateProgramWithSource");
+    p_clBuildProgram = (PFN_clBuildProgram)GetProcAddress(mfl_ocl_dll, "clBuildProgram");
+    p_clCreateKernel = (PFN_clCreateKernel)GetProcAddress(mfl_ocl_dll, "clCreateKernel");
+    p_clCreateBuffer = (PFN_clCreateBuffer)GetProcAddress(mfl_ocl_dll, "clCreateBuffer");
+    p_clEnqueueWriteBuffer = (PFN_clEnqueueWriteBuffer)GetProcAddress(mfl_ocl_dll, "clEnqueueWriteBuffer");
+    p_clEnqueueReadBuffer = (PFN_clEnqueueReadBuffer)GetProcAddress(mfl_ocl_dll, "clEnqueueReadBuffer");
+    p_clSetKernelArg = (PFN_clSetKernelArg)GetProcAddress(mfl_ocl_dll, "clSetKernelArg");
+    p_clEnqueueNDRangeKernel = (PFN_clEnqueueNDRangeKernel)GetProcAddress(mfl_ocl_dll, "clEnqueueNDRangeKernel");
+    p_clFinish = (PFN_clFinish)GetProcAddress(mfl_ocl_dll, "clFinish");
+    p_clReleaseMemObject = (PFN_clReleaseMemObject)GetProcAddress(mfl_ocl_dll, "clReleaseMemObject");
+    p_clReleaseKernel = (PFN_clReleaseKernel)GetProcAddress(mfl_ocl_dll, "clReleaseKernel");
+    p_clReleaseProgram = (PFN_clReleaseProgram)GetProcAddress(mfl_ocl_dll, "clReleaseProgram");
+    p_clReleaseCommandQueue = (PFN_clReleaseCommandQueue)GetProcAddress(mfl_ocl_dll, "clReleaseCommandQueue");
+    p_clReleaseContext = (PFN_clReleaseContext)GetProcAddress(mfl_ocl_dll, "clReleaseContext");
+    if (!p_clGetPlatformIDs || !p_clCreateContext || !p_clCreateCommandQueue) { fprintf(stderr, "ocl: missing procs\n"); return 0; }
+    fprintf(stderr, "ocl: all procs loaded\n");
+    cl_platform_id plat;
+    cl_int err = p_clGetPlatformIDs(1, &plat, NULL);
+    if (err != CL_SUCCESS) { fprintf(stderr, "ocl: GetPlatformIDs err=%d\n", err); return 0; }
+    fprintf(stderr, "ocl: platform found\n");
+    cl_device_id dev;
+    err = p_clGetDeviceIDs(plat, CL_DEVICE_TYPE_GPU, 1, &dev, NULL);
+    if (err != CL_SUCCESS) { fprintf(stderr, "ocl: GetDeviceIDs err=%d\n", err); return 0; }
+    fprintf(stderr, "ocl: GPU device found\n");
+    mfl_ocl_ctx = p_clCreateContext(NULL, 1, &dev, NULL, NULL, &err);
+    if (!mfl_ocl_ctx) { fprintf(stderr, "ocl: CreateContext err=%d\n", err); return 0; }
+    mfl_ocl_queue = p_clCreateCommandQueue(mfl_ocl_ctx, dev, 0, &err);
+    if (!mfl_ocl_queue) { fprintf(stderr, "ocl: CreateCommandQueue err=%d\n", err); p_clReleaseContext(mfl_ocl_ctx); return 0; }
+    const char* src = mfl_ocl_source;
+    size_t slen = strlen(src);
+    mfl_ocl_program = p_clCreateProgramWithSource(mfl_ocl_ctx, 1, &src, &slen, &err);
+    if (!mfl_ocl_program) { fprintf(stderr, "ocl: CreateProgram err=%d\n", err); p_clReleaseCommandQueue(mfl_ocl_queue); p_clReleaseContext(mfl_ocl_ctx); return 0; }
+    err = p_clBuildProgram(mfl_ocl_program, 1, &dev, NULL, NULL, NULL);
+    if (err != CL_SUCCESS) { fprintf(stderr, "ocl: BuildProgram err=%d\n", err); p_clReleaseProgram(mfl_ocl_program); p_clReleaseCommandQueue(mfl_ocl_queue); p_clReleaseContext(mfl_ocl_ctx); return 0; }
+    fprintf(stderr, "ocl: program built\n");
+    mfl_ocl_k_conv2d = p_clCreateKernel(mfl_ocl_program, "conv2d", &err);
+    mfl_ocl_k_matmul = p_clCreateKernel(mfl_ocl_program, "matmul", &err);
+    mfl_ocl_k_group_norm = p_clCreateKernel(mfl_ocl_program, "group_norm", &err);
+    mfl_ocl_k_attention = p_clCreateKernel(mfl_ocl_program, "attention_f32", &err);
+    if (!mfl_ocl_k_conv2d || !mfl_ocl_k_matmul || !mfl_ocl_k_group_norm || !mfl_ocl_k_attention) { fprintf(stderr, "ocl: CreateKernel failed\n"); return 0; }
+    fprintf(stderr, "ocl: all kernels created\n");
+    mfl_ocl_ready = 1;
+    return 1;
+}
+
+/* GPU conv2d — dispatches to OpenCL kernel */
+static void mfl_conv2d_gpu(int64_t outb, int64_t inb, int64_t w, int64_t b,
+                           int64_t c_in, int64_t c_out, int64_t h, int64_t w_dim,
+                           int64_t kh, int64_t kw, int64_t pad, int64_t stride) {
+    int64_t h_out = (h + 2*pad - kh) / stride + 1;
+    int64_t w_out = (w_dim + 2*pad - kw) / stride + 1;
+    size_t in_sz = c_in * h * w_dim * 4;
+    size_t wt_sz = c_out * c_in * kh * kw * 4;
+    size_t out_sz = c_out * h_out * w_out * 4;
+    cl_mem d_in = p_clCreateBuffer(mfl_ocl_ctx, CL_MEM_READ_ONLY, in_sz, NULL, NULL);
+    cl_mem d_w = p_clCreateBuffer(mfl_ocl_ctx, CL_MEM_READ_ONLY, wt_sz, NULL, NULL);
+    cl_mem d_b = p_clCreateBuffer(mfl_ocl_ctx, CL_MEM_READ_ONLY, c_out * 4, NULL, NULL);
+    cl_mem d_out = p_clCreateBuffer(mfl_ocl_ctx, CL_MEM_WRITE_ONLY, out_sz, NULL, NULL);
+    p_clEnqueueWriteBuffer(mfl_ocl_queue, d_in, CL_FALSE, 0, in_sz, (void*)(intptr_t)inb, 0, NULL, NULL);
+    p_clEnqueueWriteBuffer(mfl_ocl_queue, d_w, CL_FALSE, 0, wt_sz, (void*)(intptr_t)w, 0, NULL, NULL);
+    p_clEnqueueWriteBuffer(mfl_ocl_queue, d_b, CL_FALSE, 0, c_out * 4, (void*)(intptr_t)b, 0, NULL, NULL);
+    int32_t args[] = {(int32_t)c_in, (int32_t)c_out, (int32_t)h, (int32_t)w_dim, (int32_t)kh, (int32_t)kw, (int32_t)pad, (int32_t)stride};
+    p_clSetKernelArg(mfl_ocl_k_conv2d, 0, sizeof(cl_mem), &d_in);
+    p_clSetKernelArg(mfl_ocl_k_conv2d, 1, sizeof(cl_mem), &d_w);
+    p_clSetKernelArg(mfl_ocl_k_conv2d, 2, sizeof(cl_mem), &d_b);
+    p_clSetKernelArg(mfl_ocl_k_conv2d, 3, sizeof(cl_mem), &d_out);
+    p_clSetKernelArg(mfl_ocl_k_conv2d, 4, sizeof(int), &args[0]);
+    p_clSetKernelArg(mfl_ocl_k_conv2d, 5, sizeof(int), &args[1]);
+    p_clSetKernelArg(mfl_ocl_k_conv2d, 6, sizeof(int), &args[2]);
+    p_clSetKernelArg(mfl_ocl_k_conv2d, 7, sizeof(int), &args[3]);
+    p_clSetKernelArg(mfl_ocl_k_conv2d, 8, sizeof(int), &args[4]);
+    p_clSetKernelArg(mfl_ocl_k_conv2d, 9, sizeof(int), &args[5]);
+    p_clSetKernelArg(mfl_ocl_k_conv2d, 10, sizeof(int), &args[6]);
+    p_clSetKernelArg(mfl_ocl_k_conv2d, 11, sizeof(int), &args[7]);
+    size_t global[2] = {(size_t)c_out, (size_t)(h_out * w_out)};
+    size_t local[2] = {1, 256};
+    if (global[1] < 256) local[1] = global[1];
+    p_clEnqueueNDRangeKernel(mfl_ocl_queue, mfl_ocl_k_conv2d, 2, NULL, global, local, 0, NULL, NULL);
+    p_clEnqueueReadBuffer(mfl_ocl_queue, d_out, CL_TRUE, 0, out_sz, (void*)(intptr_t)outb, 0, NULL, NULL);
+    p_clReleaseMemObject(d_in); p_clReleaseMemObject(d_w); p_clReleaseMemObject(d_b); p_clReleaseMemObject(d_out);
+}
+
+/* GPU matmul */
+static void mfl_matmul_gpu(int64_t ob, int64_t xb, int64_t w, int64_t b,
+                           int64_t n_in, int64_t n_out, int64_t batch) {
+    size_t x_sz = batch * n_in * 4;
+    size_t w_sz = n_out * n_in * 4;
+    size_t out_sz = batch * n_out * 4;
+    cl_mem d_x = p_clCreateBuffer(mfl_ocl_ctx, CL_MEM_READ_ONLY, x_sz, NULL, NULL);
+    cl_mem d_w = p_clCreateBuffer(mfl_ocl_ctx, CL_MEM_READ_ONLY, w_sz, NULL, NULL);
+    /* Always create bias buffer — OpenCL kernels can't safely dereference null.
+     * If b is 0, use CL_TRUE (blocking) for the zeros write so the host buffer
+     * stays valid until the transfer completes (use-after-free otherwise). */
+    cl_mem d_b = p_clCreateBuffer(mfl_ocl_ctx, CL_MEM_READ_ONLY, n_out * 4, NULL, NULL);
+    if (b) {
+        p_clEnqueueWriteBuffer(mfl_ocl_queue, d_b, CL_FALSE, 0, n_out * 4, (void*)(intptr_t)b, 0, NULL, NULL);
+    } else {
+        /* Zero-fill the bias buffer with blocking write (host buffer freed after) */
+        float* zeros = (float*)calloc(n_out, sizeof(float));
+        p_clEnqueueWriteBuffer(mfl_ocl_queue, d_b, CL_TRUE, 0, n_out * 4, zeros, 0, NULL, NULL);
+        free(zeros);
+    }
+    cl_mem d_out = p_clCreateBuffer(mfl_ocl_ctx, CL_MEM_WRITE_ONLY, out_sz, NULL, NULL);
+    p_clEnqueueWriteBuffer(mfl_ocl_queue, d_x, CL_FALSE, 0, x_sz, (void*)(intptr_t)xb, 0, NULL, NULL);
+    p_clEnqueueWriteBuffer(mfl_ocl_queue, d_w, CL_FALSE, 0, w_sz, (void*)(intptr_t)w, 0, NULL, NULL);
+    int32_t ni = (int32_t)n_in, no = (int32_t)n_out, bt = (int32_t)batch;
+    p_clSetKernelArg(mfl_ocl_k_matmul, 0, sizeof(cl_mem), &d_x);
+    p_clSetKernelArg(mfl_ocl_k_matmul, 1, sizeof(cl_mem), &d_w);
+    p_clSetKernelArg(mfl_ocl_k_matmul, 2, sizeof(cl_mem), &d_b);
+    p_clSetKernelArg(mfl_ocl_k_matmul, 3, sizeof(cl_mem), &d_out);
+    p_clSetKernelArg(mfl_ocl_k_matmul, 4, sizeof(int), &ni);
+    p_clSetKernelArg(mfl_ocl_k_matmul, 5, sizeof(int), &no);
+    p_clSetKernelArg(mfl_ocl_k_matmul, 6, sizeof(int), &bt);
+    size_t global[2] = {(size_t)n_out, (size_t)batch};
+    p_clEnqueueNDRangeKernel(mfl_ocl_queue, mfl_ocl_k_matmul, 2, NULL, global, NULL, 0, NULL, NULL);
+    p_clEnqueueReadBuffer(mfl_ocl_queue, d_out, CL_TRUE, 0, out_sz, (void*)(intptr_t)ob, 0, NULL, NULL);
+    p_clReleaseMemObject(d_x); p_clReleaseMemObject(d_w); p_clReleaseMemObject(d_b); p_clReleaseMemObject(d_out);
+}
+
+/* GPU group_norm */
+static void mfl_group_norm_gpu(int64_t outb, int64_t inb, int64_t w, int64_t b,
+                               int64_t channels, int64_t h, int64_t w_dim,
+                               int64_t groups, double eps) {
+    size_t in_sz = channels * h * w_dim * 4;
+    cl_mem d_in = p_clCreateBuffer(mfl_ocl_ctx, CL_MEM_READ_ONLY, in_sz, NULL, NULL);
+    cl_mem d_w = p_clCreateBuffer(mfl_ocl_ctx, CL_MEM_READ_ONLY, channels * 4, NULL, NULL);
+    cl_mem d_b = p_clCreateBuffer(mfl_ocl_ctx, CL_MEM_READ_ONLY, channels * 4, NULL, NULL);
+    cl_mem d_out = p_clCreateBuffer(mfl_ocl_ctx, CL_MEM_WRITE_ONLY, in_sz, NULL, NULL);
+    p_clEnqueueWriteBuffer(mfl_ocl_queue, d_in, CL_FALSE, 0, in_sz, (void*)(intptr_t)inb, 0, NULL, NULL);
+    p_clEnqueueWriteBuffer(mfl_ocl_queue, d_w, CL_FALSE, 0, channels * 4, (void*)(intptr_t)w, 0, NULL, NULL);
+    p_clEnqueueWriteBuffer(mfl_ocl_queue, d_b, CL_FALSE, 0, channels * 4, (void*)(intptr_t)b, 0, NULL, NULL);
+    int32_t ch = (int32_t)channels, hh = (int32_t)h, ww = (int32_t)w_dim, gg = (int32_t)groups;
+    float eps_f = (float)eps;
+    p_clSetKernelArg(mfl_ocl_k_group_norm, 0, sizeof(cl_mem), &d_in);
+    p_clSetKernelArg(mfl_ocl_k_group_norm, 1, sizeof(cl_mem), &d_w);
+    p_clSetKernelArg(mfl_ocl_k_group_norm, 2, sizeof(cl_mem), &d_b);
+    p_clSetKernelArg(mfl_ocl_k_group_norm, 3, sizeof(cl_mem), &d_out);
+    p_clSetKernelArg(mfl_ocl_k_group_norm, 4, sizeof(int), &ch);
+    p_clSetKernelArg(mfl_ocl_k_group_norm, 5, sizeof(int), &hh);
+    p_clSetKernelArg(mfl_ocl_k_group_norm, 6, sizeof(int), &ww);
+    p_clSetKernelArg(mfl_ocl_k_group_norm, 7, sizeof(int), &gg);
+    p_clSetKernelArg(mfl_ocl_k_group_norm, 8, sizeof(float), &eps_f);
+    size_t gn_local = 256;
+    size_t gn_global = (size_t)groups * gn_local;
+    p_clEnqueueNDRangeKernel(mfl_ocl_queue, mfl_ocl_k_group_norm, 1, NULL, &gn_global, &gn_local, 0, NULL, NULL);
+    p_clEnqueueReadBuffer(mfl_ocl_queue, d_out, CL_TRUE, 0, in_sz, (void*)(intptr_t)outb, 0, NULL, NULL);
+    p_clReleaseMemObject(d_in); p_clReleaseMemObject(d_w); p_clReleaseMemObject(d_b); p_clReleaseMemObject(d_out);
+}
+
+/* GPU attention — fused flash-attention-lite kernel */
+static void mfl_attention_gpu(int64_t qb, int64_t kb, int64_t vb, int64_t ob,
+                              int64_t seq, int64_t ctx_seq, int64_t channels, int64_t heads, double scale) {
+    size_t q_sz = seq * channels * 4;
+    size_t k_sz = ctx_seq * channels * 4;
+    size_t v_sz = ctx_seq * channels * 4;
+    size_t out_sz = seq * channels * 4;
+    cl_mem d_q = p_clCreateBuffer(mfl_ocl_ctx, CL_MEM_READ_ONLY, q_sz, NULL, NULL);
+    cl_mem d_k = p_clCreateBuffer(mfl_ocl_ctx, CL_MEM_READ_ONLY, k_sz, NULL, NULL);
+    cl_mem d_v = p_clCreateBuffer(mfl_ocl_ctx, CL_MEM_READ_ONLY, v_sz, NULL, NULL);
+    cl_mem d_out = p_clCreateBuffer(mfl_ocl_ctx, CL_MEM_WRITE_ONLY, out_sz, NULL, NULL);
+    p_clEnqueueWriteBuffer(mfl_ocl_queue, d_q, CL_FALSE, 0, q_sz, (void*)(intptr_t)qb, 0, NULL, NULL);
+    p_clEnqueueWriteBuffer(mfl_ocl_queue, d_k, CL_FALSE, 0, k_sz, (void*)(intptr_t)kb, 0, NULL, NULL);
+    p_clEnqueueWriteBuffer(mfl_ocl_queue, d_v, CL_FALSE, 0, v_sz, (void*)(intptr_t)vb, 0, NULL, NULL);
+    int32_t cs = (int32_t)ctx_seq, ch = (int32_t)channels, hd = (int32_t)heads;
+    float scale_f = (float)scale;
+    p_clSetKernelArg(mfl_ocl_k_attention, 0, sizeof(cl_mem), &d_q);
+    p_clSetKernelArg(mfl_ocl_k_attention, 1, sizeof(cl_mem), &d_k);
+    p_clSetKernelArg(mfl_ocl_k_attention, 2, sizeof(cl_mem), &d_v);
+    p_clSetKernelArg(mfl_ocl_k_attention, 3, sizeof(cl_mem), &d_out);
+    p_clSetKernelArg(mfl_ocl_k_attention, 4, sizeof(int), &cs);
+    p_clSetKernelArg(mfl_ocl_k_attention, 5, sizeof(int), &ch);
+    p_clSetKernelArg(mfl_ocl_k_attention, 6, sizeof(int), &hd);
+    p_clSetKernelArg(mfl_ocl_k_attention, 7, sizeof(float), &scale_f);
+    size_t global[2] = {(size_t)seq, (size_t)heads};
+    p_clEnqueueNDRangeKernel(mfl_ocl_queue, mfl_ocl_k_attention, 2, NULL, global, NULL, 0, NULL, NULL);
+    p_clEnqueueReadBuffer(mfl_ocl_queue, d_out, CL_TRUE, 0, out_sz, (void*)(intptr_t)ob, 0, NULL, NULL);
+    p_clReleaseMemObject(d_q); p_clReleaseMemObject(d_k); p_clReleaseMemObject(d_v); p_clReleaseMemObject(d_out);
+}
+#endif /* _WIN32 */
+
+/* Dispatch wrappers — GPU if available, CPU fallback otherwise */
+static int mfl_ocl_init_wrapper(void) {
+#ifdef _WIN32
+    return mfl_ocl_init();
+#else
+    return 0;
+#endif
+}
+static void mfl_conv2d_f32(int64_t outb, int64_t inb, int64_t w, int64_t b,
+                           int64_t c_in, int64_t c_out, int64_t h, int64_t w_dim,
+                           int64_t kh, int64_t kw, int64_t pad, int64_t stride) {
+#ifdef _WIN32
+    if (mfl_ocl_ready) { mfl_conv2d_gpu(outb, inb, w, b, c_in, c_out, h, w_dim, kh, kw, pad, stride); return; }
+#endif
+    float* out = (float*)(intptr_t)outb;
+    const float* in_buf = (const float*)(intptr_t)inb;
+    const float* wt = (const float*)(intptr_t)w;
+    const float* bias = b ? (const float*)(intptr_t)b : NULL;
+    int64_t h_out = (h + 2*pad - kh) / stride + 1;
+    int64_t w_out = (w_dim + 2*pad - kw) / stride + 1;
+    int64_t ksz = kh * kw;
+    for (int64_t co = 0; co < c_out; co++) {
+        const float* wco = wt + co * c_in * ksz;
+        float bv = bias ? bias[co] : 0.0f;
+        for (int64_t y = 0; y < h_out; y++) {
+            for (int64_t x = 0; x < w_out; x++) {
+                float acc = bv;
+                for (int64_t ci = 0; ci < c_in; ci++) {
+                    const float* wci = wco + ci * ksz;
+                    for (int64_t ky = 0; ky < kh; ky++) {
+                        int64_t iy = y * stride + ky - pad;
+                        if (iy < 0 || iy >= h) continue;
+                        for (int64_t kx = 0; kx < kw; kx++) {
+                            int64_t ix = x * stride + kx - pad;
+                            if (ix < 0 || ix >= w_dim) continue;
+                            acc += in_buf[ci * h * w_dim + iy * w_dim + ix] * wci[ky * kw + kx];
+                        }
+                    }
+                }
+                out[co * h_out * w_out + y * w_out + x] = acc;
+            }
+        }
+    }
+}
+static void mfl_matmul_f32(int64_t ob, int64_t xb, int64_t w, int64_t b, int64_t n_in, int64_t n_out, int64_t batch) {
+#ifdef _WIN32
+    if (mfl_ocl_ready) { mfl_matmul_gpu(ob, xb, w, b, n_in, n_out, batch); return; }
+#endif
+    float* out = (float*)(intptr_t)ob;
+    const float* x = (const float*)(intptr_t)xb;
+    const float* wt = (const float*)(intptr_t)w;
+    const float* bias = b ? (const float*)(intptr_t)b : NULL;
+    for (int64_t o = 0; o < n_out; o++) {
+        const float* wrow = wt + o * n_in;
+        float bv = bias ? bias[o] : 0.0f;
+        for (int64_t bi = 0; bi < batch; bi++) {
+            const float* xrow = x + bi * n_in;
+            float acc = bv;
+            for (int64_t k = 0; k < n_in; k++) acc += xrow[k] * wrow[k];
+            out[bi * n_out + o] = acc;
+        }
+    }
+}
+static void mfl_group_norm_f32(int64_t outb, int64_t inb, int64_t w, int64_t b,
+                               int64_t channels, int64_t h, int64_t w_dim,
+                               int64_t groups, double eps) {
+#ifdef _WIN32
+    if (mfl_ocl_ready) { mfl_group_norm_gpu(outb, inb, w, b, channels, h, w_dim, groups, eps); return; }
+#endif
+    float* out = (float*)(intptr_t)outb;
+    const float* in_buf = (const float*)(intptr_t)inb;
+    const float* wt = (const float*)(intptr_t)w;
+    const float* bias = (const float*)(intptr_t)b;
+    int64_t hw = h * w_dim;
+    int64_t cg = channels / groups;
+    for (int64_t g = 0; g < groups; g++) {
+        double sum = 0.0, sqsum = 0.0;
+        int64_t count = cg * hw;
+        for (int64_t c = 0; c < cg; c++) {
+            const float* iptr = in_buf + (g * cg + c) * hw;
+            for (int64_t i = 0; i < hw; i++) { float v = iptr[i]; sum += v; sqsum += (double)v * v; }
+        }
+        double mean = sum / count;
+        double var = sqsum / count - mean * mean;
+        double inv_std = 1.0 / sqrt(var + eps);
+        for (int64_t c = 0; c < cg; c++) {
+            int64_t oc = g * cg + c;
+            float scale = wt[oc], bv = bias[oc];
+            const float* iptr = in_buf + oc * hw;
+            float* optr = out + oc * hw;
+            for (int64_t i = 0; i < hw; i++) optr[i] = ((float)((iptr[i] - mean) * inv_std)) * scale + bv;
+        }
+    }
+}
+static void mfl_attention_f32(int64_t qb, int64_t kb, int64_t vb, int64_t ob,
+                              int64_t seq, int64_t ctx_seq, int64_t channels, int64_t heads, double scale) {
+#ifdef _WIN32
+    if (mfl_ocl_ready) { mfl_attention_gpu(qb, kb, vb, ob, seq, ctx_seq, channels, heads, scale); return; }
+#endif
+    float* out = (float*)(intptr_t)ob;
+    const float* q = (const float*)(intptr_t)qb;
+    const float* k = (const float*)(intptr_t)kb;
+    const float* v = (const float*)(intptr_t)vb;
+    int64_t hd = channels / heads;
+    for (int64_t h = 0; h < heads; h++) {
+        int64_t off = h * hd;
+        for (int64_t i = 0; i < seq; i++) {
+            double max_score = -1e30, sum_exp = 0.0;
+            double out_acc[256];
+            for (int64_t d = 0; d < hd && d < 256; d++) out_acc[d] = 0.0;
+            for (int64_t j = 0; j < ctx_seq; j++) {
+                double dot = 0.0;
+                for (int64_t d = 0; d < hd; d++) dot += (double)q[i*channels+off+d] * k[j*channels+off+d];
+                dot *= scale;
+                double m_new = max_score > dot ? max_score : dot;
+                double rescale = exp(max_score - m_new);
+                double e = exp(dot - m_new);
+                sum_exp = sum_exp * rescale + e;
+                for (int64_t d = 0; d < hd && d < 256; d++) out_acc[d] = out_acc[d] * rescale + e * v[j*channels+off+d];
+                max_score = m_new;
+            }
+            double inv_sum = 1.0 / sum_exp;
+            for (int64_t d = 0; d < hd && d < 256; d++) out[i*channels+off+d] = (float)(out_acc[d] * inv_sum);
+        }
+    }
 }
 static double mfl_dot_q8(int64_t xq, int64_t xs, int64_t wq, int64_t ws, int64_t n, int64_t gs) {
     const int8_t* x = (const int8_t*)(intptr_t)xq;
@@ -7272,6 +7783,18 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("mfl_dot_f32(%s, %s, %s)", args[0], args[1], args[2]), nil
 	case "axpy_f32":
 		return fmt.Sprintf("mfl_axpy_f32(%s, %s, %s, %s)", args[0], args[1], args[2], args[3]), nil
+	case "matmul_f32":
+		return fmt.Sprintf("mfl_matmul_f32(%s, %s, %s, %s, %s, %s, %s)", args[0], args[1], args[2], args[3], args[4], args[5], args[6]), nil
+	case "conv2d_f32":
+		return fmt.Sprintf("mfl_conv2d_f32(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)", args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8], args[9], args[10], args[11]), nil
+	case "group_norm_f32":
+		return fmt.Sprintf("mfl_group_norm_f32(%s, %s, %s, %s, %s, %s, %s, %s, %s)", args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8]), nil
+	case "attention_f32":
+		return fmt.Sprintf("mfl_attention_f32(%s, %s, %s, %s, %s, %s, %s, %s, %s)", args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8]), nil
+	case "silu_f32":
+		return fmt.Sprintf("mfl_silu_f32(%s, %s)", args[0], args[1]), nil
+	case "ocl_init":
+		return "mfl_ocl_init_wrapper()", nil
 	case "ptr_str":
 		return fmt.Sprintf("mfl_ptr_str(%s)", args[0]), nil
 	case "dial":
