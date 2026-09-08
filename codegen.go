@@ -1323,6 +1323,7 @@ static cl_context mfl_ocl_ctx = NULL;
 static cl_command_queue mfl_ocl_queue = NULL;
 static cl_program mfl_ocl_program = NULL;
 static cl_kernel mfl_ocl_k_conv2d = NULL;
+static cl_kernel mfl_ocl_k_conv3x3_t4x4 = NULL;
 static cl_kernel mfl_ocl_k_matmul = NULL;
 static cl_kernel mfl_ocl_k_matmul_tiled = NULL;
 static cl_kernel mfl_ocl_k_group_norm = NULL;
@@ -1376,6 +1377,40 @@ static const char* mfl_ocl_source =
 "    }"
 "  }"
 "  output[co * h_out * w_out + pos] = acc;"
+"}"
+"__kernel void conv3x3_t4x4(__global const float* input, __global const float* weights,"
+"  __global const float* bias, __global float* output,"
+"  int c_in, int c_out, int h, int w) {"
+"  int co0 = get_group_id(1) * 4;"
+"  int t = get_global_id(0);"
+"  int tiles_x = w / 4;"
+"  int y = t / tiles_x;"
+"  int x0 = (t % tiles_x) * 4;"
+"  if (y >= h || co0 >= c_out) return;"
+"  float acc[4][4];"
+"  for (int j = 0; j < 4; j++) for (int p = 0; p < 4; p++) acc[j][p] = bias[co0 + j];"
+"  for (int ci = 0; ci < c_in; ci++) {"
+"    __global const float* ip = input + ci * h * w;"
+"    for (int ky = 0; ky < 3; ky++) {"
+"      int iy = y + ky - 1;"
+"      if (iy < 0 || iy >= h) continue;"
+"      float v[6];"
+"      for (int i = 0; i < 6; i++) { int ix = x0 - 1 + i; v[i] = (ix >= 0 && ix < w) ? ip[iy * w + ix] : 0.0f; }"
+"      for (int kx = 0; kx < 3; kx++) {"
+"        float w0 = weights[((co0+0) * c_in + ci) * 9 + ky * 3 + kx];"
+"        float w1 = weights[((co0+1) * c_in + ci) * 9 + ky * 3 + kx];"
+"        float w2 = weights[((co0+2) * c_in + ci) * 9 + ky * 3 + kx];"
+"        float w3 = weights[((co0+3) * c_in + ci) * 9 + ky * 3 + kx];"
+"        for (int p = 0; p < 4; p++) {"
+"          float xv = v[p + kx];"
+"          acc[0][p] = mad(xv, w0, acc[0][p]); acc[1][p] = mad(xv, w1, acc[1][p]);"
+"          acc[2][p] = mad(xv, w2, acc[2][p]); acc[3][p] = mad(xv, w3, acc[3][p]);"
+"        }"
+"      }"
+"    }"
+"  }"
+"  for (int j = 0; j < 4; j++) for (int p = 0; p < 4; p++)"
+"    output[(co0 + j) * h * w + y * w + x0 + p] = acc[j][p];"
 "}"
 "__kernel void matmul(__global const float* x, __global const float* w,"
 "  __global const float* bias, __global float* out,"
@@ -1557,12 +1592,13 @@ static int mfl_ocl_init(void) {
     if (err != CL_SUCCESS) { fprintf(stderr, "ocl: BuildProgram err=%d\n", err); p_clReleaseProgram(mfl_ocl_program); p_clReleaseCommandQueue(mfl_ocl_queue); p_clReleaseContext(mfl_ocl_ctx); return 0; }
     fprintf(stderr, "ocl: program built\n");
     mfl_ocl_k_conv2d = p_clCreateKernel(mfl_ocl_program, "conv2d", &err);
+    mfl_ocl_k_conv3x3_t4x4 = p_clCreateKernel(mfl_ocl_program, "conv3x3_t4x4", &err);
     mfl_ocl_k_matmul = p_clCreateKernel(mfl_ocl_program, "matmul", &err);
     mfl_ocl_k_matmul_tiled = p_clCreateKernel(mfl_ocl_program, "matmul_tiled", &err);
     mfl_ocl_k_group_norm = p_clCreateKernel(mfl_ocl_program, "group_norm", &err);
     mfl_ocl_k_group_norm_silu = p_clCreateKernel(mfl_ocl_program, "group_norm_silu", &err);
     mfl_ocl_k_attention = p_clCreateKernel(mfl_ocl_program, "attention_f32", &err);
-    if (!mfl_ocl_k_conv2d || !mfl_ocl_k_matmul || !mfl_ocl_k_matmul_tiled || !mfl_ocl_k_group_norm || !mfl_ocl_k_group_norm_silu || !mfl_ocl_k_attention) { fprintf(stderr, "ocl: CreateKernel failed\n"); return 0; }
+    if (!mfl_ocl_k_conv2d || !mfl_ocl_k_conv3x3_t4x4 || !mfl_ocl_k_matmul || !mfl_ocl_k_matmul_tiled || !mfl_ocl_k_group_norm || !mfl_ocl_k_group_norm_silu || !mfl_ocl_k_attention) { fprintf(stderr, "ocl: CreateKernel failed\n"); return 0; }
     fprintf(stderr, "ocl: all kernels created\n");
     mfl_ocl_ready = 1;
     return 1;
@@ -1584,23 +1620,43 @@ static void mfl_conv2d_gpu(int64_t outb, int64_t inb, int64_t w, int64_t b,
     p_clEnqueueWriteBuffer(mfl_ocl_queue, d_in, CL_FALSE, 0, in_sz, (void*)(intptr_t)inb, 0, NULL, NULL);
     p_clEnqueueWriteBuffer(mfl_ocl_queue, d_w, CL_FALSE, 0, wt_sz, (void*)(intptr_t)w, 0, NULL, NULL);
     p_clEnqueueWriteBuffer(mfl_ocl_queue, d_b, CL_FALSE, 0, c_out * 4, (void*)(intptr_t)b, 0, NULL, NULL);
-    int32_t args[] = {(int32_t)c_in, (int32_t)c_out, (int32_t)h, (int32_t)w_dim, (int32_t)kh, (int32_t)kw, (int32_t)pad, (int32_t)stride};
-    p_clSetKernelArg(mfl_ocl_k_conv2d, 0, sizeof(cl_mem), &d_in);
-    p_clSetKernelArg(mfl_ocl_k_conv2d, 1, sizeof(cl_mem), &d_w);
-    p_clSetKernelArg(mfl_ocl_k_conv2d, 2, sizeof(cl_mem), &d_b);
-    p_clSetKernelArg(mfl_ocl_k_conv2d, 3, sizeof(cl_mem), &d_out);
-    p_clSetKernelArg(mfl_ocl_k_conv2d, 4, sizeof(int), &args[0]);
-    p_clSetKernelArg(mfl_ocl_k_conv2d, 5, sizeof(int), &args[1]);
-    p_clSetKernelArg(mfl_ocl_k_conv2d, 6, sizeof(int), &args[2]);
-    p_clSetKernelArg(mfl_ocl_k_conv2d, 7, sizeof(int), &args[3]);
-    p_clSetKernelArg(mfl_ocl_k_conv2d, 8, sizeof(int), &args[4]);
-    p_clSetKernelArg(mfl_ocl_k_conv2d, 9, sizeof(int), &args[5]);
-    p_clSetKernelArg(mfl_ocl_k_conv2d, 10, sizeof(int), &args[6]);
-    p_clSetKernelArg(mfl_ocl_k_conv2d, 11, sizeof(int), &args[7]);
-    size_t global[2] = {(size_t)c_out, (size_t)(h_out * w_out)};
-    size_t local[2] = {1, 256};
-    if (global[1] < 256) local[1] = global[1];
-    p_clEnqueueNDRangeKernel(mfl_ocl_queue, mfl_ocl_k_conv2d, 2, NULL, global, local, 0, NULL, NULL);
+    /* Use register-tiled 3x3 kernel for 3x3 stride=1 pad=1 convs where dims align */
+    if (kh == 3 && kw == 3 && pad == 1 && stride == 1 && (c_out % 4) == 0 && (w_dim % 4) == 0 && c_out >= 4) {
+        int32_t ci = (int32_t)c_in, co = (int32_t)c_out, hh = (int32_t)h, ww = (int32_t)w_dim;
+        p_clSetKernelArg(mfl_ocl_k_conv3x3_t4x4, 0, sizeof(cl_mem), &d_in);
+        p_clSetKernelArg(mfl_ocl_k_conv3x3_t4x4, 1, sizeof(cl_mem), &d_w);
+        p_clSetKernelArg(mfl_ocl_k_conv3x3_t4x4, 2, sizeof(cl_mem), &d_b);
+        p_clSetKernelArg(mfl_ocl_k_conv3x3_t4x4, 3, sizeof(cl_mem), &d_out);
+        p_clSetKernelArg(mfl_ocl_k_conv3x3_t4x4, 4, sizeof(int), &ci);
+        p_clSetKernelArg(mfl_ocl_k_conv3x3_t4x4, 5, sizeof(int), &co);
+        p_clSetKernelArg(mfl_ocl_k_conv3x3_t4x4, 6, sizeof(int), &hh);
+        p_clSetKernelArg(mfl_ocl_k_conv3x3_t4x4, 7, sizeof(int), &ww);
+        int64_t tiles_x = w_dim / 4;
+        size_t global0 = (size_t)(h * tiles_x);
+        size_t global1 = (size_t)(c_out / 4);
+        size_t g[2] = {global0, global1};
+        size_t l[2] = {64, 1};
+        if (global0 < 64) l[0] = global0;
+        p_clEnqueueNDRangeKernel(mfl_ocl_queue, mfl_ocl_k_conv3x3_t4x4, 2, NULL, g, l, 0, NULL, NULL);
+    } else {
+        int32_t args[] = {(int32_t)c_in, (int32_t)c_out, (int32_t)h, (int32_t)w_dim, (int32_t)kh, (int32_t)kw, (int32_t)pad, (int32_t)stride};
+        p_clSetKernelArg(mfl_ocl_k_conv2d, 0, sizeof(cl_mem), &d_in);
+        p_clSetKernelArg(mfl_ocl_k_conv2d, 1, sizeof(cl_mem), &d_w);
+        p_clSetKernelArg(mfl_ocl_k_conv2d, 2, sizeof(cl_mem), &d_b);
+        p_clSetKernelArg(mfl_ocl_k_conv2d, 3, sizeof(cl_mem), &d_out);
+        p_clSetKernelArg(mfl_ocl_k_conv2d, 4, sizeof(int), &args[0]);
+        p_clSetKernelArg(mfl_ocl_k_conv2d, 5, sizeof(int), &args[1]);
+        p_clSetKernelArg(mfl_ocl_k_conv2d, 6, sizeof(int), &args[2]);
+        p_clSetKernelArg(mfl_ocl_k_conv2d, 7, sizeof(int), &args[3]);
+        p_clSetKernelArg(mfl_ocl_k_conv2d, 8, sizeof(int), &args[4]);
+        p_clSetKernelArg(mfl_ocl_k_conv2d, 9, sizeof(int), &args[5]);
+        p_clSetKernelArg(mfl_ocl_k_conv2d, 10, sizeof(int), &args[6]);
+        p_clSetKernelArg(mfl_ocl_k_conv2d, 11, sizeof(int), &args[7]);
+        size_t global[2] = {(size_t)c_out, (size_t)(h_out * w_out)};
+        size_t local[2] = {1, 256};
+        if (global[1] < 256) local[1] = global[1];
+        p_clEnqueueNDRangeKernel(mfl_ocl_queue, mfl_ocl_k_conv2d, 2, NULL, global, local, 0, NULL, NULL);
+    }
     p_clEnqueueReadBuffer(mfl_ocl_queue, d_out, CL_TRUE, 0, out_sz, (void*)(intptr_t)outb, 0, NULL, NULL);
     p_clReleaseMemObject(d_in); p_clReleaseMemObject(d_w); p_clReleaseMemObject(d_b); p_clReleaseMemObject(d_out);
 }
