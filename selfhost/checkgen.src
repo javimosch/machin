@@ -1079,7 +1079,7 @@ func bspec(name) (s) {
     if name == "ptr_str" { s = "i>s"  return s }
     // net / io
     if name == "listen" || name == "accept" || name == "raw_mode" { s = "i>i"  return s }
-    if name == "dial" { s = "si>i"  return s }
+    if name == "dial" || name == "listen_on" { s = "si>i"  return s }
     if name == "peer_addr" { s = "i>s"  return s }
     if name == "socket_timeout" { s = "ii>i"  return s }
     if name == "udp_socket" { s = "i>i"  return s }

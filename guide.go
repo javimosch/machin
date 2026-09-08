@@ -383,6 +383,7 @@ func machinGuide() guideCatalog {
 			// net
 			{"dial", "(string, int) -> int", "TCP connect host:port -> fd (-1 on fail)", "net"},
 			{"listen", "(int) -> int", "open a listening TCP socket on a port", "net"},
+			{"listen_on", "(string, int) -> int", "bind a listening TCP socket to a SPECIFIC address -> fd (-1 on error). listen(port) hardcodes INADDR_ANY, so a server told to serve 127.0.0.1 is still reachable from the whole network and cannot opt out; use this whenever the bind address is a security boundary. Host \"\" or \"0.0.0.0\" means every interface; anything else is resolved like dial, so \"localhost\" and \"::1\" work", "net"},
 			{"accept", "(int) -> int", "accept a connection -> fd", "net"},
 			{"peer_addr", "(int) -> string", "remote IP of a connected socket (getpeername), \"\" on error — the real client IP when not behind a proxy", "net"},
 			{"socket_timeout", "(int, int) -> int", "cap blocking recv/send on a socket to N ms (0 = none) — anti slow-loris; 0 ok / -1 error", "net"},

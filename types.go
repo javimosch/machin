@@ -2611,6 +2611,13 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		c.addPair(argSlots[1], c.cInt)
 		c.addPair(argSlots[2], c.cInt)
 		return c.cBytes, nil
+	case "listen_on":
+		if len(argSlots) != 2 {
+			return 0, fmt.Errorf("listen_on: 2 args (host string, port int)")
+		}
+		c.addPair(argSlots[0], c.cString)
+		c.addPair(argSlots[1], c.cInt)
+		return c.cInt, nil
 	case "write_file_at":
 		if len(argSlots) != 3 {
 			return 0, fmt.Errorf("write_file_at: 3 args (path string, offset int, data bytes)")

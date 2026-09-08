@@ -497,6 +497,7 @@ first := users[0]                                // value copy
 | `regex_replace(s, pattern, repl)` | replace all matches of `pattern` in `s` with `repl` (a bad pattern returns `s` unchanged) |
 | `sleep(ms)`                 | suspend the current goroutine (milliseconds) |
 | `listen(port)`              | open a TCP listening socket                  |
+| `listen_on(host, port)` | bind a listening TCP socket to a **specific** address → fd (`-1` on error). `listen` hardcodes `INADDR_ANY`, so a server told to serve `127.0.0.1` is still reachable from the whole network; use this wherever the bind address is a security boundary. `""`/`"0.0.0.0"` = every interface |
 | `accept(fd)`                | accept a connection, return its socket fd    |
 | `dial(host, port)`          | open an outbound TCP connection, return its socket fd |
 | `peer_addr(fd)`             | the remote address of a connected socket `fd` |

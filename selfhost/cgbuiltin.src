@@ -131,6 +131,7 @@ func builtin_cfn(name) (s) {
     if name == "ptr_str" { s = "mfl_ptr_str"  return s }
     if name == "dial" { s = "mfl_dial"  return s }
     if name == "listen" { s = "mfl_listen"  return s }
+    if name == "listen_on" { s = "mfl_listen_on"  return s }
     if name == "accept" { s = "mfl_accept"  return s }
     if name == "peer_addr" { s = "mfl_peer_addr"  return s }
     if name == "socket_timeout" { s = "mfl_socket_timeout"  return s }
