@@ -2556,6 +2556,65 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		c.addPair(argSlots[2], c.cInt)
 		c.addPair(argSlots[3], c.cInt)
 		return c.cVoid, nil
+	case "matmul_f32":
+		if len(argSlots) != 7 {
+			return 0, fmt.Errorf("matmul_f32: 7 args (out, x, w, bias, n_in, n_out, batch)")
+		}
+		c.addPair(argSlots[0], c.cInt)
+		c.addPair(argSlots[1], c.cInt)
+		c.addPair(argSlots[2], c.cInt)
+		c.addPair(argSlots[3], c.cInt)
+		c.addPair(argSlots[4], c.cInt)
+		c.addPair(argSlots[5], c.cInt)
+		c.addPair(argSlots[6], c.cInt)
+		return c.cVoid, nil
+	case "conv2d_f32":
+		if len(argSlots) != 12 {
+			return 0, fmt.Errorf("conv2d_f32: 12 args (out, in, w, bias, c_in, c_out, h, w_dim, kh, kw, pad, stride)")
+		}
+		for i := 0; i < 12; i++ {
+			c.addPair(argSlots[i], c.cInt)
+		}
+		return c.cVoid, nil
+	case "group_norm_f32":
+		if len(argSlots) != 9 {
+			return 0, fmt.Errorf("group_norm_f32: 9 args (out, in, w, b, channels, h, w_dim, groups, eps)")
+		}
+		for i := 0; i < 8; i++ {
+			c.addPair(argSlots[i], c.cInt)
+		}
+		c.addPair(argSlots[8], newSlot(c, KNum))
+		return c.cVoid, nil
+	case "group_norm_silu_f32":
+		if len(argSlots) != 9 {
+			return 0, fmt.Errorf("group_norm_silu_f32: 9 args (out, in, w, b, channels, h, w_dim, groups, eps)")
+		}
+		for i := 0; i < 8; i++ {
+			c.addPair(argSlots[i], c.cInt)
+		}
+		c.addPair(argSlots[8], newSlot(c, KNum))
+		return c.cVoid, nil
+	case "attention_f32":
+		if len(argSlots) != 9 {
+			return 0, fmt.Errorf("attention_f32: 9 args (q, k, v, out, seq, ctx_seq, channels, heads, scale)")
+		}
+		for i := 0; i < 8; i++ {
+			c.addPair(argSlots[i], c.cInt)
+		}
+		c.addPair(argSlots[8], newSlot(c, KNum))
+		return c.cVoid, nil
+	case "silu_f32":
+		if len(argSlots) != 2 {
+			return 0, fmt.Errorf("silu_f32: 2 args (buf, count)")
+		}
+		c.addPair(argSlots[0], c.cInt)
+		c.addPair(argSlots[1], c.cInt)
+		return c.cVoid, nil
+	case "ocl_init":
+		if len(argSlots) != 0 {
+			return 0, fmt.Errorf("ocl_init: 0 args")
+		}
+		return c.cInt, nil
 	case "ptr_str":
 		if len(argSlots) != 1 {
 			return 0, fmt.Errorf("ptr_str: 1 arg (pointer to NUL-terminated bytes)")

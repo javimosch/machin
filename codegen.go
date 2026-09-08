@@ -1326,6 +1326,7 @@ static cl_kernel mfl_ocl_k_conv2d = NULL;
 static cl_kernel mfl_ocl_k_matmul = NULL;
 static cl_kernel mfl_ocl_k_matmul_tiled = NULL;
 static cl_kernel mfl_ocl_k_group_norm = NULL;
+static cl_kernel mfl_ocl_k_group_norm_silu = NULL;
 static cl_kernel mfl_ocl_k_attention = NULL;
 static int mfl_ocl_ready = 0;
 
@@ -1441,6 +1442,41 @@ static const char* mfl_ocl_source =
 "    output[off] = (input[off] - mean) * inv_std * weight[oc] + bias[oc];"
 "  }"
 "}"
+"__kernel void group_norm_silu(__global const float* input, __global const float* weight,"
+"  __global const float* bias, __global float* output,"
+"  int channels, int h, int w, int groups, float eps) {"
+"  int g = get_group_id(0);"
+"  int lid = get_local_id(0);"
+"  int lsize = get_local_size(0);"
+"  int cg = channels / groups;"
+"  int hw = h * w;"
+"  int count = cg * hw;"
+"  int base = g * count;"
+"  __local float lsum[256], lsqsum[256];"
+"  float psum = 0.0f, psqsum = 0.0f;"
+"  for (int i = lid; i < count; i += lsize) {"
+"    float v = input[base + i];"
+"    psum += v;"
+"    psqsum += v * v;"
+"  }"
+"  lsum[lid] = psum;"
+"  lsqsum[lid] = psqsum;"
+"  barrier(CLK_LOCAL_MEM_FENCE);"
+"  for (int s = lsize / 2; s > 0; s >>= 1) {"
+"    if (lid < s) { lsum[lid] += lsum[lid + s]; lsqsum[lid] += lsqsum[lid + s]; }"
+"    barrier(CLK_LOCAL_MEM_FENCE);"
+"  }"
+"  float mean = lsum[0] / count;"
+"  float var = lsqsum[0] / count - mean * mean;"
+"  float inv_std = 1.0f / sqrt(var + eps);"
+"  for (int i = lid; i < count; i += lsize) {"
+"    int c = i / hw;"
+"    int oc = g * cg + c;"
+"    int off = oc * hw + (i % hw);"
+"    float o = (input[off] - mean) * inv_std * weight[oc] + bias[oc];"
+"    output[off] = o / (1.0f + exp(-o));"
+"  }"
+"}"
 "__kernel void attention_f32(__global const float* q, __global const float* k,"
 "  __global const float* v, __global float* out,"
 "  int ctx_seq, int channels, int heads, float scale) {"
@@ -1524,8 +1560,9 @@ static int mfl_ocl_init(void) {
     mfl_ocl_k_matmul = p_clCreateKernel(mfl_ocl_program, "matmul", &err);
     mfl_ocl_k_matmul_tiled = p_clCreateKernel(mfl_ocl_program, "matmul_tiled", &err);
     mfl_ocl_k_group_norm = p_clCreateKernel(mfl_ocl_program, "group_norm", &err);
+    mfl_ocl_k_group_norm_silu = p_clCreateKernel(mfl_ocl_program, "group_norm_silu", &err);
     mfl_ocl_k_attention = p_clCreateKernel(mfl_ocl_program, "attention_f32", &err);
-    if (!mfl_ocl_k_conv2d || !mfl_ocl_k_matmul || !mfl_ocl_k_matmul_tiled || !mfl_ocl_k_group_norm || !mfl_ocl_k_attention) { fprintf(stderr, "ocl: CreateKernel failed\n"); return 0; }
+    if (!mfl_ocl_k_conv2d || !mfl_ocl_k_matmul || !mfl_ocl_k_matmul_tiled || !mfl_ocl_k_group_norm || !mfl_ocl_k_group_norm_silu || !mfl_ocl_k_attention) { fprintf(stderr, "ocl: CreateKernel failed\n"); return 0; }
     fprintf(stderr, "ocl: all kernels created\n");
     mfl_ocl_ready = 1;
     return 1;
@@ -1645,6 +1682,36 @@ static void mfl_group_norm_gpu(int64_t outb, int64_t inb, int64_t w, int64_t b,
     size_t gn_local = 256;
     size_t gn_global = (size_t)groups * gn_local;
     p_clEnqueueNDRangeKernel(mfl_ocl_queue, mfl_ocl_k_group_norm, 1, NULL, &gn_global, &gn_local, 0, NULL, NULL);
+    p_clEnqueueReadBuffer(mfl_ocl_queue, d_out, CL_TRUE, 0, in_sz, (void*)(intptr_t)outb, 0, NULL, NULL);
+    p_clReleaseMemObject(d_in); p_clReleaseMemObject(d_w); p_clReleaseMemObject(d_b); p_clReleaseMemObject(d_out);
+}
+
+/* GPU group_norm + SiLU fused */
+static void mfl_group_norm_silu_gpu(int64_t outb, int64_t inb, int64_t w, int64_t b,
+                               int64_t channels, int64_t h, int64_t w_dim,
+                               int64_t groups, double eps) {
+    size_t in_sz = channels * h * w_dim * 4;
+    cl_mem d_in = p_clCreateBuffer(mfl_ocl_ctx, CL_MEM_READ_ONLY, in_sz, NULL, NULL);
+    cl_mem d_w = p_clCreateBuffer(mfl_ocl_ctx, CL_MEM_READ_ONLY, channels * 4, NULL, NULL);
+    cl_mem d_b = p_clCreateBuffer(mfl_ocl_ctx, CL_MEM_READ_ONLY, channels * 4, NULL, NULL);
+    cl_mem d_out = p_clCreateBuffer(mfl_ocl_ctx, CL_MEM_WRITE_ONLY, in_sz, NULL, NULL);
+    p_clEnqueueWriteBuffer(mfl_ocl_queue, d_in, CL_FALSE, 0, in_sz, (void*)(intptr_t)inb, 0, NULL, NULL);
+    p_clEnqueueWriteBuffer(mfl_ocl_queue, d_w, CL_FALSE, 0, channels * 4, (void*)(intptr_t)w, 0, NULL, NULL);
+    p_clEnqueueWriteBuffer(mfl_ocl_queue, d_b, CL_FALSE, 0, channels * 4, (void*)(intptr_t)b, 0, NULL, NULL);
+    int32_t ch = (int32_t)channels, hh = (int32_t)h, ww = (int32_t)w_dim, gg = (int32_t)groups;
+    float eps_f = (float)eps;
+    p_clSetKernelArg(mfl_ocl_k_group_norm_silu, 0, sizeof(cl_mem), &d_in);
+    p_clSetKernelArg(mfl_ocl_k_group_norm_silu, 1, sizeof(cl_mem), &d_w);
+    p_clSetKernelArg(mfl_ocl_k_group_norm_silu, 2, sizeof(cl_mem), &d_b);
+    p_clSetKernelArg(mfl_ocl_k_group_norm_silu, 3, sizeof(cl_mem), &d_out);
+    p_clSetKernelArg(mfl_ocl_k_group_norm_silu, 4, sizeof(int), &ch);
+    p_clSetKernelArg(mfl_ocl_k_group_norm_silu, 5, sizeof(int), &hh);
+    p_clSetKernelArg(mfl_ocl_k_group_norm_silu, 6, sizeof(int), &ww);
+    p_clSetKernelArg(mfl_ocl_k_group_norm_silu, 7, sizeof(int), &gg);
+    p_clSetKernelArg(mfl_ocl_k_group_norm_silu, 8, sizeof(float), &eps_f);
+    size_t gn_local = 256;
+    size_t gn_global = (size_t)groups * gn_local;
+    p_clEnqueueNDRangeKernel(mfl_ocl_queue, mfl_ocl_k_group_norm_silu, 1, NULL, &gn_global, &gn_local, 0, NULL, NULL);
     p_clEnqueueReadBuffer(mfl_ocl_queue, d_out, CL_TRUE, 0, in_sz, (void*)(intptr_t)outb, 0, NULL, NULL);
     p_clReleaseMemObject(d_in); p_clReleaseMemObject(d_w); p_clReleaseMemObject(d_b); p_clReleaseMemObject(d_out);
 }
@@ -1771,6 +1838,40 @@ static void mfl_group_norm_f32(int64_t outb, int64_t inb, int64_t w, int64_t b,
             const float* iptr = in_buf + oc * hw;
             float* optr = out + oc * hw;
             for (int64_t i = 0; i < hw; i++) optr[i] = ((float)((iptr[i] - mean) * inv_std)) * scale + bv;
+        }
+    }
+}
+static void mfl_group_norm_silu_f32(int64_t outb, int64_t inb, int64_t w, int64_t b,
+                               int64_t channels, int64_t h, int64_t w_dim,
+                               int64_t groups, double eps) {
+#ifdef _WIN32
+    if (mfl_ocl_ready) { mfl_group_norm_silu_gpu(outb, inb, w, b, channels, h, w_dim, groups, eps); return; }
+#endif
+    float* out = (float*)(intptr_t)outb;
+    const float* in_buf = (const float*)(intptr_t)inb;
+    const float* wt = (const float*)(intptr_t)w;
+    const float* bias = (const float*)(intptr_t)b;
+    int64_t hw = h * w_dim;
+    int64_t cg = channels / groups;
+    for (int64_t g = 0; g < groups; g++) {
+        double sum = 0.0, sqsum = 0.0;
+        int64_t count = cg * hw;
+        for (int64_t c = 0; c < cg; c++) {
+            const float* iptr = in_buf + (g * cg + c) * hw;
+            for (int64_t i = 0; i < hw; i++) { float v = iptr[i]; sum += v; sqsum += (double)v * v; }
+        }
+        double mean = sum / count;
+        double var = sqsum / count - mean * mean;
+        double inv_std = 1.0 / sqrt(var + eps);
+        for (int64_t c = 0; c < cg; c++) {
+            int64_t oc = g * cg + c;
+            float scale = wt[oc], bv = bias[oc];
+            const float* iptr = in_buf + oc * hw;
+            float* optr = out + oc * hw;
+            for (int64_t i = 0; i < hw; i++) {
+                float o = ((float)((iptr[i] - mean) * inv_std)) * scale + bv;
+                optr[i] = o / (1.0f + expf(-o));
+            }
         }
     }
 }
@@ -7824,6 +7925,8 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("mfl_conv2d_f32(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)", args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8], args[9], args[10], args[11]), nil
 	case "group_norm_f32":
 		return fmt.Sprintf("mfl_group_norm_f32(%s, %s, %s, %s, %s, %s, %s, %s, %s)", args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8]), nil
+	case "group_norm_silu_f32":
+		return fmt.Sprintf("mfl_group_norm_silu_f32(%s, %s, %s, %s, %s, %s, %s, %s, %s)", args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8]), nil
 	case "attention_f32":
 		return fmt.Sprintf("mfl_attention_f32(%s, %s, %s, %s, %s, %s, %s, %s, %s)", args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8]), nil
 	case "silu_f32":
