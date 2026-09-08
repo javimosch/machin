@@ -1324,6 +1324,7 @@ static cl_command_queue mfl_ocl_queue = NULL;
 static cl_program mfl_ocl_program = NULL;
 static cl_kernel mfl_ocl_k_conv2d = NULL;
 static cl_kernel mfl_ocl_k_conv3x3_t4x4 = NULL;
+static cl_kernel mfl_ocl_k_add_vec_spatial = NULL;
 static cl_kernel mfl_ocl_k_matmul = NULL;
 static cl_kernel mfl_ocl_k_matmul_tiled = NULL;
 static cl_kernel mfl_ocl_k_group_norm = NULL;
@@ -1411,6 +1412,12 @@ static const char* mfl_ocl_source =
 "  }"
 "  for (int j = 0; j < 4; j++) for (int p = 0; p < 4; p++)"
 "    output[(co0 + j) * h * w + y * w + x0 + p] = acc[j][p];"
+"}"
+"__kernel void add_vec_spatial(__global float* out, __global const float* vec, int channels, int hw) {"
+"  int c = get_global_id(0);"
+"  int pos = get_global_id(1);"
+"  if (c >= channels || pos >= hw) return;"
+"  out[c * hw + pos] += vec[c];"
 "}"
 "__kernel void matmul(__global const float* x, __global const float* w,"
 "  __global const float* bias, __global float* out,"
@@ -1593,12 +1600,13 @@ static int mfl_ocl_init(void) {
     fprintf(stderr, "ocl: program built\n");
     mfl_ocl_k_conv2d = p_clCreateKernel(mfl_ocl_program, "conv2d", &err);
     mfl_ocl_k_conv3x3_t4x4 = p_clCreateKernel(mfl_ocl_program, "conv3x3_t4x4", &err);
+    mfl_ocl_k_add_vec_spatial = p_clCreateKernel(mfl_ocl_program, "add_vec_spatial", &err);
     mfl_ocl_k_matmul = p_clCreateKernel(mfl_ocl_program, "matmul", &err);
     mfl_ocl_k_matmul_tiled = p_clCreateKernel(mfl_ocl_program, "matmul_tiled", &err);
     mfl_ocl_k_group_norm = p_clCreateKernel(mfl_ocl_program, "group_norm", &err);
     mfl_ocl_k_group_norm_silu = p_clCreateKernel(mfl_ocl_program, "group_norm_silu", &err);
     mfl_ocl_k_attention = p_clCreateKernel(mfl_ocl_program, "attention_f32", &err);
-    if (!mfl_ocl_k_conv2d || !mfl_ocl_k_conv3x3_t4x4 || !mfl_ocl_k_matmul || !mfl_ocl_k_matmul_tiled || !mfl_ocl_k_group_norm || !mfl_ocl_k_group_norm_silu || !mfl_ocl_k_attention) { fprintf(stderr, "ocl: CreateKernel failed\n"); return 0; }
+    if (!mfl_ocl_k_conv2d || !mfl_ocl_k_conv3x3_t4x4 || !mfl_ocl_k_add_vec_spatial || !mfl_ocl_k_matmul || !mfl_ocl_k_matmul_tiled || !mfl_ocl_k_group_norm || !mfl_ocl_k_group_norm_silu || !mfl_ocl_k_attention) { fprintf(stderr, "ocl: CreateKernel failed\n"); return 0; }
     fprintf(stderr, "ocl: all kernels created\n");
     mfl_ocl_ready = 1;
     return 1;
@@ -1659,6 +1667,25 @@ static void mfl_conv2d_gpu(int64_t outb, int64_t inb, int64_t w, int64_t b,
     }
     p_clEnqueueReadBuffer(mfl_ocl_queue, d_out, CL_TRUE, 0, out_sz, (void*)(intptr_t)outb, 0, NULL, NULL);
     p_clReleaseMemObject(d_in); p_clReleaseMemObject(d_w); p_clReleaseMemObject(d_b); p_clReleaseMemObject(d_out);
+}
+
+/* GPU add_vec_spatial — broadcast add: out[c, pos] += vec[c] */
+static void mfl_add_vec_spatial_gpu(int64_t ob, int64_t vb,
+                              int64_t channels, int64_t hw) {
+    size_t out_sz = channels * hw * 4;
+    cl_mem d_out = p_clCreateBuffer(mfl_ocl_ctx, CL_MEM_READ_WRITE, out_sz, NULL, NULL);
+    cl_mem d_v = p_clCreateBuffer(mfl_ocl_ctx, CL_MEM_READ_ONLY, channels * 4, NULL, NULL);
+    p_clEnqueueWriteBuffer(mfl_ocl_queue, d_out, CL_FALSE, 0, out_sz, (void*)(intptr_t)ob, 0, NULL, NULL);
+    p_clEnqueueWriteBuffer(mfl_ocl_queue, d_v, CL_FALSE, 0, channels * 4, (void*)(intptr_t)vb, 0, NULL, NULL);
+    int32_t ch = (int32_t)channels, hwi = (int32_t)hw;
+    p_clSetKernelArg(mfl_ocl_k_add_vec_spatial, 0, sizeof(cl_mem), &d_out);
+    p_clSetKernelArg(mfl_ocl_k_add_vec_spatial, 1, sizeof(cl_mem), &d_v);
+    p_clSetKernelArg(mfl_ocl_k_add_vec_spatial, 2, sizeof(int), &ch);
+    p_clSetKernelArg(mfl_ocl_k_add_vec_spatial, 3, sizeof(int), &hwi);
+    size_t global[2] = {(size_t)channels, (size_t)hw};
+    p_clEnqueueNDRangeKernel(mfl_ocl_queue, mfl_ocl_k_add_vec_spatial, 2, NULL, global, NULL, 0, NULL, NULL);
+    p_clEnqueueReadBuffer(mfl_ocl_queue, d_out, CL_TRUE, 0, out_sz, (void*)(intptr_t)ob, 0, NULL, NULL);
+    p_clReleaseMemObject(d_out); p_clReleaseMemObject(d_v);
 }
 
 /* GPU matmul */
@@ -1845,6 +1872,18 @@ static void mfl_conv2d_f32(int64_t outb, int64_t inb, int64_t w, int64_t b,
                 out[co * h_out * w_out + y * w_out + x] = acc;
             }
         }
+    }
+}
+static void mfl_add_vec_spatial_f32(int64_t ob, int64_t vb, int64_t channels, int64_t hw) {
+#ifdef _WIN32
+    if (mfl_ocl_ready) { mfl_add_vec_spatial_gpu(ob, vb, channels, hw); return; }
+#endif
+    float* out = (float*)(intptr_t)ob;
+    const float* vec = (const float*)(intptr_t)vb;
+    for (int64_t c = 0; c < channels; c++) {
+        float v = vec[c];
+        float* optr = out + c * hw;
+        for (int64_t i = 0; i < hw; i++) optr[i] += v;
     }
 }
 static void mfl_matmul_f32(int64_t ob, int64_t xb, int64_t w, int64_t b, int64_t n_in, int64_t n_out, int64_t batch) {
@@ -7979,6 +8018,8 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("mfl_matmul_f32(%s, %s, %s, %s, %s, %s, %s)", args[0], args[1], args[2], args[3], args[4], args[5], args[6]), nil
 	case "conv2d_f32":
 		return fmt.Sprintf("mfl_conv2d_f32(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)", args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8], args[9], args[10], args[11]), nil
+	case "add_vec_spatial_f32":
+		return fmt.Sprintf("mfl_add_vec_spatial_f32(%s, %s, %s, %s)", args[0], args[1], args[2], args[3]), nil
 	case "group_norm_f32":
 		return fmt.Sprintf("mfl_group_norm_f32(%s, %s, %s, %s, %s, %s, %s, %s, %s)", args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8]), nil
 	case "group_norm_silu_f32":

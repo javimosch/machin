@@ -2576,6 +2576,14 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 			c.addPair(argSlots[i], c.cInt)
 		}
 		return c.cVoid, nil
+	case "add_vec_spatial_f32":
+		if len(argSlots) != 4 {
+			return 0, fmt.Errorf("add_vec_spatial_f32: 4 args (out, vec, channels, hw)")
+		}
+		for i := 0; i < 4; i++ {
+			c.addPair(argSlots[i], c.cInt)
+		}
+		return c.cVoid, nil
 	case "group_norm_f32":
 		if len(argSlots) != 9 {
 			return 0, fmt.Errorf("group_norm_f32: 9 args (out, in, w, b, channels, h, w_dim, groups, eps)")
