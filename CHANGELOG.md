@@ -2,6 +2,13 @@
 
 ## v0.138.0
 
+**`eprint` / `eprintln` (#662).** `print`/`println` on the process stderr stream, same
+formatting. Until now the only way to write stderr was `write_file("/dev/stderr", …)`, which
+re-opens the file with O_TRUNC — under `prog 2> run.log` that wiped every previous line, and
+two multi-hour MTLM training logs kept exactly their last line. The agent-first CLI contract
+(JSON on stdout, progress on stderr) is now expressible directly. Mirrored in the self-hosted
+compiler (cgbuiltin/cgen/checkgen).
+
 **UDP and positional file writes.** Two gaps that between them made a whole class
 of program impossible to write in pure MFL: anything speaking a connectionless
 protocol, and anything filling a file out of order. Both surfaced building a

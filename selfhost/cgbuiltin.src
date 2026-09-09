@@ -255,28 +255,31 @@ func cg_builtin(iid, call_idx, callee, names) (out) {
 func cg_print(iid, call_idx, depth) {
     n := nodes[call_idx]
     args := n.kids
+    // eprint/eprintln (#662): same formatting on the process stderr stream.
+    out := "stdout"
+    if n.s == "eprint" || n.s == "eprintln" { out = "stderr" }
     // gate the whole print statement so concurrent output interleaving is
     // captured + replayed (a no-op unless recording/replaying).
     cemit("mfl_rr_print_begin();\n")
     indent(depth)
     i := 0
     for i < len(args) {
-        if i > 0 { cemit("fputs(\" \", stdout); ") }
+        if i > 0 { cemit("fputs(\" \", " + out + "); ") }
         e := cg_expr(iid, args[i])
         pk := node_kind(iid, args[i])
-        if pk == 2 { cemit("printf(\"%lld\", (long long)(" + e + "));") } else {
-        if pk == 3 { cemit("printf(\"%g\", (double)(" + e + "));") } else {
-        if pk == 4 { cemit("fputs((" + e + ") ? \"true\" : \"false\", stdout);") } else {
-        if pk == 5 { cemit("{ const char* _s = (" + e + "); fputs(_s ? _s : \"\", stdout); }") } else {
-        if pk == 12 { cemit("fputs(mfl_bytes_hex(" + e + "), stdout);") } else {
-            cemit("printf(\"%lld\", (long long)(" + e + "));")
+        if pk == 2 { cemit("fprintf(" + out + ", \"%lld\", (long long)(" + e + "));") } else {
+        if pk == 3 { cemit("fprintf(" + out + ", \"%g\", (double)(" + e + "));") } else {
+        if pk == 4 { cemit("fputs((" + e + ") ? \"true\" : \"false\", " + out + ");") } else {
+        if pk == 5 { cemit("{ const char* _s = (" + e + "); fputs(_s ? _s : \"\", " + out + "); }") } else {
+        if pk == 12 { cemit("fputs(mfl_bytes_hex(" + e + "), " + out + ");") } else {
+            cemit("fprintf(" + out + ", \"%lld\", (long long)(" + e + "));")
         }}}}}
         cemit("\n")
         if i < len(args) - 1 { indent(depth) }
         i = i + 1
     }
     indent(depth)
-    if n.s == "println" { cemit("fputs(\"\\n\", stdout);\n") } else { cemit("fflush(stdout);\n") }
+    if n.s == "println" || n.s == "eprintln" { cemit("fputs(\"\\n\", " + out + ");\n") } else { cemit("fflush(" + out + ");\n") }
     indent(depth)
     cemit("mfl_rr_print_end();\n")
 }

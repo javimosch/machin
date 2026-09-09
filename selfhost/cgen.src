@@ -488,7 +488,7 @@ func cg_stmt(iid, idx, depth) {
     k := n.kind
     if k == K_EXPRSTMT {
         cn := nodes[n.a]
-        if cn.kind == K_CALL && (cn.s == "print" || cn.s == "println") {
+        if cn.kind == K_CALL && (cn.s == "print" || cn.s == "println" || cn.s == "eprint" || cn.s == "eprintln") {
             indent(depth)
             cg_print(iid, n.a, depth)
             return
