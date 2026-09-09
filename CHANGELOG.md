@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+**`bytes` now survives a channel send / `go` call (#658).** The channel and go-statement
+marshaling only knew `char*` fields, so a `bytes` element (or a struct's `bytes` field) was
+memcpy'd as a scalar: its data pointer kept pointing into the sender goroutine's arena and the
+first 8–16 bytes came back as free-list garbage once that goroutine exited. `typeStringSlot`
+also reported the bytes kind as "int", hiding the element type from codegen. Both fixed;
+regression tests cover bare bytes, a struct with a bytes field, and bytes as a goroutine
+argument, each checked after the sender's exit plus allocator churn. Found dogfooding MTLM's
+parallel tokenizer (8 wrong token ids per chunk).
+
 **UDP and positional file writes.** Two gaps that between them made a whole class
 of program impossible to write in pure MFL: anything speaking a connectionless
 protocol, and anything filling a file out of order. Both surfaced building a

@@ -566,6 +566,7 @@ static void mfl_sleep(int64_t ms) {
        deep copy that handles arbitrary nesting (slices, maps, structs).
    Scalar elements need neither and are a plain memcpy. */
 static char* mfl_dup_arena(const char* s, size_t n); /* defined later in the runtime */
+typedef struct { uint8_t* data; int64_t len; } mfl_bytes;
 typedef struct mfl_cnode { struct mfl_cnode* next; void* data; } mfl_cnode;
 typedef struct {
     pthread_mutex_t mu; pthread_cond_t cnd;
@@ -597,6 +598,12 @@ static mfl_chan* mfl_make_chan(int64_t es, char* (*ser)(const void*), void (*des
    boundary; #310). Shared by mfl_chan_freeze and mfl_go's argument passing. */
 static void mfl_freeze_strs(int nstr, int* stroff, void* elem) {
     for (int i = 0; i < nstr; i++) {
+        if (stroff[i] < 0) { /* a bytes field (#658): -(1+offset); copy len bytes, not strlen */
+            mfl_bytes* b = (mfl_bytes*)((char*)elem + (-stroff[i] - 1));
+            if (b->data && b->len > 0) { uint8_t* d = (uint8_t*)malloc((size_t)b->len); memcpy(d, b->data, (size_t)b->len); b->data = d; }
+            else { b->data = NULL; b->len = 0; }
+            continue;
+        }
         char** p = (char**)((char*)elem + stroff[i]);
         if (*p) { size_t n = strlen(*p); char* d = (char*)malloc(n + 1); memcpy(d, *p, n + 1); *p = d; }
     }
@@ -606,6 +613,11 @@ static void mfl_freeze_strs(int nstr, int* stroff, void* elem) {
    whichever goroutine's arena is current when this runs. */
 static void mfl_thaw_strs(int nstr, int* stroff, void* elem) {
     for (int i = 0; i < nstr; i++) {
+        if (stroff[i] < 0) { /* bytes field (#658): move the malloc'd copy into the current arena */
+            mfl_bytes* b = (mfl_bytes*)((char*)elem + (-stroff[i] - 1));
+            if (b->data && b->len > 0) { uint8_t* a = (uint8_t*)mfl_dup_arena((const char*)b->data, (size_t)b->len); free(b->data); b->data = a; }
+            continue;
+        }
         char** p = (char**)((char*)elem + stroff[i]);
         if (*p) { char* a = mfl_dup_arena(*p, strlen(*p)); free(*p); *p = a; }
     }
@@ -2621,7 +2633,7 @@ static char* mfl_url_decode(const char* s) {
 /* bytes: a NUL-safe binary buffer (pointer + length), the type strings can't be.
    Values are immutable (builtins return fresh arena buffers), so passing one by
    value just shares the backing — same discipline as strings. */
-typedef struct { uint8_t* data; int64_t len; } mfl_bytes;
+/* mfl_bytes typedef moved up next to the channel runtime (#658: freeze/thaw need it) */
 static mfl_bytes mfl_escape_bytes(mfl_arena* parent, mfl_bytes b) {
     mfl_arena* cur = mfl_arena_cur;
     mfl_arena_cur = parent;
@@ -7508,9 +7520,17 @@ func (g *cgen) mapKeyArgs(mapNode Node, keyExpr string) (string, string) {
 // by value inside a channel element of the given MFL type — a bare `string`
 // (offset 0) or each string field of a struct (recursing into nested structs).
 // Slices/maps inside an element are not deep-copied (their backing stays shared).
+//
+// A `bytes` value (mfl_bytes = {data, len}) is listed too, encoded as a NEGATIVE
+// entry -(1 + offset) so the runtime's freeze/thaw can copy `len` bytes instead of
+// strlen — before #658 bytes were treated as scalars and their data pointer dangled
+// into the sender goroutine's arena once it exited.
 func (g *cgen) chanStrOffsets(typeStr, base string) []string {
 	if typeStr == "string" {
 		return []string{base + "0"}
+	}
+	if typeStr == "bytes" {
+		return []string{"-(1 + (int)(" + base + "0))"}
 	}
 	td, ok := g.c.StructTypes()[typeStr]
 	if !ok {
@@ -7522,6 +7542,8 @@ func (g *cgen) chanStrOffsets(typeStr, base string) []string {
 		fo := base + fmt.Sprintf("offsetof(%s, f_%s)", cs, f.Name)
 		if f.Type == "string" {
 			offs = append(offs, fo)
+		} else if f.Type == "bytes" {
+			offs = append(offs, "-(1 + (int)("+fo+"))")
 		} else if _, isStruct := g.c.StructTypes()[f.Type]; isStruct {
 			offs = append(offs, g.chanStrOffsets(f.Type, fo+" + ")...)
 		}
