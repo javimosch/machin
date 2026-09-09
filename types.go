@@ -2556,6 +2556,183 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		c.addPair(argSlots[2], c.cInt)
 		c.addPair(argSlots[3], c.cInt)
 		return c.cVoid, nil
+	case "matmul_f32":
+		if len(argSlots) != 7 {
+			return 0, fmt.Errorf("matmul_f32: 7 args (out, x, w, bias, n_in, n_out, batch)")
+		}
+		c.addPair(argSlots[0], c.cInt)
+		c.addPair(argSlots[1], c.cInt)
+		c.addPair(argSlots[2], c.cInt)
+		c.addPair(argSlots[3], c.cInt)
+		c.addPair(argSlots[4], c.cInt)
+		c.addPair(argSlots[5], c.cInt)
+		c.addPair(argSlots[6], c.cInt)
+		return c.cVoid, nil
+	case "gemm_f32":
+		if len(argSlots) != 9 {
+			return 0, fmt.Errorf("gemm_f32: 9 args (c, a, b, m, n, k, ta, tb, accumulate)")
+		}
+		for i := 0; i < 9; i++ {
+			c.addPair(argSlots[i], c.cInt)
+		}
+		return c.cVoid, nil
+	case "attn_causal_fwd_f32":
+		if len(argSlots) != 11 {
+			return 0, fmt.Errorf("attn_causal_fwd_f32: 11 args (q, k, v, probs, out, B, T, dim, kv_dim, heads, kv_heads)")
+		}
+		for i := 0; i < 11; i++ {
+			c.addPair(argSlots[i], c.cInt)
+		}
+		return c.cVoid, nil
+	case "attn_causal_bwd_f32":
+		if len(argSlots) != 14 {
+			return 0, fmt.Errorf("attn_causal_bwd_f32: 14 args (q, k, v, probs, d_out, dq, dk, dv, B, T, dim, kv_dim, heads, kv_heads)")
+		}
+		for i := 0; i < 14; i++ {
+			c.addPair(argSlots[i], c.cInt)
+		}
+		return c.cVoid, nil
+	case "rmsnorm_fwd_f32":
+		if len(argSlots) != 7 {
+			return 0, fmt.Errorf("rmsnorm_fwd_f32: 7 args (out, x, w, normed, n, rows, eps)")
+		}
+		for i := 0; i < 6; i++ {
+			c.addPair(argSlots[i], c.cInt)
+		}
+		c.addPair(argSlots[6], newSlot(c, KNum))
+		return c.cVoid, nil
+	case "rmsnorm_bwd_f32":
+		if len(argSlots) != 9 {
+			return 0, fmt.Errorf("rmsnorm_bwd_f32: 9 args (dx, dout, w, x, normed, dw, n, rows, eps)")
+		}
+		for i := 0; i < 8; i++ {
+			c.addPair(argSlots[i], c.cInt)
+		}
+		c.addPair(argSlots[8], newSlot(c, KNum))
+		return c.cVoid, nil
+	case "silu_mul_f32":
+		if len(argSlots) != 4 {
+			return 0, fmt.Errorf("silu_mul_f32: 4 args (out, h1, h3, n)")
+		}
+		for i := 0; i < 4; i++ {
+			c.addPair(argSlots[i], c.cInt)
+		}
+		return c.cVoid, nil
+	case "silu_mul_bwd_f32":
+		if len(argSlots) != 6 {
+			return 0, fmt.Errorf("silu_mul_bwd_f32: 6 args (dh1, dh3, dout, h1, h3, n)")
+		}
+		for i := 0; i < 6; i++ {
+			c.addPair(argSlots[i], c.cInt)
+		}
+		return c.cVoid, nil
+	case "softmax_xent_f32":
+		if len(argSlots) != 6 {
+			return 0, fmt.Errorf("softmax_xent_f32: 6 args (logits, targets_i32, probs, dlogits, rows, vocab)")
+		}
+		for i := 0; i < 6; i++ {
+			c.addPair(argSlots[i], c.cInt)
+		}
+		return c.cFloat, nil
+	case "conv2d_f32":
+		if len(argSlots) != 12 {
+			return 0, fmt.Errorf("conv2d_f32: 12 args (out, in, w, bias, c_in, c_out, h, w_dim, kh, kw, pad, stride)")
+		}
+		for i := 0; i < 12; i++ {
+			c.addPair(argSlots[i], c.cInt)
+		}
+		return c.cVoid, nil
+	case "add_vec_spatial_f32":
+		if len(argSlots) != 4 {
+			return 0, fmt.Errorf("add_vec_spatial_f32: 4 args (out, vec, channels, hw)")
+		}
+		for i := 0; i < 4; i++ {
+			c.addPair(argSlots[i], c.cInt)
+		}
+		return c.cVoid, nil
+	case "transpose_chw_f32":
+		if len(argSlots) != 5 {
+			return 0, fmt.Errorf("transpose_chw_f32: 5 args (out, in, channels, h, w)")
+		}
+		for i := 0; i < 5; i++ {
+			c.addPair(argSlots[i], c.cInt)
+		}
+		return c.cVoid, nil
+	case "transpose_add_chw_f32":
+		if len(argSlots) != 6 {
+			return 0, fmt.Errorf("transpose_add_chw_f32: 6 args (out, residual, in, channels, h, w)")
+		}
+		for i := 0; i < 6; i++ {
+			c.addPair(argSlots[i], c.cInt)
+		}
+		return c.cVoid, nil
+	case "geglu_f32":
+		if len(argSlots) != 4 {
+			return 0, fmt.Errorf("geglu_f32: 4 args (out, in, inner, seq)")
+		}
+		for i := 0; i < 4; i++ {
+			c.addPair(argSlots[i], c.cInt)
+		}
+		return c.cVoid, nil
+	case "concat_chw_f32":
+		if len(argSlots) != 6 {
+			return 0, fmt.Errorf("concat_chw_f32: 6 args (out, a, b, a_ch, b_ch, hw)")
+		}
+		for i := 0; i < 6; i++ {
+			c.addPair(argSlots[i], c.cInt)
+		}
+		return c.cVoid, nil
+	case "layer_norm_batch_f32":
+		if len(argSlots) != 6 {
+			return 0, fmt.Errorf("layer_norm_batch_f32: 6 args (out, in, w, b, seq, channels)")
+		}
+		for i := 0; i < 6; i++ {
+			c.addPair(argSlots[i], c.cInt)
+		}
+		return c.cVoid, nil
+	case "ocl_sync":
+		return c.cVoid, nil
+	case "ocl_release":
+		return c.cVoid, nil
+	case "group_norm_f32":
+		if len(argSlots) != 9 {
+			return 0, fmt.Errorf("group_norm_f32: 9 args (out, in, w, b, channels, h, w_dim, groups, eps)")
+		}
+		for i := 0; i < 8; i++ {
+			c.addPair(argSlots[i], c.cInt)
+		}
+		c.addPair(argSlots[8], newSlot(c, KNum))
+		return c.cVoid, nil
+	case "group_norm_silu_f32":
+		if len(argSlots) != 9 {
+			return 0, fmt.Errorf("group_norm_silu_f32: 9 args (out, in, w, b, channels, h, w_dim, groups, eps)")
+		}
+		for i := 0; i < 8; i++ {
+			c.addPair(argSlots[i], c.cInt)
+		}
+		c.addPair(argSlots[8], newSlot(c, KNum))
+		return c.cVoid, nil
+	case "attention_f32":
+		if len(argSlots) != 9 {
+			return 0, fmt.Errorf("attention_f32: 9 args (q, k, v, out, seq, ctx_seq, channels, heads, scale)")
+		}
+		for i := 0; i < 8; i++ {
+			c.addPair(argSlots[i], c.cInt)
+		}
+		c.addPair(argSlots[8], newSlot(c, KNum))
+		return c.cVoid, nil
+	case "silu_f32":
+		if len(argSlots) != 2 {
+			return 0, fmt.Errorf("silu_f32: 2 args (buf, count)")
+		}
+		c.addPair(argSlots[0], c.cInt)
+		c.addPair(argSlots[1], c.cInt)
+		return c.cVoid, nil
+	case "ocl_init":
+		if len(argSlots) != 0 {
+			return 0, fmt.Errorf("ocl_init: 0 args")
+		}
+		return c.cInt, nil
 	case "ptr_str":
 		if len(argSlots) != 1 {
 			return 0, fmt.Errorf("ptr_str: 1 arg (pointer to NUL-terminated bytes)")
