@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+**Arena growth tripwire (#660).** A goroutine's (or main's) root arena is reclaimed only when
+the goroutine exits, so a long loop of ordinary temporaries grows it without bound and the
+program dies to the OOM killer with no trace of why (a pure-MFL tokenizer hit 19 GB this way;
+the same loop with a per-item `arena { }` block peaks at 43 MB). Now, when a root arena — never
+a scoped `arena { }` one — passes `MFL_ARENA_WARN_MB` (default 1024; 0 disables), the runtime
+prints one stderr line naming the cause and the fix. Two compares on the allocation slow path;
+stdout untouched. The `memory` guide gotcha now says plainly that every temporary allocates
+and none is freed before the goroutine exits.
+
 **UDP and positional file writes.** Two gaps that between them made a whole class
 of program impossible to write in pure MFL: anything speaking a connectionless
 protocol, and anything filling a file out of order. Both surfaced building a

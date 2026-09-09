@@ -259,15 +259,35 @@ typedef struct { void* fn; void* env; } mfl_closure;
    own goroutine and frees everything it allocated on return. Subsystems that
    free explicitly (channels, maps, goroutine args) use raw malloc/free. */
 typedef struct mfl_blk { struct mfl_blk* next; size_t size; } mfl_blk;
-typedef struct { mfl_blk* head; size_t bytes; } mfl_arena;
+/* scoped: 1 for an arena-block's arena (freed at block exit), 0 for a goroutine's or
+   main's root arena (freed only when the goroutine returns / at exit). warned: the growth
+   tripwire below fired already for this arena. */
+typedef struct { mfl_blk* head; size_t bytes; int scoped; int warned; } mfl_arena;
 static mfl_arena mfl_main_arena = { NULL };
 static _Thread_local mfl_arena* mfl_arena_cur = NULL;
+/* Arena growth tripwire (#660). A root arena is reclaimed only when its goroutine exits, so
+   a long loop of ordinary temporaries (substr, concatenation, a per-item slice) grows it
+   without bound — a correct program that dies to the OOM killer with no trace of why. When a
+   ROOT arena (never a scoped arena-block one) passes MFL_ARENA_WARN_MB (default 1024; 0
+   disables), say so once on stderr and point at the fix. Costs two compares on an allocation
+   that already does a malloc. */
+static size_t mfl_arena_warn_bytes = (size_t)1024 * 1024 * 1024;
+__attribute__((constructor)) static void mfl_arena_warn_init(void) {
+    const char* e = getenv("MFL_ARENA_WARN_MB");
+    if (e && *e) { long long mb = atoll(e); mfl_arena_warn_bytes = mb <= 0 ? (size_t)-1 : (size_t)mb * 1024 * 1024; }
+}
+static void mfl_arena_warn(mfl_arena* a) {
+    a->warned = 1;
+    fprintf(stderr, "machin: goroutine arena passed %zu MB with no arena { } block active — allocations in a loop are only reclaimed when the goroutine exits; wrap the loop body in arena { } (guide: gotchas/memory). MFL_ARENA_WARN_MB=0 silences this.\n", mfl_arena_warn_bytes / (1024 * 1024));
+    fflush(stderr);
+}
 static void* mfl_alloc(size_t sz) {
     if (!mfl_arena_cur) mfl_arena_cur = &mfl_main_arena;
     if (sz == 0) sz = 1;
     mfl_blk* b = malloc(sizeof(mfl_blk) + sz);
     b->size = sz; b->next = mfl_arena_cur->head; mfl_arena_cur->head = b;
     mfl_arena_cur->bytes += sz;
+    if (!mfl_arena_cur->scoped && !mfl_arena_cur->warned && mfl_arena_cur->bytes > mfl_arena_warn_bytes) mfl_arena_warn(mfl_arena_cur);
     return (void*)(b + 1);
 }
 /* mfl_calloc is only ever used to box a local captured by a nested closure
@@ -320,6 +340,7 @@ static void mfl_arena_free(mfl_arena* a) {
     while (b) { mfl_blk* n = b->next; free(b); b = n; }
     a->head = NULL;
     a->bytes = 0;
+    a->warned = 0;
     mfl_strlen_cache_s = NULL; /* freed addresses may be reused — drop stale length */
 }
 
@@ -6411,7 +6432,7 @@ func (g *cgen) stmt(s Stmt, depth int) error {
 		// on exit and restore the enclosing arena.
 		id := g.arenaID
 		g.arenaID++
-		fmt.Fprintf(&g.buf, "{ mfl_arena _sa%d = {0}; mfl_arena* _sp%d = mfl_arena_cur; mfl_arena_cur = &_sa%d;\n", id, id, id)
+		fmt.Fprintf(&g.buf, "{ mfl_arena _sa%d = {0, 0, 1, 0}; mfl_arena* _sp%d = mfl_arena_cur; mfl_arena_cur = &_sa%d;\n", id, id, id)
 		g.arenaStack = append(g.arenaStack, id)
 		for _, b := range st.Body {
 			if err := g.stmt(b, depth+1); err != nil {
