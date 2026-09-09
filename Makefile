@@ -29,6 +29,7 @@ test: mfl-test
 # documented invocation had in fact stopped working.
 mfl-test: build
 	$(BIN) test framework/flags.src framework/tests/flags_test.src
+	$(BIN) test framework/json.src framework/tests/json_test.src
 	$(BIN) test framework/bson.src framework/tests/bson_test.src
 	$(BIN) test framework/xml.src framework/tests/xml_test.src
 	$(BIN) test framework/reactive.src framework/tests/reactive_test.src
