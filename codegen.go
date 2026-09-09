@@ -6265,7 +6265,7 @@ func (g *cgen) stmt(s Stmt, depth int) error {
 	indentC(&g.buf, depth)
 	switch st := s.(type) {
 	case *ExprStmt:
-		if call, ok := st.X.(*Call); ok && (call.Callee == "print" || call.Callee == "println") {
+		if call, ok := st.X.(*Call); ok && (call.Callee == "print" || call.Callee == "println" || call.Callee == "eprint" || call.Callee == "eprintln") {
 			return g.printCall(call, depth)
 		}
 		e, err := g.expr(st.X)
@@ -7003,13 +7003,21 @@ func (g *cgen) goStmt(st *GoStmt) error {
 // printCall emits one print per argument, with single-space separators, so no
 // runtime variadic machinery is needed.
 func (g *cgen) printCall(call *Call, depth int) error {
+	// eprint/eprintln (#662) are print/println on stderr: same formatting, written
+	// with fputs/fprintf on the process's stderr stream — never a re-open of
+	// /dev/stderr, which truncates a redirected log. The agent-first contract
+	// (JSON out, progress on the error stream) needs this.
+	out := "stdout"
+	if call.Callee == "eprint" || call.Callee == "eprintln" {
+		out = "stderr"
+	}
 	// gate the whole print statement so concurrent output interleaving is
 	// captured + replayed (a no-op unless recording/replaying).
 	g.buf.WriteString("mfl_rr_print_begin();\n")
 	indentC(&g.buf, depth)
 	for i, a := range call.Args {
 		if i > 0 {
-			g.buf.WriteString("fputs(\" \", stdout); ")
+			fmt.Fprintf(&g.buf, "fputs(\" \", %s); ", out)
 		}
 		e, err := g.expr(a)
 		if err != nil {
@@ -7017,19 +7025,19 @@ func (g *cgen) printCall(call *Call, depth int) error {
 		}
 		switch g.c.NodeKind(g.curFn, a) {
 		case KInt:
-			fmt.Fprintf(&g.buf, "printf(\"%%lld\", (long long)(%s));", e)
+			fmt.Fprintf(&g.buf, "fprintf(%s, \"%%lld\", (long long)(%s));", out, e)
 		case KFloat:
-			fmt.Fprintf(&g.buf, "printf(\"%%g\", (double)(%s));", e)
+			fmt.Fprintf(&g.buf, "fprintf(%s, \"%%g\", (double)(%s));", out, e)
 		case KBool:
-			fmt.Fprintf(&g.buf, "fputs((%s) ? \"true\" : \"false\", stdout);", e)
+			fmt.Fprintf(&g.buf, "fputs((%s) ? \"true\" : \"false\", %s);", e, out)
 		case KString:
-			fmt.Fprintf(&g.buf, "{ const char* _s = (%s); fputs(_s ? _s : \"\", stdout); }", e)
+			fmt.Fprintf(&g.buf, "{ const char* _s = (%s); fputs(_s ? _s : \"\", %s); }", e, out)
 		case KBytes:
-			fmt.Fprintf(&g.buf, "fputs(mfl_bytes_hex(%s), stdout);", e) // print bytes as hex
+			fmt.Fprintf(&g.buf, "fputs(mfl_bytes_hex(%s), %s);", e, out) // print bytes as hex
 		case KSlice, KStruct, KChan, KMap:
 			return fmt.Errorf("cannot print a %s value", g.c.NodeKind(g.curFn, a))
 		default:
-			fmt.Fprintf(&g.buf, "printf(\"%%lld\", (long long)(%s));", e)
+			fmt.Fprintf(&g.buf, "fprintf(%s, \"%%lld\", (long long)(%s));", out, e)
 		}
 		g.buf.WriteByte('\n')
 		if i < len(call.Args)-1 {
@@ -7040,10 +7048,10 @@ func (g *cgen) printCall(call *Call, depth int) error {
 		// keep alignment for a bare println()
 	}
 	indentC(&g.buf, depth)
-	if call.Callee == "println" {
-		g.buf.WriteString("fputs(\"\\n\", stdout);\n")
+	if call.Callee == "println" || call.Callee == "eprintln" {
+		fmt.Fprintf(&g.buf, "fputs(\"\\n\", %s);\n", out)
 	} else {
-		g.buf.WriteString("fflush(stdout);\n")
+		fmt.Fprintf(&g.buf, "fflush(%s);\n", out)
 	}
 	indentC(&g.buf, depth)
 	g.buf.WriteString("mfl_rr_print_end();\n")
@@ -8555,8 +8563,8 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 	case "tls_close":
 		g.usesTLS = true
 		return fmt.Sprintf("mfl_tls_close_h(%s)", args[0]), nil
-	case "print", "println":
-		return "", fmt.Errorf("print/println may only be used as a statement")
+	case "print", "println", "eprint", "eprintln":
+		return "", fmt.Errorf("print/println/eprint/eprintln may only be used as a statement")
 	}
 	if !g.c.IsTopFunc(ex.Callee) {
 		// a function-valued local variable, called by name

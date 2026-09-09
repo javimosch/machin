@@ -2054,7 +2054,7 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		return c.ffiSlot(ef.Ret), nil
 	}
 	switch ex.Callee {
-	case "print", "println":
+	case "print", "println", "eprint", "eprintln":
 		return c.cVoid, nil
 	case "len":
 		if len(argSlots) != 1 {

@@ -215,6 +215,8 @@ func machinGuide() guideCatalog {
 			// io
 			{"print", "(...) ->", "write args, no trailing newline", "io"},
 			{"println", "(...) ->", "write args + trailing newline", "io"},
+			{"eprint", "(...) ->", "print to STDERR (no trailing newline, flushed) — progress/diagnostics that must not pollute a JSON stdout. Writes to the process stderr stream; NEVER write_file(\"/dev/stderr\", ...), which re-opens with O_TRUNC and wipes a redirected log on every call (#662)", "io"},
+			{"eprintln", "(...) ->", "println to STDERR: args + trailing newline on the process stderr stream. The agent-first CLI contract (JSON on stdout, progress on stderr) — a per-step log line, a warning, a progress counter (#662)", "io"},
 			{"input", "() -> string", "read one stdin line (newline stripped; \"\" at EOF)", "io"},
 			{"read_stdin", "() -> string", "read all of stdin verbatim until EOF (exact bytes; no line splitting)", "io"},
 			{"flush", "() ->", "flush buffered stdout (prompt output through a pipe)", "io"},

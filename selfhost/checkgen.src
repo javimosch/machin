@@ -902,7 +902,7 @@ func gen_builtin(callee, argslots) (handled, slot) {
     handled = 1
     slot = c_void
     // no-constraint / polymorphic
-    if callee == "print" || callee == "println" { slot = c_void  return handled, slot }
+    if callee == "print" || callee == "println" || callee == "eprint" || callee == "eprintln" { slot = c_void  return handled, slot }
     if callee == "len" { slot = c_int  return handled, slot }
     if callee == "str" { slot = c_string  return handled, slot }
     if callee == "json" { slot = c_string  return handled, slot }
