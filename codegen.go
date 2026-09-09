@@ -2486,6 +2486,427 @@ static void mfl_gemm_f32(int64_t cb, int64_t ab, int64_t bb, int64_t m64, int64_
     free(Apack);
 }
 #endif
+
+/* ---- MTLM attention + elementwise kernels: multithreaded C builtins ----
+   Companion to gemm_f32 for the MTLM trainer: causal multi-head attention
+   (forward/backward, GQA-aware), RMSNorm (fwd/bwd), fused SiLU*MUL (fwd/bwd),
+   and softmax+cross-entropy. All take raw f32 buffer pointers + ints, row-major,
+   bt = B*T rows. Multithreaded via a persistent pthread pool (the same pattern as
+   the gemm pool, a separate generic instance) across rows / (b,head) /
+   (b,kv_head) groups, reusing MFL_GEMM_THREADS. Small problems run
+   single-threaded. fp32 accumulation (the softmax+xent reduction uses double
+   intermediates to match the MFL reference's loss to 1e-6). Mirrors the scalar
+   loops in mtlm src/model.src (m_attn_fwd_chunk / m_attn_back_chunk / m_rmsnorm /
+   m_rmsnorm_back2 / m_forward) in operation order. */
+#if !defined(__wasm__)
+/* Generic persistent task pool: dispatches a [0,ntasks) range to N threads, each
+   stealing gran-sized slabs and calling fn(ctx, tid, lo, hi). Created once
+   (pthread_once), reused across calls. Separate from the gemm pool (which is
+   specialized for GEMM's packed-panel dispatch) but the same pattern. */
+typedef void (*mfl_task_fn)(void* ctx, int tid, int lo, int hi);
+typedef struct {
+    pthread_mutex_t mu;
+    pthread_cond_t cv, done_cv;
+    int nthreads, gen, done_count;
+    pthread_t* threads;
+    mfl_task_fn fn;
+    void* ctx;
+    int ntasks, gran;
+    long next;
+} mfl_pool_t;
+static mfl_pool_t mfl_pool;
+static pthread_once_t mfl_pool_once = PTHREAD_ONCE_INIT;
+static int mfl_pool_want_T = 0;
+static void* mfl_pool_worker(void* arg) {
+    int tid = (int)(intptr_t)arg;
+    int gen = 0;
+    for (;;) {
+        pthread_mutex_lock(&mfl_pool.mu);
+        while (mfl_pool.gen == gen)
+            pthread_cond_wait(&mfl_pool.cv, &mfl_pool.mu);
+        gen = mfl_pool.gen;
+        pthread_mutex_unlock(&mfl_pool.mu);
+        if (gen < 0) break;   /* shutdown */
+        for (;;) {
+            long i = __atomic_fetch_add(&mfl_pool.next, mfl_pool.gran, __ATOMIC_RELAXED);
+            if (i >= mfl_pool.ntasks) break;
+            long hi = i + mfl_pool.gran;
+            if (hi > mfl_pool.ntasks) hi = mfl_pool.ntasks;
+            mfl_pool.fn(mfl_pool.ctx, tid, (int)i, (int)hi);
+        }
+        pthread_mutex_lock(&mfl_pool.mu);
+        if (++mfl_pool.done_count == mfl_pool.nthreads)
+            pthread_cond_signal(&mfl_pool.done_cv);
+        pthread_mutex_unlock(&mfl_pool.mu);
+    }
+    return NULL;
+}
+static void mfl_pool_once_init(void) {
+    int T = mfl_pool_want_T;
+    if (T < 1) T = 1;
+    if (T > 64) T = 64;
+    pthread_mutex_init(&mfl_pool.mu, NULL);
+    pthread_cond_init(&mfl_pool.cv, NULL);
+    pthread_cond_init(&mfl_pool.done_cv, NULL);
+    mfl_pool.nthreads = T;
+    mfl_pool.gen = 0;
+    mfl_pool.done_count = 0;
+    mfl_pool.threads = (pthread_t*)malloc(sizeof(pthread_t) * T);
+    for (int t = 0; t < T; t++)
+        pthread_create(&mfl_pool.threads[t], NULL, mfl_pool_worker, (void*)(intptr_t)t);
+}
+/* Dispatch fn over [0,ntasks) in gran-sized slabs. Single-threaded when tiny
+   (ntasks < 2*nthreads) or only 1 CPU. nthreads is captured at first use from
+   MFL_GEMM_THREADS (via mfl_gemm_num_threads) and fixed for the pool's life. */
+static void mfl_pool_run(mfl_task_fn fn, void* ctx, int ntasks, int gran) {
+    if (ntasks <= 0) return;
+    if (gran < 1) gran = 1;
+    int T = mfl_gemm_num_threads();
+    if (T <= 1 || ntasks < 2 * T) { fn(ctx, 0, 0, ntasks); return; }
+    mfl_pool_want_T = T;
+    pthread_once(&mfl_pool_once, mfl_pool_once_init);
+    pthread_mutex_lock(&mfl_pool.mu);
+    mfl_pool.fn = fn; mfl_pool.ctx = ctx;
+    mfl_pool.ntasks = ntasks; mfl_pool.gran = gran;
+    __atomic_store_n(&mfl_pool.next, 0, __ATOMIC_RELAXED);
+    mfl_pool.done_count = 0;
+    mfl_pool.gen++;
+    pthread_cond_broadcast(&mfl_pool.cv);
+    while (mfl_pool.done_count < mfl_pool.nthreads)
+        pthread_cond_wait(&mfl_pool.done_cv, &mfl_pool.mu);
+    pthread_mutex_unlock(&mfl_pool.mu);
+}
+
+/* ---- attn_causal_fwd_f32: q,k,v already RoPE'd. probs saved for backward.
+   probs layout: probs[((b*heads+h)*T + t)*T + s], only s<=t written. scale =
+   1/sqrt(head_size), head_size = dim/heads. GQA: head h uses kv head h/(heads/
+   kv_heads). Parallel over (b,head) — writes to out (disjoint per head) and
+   probs (disjoint per (b,head,t)); k/v are read-only, so no GQA race. */
+typedef struct {
+    const float *q, *k, *v;
+    float *probs, *out;
+    int T, dim, kv_dim, heads, hs, kvm;
+    float inv;
+} mfl_attn_fwd_ctx;
+static void mfl_attn_fwd_task(void* p, int tid, int lo, int hi) {
+    (void)tid;
+    mfl_attn_fwd_ctx* c = (mfl_attn_fwd_ctx*)p;
+    int T = c->T, hs = c->hs, kvm = c->kvm, dim = c->dim, kv_dim = c->kv_dim, heads = c->heads;
+    float inv = c->inv;
+    for (int idx = lo; idx < hi; idx++) {
+        int b = idx / heads, h = idx - b * heads;
+        int kr = (h / kvm) * hs;
+        for (int t = 0; t < T; t++) {
+            int sr = (b * heads + h) * T + t;
+            int qr = (b * T + t) * dim + h * hs;
+            float mx = -1e30f;
+            for (int s = 0; s <= t; s++) {
+                int kr2 = (b * T + s) * kv_dim + kr;
+                float dot = 0.0f;
+                for (int j = 0; j < hs; j++) dot += c->q[qr + j] * c->k[kr2 + j];
+                dot *= inv;
+                c->probs[(long)sr * T + s] = dot;
+                if (dot > mx) mx = dot;
+            }
+            float sum = 0.0f;
+            for (int s = 0; s <= t; s++) {
+                float e = expf(c->probs[(long)sr * T + s] - mx);
+                c->probs[(long)sr * T + s] = e;
+                sum += e;
+            }
+            for (int s = 0; s <= t; s++) c->probs[(long)sr * T + s] /= sum;
+            int orw = (b * T + t) * dim + h * hs;
+            for (int j = 0; j < hs; j++) c->out[orw + j] = 0.0f;
+            for (int s = 0; s <= t; s++) {
+                int vr = (b * T + s) * kv_dim + kr;
+                float a = c->probs[(long)sr * T + s];
+                for (int j = 0; j < hs; j++) c->out[orw + j] += a * c->v[vr + j];
+            }
+        }
+    }
+}
+static void mfl_attn_causal_fwd_f32(int64_t qb, int64_t kb, int64_t vb, int64_t pb,
+        int64_t ob, int64_t B64, int64_t T64, int64_t dim64, int64_t kvdim64,
+        int64_t heads64, int64_t kvh64) {
+    mfl_attn_fwd_ctx c;
+    c.q = (const float*)(intptr_t)qb; c.k = (const float*)(intptr_t)kb;
+    c.v = (const float*)(intptr_t)vb; c.probs = (float*)(intptr_t)pb;
+    c.out = (float*)(intptr_t)ob;
+    c.T = (int)T64; c.dim = (int)dim64; c.kv_dim = (int)kvdim64;
+    c.heads = (int)heads64; c.hs = c.dim / (int)heads64;
+    c.kvm = c.heads / (int)kvh64; c.inv = 1.0f / sqrtf((float)c.hs);
+    mfl_pool_run(mfl_attn_fwd_task, &c, (int)B64 * c.heads, 1);
+}
+
+/* ---- attn_causal_bwd_f32: ACCUMULATES into dq/dk/dv (caller zeroes). Same math
+   as m_attn_back_chunk: d_raw[s] = d_out_t . v_s; d_score = p*(d_raw - sum(p*
+   d_raw)); dq_t += scale*d_score*k_s; dk_s += scale*d_score*q_t; dv_s += p*d_out_t.
+   Parallel over (b, kv_head) GROUPS so the kvm query heads sharing a kv row are
+   handled by one thread — dk/dv writes are disjoint across groups (no GQA race).
+   Each task mallocs T floats of scratch (d_raw/d_score, reused per t). */
+typedef struct {
+    const float *q, *k, *v, *probs, *d_out;
+    float *dq, *dk, *dv;
+    int T, dim, kv_dim, heads, kv_heads, hs, kvm;
+    float inv;
+} mfl_attn_bwd_ctx;
+static void mfl_attn_bwd_task(void* p, int tid, int lo, int hi) {
+    (void)tid;
+    mfl_attn_bwd_ctx* c = (mfl_attn_bwd_ctx*)p;
+    int T = c->T, hs = c->hs, kvm = c->kvm, dim = c->dim, kv_dim = c->kv_dim, kv_heads = c->kv_heads;
+    float inv = c->inv;
+    float* dsc = (float*)malloc(sizeof(float) * (size_t)T);
+    for (int g = lo; g < hi; g++) {
+        int b = g / kv_heads, kvh = g - b * kv_heads;
+        int kr = kvh * hs;                 /* kv row offset for this kv head */
+        for (int h = kvh * kvm; h < (kvh + 1) * kvm; h++) {
+            for (int t = 0; t < T; t++) {
+                int sr = (b * c->heads + h) * T + t;
+                int orw = (b * T + t) * dim + h * hs;
+                for (int s = 0; s <= t; s++) {
+                    int vr = (b * T + s) * kv_dim + kr;
+                    float a = c->probs[(long)sr * T + s];
+                    float sm = 0.0f;
+                    for (int j = 0; j < hs; j++) {
+                        float dao_v = c->d_out[orw + j];
+                        c->dv[vr + j] += a * dao_v;
+                        sm += dao_v * c->v[vr + j];
+                    }
+                    dsc[s] = sm;
+                }
+                float psum = 0.0f;
+                for (int s = 0; s <= t; s++) psum += c->probs[(long)sr * T + s] * dsc[s];
+                for (int s = 0; s <= t; s++)
+                    dsc[s] = c->probs[(long)sr * T + s] * (dsc[s] - psum);
+                for (int s = 0; s <= t; s++) {
+                    int kr2 = (b * T + s) * kv_dim + kr;
+                    float ds = dsc[s] * inv;
+                    for (int j = 0; j < hs; j++) {
+                        c->dq[orw + j] += ds * c->k[kr2 + j];
+                        c->dk[kr2 + j] += ds * c->q[orw + j];
+                    }
+                }
+            }
+        }
+    }
+    free(dsc);
+}
+static void mfl_attn_causal_bwd_f32(int64_t qb, int64_t kb, int64_t vb, int64_t pb,
+        int64_t dob, int64_t dqb, int64_t dkb, int64_t dvb, int64_t B64, int64_t T64,
+        int64_t dim64, int64_t kvdim64, int64_t heads64, int64_t kvh64) {
+    mfl_attn_bwd_ctx c;
+    c.q = (const float*)(intptr_t)qb; c.k = (const float*)(intptr_t)kb;
+    c.v = (const float*)(intptr_t)vb; c.probs = (const float*)(intptr_t)pb;
+    c.d_out = (const float*)(intptr_t)dob;
+    c.dq = (float*)(intptr_t)dqb; c.dk = (float*)(intptr_t)dkb; c.dv = (float*)(intptr_t)dvb;
+    c.T = (int)T64; c.dim = (int)dim64; c.kv_dim = (int)kvdim64;
+    c.heads = (int)heads64; c.kv_heads = (int)kvh64;
+    c.hs = c.dim / c.heads; c.kvm = c.heads / c.kv_heads; c.inv = 1.0f / sqrtf((float)c.hs);
+    mfl_pool_run(mfl_attn_bwd_task, &c, (int)B64 * c.kv_heads, 1);
+}
+
+/* ---- rmsnorm_fwd_f32: out = w * x * rsqrt(mean(x^2)+eps); normed = x*rsqrt.
+   eps = 1e-5 (matches mtlm m_rmsnorm). Parallel over rows. */
+typedef struct {
+    float *out, *normed;
+    const float *x, *w;
+    int n;
+    float eps;
+} mfl_rmsn_ctx;
+static void mfl_rmsn_fwd_task(void* p, int tid, int lo, int hi) {
+    (void)tid;
+    mfl_rmsn_ctx* c = (mfl_rmsn_ctx*)p;
+    int n = c->n; float eps = c->eps;
+    for (int r = lo; r < hi; r++) {
+        const float* xr = c->x + (long)r * n;
+        float* outr = c->out + (long)r * n;
+        float* nr = c->normed + (long)r * n;
+        float ss = 0.0f;
+        for (int i = 0; i < n; i++) { float v = xr[i]; ss += v * v; }
+        float rms = 1.0f / sqrtf(ss / (float)n + eps);
+        for (int i = 0; i < n; i++) {
+            float nv = xr[i] * rms;
+            nr[i] = nv;
+            outr[i] = c->w[i] * nv;
+        }
+    }
+}
+static void mfl_rmsnorm_fwd_f32(int64_t ob, int64_t xb, int64_t wb, int64_t nb,
+        int64_t n64, int64_t rows64, double eps) {
+    mfl_rmsn_ctx c;
+    c.out = (float*)(intptr_t)ob; c.normed = (float*)(intptr_t)nb;
+    c.x = (const float*)(intptr_t)xb; c.w = (const float*)(intptr_t)wb;
+    c.n = (int)n64; c.eps = (float)eps;
+    mfl_pool_run(mfl_rmsn_fwd_task, &c, (int)rows64, 16);
+}
+/* rmsnorm_bwd_f32: dx ACCUMULATES (caller may pre-fill with the residual grad),
+   dw accumulates. dx += rms*(dout*w - normed*mean(dout*w*normed)); dw += dout*
+   normed. Recomputes rms from x for stability. Parallel over rows. dx rows are
+   disjoint per task (race-free). dw is a single [n] gradient shared across rows,
+   so multi-threaded tasks accumulate into per-thread private [n] slabs (malloc'd
+   here, zeroed), reduced into dw after; single-threaded writes dw directly. */
+typedef struct {
+    float *dx, *dw;
+    const float *dout, *w, *x, *normed;
+    int n, nthreads;
+    float eps;
+    float* dwslabs;   /* T*n private slabs (multi-threaded) or NULL (single) */
+} mfl_rmsn_bwd_ctx;
+static void mfl_rmsn_bwd_task(void* p, int tid, int lo, int hi) {
+    mfl_rmsn_bwd_ctx* c = (mfl_rmsn_bwd_ctx*)p;
+    int n = c->n; float eps = c->eps;
+    float* dwloc = c->nthreads > 1 ? c->dwslabs + (long)tid * n : c->dw;
+    for (int r = lo; r < hi; r++) {
+        const float* xr = c->x + (long)r * n;
+        const float* nr = c->normed + (long)r * n;
+        const float* dr = c->dout + (long)r * n;
+        float* dxr = c->dx + (long)r * n;
+        for (int i = 0; i < n; i++) dwloc[i] += dr[i] * nr[i];
+        float ss = 0.0f;
+        for (int i = 0; i < n; i++) { float v = xr[i]; ss += v * v; }
+        float rms = 1.0f / sqrtf(ss / (float)n + eps);
+        float gm = 0.0f;
+        for (int i = 0; i < n; i++) gm += dr[i] * c->w[i] * nr[i];
+        gm /= (float)n;
+        for (int i = 0; i < n; i++)
+            dxr[i] += rms * (dr[i] * c->w[i] - gm * nr[i]);
+    }
+}
+static void mfl_rmsnorm_bwd_f32(int64_t dxb, int64_t doutb, int64_t wb, int64_t xb,
+        int64_t nb, int64_t dwb, int64_t n64, int64_t rows64, double eps) {
+    mfl_rmsn_bwd_ctx c;
+    c.dx = (float*)(intptr_t)dxb; c.dout = (const float*)(intptr_t)doutb;
+    c.w = (const float*)(intptr_t)wb; c.x = (const float*)(intptr_t)xb;
+    c.normed = (const float*)(intptr_t)nb; c.dw = (float*)(intptr_t)dwb;
+    c.n = (int)n64; c.eps = (float)eps;
+    int T = mfl_gemm_num_threads();
+    int rows = (int)rows64, n = c.n;
+    if (T <= 1 || rows < 2 * T) {
+        c.nthreads = 1; c.dwslabs = NULL;
+        mfl_rmsn_bwd_task(&c, 0, 0, rows);
+        return;
+    }
+    c.nthreads = T;
+    c.dwslabs = (float*)calloc((size_t)T * n, sizeof(float));
+    mfl_pool_run(mfl_rmsn_bwd_task, &c, rows, 16);
+    for (int t = 0; t < T; t++) {
+        float* s = c.dwslabs + (long)t * n;
+        for (int i = 0; i < n; i++) c.dw[i] += s[i];
+    }
+    free(c.dwslabs);
+}
+
+/* ---- silu_mul_f32: out = silu(h1)*h3. silu(x) = x/(1+exp(-x)). Parallel over
+   1024-element chunks. */
+typedef struct { float *out; const float *h1, *h3; int n; } mfl_silu_fwd_ctx;
+static void mfl_silu_mul_fwd_task(void* p, int tid, int lo, int hi) {
+    (void)tid;
+    mfl_silu_fwd_ctx* c = (mfl_silu_fwd_ctx*)p;
+    int n = c->n;
+    for (int blk = lo; blk < hi; blk++) {
+        int base = blk * 1024, end = base + 1024;
+        if (end > n) end = n;
+        for (int i = base; i < end; i++) {
+            float x = c->h1[i];
+            float s = x / (1.0f + expf(-x));
+            c->out[i] = s * c->h3[i];
+        }
+    }
+}
+static void mfl_silu_mul_f32(int64_t ob, int64_t h1b, int64_t h3b, int64_t n64) {
+    mfl_silu_fwd_ctx c;
+    c.out = (float*)(intptr_t)ob; c.h1 = (const float*)(intptr_t)h1b; c.h3 = (const float*)(intptr_t)h3b;
+    c.n = (int)n64;
+    mfl_pool_run(mfl_silu_mul_fwd_task, &c, (c.n + 1023) / 1024, 1);
+}
+/* silu_mul_bwd_f32: writes (overwrites) dh1, dh3. dh1 = dout*h3*silu_grad(h1),
+   dh3 = dout*silu(h1). silu_grad(x) = s + x*s*(1-s), s = silu(x). */
+typedef struct { float *dh1, *dh3; const float *dout, *h1, *h3; int n; } mfl_silu_bwd_ctx;
+static void mfl_silu_mul_bwd_task(void* p, int tid, int lo, int hi) {
+    (void)tid;
+    mfl_silu_bwd_ctx* c = (mfl_silu_bwd_ctx*)p;
+    int n = c->n;
+    for (int blk = lo; blk < hi; blk++) {
+        int base = blk * 1024, end = base + 1024;
+        if (end > n) end = n;
+        for (int i = base; i < end; i++) {
+            float x = c->h1[i];
+            float sig = 1.0f / (1.0f + expf(-x));   /* sigmoid, NOT silu: silu'(x) = sig + x*sig*(1-sig) */
+            float s = x * sig;
+            float sg = sig + x * sig * (1.0f - sig);
+            c->dh1[i] = c->dout[i] * c->h3[i] * sg;
+            c->dh3[i] = c->dout[i] * s;
+        }
+    }
+}
+static void mfl_silu_mul_bwd_f32(int64_t dh1b, int64_t dh3b, int64_t dob,
+        int64_t h1b, int64_t h3b, int64_t n64) {
+    mfl_silu_bwd_ctx c;
+    c.dh1 = (float*)(intptr_t)dh1b; c.dh3 = (float*)(intptr_t)dh3b;
+    c.dout = (const float*)(intptr_t)dob; c.h1 = (const float*)(intptr_t)h1b; c.h3 = (const float*)(intptr_t)h3b;
+    c.n = (int)n64;
+    mfl_pool_run(mfl_silu_mul_bwd_task, &c, (c.n + 1023) / 1024, 1);
+}
+
+/* ---- softmax_xent_f32: returns mean cross-entropy over rows; writes probs and
+   dlogits = (probs - onehot)/rows. Numerically stable (max-subtract). Double
+   intermediates for the softmax sum and loss to match the MFL reference's loss
+   to 1e-6 (the reference accumulates in MFL float = C double); probs/dlogits are
+   stored as float32. Parallel over rows with per-thread double loss partials. */
+typedef struct {
+    float *logits, *probs, *dlogits;
+    const int* targets;
+    int vocab;
+    double* partial;   /* per-thread partial loss sum */
+} mfl_sxent_ctx;
+static void mfl_sxent_task(void* p, int tid, int lo, int hi) {
+    mfl_sxent_ctx* c = (mfl_sxent_ctx*)p;
+    int vocab = c->vocab;
+    double loss = 0.0;
+    for (int r = lo; r < hi; r++) {
+        const float* lr = c->logits + (long)r * vocab;
+        float* pr = c->probs + (long)r * vocab;
+        float* dr = c->dlogits + (long)r * vocab;
+        double mx = lr[0];
+        for (int i = 1; i < vocab; i++) if (lr[i] > mx) mx = lr[i];
+        double sum = 0.0;
+        for (int i = 0; i < vocab; i++) { double e = exp((double)lr[i] - mx); pr[i] = (float)e; sum += e; }
+        double inv = 1.0 / sum;
+        for (int i = 0; i < vocab; i++) pr[i] = (float)(pr[i] * inv);
+        double p = pr[c->targets[r]];
+        if (p < 1e-10) p = 1e-10;
+        loss -= log(p);
+        (void)dr;
+    }
+    c->partial[tid] += loss;
+}
+static float mfl_softmax_xent_f32(int64_t lb, int64_t tb, int64_t pb, int64_t db,
+        int64_t rows64, int64_t vocab64) {
+    mfl_sxent_ctx c;
+    c.logits = (float*)(intptr_t)lb; c.targets = (const int*)(intptr_t)tb;
+    c.probs = (float*)(intptr_t)pb; c.dlogits = (float*)(intptr_t)db;
+    c.vocab = (int)vocab64;
+    int rows = (int)rows64, vocab = c.vocab;
+    int T = mfl_gemm_num_threads();
+    double* partial = (double*)calloc((size_t)(T > 0 ? T : 1), sizeof(double));
+    c.partial = partial;
+    /* dlogits divisor is the TOTAL row count (bt), not the per-task slab; pass it
+       via a second pass after the parallel loss/probs compute. */
+    mfl_pool_run(mfl_sxent_task, &c, rows, 1);
+    double loss = 0.0;
+    for (int t = 0; t < T; t++) loss += partial[t];
+    /* divide dlogits by rows (the full batch) — done on the main thread after the
+       parallel pass wrote (probs - onehot); scale in place. */
+    double invrows = 1.0 / (double)rows;
+    for (int r = 0; r < rows; r++) {
+        float* pr = c.probs + (long)r * vocab;
+        float* dr = c.dlogits + (long)r * vocab;
+        for (int i = 0; i < vocab; i++) dr[i] = (float)((pr[i] - (i == c.targets[r] ? 1.0f : 0.0f)) * invrows);
+    }
+    free(partial);
+    return (float)(loss * invrows);
+}
+#endif
 static void mfl_group_norm_f32(int64_t outb, int64_t inb, int64_t w, int64_t b,
                                int64_t channels, int64_t h, int64_t w_dim,
                                int64_t groups, double eps) {
@@ -8651,6 +9072,20 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("mfl_matmul_f32(%s, %s, %s, %s, %s, %s, %s)", args[0], args[1], args[2], args[3], args[4], args[5], args[6]), nil
 	case "gemm_f32":
 		return fmt.Sprintf("mfl_gemm_f32(%s, %s, %s, %s, %s, %s, %s, %s, %s)", args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8]), nil
+	case "attn_causal_fwd_f32":
+		return fmt.Sprintf("mfl_attn_causal_fwd_f32(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)", args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8], args[9], args[10]), nil
+	case "attn_causal_bwd_f32":
+		return fmt.Sprintf("mfl_attn_causal_bwd_f32(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)", args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8], args[9], args[10], args[11], args[12], args[13]), nil
+	case "rmsnorm_fwd_f32":
+		return fmt.Sprintf("mfl_rmsnorm_fwd_f32(%s, %s, %s, %s, %s, %s, %s)", args[0], args[1], args[2], args[3], args[4], args[5], args[6]), nil
+	case "rmsnorm_bwd_f32":
+		return fmt.Sprintf("mfl_rmsnorm_bwd_f32(%s, %s, %s, %s, %s, %s, %s, %s, %s)", args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8]), nil
+	case "silu_mul_f32":
+		return fmt.Sprintf("mfl_silu_mul_f32(%s, %s, %s, %s)", args[0], args[1], args[2], args[3]), nil
+	case "silu_mul_bwd_f32":
+		return fmt.Sprintf("mfl_silu_mul_bwd_f32(%s, %s, %s, %s, %s, %s)", args[0], args[1], args[2], args[3], args[4], args[5]), nil
+	case "softmax_xent_f32":
+		return fmt.Sprintf("mfl_softmax_xent_f32(%s, %s, %s, %s, %s, %s)", args[0], args[1], args[2], args[3], args[4], args[5]), nil
 	case "conv2d_f32":
 		return fmt.Sprintf("mfl_conv2d_f32(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)", args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8], args[9], args[10], args[11]), nil
 	case "add_vec_spatial_f32":

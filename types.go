@@ -2576,6 +2576,64 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 			c.addPair(argSlots[i], c.cInt)
 		}
 		return c.cVoid, nil
+	case "attn_causal_fwd_f32":
+		if len(argSlots) != 11 {
+			return 0, fmt.Errorf("attn_causal_fwd_f32: 11 args (q, k, v, probs, out, B, T, dim, kv_dim, heads, kv_heads)")
+		}
+		for i := 0; i < 11; i++ {
+			c.addPair(argSlots[i], c.cInt)
+		}
+		return c.cVoid, nil
+	case "attn_causal_bwd_f32":
+		if len(argSlots) != 14 {
+			return 0, fmt.Errorf("attn_causal_bwd_f32: 14 args (q, k, v, probs, d_out, dq, dk, dv, B, T, dim, kv_dim, heads, kv_heads)")
+		}
+		for i := 0; i < 14; i++ {
+			c.addPair(argSlots[i], c.cInt)
+		}
+		return c.cVoid, nil
+	case "rmsnorm_fwd_f32":
+		if len(argSlots) != 7 {
+			return 0, fmt.Errorf("rmsnorm_fwd_f32: 7 args (out, x, w, normed, n, rows, eps)")
+		}
+		for i := 0; i < 6; i++ {
+			c.addPair(argSlots[i], c.cInt)
+		}
+		c.addPair(argSlots[6], newSlot(c, KNum))
+		return c.cVoid, nil
+	case "rmsnorm_bwd_f32":
+		if len(argSlots) != 9 {
+			return 0, fmt.Errorf("rmsnorm_bwd_f32: 9 args (dx, dout, w, x, normed, dw, n, rows, eps)")
+		}
+		for i := 0; i < 8; i++ {
+			c.addPair(argSlots[i], c.cInt)
+		}
+		c.addPair(argSlots[8], newSlot(c, KNum))
+		return c.cVoid, nil
+	case "silu_mul_f32":
+		if len(argSlots) != 4 {
+			return 0, fmt.Errorf("silu_mul_f32: 4 args (out, h1, h3, n)")
+		}
+		for i := 0; i < 4; i++ {
+			c.addPair(argSlots[i], c.cInt)
+		}
+		return c.cVoid, nil
+	case "silu_mul_bwd_f32":
+		if len(argSlots) != 6 {
+			return 0, fmt.Errorf("silu_mul_bwd_f32: 6 args (dh1, dh3, dout, h1, h3, n)")
+		}
+		for i := 0; i < 6; i++ {
+			c.addPair(argSlots[i], c.cInt)
+		}
+		return c.cVoid, nil
+	case "softmax_xent_f32":
+		if len(argSlots) != 6 {
+			return 0, fmt.Errorf("softmax_xent_f32: 6 args (logits, targets_i32, probs, dlogits, rows, vocab)")
+		}
+		for i := 0; i < 6; i++ {
+			c.addPair(argSlots[i], c.cInt)
+		}
+		return c.cFloat, nil
 	case "conv2d_f32":
 		if len(argSlots) != 12 {
 			return 0, fmt.Errorf("conv2d_f32: 12 args (out, in, w, bias, c_in, c_out, h, w_dim, kh, kw, pad, stride)")
