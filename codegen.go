@@ -4746,12 +4746,33 @@ func (g *cgen) program(p *Program) (string, error) {
 			fmt.Fprintf(&out, "%sextern %s %s(%s);\n", attr, externCType(ef.Ret), ef.Name, ps)
 		}
 	}
-	// struct typedefs, in declaration order (a struct may reference earlier ones)
-	for _, td := range p.Types {
+	// Which of p.Types came from an `extern` cstruct rather than a `type`
+	// declaration. Needed before the typedefs are written, not after: see the
+	// ordering note below.
+	cstructNames := map[string]bool{}
+	for _, ed := range p.Externs {
+		for _, cs := range ed.Structs {
+			cstructNames[cs.Name] = true
+		}
+	}
+	// struct typedefs, CSTRUCT WRAPPERS FIRST and user structs after.
+	//
+	// Declaration order is not enough. A user struct may hold a cstruct as a
+	// field -- `type Theme struct { bg Color }` over an `extern` Color -- and
+	// the mfl_ wrappers for cstructs are appended to p.Types after the user
+	// types whatever the source order, so `typedef struct { mfl_Color f_bg; }
+	// mfl_Theme;` was emitted before mfl_Color existed. The C compiler then
+	// reported `unknown type name 'mfl_Color'` and a cascade of int mismatches
+	// from its own error recovery, while `machin check` had already said the
+	// program was fine -- the worst diagnostic this compiler can produce.
+	//
+	// Two passes are sufficient and cannot loop: a cstruct's fields are C
+	// types, so a cstruct can never reference a user struct back.
+	emitTypedef := func(td *TypeDecl) {
 		if td.COpaque != "" {
 			// an opaque FFI handle: wrap the real C type by value in one hidden field
 			fmt.Fprintf(&out, "typedef struct { %s _c; } mfl_%s;\n", td.COpaque, td.Name)
-			continue
+			return
 		}
 		fmt.Fprintf(&out, "typedef struct {")
 		for _, f := range td.Fields {
@@ -4759,15 +4780,19 @@ func (g *cgen) program(p *Program) (string, error) {
 		}
 		fmt.Fprintf(&out, " } mfl_%s;\n", td.Name)
 	}
+	for _, td := range p.Types {
+		if cstructNames[td.Name] {
+			emitTypedef(td)
+		}
+	}
+	for _, td := range p.Types {
+		if !cstructNames[td.Name] {
+			emitTypedef(td)
+		}
+	}
 	// FFI struct marshaling: convert each cstruct between its MFL value (mfl_Name,
 	// with int64/double/nested mfl_ fields) and the C layout (Name) at the
 	// boundary. A nested cstruct field recurses through its own mfl_from_/mfl_to_.
-	cstructNames := map[string]bool{}
-	for _, ed := range p.Externs {
-		for _, cs := range ed.Structs {
-			cstructNames[cs.Name] = true
-		}
-	}
 	for _, ed := range p.Externs {
 		for _, cs := range ed.Structs {
 			if cs.Opaque {
