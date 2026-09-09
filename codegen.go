@@ -2213,6 +2213,279 @@ static void mfl_matmul_f32(int64_t ob, int64_t xb, int64_t w, int64_t b, int64_t
         }
     }
 }
+
+/* ---- gemm_f32: multithreaded, cache-blocked fp32 GEMM (MTLM trainer) ----
+   C[m×n] (+)= op(A)[m×k] @ op(B)[k×n], row-major. ta=1 -> A stored [k×m] (used
+   transposed); tb=1 -> B stored [n×k]. accumulate=1 adds into C, else overwrites.
+   No aliasing between C and A/B (undefined otherwise). Pure C, no external BLAS:
+   Goto/BLIS-style MC/KC/NC blocking + a 4×8 register-tiled micro-kernel, with an
+   AVX2/FMA path (target-attributed, runtime __builtin_cpu_supports dispatch) and
+   a portable scalar fallback the compiler auto-vectorizes. Panels of A and B
+   are packed so the inner loop is contiguous regardless of ta/tb. Multithreaded
+   via a persistent pthread pool splitting the M dimension across MFL_GEMM_THREADS
+   (env, default = online CPUs, cap 64); small problems (m*n*k < 64k) run
+   single-threaded. fp32 accumulation — results match a naive reference within
+   1e-4 relative (accumulation order differs). Note:
+   matmul_f32(out,x,w,0,n_in,n_out,batch) == gemm_f32(out,x,w,batch,n_out,n_in,0,1,0).
+   TODO(gemm-gpu): when mfl_ocl_ready, a fused upload+kernel could win for large
+   training batches, but matmul_f32's per-call upload is slower for repeated
+   training steps — keep the CPU path for now. */
+#if !defined(__wasm__)
+#define GEMM_MR 4
+#define GEMM_NR 8
+#define GEMM_MC 128
+#define GEMM_KC 256
+#define GEMM_NC 1024
+#if defined(__x86_64__) || defined(__i386__)
+#include <immintrin.h>
+#endif
+/* op(A)[i][p]: ta=0 A is [m,k] row-major; ta=1 A is [k,m] row-major (transposed). */
+static inline float mfl_gemm_a(const float* A, int i, int p, int k, int m, int ta) {
+    (void)m;
+    return ta ? A[(long)p * m + i] : A[(long)i * k + p];
+}
+/* op(B)[p][j]: tb=0 B is [k,n] row-major; tb=1 B is [n,k] row-major (transposed). */
+static inline float mfl_gemm_b(const float* B, int p, int j, int n, int k, int tb) {
+    (void)k;
+    return tb ? B[(long)j * k + p] : B[(long)p * n + j];
+}
+/* Pack a [kc x nc] panel of op(B) (rows p0.., cols j0..) into Bpack, row-major
+   with stride GEMM_NC. Columns [nc,GEMM_NC) are zeroed so the micro-kernel's
+   8-wide loads stay in bounds for the last NR sub-block. p0+q<k and j0+c<n hold
+   by construction (kc/nc are clamped), so no per-element bounds check. */
+static void mfl_gemm_packB(float* Bpack, const float* B, int p0, int j0,
+                           int kc, int nc, int n, int k, int tb) {
+    memset(Bpack, 0, (size_t)kc * GEMM_NC * sizeof(float));
+    for (int q = 0; q < kc; q++) {
+        float* row = Bpack + (size_t)q * GEMM_NC;
+        for (int c = 0; c < nc; c++)
+            row[c] = mfl_gemm_b(B, p0 + q, j0 + c, n, k, tb);
+    }
+}
+/* 4×8 register-tiled micro-kernel: C[i:i+4, j:j+8] (+)= A[4×kc] @ B[kc×8].
+   A has stride GEMM_KC (panel rows); B has stride ldb (panel = GEMM_NC). Rows
+   beyond m_rem are zero-padded by the caller, so they contribute nothing; only
+   m_rem × n_rem are written back. */
+#if defined(__x86_64__) || defined(__i386__)
+__attribute__((target("avx2,fma")))
+static void mfl_gemm_micro_avx(const float* A, const float* B, int ldb, int klen,
+                               float* C, int ldc, int m_rem, int n_rem, int do_add) {
+    __m256 a0 = _mm256_setzero_ps(), a1 = a0, a2 = a0, a3 = a0;
+    for (int p = 0; p < klen; p++) {
+        __m256 b = _mm256_loadu_ps(B + (size_t)p * ldb);
+        a0 = _mm256_fmadd_ps(_mm256_set1_ps(A[(size_t)0 * GEMM_KC + p]), b, a0);
+        a1 = _mm256_fmadd_ps(_mm256_set1_ps(A[(size_t)1 * GEMM_KC + p]), b, a1);
+        a2 = _mm256_fmadd_ps(_mm256_set1_ps(A[(size_t)2 * GEMM_KC + p]), b, a2);
+        a3 = _mm256_fmadd_ps(_mm256_set1_ps(A[(size_t)3 * GEMM_KC + p]), b, a3);
+    }
+    float tmp[32] __attribute__((aligned(64)));
+    _mm256_store_ps(tmp, a0);
+    _mm256_store_ps(tmp + 8, a1);
+    _mm256_store_ps(tmp + 16, a2);
+    _mm256_store_ps(tmp + 24, a3);
+    for (int r = 0; r < m_rem; r++) {
+        float* Cr = C + (size_t)r * ldc;
+        const float* tr = tmp + r * 8;
+        for (int c = 0; c < n_rem; c++)
+            Cr[c] = do_add ? (Cr[c] + tr[c]) : tr[c];
+    }
+}
+#endif
+/* Portable scalar micro-kernel — the compiler auto-vectorizes (SSE2/NEON) at -O2. */
+static void mfl_gemm_micro_scalar(const float* A, const float* B, int ldb, int klen,
+                                  float* C, int ldc, int m_rem, int n_rem, int do_add) {
+    float acc[4][8];
+    for (int r = 0; r < 4; r++)
+        for (int c = 0; c < 8; c++) acc[r][c] = 0.0f;
+    for (int p = 0; p < klen; p++) {
+        const float* Br = B + (size_t)p * ldb;
+        for (int r = 0; r < 4; r++) {
+            float a = A[(size_t)r * GEMM_KC + p];
+            for (int c = 0; c < 8; c++) acc[r][c] += a * Br[c];
+        }
+    }
+    for (int r = 0; r < m_rem; r++) {
+        float* Cr = C + (size_t)r * ldc;
+        for (int c = 0; c < n_rem; c++)
+            Cr[c] = do_add ? (Cr[c] + acc[r][c]) : acc[r][c];
+    }
+}
+static void mfl_gemm_micro(const float* A, const float* B, int ldb, int klen,
+                           float* C, int ldc, int m_rem, int n_rem, int do_add) {
+#if defined(__x86_64__) || defined(__i386__)
+    if (__builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma")) {
+        mfl_gemm_micro_avx(A, B, ldb, klen, C, ldc, m_rem, n_rem, do_add);
+        return;
+    }
+#endif
+    mfl_gemm_micro_scalar(A, B, ldb, klen, C, ldc, m_rem, n_rem, do_add);
+}
+/* Process the M-row slab [i_lo,i_hi): pack A panels (MC×KC) and run micro-kernels
+   against the shared packed B panel. Apack is a caller-owned MC×KC scratch. */
+static void mfl_gemm_slab(const float* A, const float* B, float* C, int m, int n, int k,
+                          int ta, int tb, const float* Bpack, int kc, int nc, int p0,
+                          int j0, int do_add, int i_lo, int i_hi, float* Apack) {
+    for (int i0 = i_lo; i0 < i_hi; i0 += GEMM_MC) {
+        int mc = i_hi - i0;
+        if (mc > GEMM_MC) mc = GEMM_MC;
+        for (int r = 0; r < GEMM_MC; r++) {
+            float* row = Apack + (size_t)r * GEMM_KC;
+            if (r < mc)
+                for (int q = 0; q < kc; q++) row[q] = mfl_gemm_a(A, i0 + r, p0 + q, k, m, ta);
+            else
+                for (int q = 0; q < kc; q++) row[q] = 0.0f;
+        }
+        for (int ir = 0; ir < mc; ir += GEMM_MR) {
+            int m_rem = mc - ir;
+            if (m_rem > GEMM_MR) m_rem = GEMM_MR;
+            const float* Ap = Apack + (size_t)ir * GEMM_KC;
+            for (int jb = 0; jb < nc; jb += GEMM_NR) {
+                int n_rem = nc - jb;
+                if (n_rem > GEMM_NR) n_rem = GEMM_NR;
+                mfl_gemm_micro(Ap, Bpack + jb, GEMM_NC, kc,
+                               C + (size_t)(i0 + ir) * n + (j0 + jb), n,
+                               m_rem, n_rem, do_add);
+            }
+        }
+    }
+}
+/* Persistent pthread pool: workers wait on a generation bump, grab M-slabs via an
+   atomic cursor, and signal completion. Created once (pthread_once), reused across
+   calls so a training loop doesn't pay per-call thread-creation cost. */
+typedef struct {
+    pthread_mutex_t mu;
+    pthread_cond_t cv, done_cv;
+    int T, gen, done_count;
+    pthread_t* threads;
+    float** Apacks;     /* per-worker MC×KC scratch */
+    float* Bpack;       /* shared KC×NC packed-B scratch (written by main only) */
+    /* current block params (set by main under mu before bumping gen) */
+    const float *A, *B;
+    float* C;
+    int m, n, k, ta, tb, kc, nc, p0, j0, do_add;
+    long next_i;        /* atomic M cursor */
+} mfl_gemm_pool_t;
+static mfl_gemm_pool_t mfl_gemm_pool;
+static pthread_once_t mfl_gemm_once = PTHREAD_ONCE_INIT;
+static int mfl_gemm_want_T = 0;
+static int mfl_gemm_num_threads(void) {
+    const char* e = getenv("MFL_GEMM_THREADS");
+    if (e && *e) { int v = atoi(e); if (v > 0) return v > 64 ? 64 : v; }
+#ifdef _WIN32
+    SYSTEM_INFO si; GetSystemInfo(&si); long nc = si.dwNumberOfProcessors;
+#else
+    long nc = sysconf(_SC_NPROCESSORS_ONLN);
+#endif
+    if (nc < 1) nc = 1;
+    if (nc > 64) nc = 64;
+    return (int)nc;
+}
+static void* mfl_gemm_worker(void* arg) {
+    int tid = (int)(intptr_t)arg;
+    int gen = 0;
+    for (;;) {
+        pthread_mutex_lock(&mfl_gemm_pool.mu);
+        while (mfl_gemm_pool.gen == gen)
+            pthread_cond_wait(&mfl_gemm_pool.cv, &mfl_gemm_pool.mu);
+        gen = mfl_gemm_pool.gen;
+        pthread_mutex_unlock(&mfl_gemm_pool.mu);
+        if (gen < 0) break;   /* shutdown */
+        for (;;) {
+            long i = __atomic_fetch_add(&mfl_gemm_pool.next_i, GEMM_MC, __ATOMIC_RELAXED);
+            if (i >= mfl_gemm_pool.m) break;
+            long hi = i + GEMM_MC;
+            if (hi > mfl_gemm_pool.m) hi = mfl_gemm_pool.m;
+            mfl_gemm_slab(mfl_gemm_pool.A, mfl_gemm_pool.B, mfl_gemm_pool.C,
+                          mfl_gemm_pool.m, mfl_gemm_pool.n, mfl_gemm_pool.k,
+                          mfl_gemm_pool.ta, mfl_gemm_pool.tb, mfl_gemm_pool.Bpack,
+                          mfl_gemm_pool.kc, mfl_gemm_pool.nc, mfl_gemm_pool.p0,
+                          mfl_gemm_pool.j0, mfl_gemm_pool.do_add, (int)i, (int)hi,
+                          mfl_gemm_pool.Apacks[tid]);
+        }
+        pthread_mutex_lock(&mfl_gemm_pool.mu);
+        if (++mfl_gemm_pool.done_count == mfl_gemm_pool.T)
+            pthread_cond_signal(&mfl_gemm_pool.done_cv);
+        pthread_mutex_unlock(&mfl_gemm_pool.mu);
+    }
+    return NULL;
+}
+static void mfl_gemm_once_init(void) {
+    int T = mfl_gemm_want_T;
+    if (T < 1) T = 1;
+    if (T > 64) T = 64;
+    pthread_mutex_init(&mfl_gemm_pool.mu, NULL);
+    pthread_cond_init(&mfl_gemm_pool.cv, NULL);
+    pthread_cond_init(&mfl_gemm_pool.done_cv, NULL);
+    mfl_gemm_pool.T = T;
+    mfl_gemm_pool.gen = 0;
+    mfl_gemm_pool.done_count = 0;
+    mfl_gemm_pool.threads = (pthread_t*)malloc(sizeof(pthread_t) * T);
+    mfl_gemm_pool.Apacks = (float**)malloc(sizeof(float*) * T);
+    mfl_gemm_pool.Bpack = (float*)malloc(sizeof(float) * GEMM_KC * GEMM_NC);
+    for (int t = 0; t < T; t++) {
+        mfl_gemm_pool.Apacks[t] = (float*)malloc(sizeof(float) * GEMM_MC * GEMM_KC);
+        pthread_create(&mfl_gemm_pool.threads[t], NULL, mfl_gemm_worker, (void*)(intptr_t)t);
+    }
+}
+/* Dispatch one (j0,p0) block to the pool: main packs B, workers split the M slabs. */
+static void mfl_gemm_dispatch(const float* A, const float* B, float* C, int m, int n, int k,
+                              int ta, int tb, int kc, int nc, int p0, int j0, int do_add) {
+    pthread_mutex_lock(&mfl_gemm_pool.mu);
+    mfl_gemm_pool.A = A; mfl_gemm_pool.B = B; mfl_gemm_pool.C = C;
+    mfl_gemm_pool.m = m; mfl_gemm_pool.n = n; mfl_gemm_pool.k = k;
+    mfl_gemm_pool.ta = ta; mfl_gemm_pool.tb = tb;
+    mfl_gemm_pool.kc = kc; mfl_gemm_pool.nc = nc; mfl_gemm_pool.p0 = p0;
+    mfl_gemm_pool.j0 = j0; mfl_gemm_pool.do_add = do_add;
+    __atomic_store_n(&mfl_gemm_pool.next_i, 0, __ATOMIC_RELAXED);
+    mfl_gemm_pool.done_count = 0;
+    mfl_gemm_pool.gen++;
+    pthread_cond_broadcast(&mfl_gemm_pool.cv);
+    while (mfl_gemm_pool.done_count < mfl_gemm_pool.T)
+        pthread_cond_wait(&mfl_gemm_pool.done_cv, &mfl_gemm_pool.mu);
+    pthread_mutex_unlock(&mfl_gemm_pool.mu);
+}
+static void mfl_gemm_f32(int64_t cb, int64_t ab, int64_t bb, int64_t m64, int64_t n64,
+                         int64_t k64, int64_t ta64, int64_t tb64, int64_t acc64) {
+    int m = (int)m64, n = (int)n64, k = (int)k64;
+    int ta = (int)ta64, tb = (int)tb64, accumulate = (int)acc64;
+    float* C = (float*)(intptr_t)cb;
+    const float* A = (const float*)(intptr_t)ab;
+    const float* B = (const float*)(intptr_t)bb;
+    if (m <= 0 || n <= 0 || k <= 0) return;   /* empty dims are no-ops */
+    int use_threads = ((int64_t)m * n * k >= 65536);
+    if (use_threads) {
+        mfl_gemm_want_T = mfl_gemm_num_threads();
+        if (mfl_gemm_want_T > 1) {
+            pthread_once(&mfl_gemm_once, mfl_gemm_once_init);
+            for (int j0 = 0; j0 < n; j0 += GEMM_NC) {
+                int nc = n - j0; if (nc > GEMM_NC) nc = GEMM_NC;
+                for (int p0 = 0; p0 < k; p0 += GEMM_KC) {
+                    int kc = k - p0; if (kc > GEMM_KC) kc = GEMM_KC;
+                    int do_add = (p0 > 0) || accumulate;
+                    mfl_gemm_packB(mfl_gemm_pool.Bpack, B, p0, j0, kc, nc, n, k, tb);
+                    mfl_gemm_dispatch(A, B, C, m, n, k, ta, tb, kc, nc, p0, j0, do_add);
+                }
+            }
+            return;
+        }
+    }
+    /* single-threaded path (small problem or 1 CPU): local scratch buffers */
+    float* Bpack = (float*)malloc(sizeof(float) * GEMM_KC * GEMM_NC);
+    float* Apack = (float*)malloc(sizeof(float) * GEMM_MC * GEMM_KC);
+    for (int j0 = 0; j0 < n; j0 += GEMM_NC) {
+        int nc = n - j0; if (nc > GEMM_NC) nc = GEMM_NC;
+        for (int p0 = 0; p0 < k; p0 += GEMM_KC) {
+            int kc = k - p0; if (kc > GEMM_KC) kc = GEMM_KC;
+            int do_add = (p0 > 0) || accumulate;
+            mfl_gemm_packB(Bpack, B, p0, j0, kc, nc, n, k, tb);
+            mfl_gemm_slab(A, B, C, m, n, k, ta, tb, Bpack, kc, nc, p0, j0, do_add,
+                          0, m, Apack);
+        }
+    }
+    free(Bpack);
+    free(Apack);
+}
+#endif
 static void mfl_group_norm_f32(int64_t outb, int64_t inb, int64_t w, int64_t b,
                                int64_t channels, int64_t h, int64_t w_dim,
                                int64_t groups, double eps) {
@@ -8376,6 +8649,8 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("mfl_axpy_dispatch_f32(%s, %s, %s, %s)", args[0], args[1], args[2], args[3]), nil
 	case "matmul_f32":
 		return fmt.Sprintf("mfl_matmul_f32(%s, %s, %s, %s, %s, %s, %s)", args[0], args[1], args[2], args[3], args[4], args[5], args[6]), nil
+	case "gemm_f32":
+		return fmt.Sprintf("mfl_gemm_f32(%s, %s, %s, %s, %s, %s, %s, %s, %s)", args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8]), nil
 	case "conv2d_f32":
 		return fmt.Sprintf("mfl_conv2d_f32(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)", args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8], args[9], args[10], args[11]), nil
 	case "add_vec_spatial_f32":

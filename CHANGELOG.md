@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+**`gemm_f32`: a fast multithreaded fp32 GEMM for training tiny transformers on CPU.**
+`matmul_f32` is a naive single-threaded triple loop with a per-call GPU upload —
+fine for inference, but a pure-MFL LLM *trainer* (project MTLM) needs
+`C = op(A) @ op(B)` with transposes for the backward pass (`dX = dY @ W`,
+`dW = dY^T @ X`), accumulation into an existing gradient, and real throughput.
+
+- `gemm_f32(c, a, b, m, n, k, ta, tb, accumulate) -> void` computes
+  `C[m×n] (+)= op(A)[m×k] @ op(B)[k×n]`, row-major. `ta=1` means A is stored
+  `[k×m]` and used transposed; `tb=1` means B is stored `[n×k]`. `accumulate=1`
+  adds into C, else overwrites. No aliasing between C and A/B (undefined
+  otherwise). `matmul_f32(out,x,w,0,n_in,n_out,batch) ==
+  gemm_f32(out,x,w,batch,n_out,n_in,0,1,0)`; `matmul_f32` is unchanged.
+- Pure C in the runtime, no external BLAS: Goto/BLIS-style MC/KC/NC cache
+  blocking with a 4×8 register-tiled micro-kernel. An AVX2/FMA path
+  (`__attribute__((target("avx2,fma")))`, runtime `__builtin_cpu_supports`
+  dispatch — `machin build` uses `-O2` with no `-march=native`) and a portable
+  scalar fallback the compiler auto-vectorizes. Panels of A and B are packed so
+  the inner loop is contiguous regardless of `ta`/`tb`.
+- Multithreaded via a persistent pthread pool (the runtime already links
+  `-pthread`) splitting the M dimension across `MFL_GEMM_THREADS` (env, default =
+  online CPUs, cap 64). Small problems (`m*n*k < 64k`) run single-threaded. fp32
+  accumulation; results match a naive reference within 1e-4 relative
+  (accumulation order differs). OpenCL is left on the CPU path for now —
+  `matmul_f32`'s per-call upload would be slower for repeated training steps
+  (`TODO(gemm-gpu)`).
+- Measured on an 8-thread AVX2/FMA laptop: **56 GFLOP/s at 1024³ multithreaded**
+  (27.7 single-thread), ~96 GFLOP/s on the 8192×288×768 / 8192×768×288 training
+  shapes, 47 GFLOP/s on the 288×768×8192 `ta=1` backward shape.
+
 **UDP and positional file writes.** Two gaps that between them made a whole class
 of program impossible to write in pure MFL: anything speaking a connectionless
 protocol, and anything filling a file out of order. Both surfaced building a

@@ -2568,6 +2568,14 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		c.addPair(argSlots[5], c.cInt)
 		c.addPair(argSlots[6], c.cInt)
 		return c.cVoid, nil
+	case "gemm_f32":
+		if len(argSlots) != 9 {
+			return 0, fmt.Errorf("gemm_f32: 9 args (c, a, b, m, n, k, ta, tb, accumulate)")
+		}
+		for i := 0; i < 9; i++ {
+			c.addPair(argSlots[i], c.cInt)
+		}
+		return c.cVoid, nil
 	case "conv2d_f32":
 		if len(argSlots) != 12 {
 			return 0, fmt.Errorf("conv2d_f32: 12 args (out, in, w, bias, c_in, c_out, h, w_dim, kh, kw, pad, stride)")
