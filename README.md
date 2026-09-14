@@ -200,3 +200,7 @@ pass `--safe`; Rust traps by default).
 ## License
 
 MIT — <a href="https://www.linkedin.com/in/arancibiajav/">Javier Leandro Arancibia</a>
+
+## Built with machin
+
+- **[Crevisto](https://crevisto.com)** — 100+ AI image tools, pay-per-use, no subscription. CLI + web app.
