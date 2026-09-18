@@ -69,6 +69,17 @@ jobs:
       - name: Install system deps (crypto + sqlite builtins link against these)
         run: sudo apt-get update && sudo apt-get install -y libssl-dev libsqlite3-dev
 
+      # Install zig exactly as ci.yml does, ABOVE the Test step. Without it the
+      # wasm/windows target tests t.Skip — fewer statements exercised — and
+      # TestTypesCoverageFloor (package-statement coverage >= 87%) fails here
+      # while the same commit passes ci. Seen on v0.139.0: 86.90% vs floor 87.00%.
+      - name: Install zig (the C -> wasm compiler)
+        run: |
+          ZIG_VER=0.15.2
+          curl -fsSL "https://ziglang.org/download/${ZIG_VER}/zig-x86_64-linux-${ZIG_VER}.tar.xz" -o /tmp/zig.tar.xz
+          mkdir -p /tmp/zig && tar -xf /tmp/zig.tar.xz -C /tmp/zig --strip-components=1
+          echo "/tmp/zig" >> "$GITHUB_PATH"
+
       - name: Test
         run: go test ./...
 
