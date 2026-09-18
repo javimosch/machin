@@ -1,0 +1,106 @@
+// json_test — exercises framework/json.src via `machin test`. From the repo root:
+//   machin test framework/json.src framework/tests/json_test.src
+//
+// json.src MUST be listed explicitly: `machin test` auto-composes only
+// framework/test.src (the assert helpers), never the module under test.
+//
+// The property that matters is the round trip. Every escape these functions
+// handle exists because some encoder emits it, so the assertions are written as
+// "quote it, unquote it, get the original back" rather than as a fixed table of
+// expected bytes.
+
+func test_quote_plain() {
+    assert_eq_str(json_quote("hello"), "\"hello\"", "plain string keeps its bytes")
+    assert_eq_str(json_quote(""), "\"\"", "empty string")
+}
+
+func test_quote_escapes() {
+    assert_eq_str(json_quote("a\"b"), "\"a\\\"b\"", "double quote")
+    assert_eq_str(json_quote("a\\b"), "\"a\\\\b\"", "backslash")
+    assert_eq_str(json_quote("a\nb"), "\"a\\nb\"", "newline")
+    assert_eq_str(json_quote("a\tb"), "\"a\\tb\"", "tab")
+    assert_eq_str(json_quote("a\rb"), "\"a\\rb\"", "carriage return")
+}
+
+// A control byte with no short form must still be escaped, or the document is
+// invalid JSON no parser will accept.
+func test_quote_control_byte() {
+    bell := bytes_str(from_hex("07"))
+    assert_eq_str(json_quote(bell), "\"\\u0007\"", "control byte becomes \\u00XX")
+}
+
+func test_unquote_escapes() {
+    assert_eq_str(json_unquote("\"a\\nb\""), "a\nb", "newline decodes")
+    assert_eq_str(json_unquote("\"a\\tb\""), "a\tb", "tab decodes")
+    assert_eq_str(json_unquote("\"a\\\"b\""), "a\"b", "quote decodes")
+    assert_eq_str(json_unquote("\"a\\\\b\""), "a\\b", "backslash decodes")
+    assert_eq_str(json_unquote("\"a\\/b\""), "a/b", "escaped slash is just a slash")
+}
+
+// json_get hands back a quoted token; json_unquote must accept it either way
+// so callers need not think about which they have.
+func test_unquote_accepts_bare() {
+    assert_eq_str(json_unquote("hello"), "hello", "no surrounding quotes")
+    assert_eq_str(json_unquote("\"hello\""), "hello", "with surrounding quotes")
+}
+
+func test_unquote_bmp() {
+    assert_eq_str(json_unquote("\"\\u00e9\""), "é", "two-byte character")
+    assert_eq_str(json_unquote("\"\\u20ac\""), "€", "three-byte character")
+}
+
+// A character outside the BMP arrives as two escapes. Decoding them separately
+// produces two invalid characters instead of the one that was meant.
+func test_unquote_surrogate_pair() {
+    assert_eq_str(json_unquote("\"\\ud83d\\ude00\""), "😀", "surrogate pair becomes one character")
+    assert_eq_int(len(json_unquote("\"\\ud83d\\ude00\"")), 4, "and it is four UTF-8 bytes")
+}
+
+func round_trip(s, name) {
+    assert_eq_str(json_unquote(json_quote(s)), s, name)
+}
+
+func test_round_trip() {
+    round_trip("plain", "plain")
+    round_trip("with \"quotes\"", "quotes")
+    round_trip("with \\ backslash", "backslash")
+    round_trip("line\nbreak", "newline")
+    round_trip("tab\there", "tab")
+    round_trip("é accented", "accented")
+    round_trip("€ euro", "euro")
+    round_trip("😀 emoji", "emoji")
+    round_trip("", "empty")
+    round_trip("a\nb\tc\"d\\e", "everything at once")
+}
+
+// The reason this module exists: the obvious way to strip the quotes off a
+// json_get token is wrong the moment the value contains an escape.
+func test_naive_strip_is_wrong() {
+    doc := "{\"note\":" + json_quote("first\nsecond") + "}"
+    raw, err := json_get(doc, ".note")
+    assert_eq_str(err, "", "json_get succeeded")
+    naive := substr(raw, 1, len(raw) - 1)
+    assert_eq_str(naive, "first\\nsecond", "naive strip leaves the escape as two characters")
+    assert_eq_str(json_unquote(raw), "first\nsecond", "json_unquote gives the real string")
+}
+
+func test_json_str() {
+    doc := "{\"user\":{\"name\":" + json_quote("Ada\tLovelace") + "}}"
+    name, err := json_str(doc, ".user.name")
+    assert_eq_str(err, "", "json_str succeeded")
+    assert_eq_str(name, "Ada\tLovelace", "json_str unescapes for you")
+}
+
+func main() {
+    test_quote_plain()
+    test_quote_escapes()
+    test_quote_control_byte()
+    test_unquote_escapes()
+    test_unquote_accepts_bare()
+    test_unquote_bmp()
+    test_unquote_surrogate_pair()
+    test_round_trip()
+    test_naive_strip_is_wrong()
+    test_json_str()
+    test_summary()
+}
