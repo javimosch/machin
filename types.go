@@ -3450,6 +3450,8 @@ func (c *Checker) typeStringSlot(slot int) string {
 		return "bool"
 	case KString:
 		return "string"
+	case KBytes:
+		return "bytes" // was missing: a bytes channel element / go argument read as "int" (#658)
 	case KStruct:
 		return c.sname[r]
 	case KSlice:
