@@ -1,6 +1,49 @@
 # Changelog
 
-## v0.138.0
+## v0.139.0
+
+**An OpenCL GPU backend, and the fp32 builtin surface a diffusion model needs.**
+`ocl_init()` `dlopen`s `libOpenCL.so.1` / `OpenCL.dll` at runtime — no link-time
+dependency, so a binary built with GPU support still runs where no GPU or driver
+exists — compiles the kernel set, and from then on the heavy fp32 builtins
+dispatch to the GPU automatically, with device-resident chaining keeping tensors
+on the card between ops instead of round-tripping through host memory. The
+backend was Windows-only; it is ported to Linux in this release. A failed or
+absent init leaves every builtin on its auto-vectorized C path — GPU is strictly
+an accelerator, never a requirement.
+
+- GPU-resident ops: tiled `matmul` (16×16 local-memory tiles, padded against
+  bank conflicts), `conv2d_f32` (register-tiled 3×3), `group_norm_f32`
+  (workgroup tree reduction) and fused `group_norm_silu_f32`, `attention_f32`
+  (online-softmax flash-attention-lite), `silu_f32`, `geglu_f32`, broadcast
+  add, and the CHW layout helpers `transpose_chw_f32`,
+  `transpose_add_chw_f32`, `concat_chw_f32`, `add_vec_spatial_f32`.
+- Driven by a pure-MFL Stable Diffusion Turbo port: the 512×512 1-step pipeline
+  went **61 s → 12 s end to end** on an RX 6600 (CLIP 6 s → 2 s, UNet 31 s →
+  12 s, VAE 30 s → 7 s), output within pixel tolerance of the CPU path.
+- `ocl_init() -> int` returns 1 on success, 0 on failure; call it once at
+  startup. Nothing changes if you never call it.
+
+**Attention/norm/activation kernels for transformer training, matching the
+teaching loops op-for-op.** The same release that adds `gemm_f32` (below) adds
+the rest of a trainer's hot path, so a pure-MFL transformer spends its step time
+in C kernels instead of scalar MFL loops:
+
+- `attn_causal_fwd_f32` / `attn_causal_bwd_f32` — causal multi-head attention
+  forward and backward, GQA-aware (heads sharing a kv row are one task, so the
+  dk/dv accumulations stay race-free). Saves the softmax probabilities the
+  backward needs.
+- `rmsnorm_fwd_f32` / `rmsnorm_bwd_f32` — forward writes both the normed vector
+  and the scaled output so backward recomputes nothing; dw accumulates through
+  per-thread slabs.
+- `silu_mul_f32` / `silu_mul_bwd_f32` — the fused FFN gate `silu(h1)*h3` and its
+  gradient.
+- `softmax_xent_f32` — stable softmax + cross-entropy in one pass: returns the
+  mean loss and writes `probs` and `dlogits = (probs − onehot)/rows`.
+- All multithreaded over the same pool as `gemm_f32` (`MFL_GEMM_THREADS`), fp32,
+  and written to reproduce the op order of the naive MFL loops they replace, so
+  losses are comparable step for step. Verified against the naive versions in
+  `attn_elem_test.go` / `gemm_f32_test.go`.
 
 **`gemm_f32`: a fast multithreaded fp32 GEMM for training tiny transformers on CPU.**
 `matmul_f32` is a naive single-threaded triple loop with a per-call GPU upload —
@@ -55,6 +98,10 @@ re-opens the file with O_TRUNC — under `prog 2> run.log` that wiped every prev
 two multi-hour MTLM training logs kept exactly their last line. The agent-first CLI contract
 (JSON on stdout, progress on stderr) is now expressible directly. Mirrored in the self-hosted
 compiler (cgbuiltin/cgen/checkgen).
+
+**Docs:** the project has a logo — README and the docs site carry it.
+
+## v0.138.0
 
 **UDP and positional file writes.** Two gaps that between them made a whole class
 of program impossible to write in pure MFL: anything speaking a connectionless
