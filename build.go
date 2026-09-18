@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 )
@@ -302,6 +303,11 @@ func BuildBinaryStatic(prog *Program, outPath string, safe, static bool) error {
 	if usesZlib {
 		libs = append(libs, "-lz")
 	}
+	// OpenCL GPU backend (mfl_ocl_*) dynamically loads libOpenCL via dlopen on
+	// Linux — needs -ldl (harmless on glibc ≥2.34 where it's a stub, required below).
+	if strings.Contains(csrc, "mfl_ocl_init") && runtime.GOOS == "linux" {
+		libs = append(libs, "-ldl")
+	}
 	args = append(args, "-o", outPath, tmp.Name())
 	args = append(args, srcs...)
 	args = append(args, libs...)
@@ -395,11 +401,12 @@ func BuildWindows(prog *Program, outPath string, safe bool) error {
 	if err != nil {
 		return err
 	}
-	defer os.Remove(tmp.Name())
+	// defer os.Remove(tmp.Name()) // DEBUG: keep temp C file
 	if _, err := tmp.WriteString(csrc); err != nil {
 		return err
 	}
 	tmp.Close()
+	fmt.Fprintf(os.Stderr, "DEBUG: C source at %s\n", tmp.Name())
 
 	// libm (math/noise) is in mingw's default libs; winpthreads is linked
 	// automatically by zig for the *-windows-gnu target, so no explicit -l.
