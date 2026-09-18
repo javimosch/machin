@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/logo.png" width="140" alt="machin"></p>
+
 <p align="center">
   <img src="https://img.shields.io/badge/version-0.138.0-blue" alt="Version">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
