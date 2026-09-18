@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/logo.png" width="140" alt="machin"></p>
+
 <p align="center">
   <img src="https://img.shields.io/badge/version-0.138.0-blue" alt="Version">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
@@ -200,3 +202,7 @@ pass `--safe`; Rust traps by default).
 ## License
 
 MIT — <a href="https://www.linkedin.com/in/arancibiajav/">Javier Leandro Arancibia</a>
+
+## Built with machin
+
+- **[Crevisto](https://crevisto.com)** — 100+ AI image tools, pay-per-use, no subscription. CLI + web app.
