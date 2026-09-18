@@ -49,6 +49,13 @@ regression tests cover bare bytes, a struct with a bytes field, and bytes as a g
 argument, each checked after the sender's exit plus allocator churn. Found dogfooding MTLM's
 parallel tokenizer (8 wrong token ids per chunk).
 
+**`eprint` / `eprintln` (#662).** `print`/`println` on the process stderr stream, same
+formatting. Until now the only way to write stderr was `write_file("/dev/stderr", …)`, which
+re-opens the file with O_TRUNC — under `prog 2> run.log` that wiped every previous line, and
+two multi-hour MTLM training logs kept exactly their last line. The agent-first CLI contract
+(JSON on stdout, progress on stderr) is now expressible directly. Mirrored in the self-hosted
+compiler (cgbuiltin/cgen/checkgen).
+
 **UDP and positional file writes.** Two gaps that between them made a whole class
 of program impossible to write in pure MFL: anything speaking a connectionless
 protocol, and anything filling a file out of order. Both surfaced building a
