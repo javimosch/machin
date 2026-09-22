@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.140.0
+
+**`map_free` — reclaim a transient map on the main goroutine's arena.**
+A map made while a scoped or goroutine arena is current is allocated from that
+arena and dies with it, so a per-request lookup table inside `arena { }` or a
+handler goroutine was never a leak. A map made on the MAIN goroutine's arena is
+malloc-backed instead — a long-lived map has to survive `arena_reset()`, and
+nothing at `make()` distinguishes it from a transient one — so it lived until
+the process exited, and `arena_reset()` did not touch it. That is correct for
+the long-lived caches the malloc path exists for, and wrong for exactly one
+shape: a single-actor server whose request loop runs on main because its engine
+is not goroutine-safe, so it can neither hand each connection to a goroutine nor
+wrap the loop body in `arena { }` (the engine writes to globals and ARENA001
+rightly refuses the escape). Such a server leaked one map per request — 200k of
+them cost 104 MB. `map_free(m)` hands that memory back: entries, their keys and
+values, the bucket array and the struct. On a map the arena owns it is a
+deliberate no-op rather than an error, because the caller usually cannot tell
+which path `make()` took, and a silently-correct no-op beats a footgun that only
+fires in the configuration nobody tested. The map must not be used afterwards —
+this is `free()`, not a hint. Measured on the same workload: 94 MB of growth
+without it, 1.5 MB with, clean under AddressSanitizer on both paths (#667).
+
 ## v0.139.0
 
 **An OpenCL GPU backend, and the fp32 builtin surface a diffusion model needs.**
