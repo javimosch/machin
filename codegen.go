@@ -1151,6 +1151,27 @@ static void mfl_map_del(mfl_map* m, int64_t ik, const char* sk) {
         if (!m->ar) { free(e->sk); free(e->val); free(e); }  /* arena entries are freed with the arena */
         m->count--; }
 }
+/* map_free: hand a MAIN-ARENA map's memory back. A transient map made on the
+   main goroutine (a per-request lookup table in a single-actor server that
+   cannot put its loop body in a goroutine or an arena { } block) otherwise
+   lives forever: it takes the malloc path precisely because a long-lived map
+   must survive arena_reset, and nothing distinguishes the two at the point of
+   allocation. #667.
+
+   A map allocated FROM an arena is owned by that arena, so freeing it here
+   would double-free at arena teardown. Those are a no-op rather than an
+   error: the caller usually cannot tell which path make() took, and a
+   silently-correct no-op is better than a footgun that only fires in the
+   configuration nobody tested. */
+static void mfl_map_free(mfl_map* m) {
+    if (!m || m->ar) return;
+    for (int64_t b = 0; b < m->nb; b++) {
+        mfl_ment* e = m->buckets[b];
+        while (e) { mfl_ment* nx = e->next; free(e->sk); free(e->val); free(e); e = nx; }
+    }
+    free(m->buckets);
+    free(m);
+}
 static int64_t mfl_map_len(mfl_map* m) { return m->count; }
 static mfl_slice mfl_map_keys(mfl_map* m) {
     int64_t es = m->sk ? (int64_t)sizeof(char*) : (int64_t)sizeof(int64_t);
@@ -8890,6 +8911,8 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 	case "delete":
 		ik, sk := g.mapKeyArgs(ex.Args[0], args[1])
 		return fmt.Sprintf("mfl_map_del(%s, %s, %s)", args[0], ik, sk), nil
+	case "map_free":
+		return fmt.Sprintf("mfl_map_free(%s)", args[0]), nil
 	case "keys":
 		return fmt.Sprintf("mfl_map_keys(%s)", args[0]), nil
 	case "json":

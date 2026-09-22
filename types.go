@@ -2264,6 +2264,17 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		}
 		c.addPair(argSlots[0], c.cInt)
 		return c.cVoid, nil
+	case "map_free":
+		// Hands a main-arena map's memory back (#667). One arg, the map; the
+		// map must not be used afterwards, exactly like free() for an FFI
+		// pointer. A no-op on arena-allocated maps, which their arena owns.
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("map_free: 1 arg (map)")
+		}
+		if _, _, err := c.mapKV(argSlots[0]); err != nil {
+			return 0, err
+		}
+		return c.cVoid, nil
 	case "has", "delete":
 		if len(argSlots) != 2 {
 			return 0, fmt.Errorf("%s: 2 args (map, key)", ex.Callee)
