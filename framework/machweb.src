@@ -600,6 +600,22 @@ func serve_on(host, port, handler) {
     }
 }
 
+// Same as serve_on, but silent: the caller announces the bind itself. The
+// agent-first CLI contract puts that line on STDERR (it is context, not data),
+// and serve_on's println would put a second copy on stdout where a JSON
+// consumer would choke on it.
+func serve_on_quiet(host, port, handler) {
+    server := listen_on(host, port)
+    if server < 0 {
+        write(2, "{\"error\":\"cannot bind " + host + ":" + str(port) + "\"}\n")
+        exit(1)
+    }
+    for {
+        conn := accept(server)
+        go machweb_handle(conn, handler)
+    }
+}
+
 func serve(port, handler) {
     server := listen(port)
     if server < 0 {
