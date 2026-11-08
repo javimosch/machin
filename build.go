@@ -79,6 +79,19 @@ func ccPath() string {
 	return "cc"
 }
 
+// hasStaticLib reports whether the C compiler can find a static archive for
+// the given library name (lib<name>.a) in its search path — i.e. the -dev
+// package providing it is installed. `cc -print-file-name` echoes the bare
+// filename back when nothing matches, so a resolved path means "present".
+func hasStaticLib(name string) bool {
+	out, err := exec.Command(ccPath(), "-print-file-name=lib"+name+".a").Output()
+	if err != nil {
+		return false
+	}
+	p := strings.TrimSpace(string(out))
+	return p != "" && p != "lib"+name+".a" && strings.Contains(p, string(os.PathSeparator))
+}
+
 // unpackZlibSources extracts the vendored zlib subset into a fresh temp dir and
 // returns (dir, the .c files to compile). The caller removes dir.
 //
@@ -257,7 +270,10 @@ func BuildBinaryStatic(prog *Program, outPath string, safe, static bool) error {
 	if static && (usesTLS || usesCrypto || usesSodium) {
 		note := "machin: --static + TLS/crypto: linking a static OpenSSL (needs libssl-dev's " +
 			"static archives — .a files — on the build host; a plain `apt install libssl-dev` " +
-			"provides them, no musl needed for this part, unlike --static SQLite)."
+			"provides them, no musl needed for this part, unlike --static SQLite). " +
+			"Depending on how the distro built OpenSSL, its archives may also need " +
+			"zlib1g-dev / libzstd-dev / libbrotli*-dev / libjitterentropy3-dev " +
+			"for the helper symbols (machin links whichever static archives it finds)."
 		if bundleCABundle {
 			note += " Bundling a CA root store so the binary verifies certificates with no " +
 				"external files (FROM scratch)."
@@ -307,6 +323,28 @@ func BuildBinaryStatic(prog *Program, outPath string, safe, static bool) error {
 	// Linux — needs -ldl (harmless on glibc ≥2.34 where it's a stub, required below).
 	if strings.Contains(csrc, "mfl_ocl_init") && runtime.GOOS == "linux" {
 		libs = append(libs, "-ldl")
+	}
+	// Static OpenSSL archives are built differently per distro: some libcrypto.a
+	// objects reference compression libs (zlib's inflate/deflate, zstd's
+	// ZSTD_*, brotli's Brotli*) and non-compression helpers (jitterentropy's
+	// jent_* on OpenSSL 3.5+, dlopen) — dynamic links resolve those
+	// transitively through libssl.so's own deps; static links must name them
+	// explicitly — and AFTER the crypto libs, since ld resolves
+	// left-to-right. Which ones a given libcrypto.a needs varies by distro
+	// build, so probe for each static archive and add only what the host
+	// actually has — an unconditional -l would break --static TLS on hosts
+	// without the -dev packages even when their OpenSSL doesn't need them.
+	// Unused probed libs are harmless: ld pulls nothing from an archive that
+	// resolves no undefined symbol.
+	if static && (usesTLS || usesCrypto || usesSodium) {
+		for _, l := range []string{"z", "zstd", "brotlidec", "brotlienc", "brotlicommon", "jitterentropy"} {
+			if hasStaticLib(l) {
+				libs = append(libs, "-l"+l)
+			}
+		}
+		if runtime.GOOS == "linux" {
+			libs = append(libs, "-ldl")
+		}
 	}
 	args = append(args, "-o", outPath, tmp.Name())
 	args = append(args, srcs...)

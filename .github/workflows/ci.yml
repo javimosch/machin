@@ -21,7 +21,12 @@ jobs:
           go-version-file: go.mod
 
       - name: Install system deps (crypto + sqlite builtins link against these)
-        run: sudo apt-get update && sudo apt-get install -y libssl-dev libsqlite3-dev
+        # zlib1g-dev + libzstd-dev + libjitterentropy3-dev: static OpenSSL links
+        # need libz.a/libzstd.a/libjitterentropy.a — distro libcrypto.a
+        # references their symbols (see build.go's static-crypto libs note;
+        # OpenSSL 3.5+ uses jitterentropy for the RNG; Ubuntu names the -dev
+        # package libjitterentropy3-dev).
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev libsqlite3-dev zlib1g-dev libzstd-dev libjitterentropy3-dev
 
       - name: Build
         run: go build ./...
@@ -43,7 +48,9 @@ jobs:
       # v0.122.0 and survived two releases while `TestWindowsNetCompiles` and
       # `TestWindowsBuildsPE` were red on every developer machine (#549, #517).
       - name: Test
-        run: go test ./...
+        # The suite runs ~10min on the ubuntu-26.04 runner — right at go test's
+        # default 10m panic timeout (static OpenSSL links are the slow tail).
+        run: go test -timeout 20m ./...
 
       # The MFL test suites — the ones written IN machin and run through the
       # `machin test` CLI, not the Go harness. Its own step so a failure here is

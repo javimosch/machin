@@ -29,8 +29,8 @@ import sys
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--module", required=True, help="path of the module under test")
-    ap.add_argument("--func", type=float, required=True, help="function coverage floor %")
-    ap.add_argument("--stmt", type=float, default=0.0, help="statement coverage floor %")
+    ap.add_argument("--func", type=float, required=True, help="function coverage floor %%")
+    ap.add_argument("--stmt", type=float, default=0.0, help="statement coverage floor %%")
     args = ap.parse_args()
 
     try:
