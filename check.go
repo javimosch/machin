@@ -67,6 +67,8 @@ func cmdCheck(args []string) error {
 	// gather source (multiple files are concatenated like encode/build)
 	var combined strings.Builder
 	var srcNames []string
+	var diagFiles []DiagFile
+	nl := 0
 	if stdin {
 		data, err := io.ReadAll(os.Stdin)
 		if err != nil {
@@ -75,6 +77,7 @@ func cmdCheck(args []string) error {
 		combined.Write(data)
 		combined.WriteByte('\n')
 		srcNames = []string{"<stdin>"}
+		diagFiles = []DiagFile{{Path: "<stdin>", Start: 1}}
 	} else {
 		if len(files) == 0 {
 			return fmt.Errorf("check: need a source file or --stdin")
@@ -86,18 +89,27 @@ func cmdCheck(args []string) error {
 					Severity: "error", Phase: "lex", Code: "file-not-found", Message: err.Error(), Decl: p,
 				}}}, jsonOut)
 			}
+			diagFiles = append(diagFiles, DiagFile{Path: p, Start: nl + 1})
 			combined.Write(data)
 			combined.WriteByte('\n')
+			nl += strings.Count(string(data), "\n") + 1
 		}
 		srcNames = files
 	}
 
-	return emitCheck(analyzeSource(combined.String(), srcNames), jsonOut)
+	return emitCheck(analyzeSourceSpan(combined.String(), srcNames, diagFiles), jsonOut)
 }
 
 // analyzeSource is the pure core: source text -> verdict. No I/O, no exit (so tests can
 // call it directly). lex -> parse (per declaration, collecting all errors) -> typecheck.
 func analyzeSource(combined string, srcNames []string) CheckResult {
+	return analyzeSourceSpan(combined, srcNames, nil)
+}
+
+// analyzeSourceSpan is analyzeSource plus per-file line spans, so typecheck
+// errors can report "at file:line" in multi-file checks. files is nil for
+// tests / single unnamed sources — errors then carry no position suffix.
+func analyzeSourceSpan(combined string, srcNames []string, files []DiagFile) CheckResult {
 	diags := []Diagnostic{}
 	var warns []Diagnostic
 
@@ -140,52 +152,58 @@ func analyzeSource(combined string, srcNames []string) CheckResult {
 		prog, perr := ParseProgram(decls)
 		if perr != nil {
 			diags = append(diags, Diagnostic{Severity: "error", Phase: "parse", Code: classifyParse(perr.Error()), Message: perr.Error()})
-		} else if c, cerr := Check(prog); cerr != nil {
-			msg := strings.TrimPrefix(cerr.Error(), "typecheck: ")
-			decl, line := locateCheckError(msg, decls, blockLines)
-			diags = append(diags, Diagnostic{
-				Severity: "error", Phase: "typecheck",
-				Code:    classifyCheck(msg),
-				Message: msg,
-				Decl:    decl,
-				Line:    line,
-			})
 		} else {
-			// concurrency phase: inferred data-race freedom (Slice 1.1). Only runs
-			// on a clean typecheck. Reported as errors in `check` (option a).
-			declLine := map[string]int{}
-			for i, d := range decls {
-				declLine[declName(d)] = blockLines[i]
+			if files != nil {
+				prog.Diag = sourceDiag(files, decls, blockLines)
 			}
-			for _, rf := range detectRaces(prog, c) {
-				d := rf.toDiagnostic()
-				d.Line = declLine[rf.Decl]
-				diags = append(diags, d)
-			}
+			c, cerr := Check(prog)
+			if cerr != nil {
+				msg := strings.TrimPrefix(cerr.Error(), "typecheck: ")
+				decl, line := locateCheckError(msg, decls, blockLines)
+				diags = append(diags, Diagnostic{
+					Severity: "error", Phase: "typecheck",
+					Code:    classifyCheck(msg),
+					Message: msg,
+					Decl:    decl,
+					Line:    line,
+				})
+			} else {
+				// concurrency phase: inferred data-race freedom (Slice 1.1). Only runs
+				// on a clean typecheck. Reported as errors in `check` (option a).
+				declLine := map[string]int{}
+				for i, d := range decls {
+					declLine[declName(d)] = blockLines[i]
+				}
+				for _, rf := range detectRaces(prog, c) {
+					d := rf.toDiagnostic()
+					d.Line = declLine[rf.Decl]
+					diags = append(diags, d)
+				}
 
-			// falsify phase: bounded counterexamples (Slice 1.2). Advisory —
-			// emitted as Warnings, never affecting OK / exit code.
-			for _, ff := range detectFalsifiable(prog, c) {
-				d := ff.toDiagnostic()
-				d.Line = declLine[ff.Decl]
-				warns = append(warns, d)
-			}
+				// falsify phase: bounded counterexamples (Slice 1.2). Advisory —
+				// emitted as Warnings, never affecting OK / exit code.
+				for _, ff := range detectFalsifiable(prog, c) {
+					d := ff.toDiagnostic()
+					d.Line = declLine[ff.Decl]
+					warns = append(warns, d)
+				}
 
-			// deadlock phase: compile-time deadlocks (a receive on a channel nothing ever
-			// feeds). Advisory, false-positive-free — reported as Warnings.
-			for _, df := range detectDeadlocks(prog, c) {
-				d := df.toDiagnostic()
-				d.Line = declLine[df.Decl]
-				warns = append(warns, d)
-			}
+				// deadlock phase: compile-time deadlocks (a receive on a channel nothing ever
+				// feeds). Advisory, false-positive-free — reported as Warnings.
+				for _, df := range detectDeadlocks(prog, c) {
+					d := df.toDiagnostic()
+					d.Line = declLine[df.Decl]
+					warns = append(warns, d)
+				}
 
-			// arena phase: a value allocated inside an `arena { }` block that escapes to a
-			// location outliving the block (so it dangles after bulk reclamation). Sound +
-			// conservative — a clean result proves the block's reclamation is safe. Advisory.
-			for _, af := range detectArenaEscapes(prog, c) {
-				d := af.toDiagnostic()
-				d.Line = declLine[af.Decl]
-				warns = append(warns, d)
+				// arena phase: a value allocated inside an `arena { }` block that escapes to a
+				// location outliving the block (so it dangles after bulk reclamation). Sound +
+				// conservative — a clean result proves the block's reclamation is safe. Advisory.
+				for _, af := range detectArenaEscapes(prog, c) {
+					d := af.toDiagnostic()
+					d.Line = declLine[af.Decl]
+					warns = append(warns, d)
+				}
 			}
 		}
 	}
@@ -367,6 +385,65 @@ func locateCheckError(msg string, decls []string, lines []int) (string, int) {
 		}
 	}
 	return "", 0
+}
+
+// sourceDiag builds the Program.Diag sidecar for decls parsed from a
+// concatenation of sources: declName(decls[i]) sits at combined-source line
+// lines[i], and files[i] records where each input file's span begins.
+func sourceDiag(files []DiagFile, decls []string, lines []int) *ProgDiag {
+	d := &ProgDiag{Files: files}
+	seen := map[string]bool{}
+	for i, decl := range decls {
+		if i >= len(lines) {
+			break
+		}
+		name := declName(decl)
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		d.Decl = append(d.Decl, DiagDecl{Name: name, Line: lines[i]})
+	}
+	return d
+}
+
+// diagFileLine maps a combined-source line back to "path:line" using the file
+// spans recorded in Diag. Files are appended in concatenation order, so the
+// answer is the last file whose Start is <= line.
+func diagFileLine(d *ProgDiag, line int) (string, int) {
+	path, start := "", 1
+	for _, f := range d.Files {
+		if f.Start <= line {
+			path, start = f.Path, f.Start
+		} else {
+			break
+		}
+	}
+	local := line - start + 1
+	if local < 1 {
+		local = 1
+	}
+	return path, local
+}
+
+// diagContext appends "— at file:line" to a checker error when the program
+// carries Diag source info and the message names a known declaration. This is
+// what turns a bare "type mismatch: struct vs int" into something an agent can
+// act on without bisecting. Unmatched errors pass through unchanged.
+func diagContext(p *Program, err error) error {
+	if p == nil || p.Diag == nil || err == nil {
+		return err
+	}
+	msg := err.Error()
+	for _, d := range p.Diag.Decl {
+		if strings.Contains(msg, `"`+d.Name+`"`) {
+			if path, local := diagFileLine(p.Diag, d.Line); path != "" {
+				return fmt.Errorf("%s — at %s:%d", msg, path, local)
+			}
+			return fmt.Errorf("%s — at line %d", msg, d.Line)
+		}
+	}
+	return err
 }
 
 func classifyParse(msg string) string {
