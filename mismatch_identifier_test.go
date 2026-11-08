@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -225,5 +227,91 @@ func TestMismatchOmitsNoisyCause(t *testing.T) {
 	}
 	if strings.Contains(cerr.Error(), "— from") {
 		t.Fatalf("a literal cause should be omitted as noise: %q", cerr.Error())
+	}
+}
+
+// A mismatch between two anonymous slots (literals, no identifier on either
+// side) used to read only "type mismatch: num vs string" — no function, no
+// expression, forcing the same manual bisect #506 fixed for named vars. The
+// constraint now carries its enclosing function and generating expression.
+func TestMismatchAnonymousNamesFuncAndExpr(t *testing.T) {
+	prog, err := ParseProgram([]string{
+		`func f() { q := 1 + "x" println(q) }`,
+		`func main() { f() }`,
+	})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	_, cerr := Check(prog)
+	if cerr == nil {
+		t.Fatal("expected a type mismatch")
+	}
+	msg := cerr.Error()
+	if !strings.Contains(msg, `in "f"`) {
+		t.Fatalf("anonymous mismatch does not name the enclosing function: %q", msg)
+	}
+	if !strings.Contains(msg, `— from 1 + "x"`) {
+		t.Fatalf("anonymous mismatch does not name the generating expression: %q", msg)
+	}
+}
+
+// When the program carries Diag source info (populated by the .src loaders),
+// a typecheck error gains an "— at file:line" suffix pointing at the function
+// declaration — the difference between "somewhere in this 900-line file" and
+// an actionable location.
+func TestMismatchErrorCarriesFileLine(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bad.src")
+	src := "// leading comment\nfunc f() {\n\tq := 1 + \"x\"\n\tprintln(q)\n}\nfunc main() { f() }\n"
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	prog, err := loadMFL(path)
+	if err != nil {
+		t.Fatalf("loadMFL: %v", err)
+	}
+	_, cerr := Check(prog)
+	if cerr == nil {
+		t.Fatal("expected a type mismatch")
+	}
+	want := "— at " + path + ":2"
+	if !strings.Contains(cerr.Error(), want) {
+		t.Fatalf("error lacks %q suffix: %q", want, cerr.Error())
+	}
+}
+
+// In a multi-file composition the suffix must name the file the failing decl
+// actually came from, not just a combined-source line number.
+func TestMismatchFileLineMultiFile(t *testing.T) {
+	combined := "func a() {\n\tq := 1 + \"x\"\n\tprintln(q)\n}\n\nfunc main() { a() }\n"
+	files := []DiagFile{{Path: "one.src", Start: 1}, {Path: "two.src", Start: 6}}
+	res := analyzeSourceSpan(combined, []string{"one.src", "two.src"}, files)
+	if res.OK || len(res.Diagnostics) == 0 {
+		t.Fatalf("expected a diagnostic, got ok=%v diags=%v", res.OK, res.Diagnostics)
+	}
+	msg := res.Diagnostics[0].Message
+	if !strings.Contains(msg, "— at one.src:1") {
+		t.Fatalf("multi-file error lacks per-file position: %q", msg)
+	}
+	if res.Diagnostics[0].Decl != "a" {
+		t.Fatalf("decl = %q, want a", res.Diagnostics[0].Decl)
+	}
+}
+
+// Without Diag (hand-built programs, packed .mfl), errors must pass through
+// unchanged — the suffix is strictly additive, never noise on its own.
+func TestMismatchNoDiagNoSuffix(t *testing.T) {
+	prog, err := ParseProgram([]string{
+		`func f() { q := 1 + "x" println(q) }`,
+	})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	_, cerr := Check(prog)
+	if cerr == nil {
+		t.Fatal("expected a type mismatch")
+	}
+	if strings.Contains(cerr.Error(), "— at") {
+		t.Fatalf("program without Diag should not gain a position suffix: %q", cerr.Error())
 	}
 }

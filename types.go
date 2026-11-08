@@ -89,7 +89,7 @@ type Checker struct {
 
 	externs map[string]*ExternFunc // foreign C functions, by name
 
-	pairs []int      // flattened pairs: pairs[2i], pairs[2i+1]
+	pairs []int // flattened pairs: pairs[2i], pairs[2i+1]
 	// pairSrc[i] is the expression that generated pairs[2i]/pairs[2i+1], kept as
 	// an AST node and rendered only on failure (#551). When unification fails,
 	// the failing constraint IS the conflicting use — naming it is the whole
@@ -97,8 +97,15 @@ type Checker struct {
 	// charat(s, i)". Not a line number: MFL's canonical form is one declaration
 	// per line, so every expression inside a function shares its line.
 	pairSrc []Expr
-	curExpr Expr // expression being constraint-generated; recorded by addPair
-	plus  []plusCons // overloaded '+' constraints, resolved by fixpoint
+	// pairFn[i] is the source function that generated pairs[2i]/pairs[2i+1].
+	// Anonymous slots (builtin args, append elements, returns) have no
+	// variable for slotVar to name, so the mismatch message falls back to
+	// "in \"fn\"" — without it the error is a bare "type mismatch: A vs B"
+	// with nothing to bisect on.
+	pairFn  []string
+	curFn   string     // source function currently generating constraints
+	curExpr Expr       // expression being constraint-generated; recorded by addPair
+	plus    []plusCons // overloaded '+' constraints, resolved by fixpoint
 
 	lenArgs   []int      // slots passed to len(); must resolve to string/slice/map
 	strArgs   []int      // slots passed to str(); must resolve to a number, bool, or string
@@ -195,7 +202,8 @@ type indexUse struct {
 
 type plusCons struct {
 	l, r, res int
-	src       Expr // the `+` expression, for the #551 mismatch cause
+	src       Expr   // the `+` expression, for the #551 mismatch cause
+	fn        string // source function that generated the constraint
 }
 
 // funcSig is a function value's signature: parameter slots and a single return
@@ -667,12 +675,16 @@ func (c *Checker) instantiate(name string) (string, error) {
 
 	prev, had := c.instStack[name]
 	c.instStack[name] = inst
+	prevFn := c.curFn
+	c.curFn = name
 	syn := &FuncDecl{Name: inst, Params: fn.Params, Returns: fn.Returns, Body: fn.Body, IsLambda: fn.IsLambda, NumCaptures: fn.NumCaptures}
 	for _, s := range fn.Body {
 		if err := c.genStmt(syn, s); err != nil {
+			c.curFn = prevFn
 			return "", err
 		}
 	}
+	c.curFn = prevFn
 	if had {
 		c.instStack[name] = prev
 	} else {
@@ -869,11 +881,11 @@ func Check(p *Program) (*Checker, error) {
 	}
 	// 3. solve
 	if err := c.solve(); err != nil {
-		return nil, err
+		return nil, diagContext(p, err)
 	}
 	// 3b. resolve deferred x[i] and struct field uses now that bases have a type
 	if err := c.resolveDeferred(); err != nil {
-		return nil, err
+		return nil, diagContext(p, err)
 	}
 	// 4. defaults — return slots (if any) default to int like other slots; a
 	// function with no return slots is void.
@@ -949,6 +961,7 @@ func (c *Checker) sigString(inst string) string {
 func (c *Checker) addPair(a, b int) {
 	c.pairs = append(c.pairs, a, b)
 	c.pairSrc = append(c.pairSrc, c.curExpr)
+	c.pairFn = append(c.pairFn, c.curFn)
 }
 
 // checkTypeName validates that a declared type string is known.
@@ -1201,6 +1214,14 @@ func (c *Checker) pairSrcAt(i int) Expr {
 	return nil
 }
 
+// pairFnAt returns the source function that generated pairs[i]/pairs[i+1].
+func (c *Checker) pairFnAt(i int) string {
+	if j := i / 2; j < len(c.pairFn) {
+		return c.pairFn[j]
+	}
+	return ""
+}
+
 // mismatchCause renders the expression that produced the failing constraint,
 // but only when it actually adds information: a bare identifier or literal just
 // repeats what the message already says, and naming it would be noise.
@@ -1217,7 +1238,7 @@ func mismatchCause(e Expr) string {
 	return src
 }
 
-func (c *Checker) annotateMismatch(err error, a, b int, src Expr) error {
+func (c *Checker) annotateMismatch(err error, a, b int, src Expr, fn string) error {
 	msg := err.Error()
 	if !strings.HasPrefix(msg, "type mismatch: ") {
 		return err
@@ -1228,10 +1249,20 @@ func (c *Checker) annotateMismatch(err error, a, b int, src Expr) error {
 		who, _ = c.slotVar(b)
 		matched = b
 	}
+	detail := strings.TrimPrefix(msg, "type mismatch: ")
 	if who == "" {
+		// Anonymous slots — a builtin argument, an append element, a return
+		// value — have no variable for slotVar to name. Say which function
+		// generated the constraint (and what expression caused it) instead of
+		// leaving a bare "type mismatch: A vs B" to bisect by hand.
+		if fn != "" {
+			return fmt.Errorf("type mismatch in %q: %s%s", fn, detail, causeSuffix(src))
+		}
+		if cs := causeSuffix(src); cs != "" {
+			return fmt.Errorf("%s%s", msg, cs)
+		}
 		return err
 	}
-	detail := strings.TrimPrefix(msg, "type mismatch: ")
 	if c.isRedeclared(c.find(matched)) {
 		// The colliding declarations bind one function-scoped slot that a `:=`
 		// actually redeclared: MFL does not block-scope `:=`, so the same name in
@@ -1287,7 +1318,7 @@ func (c *Checker) solve() error {
 		for i := 0; i+1 < len(c.pairs); i += 2 {
 			ch, err := c.union(c.pairs[i], c.pairs[i+1])
 			if err != nil {
-				return c.annotateMismatch(err, c.pairs[i], c.pairs[i+1], c.pairSrcAt(i))
+				return c.annotateMismatch(err, c.pairs[i], c.pairs[i+1], c.pairSrcAt(i), c.pairFnAt(i))
 			}
 			changed = changed || ch
 		}
@@ -1303,11 +1334,11 @@ func (c *Checker) solve() error {
 			}
 			ch1, err := c.union(a, b)
 			if err != nil {
-				return c.annotateMismatch(err, a, b, p.src)
+				return c.annotateMismatch(err, a, b, p.src, p.fn)
 			}
 			ch2, err := c.union(p.res, p.l)
 			if err != nil {
-				return c.annotateMismatch(err, p.res, p.l, p.src)
+				return c.annotateMismatch(err, p.res, p.l, p.src, p.fn)
 			}
 			changed = changed || ch1 || ch2
 		}
@@ -1770,7 +1801,7 @@ func (c *Checker) genBinary(fn *FuncDecl, ex *Binary) (int, error) {
 	switch ex.Op {
 	case "+":
 		res := newSlot(c, KVar)
-		c.plus = append(c.plus, plusCons{l: ls, r: rs, res: res, src: ex})
+		c.plus = append(c.plus, plusCons{l: ls, r: rs, res: res, src: ex, fn: c.curFn})
 		return res, nil
 	case "-", "*", "/":
 		c.addPair(ls, rs)

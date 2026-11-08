@@ -9,6 +9,34 @@ type Program struct {
 	Funcs   []*FuncDecl
 	Externs []*ExternDecl
 	Globals []*GlobalVar
+	// Diag optionally maps declarations back to source positions for
+	// diagnostics (which file/line each decl starts at). Populated by the
+	// source loaders (loadMFL, composeSources); nil for hand-built programs,
+	// in which case errors carry no position suffix.
+	Diag *ProgDiag
+}
+
+// ProgDiag is the source-position sidecar Check uses to append "at file:line"
+// to typecheck errors. Lines are 1-based lines in the CONCATENATED source the
+// decls were parsed from (all input files joined in order); Files maps those
+// combined lines back to the file they came from.
+type ProgDiag struct {
+	Files []DiagFile
+	Decl  []DiagDecl
+}
+
+// DiagFile is one input file's span in the concatenated source: Path is the
+// name the user gave (or the module name), Start the 1-based combined line
+// where the file's first line lands.
+type DiagFile struct {
+	Path  string
+	Start int
+}
+
+// DiagDecl is one declaration's name and combined-source start line.
+type DiagDecl struct {
+	Name string
+	Line int
 }
 
 // GlobalVar is a package-level mutable variable: `var name = expr` at top level.

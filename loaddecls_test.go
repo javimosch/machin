@@ -10,7 +10,7 @@ import (
 // Cover its three paths: plain source, packed (base64) source, and a bad
 // packed line.
 func TestLoadDecls_Plain(t *testing.T) {
-	decls, err := loadDecls("func main() { print(1) }\n")
+	decls, _, err := loadDecls("func main() { print(1) }\n")
 	if err != nil {
 		t.Fatalf("loadDecls: %v", err)
 	}
@@ -21,7 +21,7 @@ func TestLoadDecls_Plain(t *testing.T) {
 
 func TestLoadDecls_Packed(t *testing.T) {
 	line := base64.StdEncoding.EncodeToString([]byte("func main(){print(1)}"))
-	decls, err := loadDecls(line + "\n")
+	decls, _, err := loadDecls(line + "\n")
 	if err != nil {
 		t.Fatalf("loadDecls: %v", err)
 	}
@@ -31,7 +31,7 @@ func TestLoadDecls_Packed(t *testing.T) {
 }
 
 func TestLoadDecls_BadPacked(t *testing.T) {
-	_, err := loadDecls("not-valid-base64-!!!\n")
+	_, _, err := loadDecls("not-valid-base64-!!!\n")
 	if err == nil {
 		t.Fatal("loadDecls should error on an invalid packed line, got nil")
 	}
@@ -41,7 +41,7 @@ func TestLoadDecls_BadPacked(t *testing.T) {
 }
 
 func TestLoadDecls_Empty(t *testing.T) {
-	decls, err := loadDecls("")
+	decls, _, err := loadDecls("")
 	if err != nil {
 		t.Fatalf("loadDecls empty: %v", err)
 	}
@@ -51,7 +51,7 @@ func TestLoadDecls_Empty(t *testing.T) {
 }
 
 func TestLoadDecls_WhitespaceOnly(t *testing.T) {
-	decls, err := loadDecls("  \n  \n\n")
+	decls, _, err := loadDecls("  \n  \n\n")
 	if err != nil {
 		t.Fatalf("loadDecls whitespace only: %v", err)
 	}
@@ -66,7 +66,7 @@ func TestLoadDecls_MultiplePlain(t *testing.T) {
 	// completed top-level block at line boundaries, so two decls packed onto
 	// a single physical line are never split — see TestSplitFunctionsLoc in
 	// check_helpers_test.go for the same one-decl-starts-a-line contract.
-	decls, err := loadDecls("func f1() {}\nfunc f2() {}\n")
+	decls, _, err := loadDecls("func f1() {}\nfunc f2() {}\n")
 	if err != nil {
 		t.Fatalf("loadDecls multiple: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestLoadDecls_MultiplePlain(t *testing.T) {
 func TestLoadDecls_MultiplePacked(t *testing.T) {
 	line1 := base64.StdEncoding.EncodeToString([]byte("func f1(){}"))
 	line2 := base64.StdEncoding.EncodeToString([]byte("func f2(){}"))
-	decls, err := loadDecls(line1 + "\n" + line2 + "\n")
+	decls, _, err := loadDecls(line1 + "\n" + line2 + "\n")
 	if err != nil {
 		t.Fatalf("loadDecls multiple packed: %v", err)
 	}

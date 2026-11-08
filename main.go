@@ -157,7 +157,7 @@ func loadMFL(path string) (*Program, error) {
 	if err != nil {
 		return nil, err
 	}
-	decls, err := loadDecls(string(data))
+	decls, lines, err := loadDecls(string(data))
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
@@ -167,6 +167,9 @@ func loadMFL(path string) (*Program, error) {
 	}
 	if len(prog.Funcs) == 0 {
 		return nil, fmt.Errorf("%s: no functions", path)
+	}
+	if len(lines) == len(decls) {
+		prog.Diag = sourceDiag([]DiagFile{{Path: path, Start: 1}}, decls, lines)
 	}
 	return prog, nil
 }
@@ -186,7 +189,7 @@ func loadMFL(path string) (*Program, error) {
 // build`/`run` tolerate hand-written .mfl the same way `check` already does,
 // instead of misreading a line like `println(x)` (no whitespace, but plainly
 // not base64) as a malformed packed declaration. (Found via dogfooding.)
-func loadDecls(content string) ([]string, error) {
+func loadDecls(content string) ([]string, []int, error) {
 	allPacked, sawLine := true, false
 	for _, line := range strings.Split(content, "\n") {
 		line = strings.TrimSpace(line)
@@ -208,21 +211,21 @@ func loadDecls(content string) ([]string, error) {
 			}
 			raw, err := base64.StdEncoding.DecodeString(line)
 			if err != nil {
-				return nil, fmt.Errorf("line %d: not valid packed (base64) MFL: %w", n+1, err)
+				return nil, nil, fmt.Errorf("line %d: not valid packed (base64) MFL: %w", n+1, err)
 			}
 			decls = append(decls, string(raw))
 		}
-		return decls, nil
+		return decls, nil, nil
 	}
-	blocks, _, err := splitFunctionsLoc(content)
+	blocks, lines, err := splitFunctionsLoc(content)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	decls := make([]string, len(blocks))
 	for i, b := range blocks {
 		decls[i] = normalize(b)
 	}
-	return decls, nil
+	return decls, lines, nil
 }
 
 // declFromLine yields one declaration from a .mfl line. Canonical MFL is plain
@@ -555,15 +558,19 @@ func cmdEncode(args []string) error {
 // composing a framework module ahead of a file behaves identically in both.
 func composeSources(paths []string) (*Program, string, error) {
 	var combined strings.Builder
+	var files []DiagFile
+	nl := 0
 	for _, path := range paths {
 		data, err := readModule(path) // local file, else an embedded framework module
 		if err != nil {
 			return nil, "", err
 		}
+		files = append(files, DiagFile{Path: path, Start: nl + 1})
 		combined.Write(data)
 		combined.WriteByte('\n')
+		nl += strings.Count(string(data), "\n") + 1
 	}
-	blocks, err := splitFunctions(combined.String())
+	blocks, blockLines, err := splitFunctionsLoc(combined.String())
 	if err != nil {
 		return nil, "", err
 	}
@@ -579,6 +586,7 @@ func composeSources(paths []string) (*Program, string, error) {
 	if err != nil {
 		return nil, "", fmt.Errorf("parse: %w", err)
 	}
+	prog.Diag = sourceDiag(files, decls, blockLines)
 	if _, err := Check(prog); err != nil {
 		return nil, "", fmt.Errorf("typecheck: %w", err)
 	}
