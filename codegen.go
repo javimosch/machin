@@ -3854,12 +3854,23 @@ static char* mfl_read_file(const char* path) {
     if (mfl_is_dir(path)) { if (mfl_rr_mode == 1) mfl_rr_io_log_bytes("", 0); return mfl_dup(""); }
     FILE* f = fopen(path, "rb");
     if (!f) { if (mfl_rr_mode == 1) mfl_rr_io_log_bytes("", 0); return mfl_dup(""); }
+    /* #668: procfs/sysfs report st_size 0 but yield bytes on read, so ftell is
+       only a capacity hint — read to EOF in a growable buffer (also safe when a
+       file grows between stat and read). */
     fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
     if (n < 0) n = 0;
-    char* buf = mfl_alloc((size_t)n + 1);
-    size_t r = fread(buf, 1, (size_t)n, f); buf[r] = 0;
+    size_t cap = (size_t)n + 4096, len = 0;
+    char* tmp = (char*)malloc(cap);
+    for (;;) {
+        if (len == cap) { cap *= 2; tmp = (char*)realloc(tmp, cap); }
+        size_t r = fread(tmp + len, 1, cap - len, f);
+        len += r;
+        if (r == 0) break;
+    }
     fclose(f);
-    if (mfl_rr_mode == 1) mfl_rr_io_log_bytes(buf, r);
+    char* buf = mfl_alloc(len + 1);
+    memcpy(buf, tmp, len); buf[len] = 0; free(tmp);
+    if (mfl_rr_mode == 1) mfl_rr_io_log_bytes(buf, len);
     return buf;
 }
 static int64_t mfl_write_file(const char* path, const char* content) {
@@ -3956,11 +3967,23 @@ static mfl_bytes mfl_read_file_bytes(const char* path) {
     if (mfl_is_dir(path)) { if (mfl_rr_mode == 1) mfl_rr_io_log_bytes("", 0); return b; }
     FILE* f = fopen(path, "rb");
     if (!f) { if (mfl_rr_mode == 1) mfl_rr_io_log_bytes("", 0); return b; }
+    /* #668: same read-to-EOF loop as mfl_read_file — procfs/sysfs files report
+       size 0 but yield bytes on read. */
     fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
     if (n < 0) n = 0;
-    b.data = (uint8_t*)mfl_alloc((size_t)n ? (size_t)n : 1);
-    b.len = (int64_t)fread(b.data, 1, (size_t)n, f);
+    size_t cap = (size_t)n + 4096, len = 0;
+    uint8_t* tmp = (uint8_t*)malloc(cap);
+    for (;;) {
+        if (len == cap) { cap *= 2; tmp = (uint8_t*)realloc(tmp, cap); }
+        size_t r = fread(tmp + len, 1, cap - len, f);
+        len += r;
+        if (r == 0) break;
+    }
     fclose(f);
+    b.data = (uint8_t*)mfl_alloc(len ? len : 1);
+    if (len) memcpy(b.data, tmp, len);
+    b.len = (int64_t)len;
+    free(tmp);
     if (mfl_rr_mode == 1) mfl_rr_io_log_bytes((char*)b.data, (size_t)b.len);
     return b;
 }
