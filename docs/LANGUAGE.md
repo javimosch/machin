@@ -533,9 +533,9 @@ first := users[0]                                // value copy
 | `zlib_decompress(b)`        | zlib-decompress a raw zlib stream → `bytes`; empty on an invalid stream |
 | `bytes_index(b, needle, from)` | find `needle` in `b` at/after index `from`, NUL-safe (`-1` if absent); for binary protocols / multipart boundaries |
 | `alloc(n)` / `free(p)`      | allocate/free `n` zeroed raw bytes on the heap → pointer (an `int`); for building C buffers/structs to pass over FFI |
-| `poke_f32(p, off, v)` / `peek_f32(p, off)` | write/read a 4-byte float at byte offset `off` from pointer `p` |
-| `poke_i32(p, off, v)` / `peek_i32(p, off)` | write/read a 4-byte int at byte offset `off` from pointer `p` |
-| `poke_u8(p, off, v)` / `poke_u16(p, off, v)` / `poke_ptr(p, off, v)` | write a 1-byte / 2-byte / pointer-sized value at byte offset `off` from pointer `p` |
+| `poke_f32(p, off, v)` / `poke_f64(p, off, v)` / `peek_f32(p, off)` / `peek_f64(p, off)` | write/read a 4-byte / 8-byte float at byte offset `off` from pointer `p` |
+| `poke_i8`/`poke_i16`/`poke_i32`/`poke_i64`/`poke_u8`/`poke_u16`/`poke_u32`/`poke_u64` and `peek_i8`/`peek_i16`/`peek_i32`/`peek_i64`/`peek_u8`/`peek_u16`/`peek_u32`/`peek_u64` `(p, off[, v])` | write/read a signed or unsigned int of the named width at byte offset `off` (`i` sign-extends on read, `u` zero-extends) |
+| `poke_ptr(p, off, v)` / `peek_ptr(p, off)` | write/read a pointer-sized value at byte offset `off` from pointer `p` |
 | `ptr_str(p)`                | read a NUL-terminated C string at pointer `p` → `string` |
 | `raw_mode(on)`              | toggle terminal raw mode (`1` enable, `0` restore) for uncooked keyboard input |
 | `read_key()`                | read one keypress from stdin (requires `raw_mode(1)`) |

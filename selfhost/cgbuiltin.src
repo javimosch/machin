@@ -115,14 +115,27 @@ func builtin_cfn(name) (s) {
     if name == "free" { s = "mfl_raw_free"  return s }
     if name == "madvise_free" { s = "mfl_madvise_free"  return s }
     if name == "poke_f32" { s = "mfl_poke_f32"  return s }
+    if name == "poke_f64" { s = "mfl_poke_f64"  return s }
+    if name == "poke_i8" { s = "mfl_poke_i8"  return s }
+    if name == "poke_i16" { s = "mfl_poke_i16"  return s }
     if name == "poke_i32" { s = "mfl_poke_i32"  return s }
+    if name == "poke_i64" { s = "mfl_poke_i64"  return s }
     if name == "poke_u8" { s = "mfl_poke_u8"  return s }
     if name == "poke_u16" { s = "mfl_poke_u16"  return s }
+    if name == "poke_u32" { s = "mfl_poke_u32"  return s }
+    if name == "poke_u64" { s = "mfl_poke_u64"  return s }
     if name == "poke_ptr" { s = "mfl_poke_ptr"  return s }
     if name == "peek_f32" { s = "mfl_peek_f32"  return s }
-    if name == "peek_i32" { s = "mfl_peek_i32"  return s }
+    if name == "peek_f64" { s = "mfl_peek_f64"  return s }
     if name == "peek_i8" { s = "mfl_peek_i8"  return s }
+    if name == "peek_i16" { s = "mfl_peek_i16"  return s }
+    if name == "peek_i32" { s = "mfl_peek_i32"  return s }
+    if name == "peek_i64" { s = "mfl_peek_i64"  return s }
     if name == "peek_u8" { s = "mfl_peek_u8"  return s }
+    if name == "peek_u16" { s = "mfl_peek_u16"  return s }
+    if name == "peek_u32" { s = "mfl_peek_u32"  return s }
+    if name == "peek_u64" { s = "mfl_peek_u64"  return s }
+    if name == "peek_ptr" { s = "mfl_peek_ptr"  return s }
     if name == "dot_i8" { s = "mfl_dot_i8"  return s }
     if name == "dot_q8" { s = "mfl_dot_q8"  return s }
     if name == "matmul_q8_batch" { s = "mfl_matmul_q8_batch"  return s }

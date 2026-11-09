@@ -2527,15 +2527,15 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		c.addPair(argSlots[0], c.cInt)
 		c.addPair(argSlots[1], c.cInt)
 		return c.cVoid, nil
-	case "poke_f32":
+	case "poke_f32", "poke_f64":
 		if len(argSlots) != 3 {
-			return 0, fmt.Errorf("poke_f32: 3 args (ptr, byte offset, value)")
+			return 0, fmt.Errorf("%s: 3 args (ptr, byte offset, value)", ex.Callee)
 		}
 		c.addPair(argSlots[0], c.cInt)
 		c.addPair(argSlots[1], c.cInt)
 		c.addPair(argSlots[2], newSlot(c, KNum))
 		return c.cVoid, nil
-	case "poke_i32", "poke_u8", "poke_u16", "poke_ptr":
+	case "poke_i8", "poke_i16", "poke_i32", "poke_i64", "poke_u8", "poke_u16", "poke_u32", "poke_u64", "poke_ptr":
 		if len(argSlots) != 3 {
 			return 0, fmt.Errorf("%s: 3 args (ptr, byte offset, value)", ex.Callee)
 		}
@@ -2543,14 +2543,14 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		c.addPair(argSlots[1], c.cInt)
 		c.addPair(argSlots[2], c.cInt)
 		return c.cVoid, nil
-	case "peek_f32":
+	case "peek_f32", "peek_f64":
 		if len(argSlots) != 2 {
-			return 0, fmt.Errorf("peek_f32: 2 args (ptr, byte offset)")
+			return 0, fmt.Errorf("%s: 2 args (ptr, byte offset)", ex.Callee)
 		}
 		c.addPair(argSlots[0], c.cInt)
 		c.addPair(argSlots[1], c.cInt)
 		return c.cFloat, nil
-	case "peek_i32", "peek_i8", "peek_u8":
+	case "peek_i8", "peek_i16", "peek_i32", "peek_i64", "peek_u8", "peek_u16", "peek_u32", "peek_u64", "peek_ptr":
 		if len(argSlots) != 2 {
 			return 0, fmt.Errorf("%s: 2 args (ptr, byte offset)", ex.Callee)
 		}

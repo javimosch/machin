@@ -1283,14 +1283,27 @@ static mfl_mmap_result mfl_mmap_file(const char* path) {
    pointer the program alloc'd, then passes it here. */
 static char* mfl_ptr_str(int64_t p) { return p ? mfl_dup((const char*)(intptr_t)p) : mfl_dup(""); }
 static void mfl_poke_f32(int64_t p, int64_t o, double v) { *(float*)((char*)(intptr_t)p + o) = (float)v; }
+static void mfl_poke_f64(int64_t p, int64_t o, double v) { *(double*)((char*)(intptr_t)p + o) = v; }
+static void mfl_poke_i8(int64_t p, int64_t o, int64_t v) { *(int8_t*)((char*)(intptr_t)p + o) = (int8_t)v; }
+static void mfl_poke_i16(int64_t p, int64_t o, int64_t v) { *(int16_t*)((char*)(intptr_t)p + o) = (int16_t)v; }
 static void mfl_poke_i32(int64_t p, int64_t o, int64_t v) { *(int32_t*)((char*)(intptr_t)p + o) = (int32_t)v; }
+static void mfl_poke_u32(int64_t p, int64_t o, int64_t v) { *(uint32_t*)((char*)(intptr_t)p + o) = (uint32_t)v; }
+static void mfl_poke_i64(int64_t p, int64_t o, int64_t v) { *(int64_t*)((char*)(intptr_t)p + o) = v; }
 static void mfl_poke_u8(int64_t p, int64_t o, int64_t v) { *(uint8_t*)((char*)(intptr_t)p + o) = (uint8_t)v; }
 static void mfl_poke_u16(int64_t p, int64_t o, int64_t v) { *(uint16_t*)((char*)(intptr_t)p + o) = (uint16_t)v; }
+static void mfl_poke_u64(int64_t p, int64_t o, int64_t v) { *(uint64_t*)((char*)(intptr_t)p + o) = (uint64_t)v; }
 static void mfl_poke_ptr(int64_t p, int64_t o, int64_t v) { *(void**)((char*)(intptr_t)p + o) = (void*)(intptr_t)v; }
 static double mfl_peek_f32(int64_t p, int64_t o) { return (double)*(float*)((char*)(intptr_t)p + o); }
-static int64_t mfl_peek_i32(int64_t p, int64_t o) { return (int64_t)*(int32_t*)((char*)(intptr_t)p + o); }
+static double mfl_peek_f64(int64_t p, int64_t o) { return *(double*)((char*)(intptr_t)p + o); }
 static int64_t mfl_peek_i8(int64_t p, int64_t o) { return (int64_t)*(int8_t*)((char*)(intptr_t)p + o); }
+static int64_t mfl_peek_i16(int64_t p, int64_t o) { return (int64_t)*(int16_t*)((char*)(intptr_t)p + o); }
+static int64_t mfl_peek_i32(int64_t p, int64_t o) { return (int64_t)*(int32_t*)((char*)(intptr_t)p + o); }
+static int64_t mfl_peek_u32(int64_t p, int64_t o) { return (int64_t)*(uint32_t*)((char*)(intptr_t)p + o); }
+static int64_t mfl_peek_i64(int64_t p, int64_t o) { return *(int64_t*)((char*)(intptr_t)p + o); }
 static int64_t mfl_peek_u8(int64_t p, int64_t o) { return (int64_t)*(uint8_t*)((char*)(intptr_t)p + o); }
+static int64_t mfl_peek_u16(int64_t p, int64_t o) { return (int64_t)*(uint16_t*)((char*)(intptr_t)p + o); }
+static int64_t mfl_peek_u64(int64_t p, int64_t o) { return (int64_t)*(uint64_t*)((char*)(intptr_t)p + o); }
+static int64_t mfl_peek_ptr(int64_t p, int64_t o) { return (int64_t)(intptr_t)*(void**)((char*)(intptr_t)p + o); }
 /* signed-byte dot product with a 32-bit accumulator (the vector-friendly width:
  * cc autovectorizes this where an int64 reduction stays half-speed). Exact while
  * |sum| < 2^31 - always true for i8*i8 up to n ~ 133k - the quantized-matmul
@@ -9160,9 +9173,13 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("mfl_raw_free(%s)", args[0]), nil
 	case "madvise_free":
 		return fmt.Sprintf("mfl_madvise_free(%s, %s)", args[0], args[1]), nil
-	case "poke_f32", "poke_i32", "poke_u8", "poke_u16", "poke_ptr":
+	case "poke_f32", "poke_f64":
 		return fmt.Sprintf("mfl_%s(%s, %s, %s)", ex.Callee, args[0], args[1], args[2]), nil
-	case "peek_f32", "peek_i32", "peek_i8", "peek_u8":
+	case "poke_i8", "poke_i16", "poke_i32", "poke_i64", "poke_u8", "poke_u16", "poke_u32", "poke_u64", "poke_ptr":
+		return fmt.Sprintf("mfl_%s(%s, %s, %s)", ex.Callee, args[0], args[1], args[2]), nil
+	case "peek_f32", "peek_f64":
+		return fmt.Sprintf("mfl_%s(%s, %s)", ex.Callee, args[0], args[1]), nil
+	case "peek_i8", "peek_i16", "peek_i32", "peek_i64", "peek_u8", "peek_u16", "peek_u32", "peek_u64", "peek_ptr":
 		return fmt.Sprintf("mfl_%s(%s, %s)", ex.Callee, args[0], args[1]), nil
 	case "dot_i8":
 		return fmt.Sprintf("mfl_dot_i8(%s, %s, %s)", args[0], args[1], args[2]), nil

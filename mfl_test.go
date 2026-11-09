@@ -1267,6 +1267,39 @@ func TestRawMemoryPeekI8U8(t *testing.T) {
 	}
 }
 
+// The full peek/poke width matrix (#675): every integer width round-trips with
+// the named sign extension, f64 keeps full precision, and peek_ptr reads back a
+// pointer-sized value. i16/u16 are the int16 ground-height / fixed-point case
+// that motivated the issue.
+func TestRawMemoryWidthMatrix(t *testing.T) {
+	main := `func main() {
+	p := alloc(64)
+	poke_i8(p, 0, -100)
+	poke_u8(p, 1, 250)
+	poke_i16(p, 2, -12345)
+	poke_u16(p, 4, 65535)
+	poke_i32(p, 8, -70000)
+	poke_u32(p, 12, 4000000000)
+	poke_i64(p, 16, -9000000000)
+	poke_u64(p, 24, 0x7FFFFFFFFFFFFFFF)
+	poke_f32(p, 32, 2.5)
+	poke_f64(p, 40, 3.14159265358979)
+	poke_ptr(p, 48, p)
+	println(str(peek_i8(p, 0)) + " " + str(peek_u8(p, 1)))
+	println(str(peek_i16(p, 2)) + " " + str(peek_u16(p, 4)))
+	println(str(peek_i32(p, 8)) + " " + str(peek_u32(p, 12)))
+	println(str(peek_i64(p, 16)) + " " + str(peek_u64(p, 24)))
+	println(str(peek_f32(p, 32)) + " " + str(peek_f64(p, 40)))
+	println(str(peek_ptr(p, 48) == p))
+	free(p)
+}`
+	out, _ := buildRun(t, main)
+	want := "-100 250\n-12345 65535\n-70000 4000000000\n-9000000000 9223372036854775807\n2.5 3.14159\ntrue\n"
+	if out != want {
+		t.Fatalf("raw memory width matrix: got %q, want %q", out, want)
+	}
+}
+
 // dot_i8: signed-byte dot product over raw buffers. 3*(-4) + 100*100 + (-128)*2
 // = 9732 exercises sign handling on both sides; a second call over the same
 // buffer at an offset checks pointer arithmetic composes.
