@@ -5608,14 +5608,15 @@ static void mfl_sqlite_bind(sqlite3_stmt* st, mfl_slice params) {
     }
 }
 /* step a prepared statement to completion, returning a JSON array of row
-   objects; finalizes the statement. */
+   objects; finalizes the statement. Returns NULL on a step error so the
+   caller can tell failure from a legitimately empty result (#672). */
 static char* mfl_sqlite_rows_json(sqlite3_stmt* st) {
     size_t cap = 256, len = 0;
     char* out = (char*)malloc(cap);
     out[len++] = '[';
     int ncol = sqlite3_column_count(st);
-    int row = 0;
-    while (sqlite3_step(st) == SQLITE_ROW) {
+    int row = 0, rc = SQLITE_DONE;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
         if (row++) { if (len + 1 >= cap) { cap *= 2; out = realloc(out, cap); } out[len++] = ','; }
         if (len + 1 >= cap) { cap *= 2; out = realloc(out, cap); }
         out[len++] = '{';
@@ -5645,23 +5646,36 @@ static char* mfl_sqlite_rows_json(sqlite3_stmt* st) {
     if (len + 1 >= cap) { cap *= 2; out = realloc(out, cap); }
     out[len++] = ']';
     sqlite3_finalize(st);
+    if (rc != SQLITE_DONE) { free(out); return NULL; }
     char* r = mfl_dup_arena(out, len);
     free(out);
     return r;
 }
+/* #672: sqlite_query returns "" on failure — "[]" is reserved for a valid
+   query with zero rows. sqlite_errmsg(db) says why. */
 static char* mfl_sqlite_query(int64_t h, const char* sql) {
     sqlite3* db = (sqlite3*)(intptr_t)h;
     sqlite3_stmt* st = NULL;
-    if (!db || sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) return mfl_dup_arena("[]", 2);
-    return mfl_sqlite_rows_json(st);
+    if (!db || sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) return mfl_dup_arena("", 0);
+    char* r = mfl_sqlite_rows_json(st);
+    return r ? r : mfl_dup_arena("", 0);
 }
 /* parameterized variants: bind a []string of params to the ? placeholders. */
 static char* mfl_sqlite_query_p(int64_t h, const char* sql, mfl_slice params) {
     sqlite3* db = (sqlite3*)(intptr_t)h;
     sqlite3_stmt* st = NULL;
-    if (!db || sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) return mfl_dup_arena("[]", 2);
+    if (!db || sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) return mfl_dup_arena("", 0);
     mfl_sqlite_bind(st, params);
-    return mfl_sqlite_rows_json(st);
+    char* r = mfl_sqlite_rows_json(st);
+    return r ? r : mfl_dup_arena("", 0);
+}
+/* the db handle's most recent error message — pair with sqlite_query ""
+   results and nonzero sqlite_exec codes. "" for a bad handle. */
+static char* mfl_sqlite_errmsg(int64_t h) {
+    sqlite3* db = (sqlite3*)(intptr_t)h;
+    if (!db) return mfl_dup_arena("", 0);
+    const char* m = sqlite3_errmsg(db);
+    return mfl_dup_arena(m ? m : "", m ? strlen(m) : 0);
 }
 static int64_t mfl_sqlite_exec_p(int64_t h, const char* sql, mfl_slice params) {
     sqlite3* db = (sqlite3*)(intptr_t)h;
@@ -9085,6 +9099,9 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 			return fmt.Sprintf("mfl_sqlite_query_p(%s, %s, %s)", args[0], args[1], args[2]), nil
 		}
 		return fmt.Sprintf("mfl_sqlite_query(%s, %s)", args[0], args[1]), nil
+	case "sqlite_errmsg":
+		g.usesSQLite = true
+		return fmt.Sprintf("mfl_sqlite_errmsg(%s)", args[0]), nil
 	case "sqlite_close":
 		g.usesSQLite = true
 		return fmt.Sprintf("mfl_sqlite_close(%s)", args[0]), nil

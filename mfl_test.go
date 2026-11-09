@@ -923,6 +923,25 @@ func TestSQLiteParams(t *testing.T) {
 	}
 }
 
+// #672: sqlite_query must distinguish SQL failure from a valid empty result —
+// "" means broken (sqlite_errmsg says why), "[]" means zero rows.
+func TestSQLiteQueryError(t *testing.T) {
+	main := `func main() {
+	db := sqlite_open(":memory:")
+	sqlite_exec(db, "CREATE TABLE t(a int)")
+	bad := sqlite_query(db, "SELECT a AS isnull FROM t")
+	el := len(sqlite_errmsg(db))
+	empty := sqlite_query(db, "SELECT a AS a FROM t WHERE a = 999")
+	println(str(len(bad)) + " " + str(len(empty)) + " " + str(el))
+	sqlite_close(db)
+}`
+	out, _ := buildRun(t, main)
+	fields := strings.Fields(out)
+	if len(fields) != 3 || fields[0] != "0" || fields[1] != "2" || fields[2] == "0" {
+		t.Fatalf("sqlite error signaling: got %q, want '0 2 <nonzero>'", out)
+	}
+}
+
 // url_encode follows RFC 3986 (space -> %20, reserved chars escaped, unreserved
 // kept); url_decode reverses it and also treats '+' as space.
 func TestURLEncoding(t *testing.T) {

@@ -38,7 +38,7 @@ func note_feature(name) {
     if is_math1(name) || name == "pow" || name == "pi" || name == "f64_bits" || name == "f64_from_bits" { g_uses_math = 1 }
     if name == "noise2" || name == "noise3" { g_uses_noise = 1 }
     if name == "regex_match" || name == "regex_find" || name == "regex_replace" || name == "regex_groups" { g_uses_regex = 1 }
-    if name == "sqlite_open" || name == "sqlite_close" || name == "sqlite_exec" || name == "sqlite_query" { g_uses_sqlite = 1 }
+    if name == "sqlite_open" || name == "sqlite_close" || name == "sqlite_exec" || name == "sqlite_query" || name == "sqlite_errmsg" { g_uses_sqlite = 1 }
     if is_crypto_builtin(name) == 1 { g_uses_crypto = 1 }
     if name == "xeddsa_sign" || name == "xeddsa_verify" { g_uses_xeddsa = 1 }
     if name == "https_get" || name == "https_post" || name == "http_get" || name == "http_request" { g_uses_tls = 1 }
@@ -106,6 +106,7 @@ func builtin_cfn(name) (s) {
     if name == "hmac_sha256" { s = "mfl_hmac_sha256"  return s }
     if name == "sqlite_open" { s = "mfl_sqlite_open"  return s }
     if name == "sqlite_close" { s = "mfl_sqlite_close"  return s }
+    if name == "sqlite_errmsg" { s = "mfl_sqlite_errmsg"  return s }
     if name == "regex_match" { s = "mfl_regex_match"  return s }
     if name == "regex_find" { s = "mfl_regex_find"  return s }
     if name == "regex_replace" { s = "mfl_regex_replace"  return s }
