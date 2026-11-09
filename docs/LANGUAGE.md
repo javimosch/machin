@@ -828,7 +828,9 @@ machin run   app.mfl --safe
 
 These checks add overhead, so they are opt-in rather than always on; a
 separate `--race-safe` flag (not related to `--safe`) refuses to build if a
-data race is inferred in `go`/channel usage.
+data race is inferred in `go`/channel usage or across machweb request
+handlers (`serve`, `serve_on`, `serve_on_quiet`, `serve_tls`, and `route`
+handlers under `serve_router` — each runs on its own per-request goroutine).
 
 ---
 

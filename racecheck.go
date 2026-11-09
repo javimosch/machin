@@ -696,6 +696,9 @@ type gAccess struct{ read, write bool }
 type goSite struct {
 	callee string
 	inLoop bool
+	// desc, when non-empty, replaces the default "goroutine `go callee(...)`"
+	// label — used for handlers spawned indirectly by the framework (#647).
+	desc string
 }
 
 // collectLocals records the names a function binds (params + `:=` decls + range
@@ -883,7 +886,7 @@ func collectCallGraph(ss []Stmt, inLoop bool, normal *[]string, gos *[]goSite) {
 	for _, s := range ss {
 		switch st := s.(type) {
 		case *GoStmt:
-			*gos = append(*gos, goSite{st.Call.Callee, inLoop})
+			*gos = append(*gos, goSite{st.Call.Callee, inLoop, ""})
 			for _, a := range st.Call.Args {
 				rd(a)
 			}
@@ -917,6 +920,128 @@ func collectCallGraph(ss []Stmt, inLoop bool, normal *[]string, gos *[]goSite) {
 			collectCallGraph(st.Body, inLoop, normal, gos)
 		}
 	}
+}
+
+// machwebServeFuncs are the framework entry points whose func-valued handler
+// argument runs on a fresh goroutine per request (#647): serve/serve_on/
+// serve_on_quiet spawn `go machweb_handle(conn, handler)` per accepted
+// connection and serve_tls spawns `go machweb_accept_tls(...)`. A same-named
+// user function whose body contains no `go` is not a spawn site.
+var machwebServeFuncs = map[string]bool{
+	"serve": true, "serve_on": true, "serve_on_quiet": true, "serve_tls": true,
+}
+
+// handlerArgName resolves a serve-family call argument to the function whose
+// global footprint runs on the request goroutine. It returns the callee name
+// for gall lookup plus a flag marking closure values (lifted lambdas have no
+// stable source-level name, so findings display "(anonymous)"). ok is false
+// for args that aren't statically resolvable func values (params, call
+// results, map lookups).
+func handlerArgName(e Expr, funcNames, local map[string]bool, cvars map[string]*MakeClosure) (name string, anon, ok bool) {
+	switch a := e.(type) {
+	case *MakeClosure:
+		return a.FuncName, true, true
+	case *Ident:
+		if mc, isC := cvars[a.Name]; isC {
+			return mc.FuncName, true, true
+		}
+		if local[a.Name] {
+			return "", false, false // a non-closure local shadows any func of this name
+		}
+		if funcNames[a.Name] {
+			return a.Name, false, true
+		}
+	}
+	return "", false, false
+}
+
+// handlerSpawnSites appends goSites for func-valued arguments of machweb's
+// serve-family calls in ss. Each request runs its handler on a dedicated
+// goroutine, so handler global accesses are concurrent with every sibling
+// handler's — sites are loop-multiplied like `go` inside a loop. route()
+// handlers qualify only when the program actually serves a router (a
+// serve_router call exists); the router map itself is flow-insensitive, so
+// this is gated on the canonical serve_router entry point.
+func handlerSpawnSites(ss []Stmt, spawnOK, funcNames map[string]bool, routerServed bool, local map[string]bool, cvars map[string]*MakeClosure, gos *[]goSite) {
+	var rd func(e Expr)
+	rd = func(e Expr) {
+		switch t := e.(type) {
+		case *Call:
+			if spawnOK[t.Callee] || (t.Callee == "route" && routerServed) {
+				for _, a := range t.Args {
+					if name, anon, ok := handlerArgName(a, funcNames, local, cvars); ok {
+						disp := name
+						if anon {
+							disp = "(anonymous)"
+						}
+						*gos = append(*gos, goSite{callee: name, inLoop: true,
+							desc: "machweb request handler `" + disp + "`"})
+					}
+				}
+			}
+			for _, a := range t.Args {
+				rd(a)
+			}
+		case *Binary:
+			rd(t.L)
+			rd(t.R)
+		case *Unary:
+			rd(t.X)
+		case *Index:
+			rd(t.X)
+			rd(t.Idx)
+		case *FieldAccess:
+			rd(t.X)
+		case *SliceLit:
+			for _, el := range t.Elems {
+				rd(el)
+			}
+		case *StructLit:
+			for _, v := range t.Vals {
+				rd(v)
+			}
+		}
+	}
+	var walk func(ss []Stmt)
+	walk = func(ss []Stmt) {
+		for _, s := range ss {
+			switch st := s.(type) {
+			case *GoStmt:
+				for _, a := range st.Call.Args {
+					rd(a)
+				}
+			case *AssignStmt:
+				rd(st.Val)
+			case *MultiAssign:
+				for _, e := range st.Rhs {
+					rd(e)
+				}
+			case *IndexAssign:
+				rd(st.Val)
+			case *FieldAssign:
+				rd(st.Val)
+			case *ExprStmt:
+				rd(st.X)
+			case *ReturnStmt:
+				for _, e := range st.Vals {
+					rd(e)
+				}
+			case *SendStmt:
+				rd(st.Val)
+			case *IfStmt:
+				rd(st.Cond)
+				walk(st.Then)
+				walk(st.Else)
+			case *WhileStmt:
+				walk(st.Body)
+			case *RangeStmt:
+				walk(st.Body)
+			case *ArenaStmt:
+				walk(st.Body)
+			}
+		}
+	}
+	walk(ss)
 }
 
 // mainPostGlobals returns main's DIRECT global accesses that occur after its first
@@ -1013,6 +1138,7 @@ func globalRaces(prog *Program, c *Checker) []raceFinding {
 	normalCallees := map[string][]string{}
 	var allGo []goSite
 	var mainFn *FuncDecl
+	gosByFn := map[string][]goSite{}
 	for _, f := range prog.Funcs {
 		ln := map[string]bool{}
 		for _, p := range f.Params {
@@ -1027,10 +1153,40 @@ func globalRaces(prog *Program, c *Checker) []raceFinding {
 		var gos []goSite
 		collectCallGraph(f.Body, false, &normal, &gos)
 		normalCallees[f.Name] = normal
+		gosByFn[f.Name] = gos
 		allGo = append(allGo, gos...)
 		if f.Name == "main" {
 			mainFn = f
 		}
+	}
+	// #647: machweb's serve-family calls spawn their handler argument on a
+	// per-request goroutine, and route() handlers run on serve_router's. A
+	// serve-family name only counts when its body really contains a `go` —
+	// a same-named user function that doesn't spawn isn't a spawn site.
+	spawnOK := map[string]bool{}
+	for n, gs := range gosByFn {
+		if len(gs) > 0 && machwebServeFuncs[n] {
+			spawnOK[n] = true
+		}
+	}
+	funcNames := map[string]bool{}
+	for _, f := range prog.Funcs {
+		funcNames[f.Name] = true
+	}
+	routerServed := false
+	for _, cs := range normalCallees {
+		for _, ce := range cs {
+			if ce == "serve_router" {
+				routerServed = true
+			}
+		}
+	}
+	for _, f := range prog.Funcs {
+		cvars := map[string]*MakeClosure{}
+		collectClosureVars(f.Body, cvars)
+		var hgos []goSite
+		handlerSpawnSites(f.Body, spawnOK, funcNames, routerServed, local[f.Name], cvars, &hgos)
+		allGo = append(allGo, hgos...)
 	}
 	// transitive global footprint over NORMAL calls (a goroutine is a separate thread)
 	gall := map[string]map[string]*gAccess{}
@@ -1091,11 +1247,15 @@ func globalRaces(prog *Program, c *Checker) []raceFinding {
 				mult = 2
 				label = "loop-spawned goroutine"
 			}
+			frag := label + " `go " + gs.callee + "(...)`"
+			if gs.desc != "" {
+				frag = gs.desc
+			}
 			verb := "reads"
 			if a.write {
 				verb = "writes"
 			}
-			threads = append(threads, th{a.write, mult, fmt.Sprintf("%s `go %s(...)` %s global `%s`", label, gs.callee, verb, g)})
+			threads = append(threads, th{a.write, mult, fmt.Sprintf("%s %s global `%s`", frag, verb, g)})
 		}
 		goThreads := len(threads)
 		if a := mainConc[g]; a != nil {

@@ -669,6 +669,14 @@ var g_nc_fn = []string{}
 var g_nc_ce = []string{}
 var g_go_ce = []string{}
 var g_go_loop = []int{}
+var g_go_desc = []string{}   // #647: non-empty replaces the `go ce(...)` label (machweb handlers)
+var g_fl_node = []int{}      // #647: discovered K_FUNCLIT node indices
+var g_fl_name = []string{}   //   ... paired with synthetic gall keys ("$h<i>")
+var g_fl_ctr = 0
+var g_fb_name = []string{}   // #647: per-unit local name -> K_FUNCLIT binds
+var g_fb_node = []int{}
+var g_router_served = 0      // #647: program calls serve_router somewhere
+var g_bhg = 0
 var g_mc_g = []string{}
 var g_mc_r = []int{}
 var g_mc_w = []int{}
@@ -762,7 +770,7 @@ func gd_walk(fn, locals, kids) {
             for _, e := range n.kids { gd_rd(fn, locals, e) }
         } else { if k == K_GO {
             gc := nodes[n.a]
-            g_go_ce = append(g_go_ce, gc.s)  g_go_loop = append(g_go_loop, 0)
+            g_go_ce = append(g_go_ce, gc.s)  g_go_loop = append(g_go_loop, 0)  g_go_desc = append(g_go_desc, "")
             for _, a := range gc.kids { gd_rd(fn, locals, a) }
         } else { if k == K_IF {
             gd_rd(fn, locals, n.a)  gd_walk(fn, locals, n.kids)  gd_walk(fn, locals, n.kids2)
@@ -782,7 +790,7 @@ func gd_walk_loop(fn, locals, kids) {
         k := n.kind
         if k == K_GO {
             gc := nodes[n.a]
-            g_go_ce = append(g_go_ce, gc.s)  g_go_loop = append(g_go_loop, 1)
+            g_go_ce = append(g_go_ce, gc.s)  g_go_loop = append(g_go_loop, 1)  g_go_desc = append(g_go_desc, "")
             for _, a := range gc.kids { gd_rd(fn, locals, a) }
         } else { if k == K_EXPRSTMT {
             cn := nodes[n.a]
@@ -845,6 +853,24 @@ func global_races() {
         gd_walk(g_func_names[fi], locals, nodes[fr].kids)
         fi = fi + 1
     }
+    // #647: the AST keeps lambdas inline as K_FUNCLIT — analyze each body under a
+    // synthetic "$h<i>" name so serve-family handler args get a gall footprint.
+    g_fl_ctr = 0
+    g_fl_node = []int{}  g_fl_name = []string{}
+    fi = 0
+    for fi < len(g_func_names) {
+        fl_stmt(nodes[g_func_roots[fi]].kids)
+        fi = fi + 1
+    }
+    li := 0
+    for li < len(g_fl_node) {
+        fidx := g_fl_node[li]
+        flocals := []string{}
+        for _, p := range nodes[fidx].names { flocals = append(flocals, p) }
+        flocals = collect_locals(nodes[fidx].kids, flocals)
+        gd_walk(g_fl_name[li], flocals, nodes[fidx].kids)
+        li = li + 1
+    }
     // seed gall = gdirect
     gi := 0
     for gi < len(g_gd_fn) { gd_merge(1, g_gd_fn[gi], g_gd_g[gi], g_gd_r[gi], g_gd_w[gi])  gi = gi + 1 }
@@ -885,6 +911,37 @@ func global_races() {
         }
     }
 
+    // #647: handler spawn sites — serve-family calls spawn their func-valued
+    // handler per request; route() handlers run on serve_router's goroutines.
+    g_router_served = 0
+    ei2 := 0
+    for ei2 < len(g_nc_ce) {
+        if g_nc_ce[ei2] == "serve_router" { g_router_served = 1 }
+        ei2 = ei2 + 1
+    }
+    fi = 0
+    for fi < len(g_func_names) {
+        fr2 := g_func_roots[fi]
+        hlocals := []string{}
+        for _, p := range nodes[fr2].names { hlocals = append(hlocals, p) }
+        hlocals = collect_locals(nodes[fr2].kids, hlocals)
+        g_fb_name = []string{}  g_fb_node = []int{}
+        collect_fbinds(nodes[fr2].kids)
+        hs_stmt(hlocals, nodes[fr2].kids)
+        fi = fi + 1
+    }
+    li = 0
+    for li < len(g_fl_node) {
+        fidx2 := g_fl_node[li]
+        flocals2 := []string{}
+        for _, p := range nodes[fidx2].names { flocals2 = append(flocals2, p) }
+        flocals2 = collect_locals(nodes[fidx2].kids, flocals2)
+        g_fb_name = []string{}  g_fb_node = []int{}
+        collect_fbinds(nodes[fidx2].kids)
+        hs_stmt(flocals2, nodes[fidx2].kids)
+        li = li + 1
+    }
+
     // per global G: gather concurrent threads
     ni := 0
     for ni < len(g_global_names) {
@@ -909,7 +966,9 @@ func global_races() {
                     total = total + mult
                     if isw == 1 { writes = writes + mult }
                     gothreads = gothreads + 1
-                    descs = append(descs, label + " `go " + ce + "(...)` " + verb + " global `" + g + "`")
+                    d := label + " `go " + ce + "(...)`"
+                    if g_go_desc[si] != "" { d = g_go_desc[si] }
+                    descs = append(descs, d + " " + verb + " global `" + g + "`")
                 }
                 ai = ai + 1
             }
@@ -938,6 +997,182 @@ func global_races() {
             g_rf_writers = append(g_rf_writers, join(descs, "\x01"))
         }
         ni = ni + 1
+    }
+}
+
+// ---- #647: machweb handler spawn sites ----
+// serve/serve_on/serve_on_quiet/serve_tls run their func-valued handler on a
+// fresh goroutine per request; route() handlers run on serve_router's. The
+// self-hosted AST keeps lambdas inline as K_FUNCLIT (no lifting), so each
+// funclit body is analyzed under a synthetic "$h<i>" gall key.
+
+// machweb_serve_name: is nm one of the serve-family entry points?
+func machweb_serve_name(nm) (b) {
+    b = 0
+    if nm == "serve" { b = 1 }
+    if nm == "serve_on" { b = 1 }
+    if nm == "serve_on_quiet" { b = 1 }
+    if nm == "serve_tls" { b = 1 }
+}
+
+// body_has_go: does this function's body contain a `go` statement (any depth,
+// same stmt coverage as the Go collectCallGraph — no select)?
+func body_has_go(root) (b) {
+    b = 0
+    if root < 0 { return b }
+    g_bhg = 0
+    bhg_walk(nodes[root].kids)
+    b = g_bhg
+}
+func bhg_walk(kids) {
+    for _, s := range kids {
+        if g_bhg == 1 { return }
+        n := nodes[s]
+        k := n.kind
+        if k == K_GO { g_bhg = 1  return }
+        if k == K_IF { bhg_walk(n.kids)  bhg_walk(n.kids2)
+        } else { if k == K_WHILE || k == K_RANGE || k == K_ARENA { bhg_walk(n.kids)
+        }}
+    }
+}
+
+// fl_stmt/fl_expr: discover every K_FUNCLIT reachable from these statements
+// (recursing into nested funclit bodies) and register it under "$h<i>".
+func fl_stmt(kids) {
+    for _, s := range kids {
+        n := nodes[s]
+        k := n.kind
+        if k == K_EXPRSTMT { fl_expr(n.a)
+        } else { if k == K_ASSIGN { fl_expr(n.a)
+        } else { if k == K_MULTI { for _, e := range n.kids { fl_expr(e) }
+        } else { if k == K_IDXASSIGN { fl_expr(n.a)  fl_expr(n.b)
+        } else { if k == K_FLDASSIGN { fl_expr(n.a)  fl_expr(n.b)
+        } else { if k == K_RETURN { for _, e := range n.kids { fl_expr(e) }
+        } else { if k == K_SEND { fl_expr(n.a)  fl_expr(n.b)
+        } else { if k == K_GO { fl_expr(n.a)
+        } else { if k == K_IF { fl_expr(n.a)  fl_stmt(n.kids)  fl_stmt(n.kids2)
+        } else { if k == K_WHILE || k == K_RANGE { fl_expr(n.a)  fl_stmt(n.kids)
+        } else { if k == K_ARENA { fl_stmt(n.kids)
+        } else { if k == K_SELECT { fl_stmt(n.kids)  fl_stmt(n.kids2)
+        } else { if k == K_SELCASE { fl_expr(n.a)  fl_expr(n.b)  fl_stmt(n.kids)
+        }}}}}}}}}}}}}
+    }
+}
+func fl_expr(e) {
+    n := nodes[e]
+    k := n.kind
+    if k == K_FUNCLIT {
+        g_fl_ctr = g_fl_ctr + 1
+        g_fl_node = append(g_fl_node, e)
+        g_fl_name = append(g_fl_name, "$h" + str(g_fl_ctr))
+        fl_stmt(n.kids)
+        return
+    }
+    if k == K_CALL { for _, a := range n.kids { fl_expr(a) }  return }
+    if k == K_CALLV { fl_expr(n.a)  for _, a := range n.kids { fl_expr(a) }  return }
+    if k == K_BIN { fl_expr(n.a)  fl_expr(n.b)  return }
+    if k == K_UNARY || k == K_FIELD || k == K_RECV { fl_expr(n.a)  return }
+    if k == K_INDEX { fl_expr(n.a)  fl_expr(n.b)  return }
+    if k == K_SLICE || k == K_STRUCT || k == K_MAKECHAN || k == K_MAKEMAP { for _, x := range n.kids { fl_expr(x) }  return }
+}
+func fl_name_of(nodeidx) (nm) {
+    nm = ""
+    i := 0
+    for i < len(g_fl_node) { if g_fl_node[i] == nodeidx { nm = g_fl_name[i]  return nm }  i = i + 1 }
+}
+
+// collect_fbinds: local name -> K_FUNCLIT node for `x := func...` binds in
+// this unit (mirrors the Go collectClosureVars coverage: if/while/range/arena).
+func collect_fbinds(kids) {
+    for _, s := range kids {
+        n := nodes[s]
+        k := n.kind
+        if k == K_ASSIGN {
+            if nodes[n.a].kind == K_FUNCLIT { g_fb_name = append(g_fb_name, n.s)  g_fb_node = append(g_fb_node, n.a) }
+        } else { if k == K_IF { collect_fbinds(n.kids)  collect_fbinds(n.kids2)
+        } else { if k == K_WHILE || k == K_RANGE || k == K_ARENA { collect_fbinds(n.kids)
+        }}}
+    }
+}
+
+// hs_stmt/hs_expr/hs_arg: emit go sites for func-valued args of serve-family
+// calls. A serve-family callee qualifies only when its body really contains a
+// `go` (a same-named user function that doesn't spawn isn't a spawn site);
+// route() qualifies only when the program calls serve_router.
+func hs_stmt(locals, kids) {
+    for _, s := range kids {
+        n := nodes[s]
+        k := n.kind
+        if k == K_GO {
+            gc := nodes[n.a]
+            for _, a := range gc.kids { hs_expr(locals, a) }
+        } else { if k == K_EXPRSTMT {
+            hs_expr(locals, n.a)
+        } else { if k == K_ASSIGN {
+            hs_expr(locals, n.a)
+        } else { if k == K_MULTI {
+            for _, e := range n.kids { hs_expr(locals, e) }
+        } else { if k == K_IDXASSIGN {
+            hs_expr(locals, n.b)
+        } else { if k == K_FLDASSIGN {
+            hs_expr(locals, n.b)
+        } else { if k == K_RETURN {
+            for _, e := range n.kids { hs_expr(locals, e) }
+        } else { if k == K_SEND {
+            hs_expr(locals, n.b)
+        } else { if k == K_IF {
+            hs_expr(locals, n.a)  hs_stmt(locals, n.kids)  hs_stmt(locals, n.kids2)
+        } else { if k == K_WHILE || k == K_RANGE {
+            hs_expr(locals, n.a)  hs_stmt(locals, n.kids)
+        } else { if k == K_ARENA {
+            hs_stmt(locals, n.kids)
+        }}}}}}}}}}}
+    }
+}
+func hs_expr(locals, e) {
+    n := nodes[e]
+    k := n.kind
+    if k == K_CALL {
+        ce := n.s
+        root := func_root(ce)
+        if (machweb_serve_name(ce) == 1 && root >= 0 && body_has_go(root) == 1) || (ce == "route" && g_router_served == 1) {
+            for _, a := range n.kids { hs_arg(locals, a) }
+        }
+        for _, a := range n.kids { hs_expr(locals, a) }
+        return
+    }
+    if k == K_BIN { hs_expr(locals, n.a)  hs_expr(locals, n.b)  return }
+    if k == K_UNARY || k == K_FIELD { hs_expr(locals, n.a)  return }
+    if k == K_INDEX { hs_expr(locals, n.a)  hs_expr(locals, n.b)  return }
+    if k == K_SLICE || k == K_STRUCT { for _, x := range n.kids { hs_expr(locals, x) }  return }
+}
+func hs_arg(locals, ai) {
+    n := nodes[ai]
+    k := n.kind
+    if k == K_FUNCLIT {
+        nm := fl_name_of(ai)
+        if nm != "" {
+            g_go_ce = append(g_go_ce, nm)  g_go_loop = append(g_go_loop, 1)  g_go_desc = append(g_go_desc, "machweb request handler `(anonymous)`")
+        }
+        return
+    }
+    if k == K_ID {
+        nm := n.s
+        bi := len(g_fb_name) - 1
+        while bi >= 0 {
+            if g_fb_name[bi] == nm {
+                fnm := fl_name_of(g_fb_node[bi])
+                if fnm != "" {
+                    g_go_ce = append(g_go_ce, fnm)  g_go_loop = append(g_go_loop, 1)  g_go_desc = append(g_go_desc, "machweb request handler `(anonymous)`")
+                }
+                return
+            }
+            bi = bi - 1
+        }
+        if name_in(nm, locals) == 1 { return }
+        if func_root(nm) >= 0 {
+            g_go_ce = append(g_go_ce, nm)  g_go_loop = append(g_go_loop, 1)  g_go_desc = append(g_go_desc, "machweb request handler `" + nm + "`")
+        }
     }
 }
 
