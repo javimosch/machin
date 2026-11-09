@@ -371,7 +371,7 @@ startup (before `main`; at `_initialize` for a wasm reactor).
 | `sha256` | `(string) -> string` | SHA-256 of text, lowercase hex |
 | `hmac_sha256` | `(string, string) -> string` | HMAC-SHA256(key, message), lowercase hex |
 | `sqlite_open` | `(string) -> int` | open/create a SQLite db file → handle (0 on fail); `:memory:` for in-memory |
-| `sqlite_exec` | `(int, string[, []string]) -> int` | run SQL with no result; an optional `[]string` binds the `?` placeholders (injection-safe); 0 on success |
+| `sqlite_exec` | `(int, string[, []string]) -> int` | run SQL with no result; an optional `[]string` binds the `?` placeholders (injection-safe); returns the sqlite3 result code — `0` on success, nonzero on failure (e.g. `5` BUSY, `19` CONSTRAINT); handles open with a 5s `busy_timeout` so lock races wait rather than silently drop the write |
 | `sqlite_query` | `(int, string[, []string]) -> string` | run a SELECT → JSON array of row objects; an optional `[]string` binds the `?` placeholders; `""` on failure (`"[]"` is a valid empty result), `sqlite_errmsg` says why; composes with `json_get` |
 | `sqlite_errmsg` | `(int) -> string` | the db handle's most recent error message (`""` for a bad handle) |
 | `sqlite_close` | `(int) -> int` | close the database |

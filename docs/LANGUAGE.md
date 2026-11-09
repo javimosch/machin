@@ -586,7 +586,7 @@ on the build/runtime host, e.g. `apt install libsqlite3-dev` on Debian/Ubuntu).
 | Builtin                          | Purpose                                                                 |
 |----------------------------------|-------------------------------------------------------------------------|
 | `sqlite_open(path) -> int`       | open or create a SQLite database file → handle (`0` on failure); `":memory:"` opens a transient in-memory db |
-| `sqlite_exec(h, sql[, []string]) -> int` | run result-less SQL (CREATE/INSERT/UPDATE/DELETE); optional `[]string` binds `?` params (injection-safe); returns `0` on success |
+| `sqlite_exec(h, sql[, []string]) -> int` | run result-less SQL (CREATE/INSERT/UPDATE/DELETE); optional `[]string` binds `?` params (injection-safe); returns the sqlite3 result code — `0` on success, **nonzero on failure** (e.g. `5` BUSY, `19` CONSTRAINT), so a lost write is detectable; handles open with a 5s `busy_timeout` so lock races wait instead of vanishing |
 | `sqlite_query(h, sql[, []string]) -> string` | run a SELECT → **JSON array-of-row-objects** string; optional `[]string` binds `?` params; returns `""` on failure — `"[]"` is a valid empty result, so check for `""` and call `sqlite_errmsg(h)` for the reason; decode with `parse(rows, []T{})` for a typed slice, or `json_get` for a single field |
 | `sqlite_errmsg(h) -> string`    | the db handle's most recent error message (`""` for a bad handle); pair with `sqlite_query` `""` results and nonzero `sqlite_exec` codes |
 | `sqlite_close(h) -> int`         | close the database handle                                               |
