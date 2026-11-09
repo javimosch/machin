@@ -366,6 +366,25 @@ func main() {
 }
 EOF
 run "$T/h19.src"
+# h20 — #650: struct typedefs emit in dependency order (user->cstruct fields,
+# forward cstruct->cstruct nesting, converter order).
+cat > "$T/h20.src" <<'EOF'
+extern "g" {
+    header "g.h"
+    cstruct Outer { i Inner }
+    cstruct Inner { v i32 }
+    cstruct Color { r u8 g u8 b u8 a u8 }
+    fn Use(Outer, Color)
+}
+type Wrap struct { o Outer  c Color }
+type Theme struct { bg Color }
+func main() {
+    w := Wrap{}
+    t := Theme{}
+    Use(w.o, t.bg)
+}
+EOF
+run "$T/h20.src"
 
 # SELF-APPLICATION: the MFL codegen emits byte-identical C for the compiler's OWN
 # source (checker + full codegen) — the fixpoint-adjacent milestone.

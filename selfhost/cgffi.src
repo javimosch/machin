@@ -84,11 +84,100 @@ func cg_extern_decls() {
     }
 }
 
-// cg_cstruct_typedefs: emit the mfl_<Name> typedef for every cstruct (in decl order,
-// after the plain `type` typedefs — matching p.Types: types first, then cstructs).
-func cg_cstruct_typedefs() {
+// struct_type_order: g_structdefs indices in dependency order — mirrors Go's
+// orderStructTypes (#650): repeated scan over user types then cstructs (the
+// p.Types sequence), a def emits once every struct-typed field's target is
+// already emitted. A cstruct's raw CType fields only depend on cstruct defs
+// (matching the parser, which maps non-cstruct CTypes to scalars).
+func struct_type_order() (ord) {
+    ord = []int{}
+    n := len(g_structdefs)
+    seq := []int{}
     i := 0
-    for i < len(g_structdefs) { if g_structdefs[i].cstruct == 1 { cg_cstruct_typedef(i) }  i = i + 1 }
+    while i < n { if g_structdefs[i].cstruct == 0 { seq = append(seq, i) }  i = i + 1 }
+    i = 0
+    while i < n { if g_structdefs[i].cstruct == 1 { seq = append(seq, i) }  i = i + 1 }
+    done := []int{}
+    i = 0
+    while i < n { done = append(done, 0)  i = i + 1 }
+    remaining := len(seq)
+    while remaining > 0 {
+        progressed := 0
+        si := 0
+        while si < len(seq) {
+            di := seq[si]
+            if done[di] == 0 {
+                d := g_structdefs[di]
+                ready := 1
+                j := 0
+                while j < len(d.ftypes) {
+                    ft := d.ftypes[j]
+                    k := 0
+                    while k < n {
+                        if k != di && done[k] == 0 && g_structdefs[k].name == ft {
+                            if d.cstruct == 0 || g_structdefs[k].cstruct == 1 { ready = 0 }
+                        }
+                        k = k + 1
+                    }
+                    j = j + 1
+                }
+                if ready == 1 { done[di] = 1  ord = append(ord, di)  remaining = remaining - 1  progressed = 1 }
+            }
+            si = si + 1
+        }
+        if progressed == 0 {
+            si = 0
+            while si < len(seq) {
+                di := seq[si]
+                if done[di] == 0 { done[di] = 1  ord = append(ord, di)  remaining = remaining - 1 }
+                si = si + 1
+            }
+        }
+    }
+}
+
+// cstruct_type_order: indices of the cstruct defs in dependency order —
+// mirrors Go's orderCStructs (#650): a nested cstruct field's mfl_from_/mfl_to_
+// converters must be defined before the parent's (they are static).
+func cstruct_type_order() (ord) {
+    ord = []int{}
+    n := len(g_structdefs)
+    done := []int{}
+    i := 0
+    for i < n { done = append(done, 0)  i = i + 1 }
+    total := 0
+    i = 0
+    while i < n { if g_structdefs[i].cstruct == 1 { total = total + 1 }  i = i + 1 }
+    remaining := total
+    while remaining > 0 {
+        progressed := 0
+        i = 0
+        while i < n {
+            if g_structdefs[i].cstruct == 1 && done[i] == 0 {
+                d := g_structdefs[i]
+                ready := 1
+                j := 0
+                while j < len(d.ftypes) {
+                    ft := d.ftypes[j]
+                    k := 0
+                    while k < n {
+                        if k != i && done[k] == 0 && g_structdefs[k].cstruct == 1 && g_structdefs[k].name == ft { ready = 0 }
+                        k = k + 1
+                    }
+                    j = j + 1
+                }
+                if ready == 1 { done[i] = 1  ord = append(ord, i)  remaining = remaining - 1  progressed = 1 }
+            }
+            i = i + 1
+        }
+        if progressed == 0 {
+            i = 0
+            while i < n {
+                if g_structdefs[i].cstruct == 1 && done[i] == 0 { done[i] = 1  ord = append(ord, i)  remaining = remaining - 1 }
+                i = i + 1
+            }
+        }
+    }
 }
 
 // cg_cstruct_typedef: the mfl_<Name> struct for a cstruct (opaque -> one _c field).
@@ -104,10 +193,11 @@ func cg_cstruct_typedef(di) {
     cemit(line + " } mfl_" + d.name + ";\n")
 }
 
-// cg_ffi_marshaling: mfl_from_<N> / mfl_to_<N> for each cstruct.
+// cg_ffi_marshaling: mfl_from_<N> / mfl_to_<N> for each cstruct, in
+// cstruct_type_order (nested cstructs before their parents — #650).
 func cg_ffi_marshaling() {
-    for _, d := range g_structdefs {
-        if d.cstruct == 0 { continue }
+    for _, di := range cstruct_type_order() {
+        d := g_structdefs[di]
         nm := d.name
         if len(d.fnames) == 0 {
             cemit("static mfl_" + nm + " mfl_from_" + nm + "(" + nm + " c) { return (mfl_" + nm + "){ ._c = c }; }\n")

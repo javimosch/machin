@@ -1607,6 +1607,40 @@ func TestNestedCStruct(t *testing.T) {
 	}
 }
 
+// #650: a user struct holding an extern cstruct must emit the cstruct's mfl_
+// typedef first — p.Types lists user types before synthesized cstructs, so
+// declaration order alone produced `mfl_Theme{ mfl_Color f_bg }` before
+// `mfl_Color` existed (check passed, cc failed). Same hazard one level down:
+// a cstruct nesting a later-declared cstruct needs the inner converters
+// defined first. Assert the emitted order directly.
+func TestCStructTypedefOrder(t *testing.T) {
+	src := []string{
+		`extern "g" { header "g.h" cstruct Outer { i Inner } cstruct Inner { v i32 } cstruct Color { r u8 g u8 b u8 a u8 } fn Use(Outer) }`,
+		`type Wrap struct { o Outer  c Color }`,
+		`type Theme struct { bg Color }`,
+		`func main() { w := Wrap{}  t := Theme{}  println(str(w.o.i.v) + " " + str(t.bg.r)) }`,
+	}
+	prog, err := ParseProgram(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := CompileToC(prog, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := func(a, b string) {
+		t.Helper()
+		ia, ib := strings.Index(c, a), strings.Index(c, b)
+		if ia < 0 || ib < 0 || ia > ib {
+			t.Fatalf("typedef order: %q (at %d) must precede %q (at %d)", a, ia, b, ib)
+		}
+	}
+	before("} mfl_Inner;", "mfl_Inner f_i;")   // nested cstruct typedef
+	before("} mfl_Color;", "mfl_Color f_bg;")  // user struct -> cstruct field
+	before("} mfl_Outer;", "mfl_Outer f_o;")   // user struct -> cstruct field
+	before("mfl_from_Inner(", "mfl_from_Outer(") // converter order
+}
+
 // Issue #552: a narrow cstruct field (u8/u16/i32/...) silently truncates at the
 // FFI boundary while the MFL-side value keeps the full int64 — reading the
 // field back does not reveal it. Under --safe, mfl_to_<Struct> must instead

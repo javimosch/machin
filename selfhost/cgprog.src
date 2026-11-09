@@ -160,16 +160,25 @@ func cg_program() {
     // 0. extern (FFI) declarations: #include headers or raw cstruct typedefs + prototypes
     cg_extern_decls()
     // 1. struct typedefs — declared `type` structs and cstructs (mfl_ form), in
-    //    declaration order (g_structdefs = types then cstructs, matching p.Types).
-    for _, d := range g_structdefs {
+    //    DEPENDENCY order matching Go's orderStructTypes (#650): a field whose
+    //    type names another struct must see that struct's mfl_ typedef first.
+    //    g_structdefs interleaves by source line, so struct_type_order scans
+    //    user types then cstructs — the same sequence as p.Types.
+    sorder := struct_type_order()
+    oi := 0
+    for oi < len(sorder) {
+        di := sorder[oi]
+        d := g_structdefs[di]
         if d.cstruct == 0 {
             line := "typedef struct {"
             j := 0
             for j < len(d.fnames) { line = line + " " + ctype_name(d.ftypes[j]) + " f_" + d.fnames[j] + ";"  j = j + 1 }
             cemit(line + " } mfl_" + d.name + ";\n")
+        } else {
+            cg_cstruct_typedef(di)
         }
+        oi = oi + 1
     }
-    cg_cstruct_typedefs()
     // 2. FFI marshaling (mfl_from_/mfl_to_ per cstruct)
     cg_ffi_marshaling()
     // 3. closure environment (#308 Phase 2) + multi-return result structs, per instance.

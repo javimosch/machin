@@ -93,24 +93,115 @@ func cTypeName(t string) string {
 	return "mfl_" + t
 }
 
+// orderStructTypes returns types sorted so every struct-typed field's target
+// typedef is emitted before its user. p.Types lists user `type` decls before
+// the cstruct TypeDecls the parser synthesizes, so plain declaration order
+// emits e.g. a user struct holding a cstruct before that cstruct's mfl_
+// typedef exists — a hard cc error that `machin check` cannot see (#650).
+// Repeated-scan topological order (deps first, declaration order otherwise);
+// a by-value cycle is not expressible in C anyway, so leftovers emit as-is.
+// The selfhost compiler mirrors this exact scan in struct_type_order().
+func orderStructTypes(types []*TypeDecl) []*TypeDecl {
+	index := make(map[string]int, len(types))
+	for i, td := range types {
+		index[td.Name] = i
+	}
+	done := make([]bool, len(types))
+	out := make([]*TypeDecl, 0, len(types))
+	for remaining := len(types); remaining > 0; {
+		progressed := false
+		for i, td := range types {
+			if done[i] {
+				continue
+			}
+			ready := true
+			for _, f := range td.Fields {
+				if dep, ok := index[f.Type]; ok && dep != i && !done[dep] {
+					ready = false
+					break
+				}
+			}
+			if ready {
+				done[i] = true
+				out = append(out, td)
+				remaining--
+				progressed = true
+			}
+		}
+		if !progressed { // dependency cycle: emit the rest in declaration order
+			for i, td := range types {
+				if !done[i] {
+					done[i] = true
+					out = append(out, td)
+				}
+			}
+		}
+	}
+	return out
+}
+
+// orderCStructs applies the same dependency ordering to cstructs for their
+// mfl_from_/mfl_to_ converters: a nested cstruct field calls the inner
+// struct's converters, which must already be defined (they are static).
+func orderCStructs(css []ExternStruct, names map[string]bool) []ExternStruct {
+	index := make(map[string]int, len(css))
+	for i := range css {
+		index[css[i].Name] = i
+	}
+	done := make([]bool, len(css))
+	out := make([]ExternStruct, 0, len(css))
+	for remaining := len(css); remaining > 0; {
+		progressed := false
+		for i := range css {
+			if done[i] {
+				continue
+			}
+			ready := true
+			for _, f := range css[i].Fields {
+				if names[f.CType] {
+					if dep, ok := index[f.CType]; ok && dep != i && !done[dep] {
+						ready = false
+						break
+					}
+				}
+			}
+			if ready {
+				done[i] = true
+				out = append(out, css[i])
+				remaining--
+				progressed = true
+			}
+		}
+		if !progressed {
+			for i := range css {
+				if !done[i] {
+					done[i] = true
+					out = append(out, css[i])
+				}
+			}
+		}
+	}
+	return out
+}
+
 type cgen struct {
 	c            *Checker
 	buf          strings.Builder // function bodies
 	tramp        strings.Builder // goroutine trampolines
 	goID         int
-	jsonFns      strings.Builder      // generated per-type JSON serializers + parsers
-	unaliased    map[string]bool      // "inst\x00var" -> append may grow in place (#578)
-	cover        bool                 // emit function-entry coverage counters (#589)
-	covIdx       map[string]int       // source function name -> counter slot
-	covNames     []string             // counter slot -> source function name
-	covStmt      map[Stmt]int         // statement -> counter slot (#589 stage B2)
-	covStmtOwner []string             // statement slot -> owning source function name
-	sortFns      strings.Builder      // generated per-element-type sort_by comparators (#580)
-	sortMemo     map[string]string    // element C type -> comparator function name
+	jsonFns      strings.Builder   // generated per-type JSON serializers + parsers
+	unaliased    map[string]bool   // "inst\x00var" -> append may grow in place (#578)
+	cover        bool              // emit function-entry coverage counters (#589)
+	covIdx       map[string]int    // source function name -> counter slot
+	covNames     []string          // counter slot -> source function name
+	covStmt      map[Stmt]int      // statement -> counter slot (#589 stage B2)
+	covStmtOwner []string          // statement slot -> owning source function name
+	sortFns      strings.Builder   // generated per-element-type sort_by comparators (#580)
+	sortMemo     map[string]string // element C type -> comparator function name
 	sortID       int
-	copyFns      strings.Builder      // generated per-type deep copiers (#639)
-	copyProtos   strings.Builder      // ...and their prototypes, for recursive types
-	copyMemo     map[string]string    // type string -> deep-copy function name
+	copyFns      strings.Builder   // generated per-type deep copiers (#639)
+	copyProtos   strings.Builder   // ...and their prototypes, for recursive types
+	copyMemo     map[string]string // type string -> deep-copy function name
 	copyID       int
 	jsonMemo     map[string]string    // type string -> serializer function name
 	parseMemo    map[string]string    // type string -> parser function name
@@ -6650,8 +6741,12 @@ func (g *cgen) program(p *Program) (string, error) {
 			fmt.Fprintf(&out, "%sextern %s %s(%s);\n", attr, externCType(ef.Ret), ef.Name, ps)
 		}
 	}
-	// struct typedefs, in declaration order (a struct may reference earlier ones)
-	for _, td := range p.Types {
+	// struct typedefs in dependency order: a struct field whose type names
+	// another declared struct needs that struct's mfl_ typedef first. p.Types
+	// lists user `type` decls before the cstruct TypeDecls the parser
+	// synthesizes, so declaration order alone emits user→cstruct fields (and
+	// forward cstruct→cstruct fields) before their target typedef — #650.
+	for _, td := range orderStructTypes(p.Types) {
 		if td.COpaque != "" {
 			// an opaque FFI handle: wrap the real C type by value in one hidden field
 			fmt.Fprintf(&out, "typedef struct { %s _c; } mfl_%s;\n", td.COpaque, td.Name)
@@ -6672,41 +6767,43 @@ func (g *cgen) program(p *Program) (string, error) {
 			cstructNames[cs.Name] = true
 		}
 	}
+	var allCStructs []ExternStruct
 	for _, ed := range p.Externs {
-		for _, cs := range ed.Structs {
-			if cs.Opaque {
-				// copy the whole C struct in/out of the one-field MFL wrapper
-				fmt.Fprintf(&out, "static mfl_%s mfl_from_%s(%s c) { return (mfl_%s){ ._c = c }; }\n", cs.Name, cs.Name, cs.Name, cs.Name)
-				fmt.Fprintf(&out, "static %s mfl_to_%s(mfl_%s m) { return m._c; }\n", cs.Name, cs.Name, cs.Name)
-				continue
-			}
-			fmt.Fprintf(&out, "static mfl_%s mfl_from_%s(%s c) { return (mfl_%s){", cs.Name, cs.Name, cs.Name, cs.Name)
-			for _, f := range cs.Fields {
-				if cstructNames[f.CType] {
-					fmt.Fprintf(&out, " .f_%s = mfl_from_%s(c.%s),", f.Name, f.CType, f.Name)
-				} else if f.CType == "ptr" {
-					fmt.Fprintf(&out, " .f_%s = (int64_t)(intptr_t)c.%s,", f.Name, f.Name)
-				} else {
-					fmt.Fprintf(&out, " .f_%s = c.%s,", f.Name, f.Name)
-				}
-			}
-			out.WriteString(" }; }\n")
-			fmt.Fprintf(&out, "static %s mfl_to_%s(mfl_%s m) { return (%s){", cs.Name, cs.Name, cs.Name, cs.Name)
-			for _, f := range cs.Fields {
-				if cstructNames[f.CType] {
-					fmt.Fprintf(&out, " .%s = mfl_to_%s(m.f_%s),", f.Name, f.CType, f.Name)
-				} else if f.CType == "ptr" {
-					// a pointer field: MFL holds it as an int; void* converts to the
-					// real C field type (float*, unsigned char*, ...).
-					fmt.Fprintf(&out, " .%s = (void*)(intptr_t)m.f_%s,", f.Name, f.Name)
-				} else if lo, hi, isNarrow := narrowRange(f.CType); isNarrow && g.safe {
-					fmt.Fprintf(&out, " .%s = (%s)mfl_narrow(m.f_%s, %d, %d, \"%s field '%s'\"),", f.Name, ffiCType(f.CType), f.Name, lo, hi, f.CType, f.Name)
-				} else {
-					fmt.Fprintf(&out, " .%s = (%s)m.f_%s,", f.Name, ffiCType(f.CType), f.Name)
-				}
-			}
-			out.WriteString(" }; }\n")
+		allCStructs = append(allCStructs, ed.Structs...)
+	}
+	for _, cs := range orderCStructs(allCStructs, cstructNames) {
+		if cs.Opaque {
+			// copy the whole C struct in/out of the one-field MFL wrapper
+			fmt.Fprintf(&out, "static mfl_%s mfl_from_%s(%s c) { return (mfl_%s){ ._c = c }; }\n", cs.Name, cs.Name, cs.Name, cs.Name)
+			fmt.Fprintf(&out, "static %s mfl_to_%s(mfl_%s m) { return m._c; }\n", cs.Name, cs.Name, cs.Name)
+			continue
 		}
+		fmt.Fprintf(&out, "static mfl_%s mfl_from_%s(%s c) { return (mfl_%s){", cs.Name, cs.Name, cs.Name, cs.Name)
+		for _, f := range cs.Fields {
+			if cstructNames[f.CType] {
+				fmt.Fprintf(&out, " .f_%s = mfl_from_%s(c.%s),", f.Name, f.CType, f.Name)
+			} else if f.CType == "ptr" {
+				fmt.Fprintf(&out, " .f_%s = (int64_t)(intptr_t)c.%s,", f.Name, f.Name)
+			} else {
+				fmt.Fprintf(&out, " .f_%s = c.%s,", f.Name, f.Name)
+			}
+		}
+		out.WriteString(" }; }\n")
+		fmt.Fprintf(&out, "static %s mfl_to_%s(mfl_%s m) { return (%s){", cs.Name, cs.Name, cs.Name, cs.Name)
+		for _, f := range cs.Fields {
+			if cstructNames[f.CType] {
+				fmt.Fprintf(&out, " .%s = mfl_to_%s(m.f_%s),", f.Name, f.CType, f.Name)
+			} else if f.CType == "ptr" {
+				// a pointer field: MFL holds it as an int; void* converts to the
+				// real C field type (float*, unsigned char*, ...).
+				fmt.Fprintf(&out, " .%s = (void*)(intptr_t)m.f_%s,", f.Name, f.Name)
+			} else if lo, hi, isNarrow := narrowRange(f.CType); isNarrow && g.safe {
+				fmt.Fprintf(&out, " .%s = (%s)mfl_narrow(m.f_%s, %d, %d, \"%s field '%s'\"),", f.Name, ffiCType(f.CType), f.Name, lo, hi, f.CType, f.Name)
+			} else {
+				fmt.Fprintf(&out, " .%s = (%s)m.f_%s,", f.Name, ffiCType(f.CType), f.Name)
+			}
+		}
+		out.WriteString(" }; }\n")
 	}
 	// closure environment + multi-return result structs (one per instance)
 	for _, inst := range g.c.Reps() {
