@@ -290,6 +290,41 @@ func main() {
 EOF
 run "$T/h14.src"
 
+# h21 — #648: stores into package globals promote arena-backed payload into the
+# main arena (string offsets, JSON round-trip for slice/map, struct fields,
+# index/field assign roots).
+cat > "$T/h21.src" <<'EOF'
+type Cfg struct { n int  tag string }
+var gname = ""
+var glabel = ""
+var goflags = []string{}
+var gnotes = make(map[string]string)
+var gcfg = Cfg{n: 0, tag: ""}
+func writer(done) {
+    part := "world"
+    gname = "hello-" + part
+    gname, glabel = "m-" + part, "n-" + part
+    goflags = []string{"a" + part, "b" + part}
+    gnotes["k"] = "v-" + part
+    gcfg = Cfg{n: 7, tag: "t-" + part}
+    gcfg.tag = "u-" + part
+    goflags[0] = "z" + part
+    done <- 1
+}
+func main() {
+    done := make(chan int)
+    go writer(done)
+    <-done
+    sleep(30)
+    println(gname)
+    println(glabel)
+    println(goflags[0] + " " + goflags[1])
+    println(gnotes["k"])
+    println(str(gcfg.n) + " " + gcfg.tag)
+}
+EOF
+run "$T/h21.src"
+
 # h15 — make([]T, n[, cap]) slice allocation (#678: was a selfhost parse gap).
 cat > "$T/h15.src" <<'EOF'
 func main() {

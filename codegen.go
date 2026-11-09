@@ -190,6 +190,7 @@ type cgen struct {
 	tramp        strings.Builder // goroutine trampolines
 	goID         int
 	jsonFns      strings.Builder   // generated per-type JSON serializers + parsers
+	jsonProtos   strings.Builder   // JSON ser/deser prototypes (emitted before bodies)
 	unaliased    map[string]bool   // "inst\x00var" -> append may grow in place (#578)
 	cover        bool              // emit function-entry coverage counters (#589)
 	covIdx       map[string]int    // source function name -> counter slot
@@ -736,6 +737,27 @@ static void mfl_thaw_strs(int nstr, int* stroff, void* elem) {
 }
 static void mfl_chan_freeze(mfl_chan* c, void* elem) { mfl_freeze_strs(c->nstr, c->stroff, elem); }
 static void mfl_chan_thaw(mfl_chan* c, void* elem) { mfl_thaw_strs(c->nstr, c->stroff, elem); }
+/* promote_strs: copy each string/bytes field (at the given offsets) into the
+   MAIN arena, leaving the source value's pointers replaced with the copies.
+   Used when a value is stored into package-global storage from a scoped or
+   goroutine arena, whose reclamation would otherwise leave the global
+   dangling (#648). A no-op on the main arena itself, so ordinary stores pay
+   one comparison. */
+static void mfl_promote_strs(int nstr, int* stroff, void* elem) {
+    if (!mfl_arena_cur || mfl_arena_cur == &mfl_main_arena) return;
+    mfl_arena* cur = mfl_arena_cur;
+    mfl_arena_cur = &mfl_main_arena;
+    for (int i = 0; i < nstr; i++) {
+        if (stroff[i] < 0) { /* bytes field: -(1+offset); copy len bytes, not strlen */
+            mfl_bytes* b = (mfl_bytes*)((char*)elem + (-stroff[i] - 1));
+            if (b->data && b->len > 0) { uint8_t* a = (uint8_t*)mfl_alloc((size_t)b->len); memcpy(a, b->data, (size_t)b->len); b->data = a; }
+            continue;
+        }
+        char** p = (char**)((char*)elem + stroff[i]);
+        if (*p) { size_t n = strlen(*p) + 1; char* a = (char*)mfl_alloc(n); memcpy(a, *p, n); *p = a; }
+    }
+    mfl_arena_cur = cur;
+}
 /* record/replay hooks (defined below, before mfl_chan_send). */
 static void mfl_rr_enter(void); static void mfl_rr_mark(void); static void mfl_rr_exit(void);
 /* close a channel: receivers drain the buffer then get "not ok". Wakes every
@@ -6849,8 +6871,10 @@ func (g *cgen) program(p *Program) (string, error) {
 	if len(p.Types) > 0 {
 		out.WriteByte('\n')
 	}
-	// JSON serializers (generated on demand by json()); reference struct typedefs
+	// JSON serializers (generated on demand by json()); reference struct typedefs.
+	// Prototypes first: recursive types' serializers reference each other.
 	if g.jsonFns.Len() > 0 {
+		out.WriteString(g.jsonProtos.String())
 		out.WriteString(g.jsonFns.String())
 		out.WriteByte('\n')
 	}
@@ -7215,7 +7239,17 @@ func (g *cgen) stmt(s Stmt, depth int) error {
 			g.buf.WriteString("(void)(" + e + ");\n")
 			return nil
 		}
-		fmt.Fprintf(&g.buf, "%s = %s;\n", g.varRef(st.Name), e)
+		ref := g.varRef(st.Name)
+		if ref == "mfl_g_"+st.Name {
+			// storing into package-global storage: keep arena-backed payload
+			// alive past the assigning goroutine/arena block (#648)
+			var err error
+			e, err = g.promoteGlobal(g.c.typeStringSlot(g.c.globalSlot[st.Name]), e)
+			if err != nil {
+				return err
+			}
+		}
+		fmt.Fprintf(&g.buf, "%s = %s;\n", ref, e)
 		g.emitProbe(st.Name, g.c.NodeKind(g.curFn, st.Val), depth)
 	case *ReturnStmt:
 		if len(st.Vals) == 0 {
@@ -7294,6 +7328,10 @@ func (g *cgen) stmt(s Stmt, depth int) error {
 		if err != nil {
 			return err
 		}
+		val, err = g.promoteIntoGlobal(st.Target.X, st.Val, val)
+		if err != nil {
+			return err
+		}
 		if g.c.NodeKind(g.curFn, st.Target.X) == KMap {
 			ik, sk := g.mapKeyArgs(st.Target.X, idx)
 			vt := g.c.MapValCType(g.curFn, st.Target.X)
@@ -7307,6 +7345,10 @@ func (g *cgen) stmt(s Stmt, depth int) error {
 			return err
 		}
 		val, err := g.expr(st.Val)
+		if err != nil {
+			return err
+		}
+		val, err = g.promoteIntoGlobal(st.Target.X, st.Val, val)
 		if err != nil {
 			return err
 		}
@@ -7507,12 +7549,23 @@ func (g *cgen) selectStmt(st *SelectStmt, depth int) error {
 }
 
 func (g *cgen) multiAssign(st *MultiAssign, depth int) error {
-	assign := func(name, val string) {
+	assign := func(name, val string) error {
 		if name == "_" {
-			return
+			return nil
+		}
+		ref := g.varRef(name)
+		if ref == "mfl_g_"+name {
+			// storing into package-global storage: keep arena-backed payload
+			// alive past the assigning goroutine/arena block (#648)
+			var err error
+			val, err = g.promoteGlobal(g.c.typeStringSlot(g.c.globalSlot[name]), val)
+			if err != nil {
+				return err
+			}
 		}
 		indentC(&g.buf, depth+1)
-		fmt.Fprintf(&g.buf, "%s = %s;\n", g.varRef(name), val)
+		fmt.Fprintf(&g.buf, "%s = %s;\n", ref, val)
+		return nil
 	}
 
 	if len(st.Rhs) == 1 {
@@ -7530,8 +7583,12 @@ func (g *cgen) multiAssign(st *MultiAssign, depth int) error {
 			fmt.Fprintf(&g.buf, "%s _rv%d; int _rok%d = mfl_chan_recv2(%s, &_rv%d);\n", et, id, id, ch, id)
 			indentC(&g.buf, depth+1)
 			fmt.Fprintf(&g.buf, "if (!_rok%d) memset(&_rv%d, 0, sizeof(_rv%d));\n", id, id, id)
-			assign(st.Names[0], fmt.Sprintf("_rv%d", id))
-			assign(st.Names[1], fmt.Sprintf("_rok%d", id))
+			if err := assign(st.Names[0], fmt.Sprintf("_rv%d", id)); err != nil {
+				return err
+			}
+			if err := assign(st.Names[1], fmt.Sprintf("_rok%d", id)); err != nil {
+				return err
+			}
 			indentC(&g.buf, depth)
 			g.buf.WriteString("}\n")
 			return nil
@@ -7560,7 +7617,9 @@ func (g *cgen) multiAssign(st *MultiAssign, depth int) error {
 				indentC(&g.buf, depth+1)
 				fmt.Fprintf(&g.buf, "%s _t%d = %s(%s);\n", ctype, id, cfn, strings.Join(args, ", "))
 				for i, name := range st.Names {
-					assign(name, fmt.Sprintf("_t%d.%s", id, fields[i]))
+					if err := assign(name, fmt.Sprintf("_t%d.%s", id, fields[i])); err != nil {
+						return err
+					}
 				}
 				indentC(&g.buf, depth)
 				g.buf.WriteString("}\n")
@@ -7584,7 +7643,9 @@ func (g *cgen) multiAssign(st *MultiAssign, depth int) error {
 			indentC(&g.buf, depth+1)
 			fmt.Fprintf(&g.buf, "%s_ret _t%d = %s(%s);\n", cn, id, cn, strings.Join(args, ", "))
 			for i, name := range st.Names {
-				assign(name, fmt.Sprintf("_t%d.r%d", id, i))
+				if err := assign(name, fmt.Sprintf("_t%d.r%d", id, i)); err != nil {
+					return err
+				}
 			}
 			indentC(&g.buf, depth)
 			g.buf.WriteString("}\n")
@@ -7595,7 +7656,15 @@ func (g *cgen) multiAssign(st *MultiAssign, depth int) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(&g.buf, "%s = %s;\n", g.varRef(st.Names[0]), e)
+		ref := g.varRef(st.Names[0])
+		if ref == "mfl_g_"+st.Names[0] {
+			var perr error
+			e, perr = g.promoteGlobal(g.c.typeStringSlot(g.c.globalSlot[st.Names[0]]), e)
+			if perr != nil {
+				return perr
+			}
+		}
+		fmt.Fprintf(&g.buf, "%s = %s;\n", ref, e)
 		return nil
 	}
 
@@ -7612,7 +7681,9 @@ func (g *cgen) multiAssign(st *MultiAssign, depth int) error {
 		fmt.Fprintf(&g.buf, "%s _t%d_%d = %s;\n", g.c.NodeCType(g.curFn, e), id, i, ce)
 	}
 	for i, name := range st.Names {
-		assign(name, fmt.Sprintf("_t%d_%d", id, i))
+		if err := assign(name, fmt.Sprintf("_t%d_%d", id, i)); err != nil {
+			return err
+		}
 	}
 	indentC(&g.buf, depth)
 	g.buf.WriteString("}\n")
@@ -8484,6 +8555,84 @@ func (g *cgen) chanNeedsJSON(typeStr string) bool {
 	return false
 }
 
+// promoteGlobal wraps a value stored into package-global storage so any
+// arena-backed payload is copied into the MAIN arena first (#648). Globals are
+// C statics that outlive every goroutine and arena { } block; without this, a
+// goroutine assigning a runtime-built string/slice/map/struct leaves the
+// global pointing into the child's arena, which mfl_go_run_* frees at exit —
+// a use-after-free. Scalars and channels carry no arena payload by value and
+// pass through unchanged, as does anything assigned on the main arena (the
+// emitted check is one comparison). String-bearing values use the same
+// offset table as channel freeze/thaw; slice/map values go through the JSON
+// round-trip with the arena switched to mfl_main_arena for the parse, which
+// also lands map entries in malloc (m->ar == 0) so later goroutine writes
+// stay stable.
+func (g *cgen) promoteGlobal(typeStr, e string) (string, error) {
+	if typeStr == "" {
+		return e, nil
+	}
+	if g.chanNeedsJSON(typeStr) {
+		ser, err := g.jsonSerializer(typeStr)
+		if err != nil {
+			return "", err
+		}
+		des, err := g.jsonParser(typeStr)
+		if err != nil {
+			return "", err
+		}
+		id := g.tmpID
+		g.tmpID++
+		ids := fmt.Sprint(id)
+		return fmt.Sprintf("({ %s _pg%s = %s; if (mfl_arena_cur != NULL && mfl_arena_cur != &mfl_main_arena) { char* _pj%s = %s(_pg%s); const char* _pp%s = _pj%s; mfl_arena* _pa%s = mfl_arena_cur; mfl_arena_cur = &mfl_main_arena; _pg%s = %s(&_pp%s); mfl_arena_cur = _pa%s; } _pg%s; })",
+			cTypeName(typeStr), ids, e,
+			ids, ser, ids,
+			ids, ids, ids,
+			ids, des, ids,
+			ids, ids), nil
+	}
+	offs := g.chanStrOffsets(typeStr, "")
+	if len(offs) == 0 {
+		return e, nil
+	}
+	id := g.tmpID
+	g.tmpID++
+	ids := fmt.Sprint(id)
+	return fmt.Sprintf("({ %s _pg%s = %s; mfl_promote_strs(%d, (int[]){%s}, &_pg%s); _pg%s; })",
+		cTypeName(typeStr), ids, e, len(offs), strings.Join(offs, ", "), ids, ids), nil
+}
+
+// promoteIntoGlobal applies promoteGlobal when the store's container
+// expression is rooted at a package global (#648): the value lands in
+// global-reachable storage, so its arena-backed payload must outlive the
+// current goroutine/arena block. Returns val unchanged for local targets.
+func (g *cgen) promoteIntoGlobal(target Expr, valExpr Expr, val string) (string, error) {
+	name, ok := globalRootName(target)
+	if !ok || g.c.IsLocal(g.curFn, name) {
+		return val, nil
+	}
+	if _, isG := g.c.globalSlot[name]; !isG {
+		return val, nil
+	}
+	return g.promoteGlobal(g.c.TypeString(g.curFn, valExpr), val)
+}
+
+// globalRootName peels an assignment target's container expression (index,
+// field, slice) down to its base identifier, reporting the name when the
+// store lands inside package-global storage (#648).
+func globalRootName(e Expr) (string, bool) {
+	switch n := e.(type) {
+	case *Ident:
+		return n.Name, true
+	case *Index:
+		return globalRootName(n.X)
+	case *FieldAccess:
+		return globalRootName(n.X)
+	case *SliceExpr:
+		return globalRootName(n.X)
+	}
+	return "", false
+}
+
 // chanJSONFns emits (once per type) the serialize/parse wrappers a JSON-mode
 // channel calls, returning their names. The wrappers adapt the generated
 // per-type JSON serializer/parser to the channel's void* calling convention.
@@ -8668,6 +8817,10 @@ func (g *cgen) jsonSerializer(typeStr string) (string, error) {
 	g.jsonID++
 	g.jsonMemo[typeStr] = name // reserve before recursion
 	ct := cTypeName(typeStr)
+	// A PROTOTYPE, BECAUSE TYPES RECURSE: a struct with a []Self field makes
+	// the slice serializer reference the struct serializer reserved-but-not-yet
+	// emitted (same hazard copyProtos solves for deepCopier, #639).
+	fmt.Fprintf(&g.jsonProtos, "static char* %s(%s v);\n", name, ct)
 	var body string
 
 	switch {
@@ -8679,6 +8832,8 @@ func (g *cgen) jsonSerializer(typeStr string) (string, error) {
 		body = `return mfl_dup(v ? "true" : "false");`
 	case typeStr == "string":
 		body = "return mfl_json_str(v);"
+	case typeStr == "bytes":
+		body = "return mfl_json_str(mfl_base64_encode_bytes(v));"
 	case strings.HasPrefix(typeStr, "[]"):
 		elem := typeStr[2:]
 		es, err := g.jsonSerializer(elem)
@@ -8761,6 +8916,7 @@ func (g *cgen) jsonParser(typeStr string) (string, error) {
 	g.jsonID++
 	g.parseMemo[typeStr] = name
 	ct := cTypeName(typeStr)
+	fmt.Fprintf(&g.jsonProtos, "static %s %s(const char** p);\n", ct, name)
 	var body string
 
 	switch {
@@ -8772,6 +8928,8 @@ func (g *cgen) jsonParser(typeStr string) (string, error) {
 		body = "return mfl_js_bool(p);"
 	case typeStr == "string":
 		body = "return mfl_js_str(p);"
+	case typeStr == "bytes":
+		body = "return mfl_base64_decode_bytes(mfl_js_str(p));"
 	case strings.HasPrefix(typeStr, "[]"):
 		elem := typeStr[2:]
 		ep, err := g.jsonParser(elem)

@@ -2005,10 +2005,17 @@ func (c *Checker) genMultiAssign(fn *FuncDecl, st *MultiAssign) error {
 		}
 		slot, ok := env[n]
 		if !ok {
-			if st.Op == "=" {
-				return fmt.Errorf("assignment to undefined variable %q", n)
+			// `=` to a name that is a package global assigns the global (the
+			// same fallback the single-assign form has); `:=` always introduces
+			// a local, which may shadow a global.
+			if gs, isG := c.globalSlot[n]; isG && st.Op == "=" {
+				slot = gs
+			} else {
+				if st.Op == "=" {
+					return fmt.Errorf("assignment to undefined variable %q", n)
+				}
+				slot = c.newLocal(fn.Name, n)
 			}
-			slot = c.newLocal(fn.Name, n)
 		} else if st.Op == ":=" {
 			c.redeclared = append(c.redeclared, slot)
 		}

@@ -507,11 +507,16 @@ id(42); id("hi"); id(3.14)   // → three native functions
     a slice or map go through a JSON round-trip.) Fixed in v0.104.0 for `go`
     arguments — see #310; the argument, not just a later channel send of it, is
     now safe.
+  - **Package-global stores are promoted too:** assigning a `string`, slice,
+    map, struct, or `bytes` value to a `var` global — directly, through
+    multi-assign, or as an element/field of a global container — copies its
+    arena-backed payload into the main arena first, so the global stays valid
+    after the assigning goroutine (or `arena { }` block) ends. Scalars and
+    channels need no copy.
   - *Caveat:* a value allocated in one goroutine and shared with another by other
-    means (stored in a map outliving the sender, or captured by a closure that is
-    itself stored somewhere long-lived rather than passed directly to `go`) may
-    be reclaimed while still referenced. Keep such values in the receiver's
-    scope.
+    means (stored in a map or closure environment outliving the sender, rather
+    than a global, channel, or `go` argument) may be reclaimed while still
+    referenced. Keep such values in the receiver's scope.
 - A **scoped arena** block, `arena { ... }`, installs a fresh arena for the
   duration of the block and frees everything allocated inside it when the block
   ends. This bounds the memory of a *single* long-lived goroutine that allocates

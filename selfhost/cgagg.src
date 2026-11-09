@@ -52,6 +52,7 @@ func chan_needs_json(tn) (b) {
 func chan_str_offsets(tn, base) (offs) {
     offs = []string{}
     if tn == "string" { offs = append(offs, base + "0")  return offs }
+    if tn == "bytes" { offs = append(offs, "-(1 + (int)(" + base + "0))")  return offs }
     di := struct_def_idx(tn)
     if di < 0 { return offs }
     d := g_structdefs[di]
@@ -62,13 +63,58 @@ func chan_str_offsets(tn, base) (offs) {
         if d.ftypes[j] == "string" {
             offs = append(offs, fo)
         } else {
-            if struct_def_idx(d.ftypes[j]) >= 0 {
-                sub := chan_str_offsets(d.ftypes[j], fo + " + ")
-                k := 0
-                for k < len(sub) { offs = append(offs, sub[k])  k = k + 1 }
+            if d.ftypes[j] == "bytes" {
+                offs = append(offs, "-(1 + (int)(" + fo + "))")
+            } else {
+                if struct_def_idx(d.ftypes[j]) >= 0 {
+                    sub := chan_str_offsets(d.ftypes[j], fo + " + ")
+                    k := 0
+                    for k < len(sub) { offs = append(offs, sub[k])  k = k + 1 }
+                }
             }
         }
         j = j + 1
+    }
+}
+
+// cg_promote: port of codegen.go's promoteGlobal — wraps a value stored into
+// package-global storage so arena-backed payload is copied into the MAIN arena
+// (#648). Scalars/channels pass through; string-bearing values go through
+// mfl_promote_strs; slice/map (JSON-mode) types round-trip with the arena
+// switched to mfl_main_arena for the parse.
+func cg_promote(tn, e) (out) {
+    out = e
+    if tn == "" { return out }
+    if chan_needs_json(tn) == 1 {
+        ser := json_serializer(tn)
+        des := json_parser(tn)
+        id := g_tmpid
+        g_tmpid = g_tmpid + 1
+        ids := str(id)
+        out = "({ " + ctype_name(tn) + " _pg" + ids + " = " + e + "; if (mfl_arena_cur != NULL && mfl_arena_cur != &mfl_main_arena) { char* _pj" + ids + " = " + ser + "(_pg" + ids + "); const char* _pp" + ids + " = _pj" + ids + "; mfl_arena* _pa" + ids + " = mfl_arena_cur; mfl_arena_cur = &mfl_main_arena; _pg" + ids + " = " + des + "(&_pp" + ids + "); mfl_arena_cur = _pa" + ids + "; } _pg" + ids + "; })"
+        return out
+    }
+    offs := chan_str_offsets(tn, "")
+    if len(offs) == 0 { return out }
+    id := g_tmpid
+    g_tmpid = g_tmpid + 1
+    ids := str(id)
+    out = "({ " + ctype_name(tn) + " _pg" + ids + " = " + e + "; mfl_promote_strs(" + str(len(offs)) + ", (int[]){" + join(offs, ", ") + "}, &_pg" + ids + "); _pg" + ids + "; })"
+    return out
+}
+
+// global_root_name: peel index/field expr nodes down to a base K_ID, returning
+// its name — the store lands in global-reachable storage when that ident is a
+// package global (#648). Port of codegen.go's globalRootName.
+func global_root_name(idx) (nm, found) {
+    nm = ""
+    found = 0
+    n := nodes[idx]
+    if n.kind == K_ID { nm = n.s  found = 1  return nm, found }
+    if n.kind == K_INDEX || n.kind == K_FIELD {
+        rn, rfound := global_root_name(n.a)
+        nm = rn
+        found = rfound
     }
 }
 
@@ -83,7 +129,10 @@ var g_jsonfns = []string{}   // accumulated generated function text -- spliced e
                               // cg_program (with the struct typedefs), same two-pass
                               // idea as goroutine trampolines but at the reference's
                               // exact position, for byte-identical output.
+var g_jsonprotos = []string{}  // their prototypes, spliced before the bodies --
+                               // recursive types' serializers reference each other
 func jsonfn_emit(s) { g_jsonfns = append(g_jsonfns, s) }
+func jsonproto_emit(s) { g_jsonprotos = append(g_jsonprotos, s) }
 
 var g_jsonmemo_k = []string{}
 var g_jsonmemo_v = []string{}
@@ -121,11 +170,13 @@ func json_serializer(t) (name) {
     g_jsonid = g_jsonid + 1
     jsonmemo_set(t, name)
     ct := ctype_name(t)
+    jsonproto_emit("static char* " + name + "(" + ct + " v);\n")
     body := ""
     if t == "int" { body = "return mfl_str_i(v);" }
     if t == "float" { body = "return mfl_str_d(v);" }
     if t == "bool" { body = "return mfl_dup(v ? \"true\" : \"false\");" }
     if t == "string" { body = "return mfl_json_str(v);" }
+    if t == "bytes" { body = "return mfl_json_str(mfl_base64_encode_bytes(v));" }
     if body == "" && has_prefix(t, "[]") {
         elem := substr(t, 2, len(t))
         es := json_serializer(elem)
@@ -173,11 +224,13 @@ func json_parser(t) (name) {
     g_jsonid = g_jsonid + 1
     parsememo_set(t, name)
     ct := ctype_name(t)
+    jsonproto_emit("static " + ct + " " + name + "(const char** p);\n")
     body := ""
     if t == "int" { body = "return mfl_js_int(p);" }
     if t == "float" { body = "return mfl_js_float(p);" }
     if t == "bool" { body = "return mfl_js_bool(p);" }
     if t == "string" { body = "return mfl_js_str(p);" }
+    if t == "bytes" { body = "return mfl_base64_decode_bytes(mfl_js_str(p));" }
     if body == "" && has_prefix(t, "[]") {
         elem := substr(t, 2, len(t))
         ep := json_parser(elem)
@@ -420,6 +473,9 @@ func cg_index_assign(iid, idx, depth) {
     xs := cg_expr(iid, ixn.a)
     is := cg_expr(iid, ixn.b)
     val := cg_expr(iid, n.b)
+    // a store rooted at a package global lands in global-reachable storage:
+    // promote arena-backed payload into the main arena (#648)
+    if promote_needed(iid, ixn.a) == 1 { val = cg_promote(expr_type_name(iid, n.b), val) }
     if node_kind(iid, ixn.a) == 10 {
         ik, sk := map_key_args(iid, ixn.a, is)
         vt := map_val_ctype(iid, ixn.a)
@@ -435,7 +491,27 @@ func cg_field_assign(iid, idx) {
     fdn := nodes[n.a]
     xs := cg_expr(iid, fdn.a)
     val := cg_expr(iid, n.b)
+    if promote_needed(iid, fdn.a) == 1 { val = cg_promote(expr_type_name(iid, n.b), val) }
     cemit("(" + xs + ").f_" + fdn.s + " = " + val + ";\n")
+}
+
+// expr_type_name: the MFL type-name of expression node `idx` ("" when unknown).
+func expr_type_name(iid, idx) (tn) {
+    tn = ""
+    r := node_slot_of(iid, idx)
+    if r >= 0 { tn = type_string_slot(r) }
+}
+
+// promote_needed: is this store rooted at a package global (not shadowed by a
+// local)? target_idx is the container expr (index/field X).
+func promote_needed(iid, target_idx) (b) {
+    b = 0
+    nm, found := global_root_name(target_idx)
+    if found == 0 { return b }
+    _, gfound := global_lookup(nm)
+    if gfound == 0 { return b }
+    if is_local(iid, nm) == 1 { return b }
+    b = 1
 }
 
 func cg_range(iid, idx, depth) {
