@@ -278,6 +278,18 @@ func main() {
 EOF
 run "$T/h13.src"
 
+# h14 — sqlite_errmsg builtin: signature + mfl_sqlite_errmsg emit parity (#672).
+cat > "$T/h14.src" <<'EOF'
+func main() {
+    db := sqlite_open(":memory:")
+    r := sqlite_query(db, "SELECT 1")
+    e := sqlite_errmsg(db)
+    println(r + "|" + e)
+    sqlite_close(db)
+}
+EOF
+run "$T/h14.src"
+
 # SELF-APPLICATION: the MFL codegen emits byte-identical C for the compiler's OWN
 # source (checker + full codegen) — the fixpoint-adjacent milestone.
 $N "$MACHIN" encode selfhost/lex.src selfhost/parse.src selfhost/check.src \

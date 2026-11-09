@@ -3100,6 +3100,12 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 			return c.cString, nil
 		}
 		return c.cInt, nil
+	case "sqlite_errmsg":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("sqlite_errmsg: 1 arg (db int)")
+		}
+		c.addPair(argSlots[0], c.cInt)
+		return c.cString, nil
 	case "sqlite_close":
 		if len(argSlots) != 1 {
 			return 0, fmt.Errorf("sqlite_close: 1 arg (db int)")
