@@ -872,6 +872,31 @@ func TestChannelClose(t *testing.T) {
 	}
 }
 
+// #673: a goroutine must never receive its OWN queued send — the old queue
+// delivered it, so `ch <- 1; <-ch` in one goroutine (the keeper-lock idiom)
+// satisfied itself and spun at 100% CPU. A select recv now reports "not ready"
+// for a self-sent head node; after close() the drain still delivers it (close
+// preserves FIFO order and self-delivery no longer matters).
+func TestChannelNoSelfDelivery(t *testing.T) {
+	main := `func main() {
+	ch := make(chan int)
+	ch <- 5
+	select {
+	case v := <-ch:
+		println("self-delivered " + str(v))
+	default:
+		println("not ready")
+	}
+	close(ch)
+	v, ok := <-ch
+	println(str(v) + " " + str(ok))
+}`
+	out, _ := buildRun(t, main)
+	if out != "not ready\n5 true\n" {
+		t.Fatalf("no-self-delivery: got %q, want %q", out, "not ready\n5 true\n")
+	}
+}
+
 // flush() forces buffered stdout out; it compiles to fflush and is a no-op on
 // captured output (which sees everything anyway), so just assert it runs.
 func TestFlush(t *testing.T) {

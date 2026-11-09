@@ -588,7 +588,7 @@ static void mfl_sleep(int64_t ms) {
    Scalar elements need neither and are a plain memcpy. */
 static char* mfl_dup_arena(const char* s, size_t n); /* defined later in the runtime */
 typedef struct { uint8_t* data; int64_t len; } mfl_bytes;
-typedef struct mfl_cnode { struct mfl_cnode* next; void* data; } mfl_cnode;
+typedef struct mfl_cnode { struct mfl_cnode* next; void* data; const char* gid; } mfl_cnode;
 typedef struct {
     pthread_mutex_t mu; pthread_cond_t cnd;
     mfl_cnode *head, *tail; int64_t es; int closed;
@@ -880,9 +880,12 @@ static void mfl_panic(const char* msg) {
     exit(1);
 }
 
-/* runtime deadlock detector. machin channels are unbounded, so send never blocks — the
-   only blocking op is recv on an empty, open channel. A deadlock is every live goroutine
-   parked in such a recv, with no one left to send. Track live vs. blocked goroutines and,
+/* runtime deadlock detector. machin channels are unbounded queues — a send
+   never blocks — but a goroutine can never receive its OWN queued sends (#673),
+   so the only blocking op is a receive with no receivable node: an empty open
+   channel, or one whose head is the receiver's own send. A deadlock is every
+   live goroutine parked in such a receive, with no one left to send. Track
+   live vs. blocked goroutines and,
    the moment they meet, report + exit(2) instead of hanging forever. main is one live
    goroutine; a spawned goroutine is counted from its spawn site until its body returns. */
 static pthread_mutex_t mfl_dl_mu = PTHREAD_MUTEX_INITIALIZER;
@@ -1002,6 +1005,7 @@ static void mfl_dl_deadlock(void) {
 static void mfl_chan_send(mfl_chan* c, const void* v) {
     mfl_rr_enter();
     mfl_cnode* n = malloc(sizeof(mfl_cnode));
+    n->gid = mfl_gid_path;   /* sender id — receivers never take their own nodes (#673) */
     if (c->ser) {
         char* j = c->ser(v);                 /* arena JSON of the whole value */
         size_t L = strlen(j);
@@ -1020,6 +1024,15 @@ static void mfl_chan_send(mfl_chan* c, const void* v) {
     mfl_dl_note(); /* a send is channel progress — resets the deadlock watchdog */
     mfl_rr_exit();
 }
+/* a queued node is receivable by this goroutine iff it was sent by a DIFFERENT
+   goroutine (or the channel is closed and draining — post-close order is
+   preserved and self-delivery no longer matters). #673: without this, a send
+   followed by a receive in one goroutine satisfied itself and spun at 100% CPU —
+   the keeper-lock idiom turned into a busy loop. */
+static int mfl_chan_head_mine(mfl_chan* c) {
+    const char* me = mfl_gid_path ? mfl_gid_path : "0";
+    return c->head && c->head->gid && strcmp(c->head->gid, me) == 0;
+}
 /* deliver node n's payload into out (receiver arena), then free the node. */
 static void mfl_chan_deliver(mfl_chan* c, mfl_cnode* n, void* out) {
     if (c->des) {
@@ -1036,9 +1049,13 @@ static void mfl_chan_deliver(mfl_chan* c, mfl_cnode* n, void* out) {
 static int mfl_chan_recv2(mfl_chan* c, void* out) {
     mfl_rr_enter();
     pthread_mutex_lock(&c->mu);
-    if (!c->head && !c->closed) {
+    if (!c->closed && (!c->head || mfl_chan_head_mine(c))) {
+        /* empty, or the head node is this goroutine's own send — either way
+           there is nothing THIS goroutine may receive; park. A dequeue by
+           another receiver broadcasts below so we re-check the new head. */
         mfl_dl_block(c->id); /* about to park on an empty open channel */
-        while (!c->head && !c->closed) pthread_cond_wait(&c->cnd, &c->mu);
+        while (!c->closed && (!c->head || mfl_chan_head_mine(c)))
+            pthread_cond_wait(&c->cnd, &c->mu);
         mfl_dl_unblock();
     }
     mfl_cnode* n = c->head;
@@ -1048,6 +1065,7 @@ static int mfl_chan_recv2(mfl_chan* c, void* out) {
     if (!n) { mfl_rr_mark(); pthread_mutex_unlock(&c->mu); mfl_rr_exit(); return 0; }
     c->head = n->next;
     if (!c->head) c->tail = NULL;
+    pthread_cond_broadcast(&c->cnd);   /* head changed — wake receivers skipping own nodes */
     mfl_rr_mark();
     pthread_mutex_unlock(&c->mu);
     mfl_chan_deliver(c, n, out);
@@ -1063,7 +1081,11 @@ static void mfl_chan_recv(mfl_chan* c, void* out) {
 static int mfl_chan_tryrecv2(mfl_chan* c, void* out, int* ok) {
     pthread_mutex_lock(&c->mu);
     mfl_cnode* n = c->head;
-    if (n) { c->head = n->next; if (!c->head) c->tail = NULL; }
+    /* a select recv is not ready while the head node is this goroutine's own
+       send (#673) — same rule as the blocking recv, or select would deliver
+       self-sent values the blocking path refuses. */
+    if (n && !c->closed && mfl_chan_head_mine(c)) n = NULL;
+    if (n) { c->head = n->next; if (!c->head) c->tail = NULL; pthread_cond_broadcast(&c->cnd); }
     int closed = c->closed;
     /* a select recv that fires IS an ordered channel effect — mark it in schedule
        order (under c->mu, like mfl_chan_recv2) so a select-using program records a
@@ -1075,7 +1097,6 @@ static int mfl_chan_tryrecv2(mfl_chan* c, void* out, int* ok) {
     if (closed) { memset(out, 0, c->es); *ok = 0; return 1; }
     return 0;
 }
-
 /* maps: a chained hash table keyed by int64 or string, fixed-size values */
 typedef struct mfl_ment { struct mfl_ment* next; int64_t ik; char* sk; void* val; } mfl_ment;
 typedef struct { mfl_ment** buckets; int64_t nb, count, vs; int sk; int ar; } mfl_map;
