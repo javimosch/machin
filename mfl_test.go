@@ -1389,6 +1389,25 @@ func TestFileRawRoundtrip(t *testing.T) {
 	}
 }
 
+// #668: procfs/sysfs files report st_size 0 but yield bytes on read — read_file
+// and read_file_bytes must read to EOF, not trust the size. /proc is Linux-only;
+// skip elsewhere (the stat guard keeps this portable, no runtime import needed).
+func TestReadFileProcfs(t *testing.T) {
+	if _, err := os.Stat("/proc/self/status"); err != nil {
+		t.Skip("no procfs")
+	}
+	main := `func main() {
+	txt := read_file("/proc/self/status")
+	b := read_file_bytes("/proc/self/status")
+	println(str(len(txt)) + " " + str(len(b)))
+}`
+	out, _ := buildRun(t, main)
+	fields := strings.Fields(out)
+	if len(fields) != 2 || fields[0] != fields[1] || fields[0] == "0" {
+		t.Fatalf("procfs read: got %q, want two equal nonzero lengths", out)
+	}
+}
+
 func TestMatmulQ8Batch(t *testing.T) {
 	// matmul_q8_batch(ob,ostride,xq,xs,wq,ws,n,gs,B,lo,hi) must equal per-position dot_q8.
 	main := `func main() {
