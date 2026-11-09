@@ -81,6 +81,7 @@ func al_scan_expr(iid, idx) {
     k := n.kind
     if k == K_INT || k == K_FLOAT || k == K_STR || k == K_BOOL || k == K_NIL { return }
     if k == K_MAKECHAN || k == K_MAKEMAP { return }
+    if k == K_MAKESLICE { al_scan_expr(iid, n.a)  if n.b >= 0 { al_scan_expr(iid, n.b) }  return }
     if k == K_ID { al_disq(n.s)  return }
     if k == K_INDEX {
         // v[i] yields an ELEMENT. For a struct or nested-slice element that is a

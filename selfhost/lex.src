@@ -93,12 +93,37 @@ func lex(src, b) (toks) {
             }
             if done == false {
                 isf := false
+                // mantissa: digits and '.' (underscore separators deferred —
+                // parse_int/parse_float don't strip them, so lexing them would
+                // silently miscompile; they still fail loudly as separate tokens)
                 while pos < n {
                     d := byte_at(b, pos)
                     if is_digit(d) || d == 46 {
                         if d == 46 { isf = true }
                         pos = pos + 1
                     } else { break }
+                }
+                // optional exponent: e/E, optional sign, then digits — only
+                // consumed when a valid exponent follows (1e3 is a float,
+                // a trailing 'e' is left for the next token)
+                if pos < n {
+                    e := byte_at(b, pos)
+                    if e == 101 || e == 69 {
+                        j := pos + 1
+                        if j < n {
+                            sg := byte_at(b, j)
+                            if sg == 43 || sg == 45 { j = j + 1 }
+                        }
+                        if j < n {
+                            if is_digit(byte_at(b, j)) {
+                                isf = true
+                                pos = j
+                                while pos < n {
+                                    if is_digit(byte_at(b, pos)) { pos = pos + 1 } else { break }
+                                }
+                            }
+                        }
+                    }
                 }
                 k := 2
                 if isf { k = 3 }

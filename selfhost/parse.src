@@ -26,6 +26,7 @@ var K_SLICE = 13
 var K_STRUCT = 14
 var K_MAKECHAN = 15
 var K_MAKEMAP = 16
+var K_MAKESLICE = 41
 var K_RECV = 17
 var K_FUNCLIT = 18
 // statements
@@ -133,15 +134,39 @@ func prec(op) (p) {
 
 func parse_expr() (idx) { idx = parse_binary(1) }
 
-func parse_binary(minp) (idx) {
+// parse_expr_for_stmt: parseExpr for the ONE context where a trailing `<-` must
+// NOT be reinterpreted as `<` + unary `-` — the leading expression of a simple
+// statement (which may be the channel of a send `ch <- v`) and a select send
+// case's channel. Port of parser.go parseExprForStmt (issue #208).
+func parse_expr_for_stmt() (idx) {
     left := parse_unary()
+    if pk().val == "<-" { idx = left  return idx }
+    idx = parse_binary_from(left, 1)
+}
+
+func parse_binary(minp) (idx) { idx = parse_binary_from(parse_unary(), minp) }
+
+func parse_binary_from(left, minp) (idx) {
     while true {
         t := pk()
         if t.kind != 6 { break }
+        if t.val == "<-" {
+            // "<-" lexed as one token is ambiguous: in operator position it can
+            // only be `<` + unary `-` on the next operand (a channel send's `<-`
+            // is consumed by the statement parser before reaching here). Port of
+            // parser.go issue-#208 handling.
+            if 4 < minp { break }
+            adv()
+            operand := parse_unary()
+            neg := emit(Node{kind: K_UNARY, s: "-", a: operand})
+            right := parse_binary_from(neg, 5)
+            left = emit(Node{kind: K_BIN, s: "<", a: left, b: right})
+            continue
+        }
         pr := prec(t.val)
         if pr == 0 || pr < minp { break }
         op := adv().val
-        right := parse_binary(pr + 1)
+        right := parse_binary_from(parse_unary(), pr + 1)
         left = emit(Node{kind: K_BIN, s: op, a: left, b: right})
     }
     idx = left
@@ -300,6 +325,16 @@ func parse_make() (idx) {
         val := parse_type_name()
         eat(")")
         idx = emit(Node{kind: K_MAKEMAP, s: key, s2: val})
+        return idx
+    }
+    if pk().val == "[" {
+        typ := parse_type_name()   // "[]T" (slices only; chan/map have no [ form)
+        eat(",")
+        lenx := parse_expr()
+        capx := -1
+        if pk().val == "," { adv()  capx = parse_expr() }
+        eat(")")
+        idx = emit(Node{kind: K_MAKESLICE, s: typ, a: lenx, b: capx})
         return idx
     }
     idx = -1
@@ -510,7 +545,7 @@ func parse_stmt() (idx) {
             return idx
         }
     }
-    x := parse_expr()
+    x := parse_expr_for_stmt()
     if pk().val == "<-" {
         adv()
         val := parse_expr()
@@ -645,7 +680,7 @@ func parse_select() (idx) {
                 eat("<-")
                 ca = parse_expr()
             } else {
-                ca = parse_expr()
+                ca = parse_expr_for_stmt()
                 eat("<-")
                 cb = parse_expr()
                 is_send = 1
@@ -755,6 +790,12 @@ func dump_expr(idx) (s) {
     }
     if n.kind == K_MAKECHAN { s = "(makechan " + n.s + ")"  return s }
     if n.kind == K_MAKEMAP { s = "(makemap " + n.s + " " + n.s2 + ")"  return s }
+    if n.kind == K_MAKESLICE {
+        capstr := "-"
+        if n.b >= 0 { capstr = dump_expr(n.b) }
+        s = "(makeslice " + n.s + " " + dump_expr(n.a) + " " + capstr + ")"
+        return s
+    }
     if n.kind == K_RECV { s = "(recv " + dump_expr(n.a) + ")"  return s }
     if n.kind == K_FUNCLIT {
         params := "(params"

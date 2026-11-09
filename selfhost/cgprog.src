@@ -201,6 +201,12 @@ func cg_program() {
         for _, s := range g_jsonfns { cemit(s) }
         cemit("\n")
     }
+    // 3c. sort_by comparator bridges (generated on demand during body emission),
+    //     spliced before globals — the reference's sortFns position.
+    if len(g_sortfns) > 0 {
+        for _, s := range g_sortfns { cemit(s) }
+        cemit("\n")
+    }
     // 3. package globals: zero-initialized C statics
     gi := 0
     for gi < len(g_global_names) {
