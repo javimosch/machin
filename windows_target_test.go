@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"compress/gzip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,35 +11,8 @@ import (
 )
 
 // #517 Phase 0: the windows target compiles the POSIX-independent core. These
-// checks are toolchain-free (they exercise CompileToCTarget / the preflight),
-// mirroring the zig-free branches the wasm tests cover.
-
-// The windows preflight must reject each not-yet-supported subsystem with an
-// actionable, #517-referencing message — before any C is handed to a compiler.
-func TestWindowsPreflightRejects(t *testing.T) {
-	cases := []struct {
-		name     string
-		src      string
-		mentions string
-	}{
-		{"regex", `func main() { println(regex_match("a", "a")) }`, "regex"},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			prog, err := ParseProgram([]string{normalize(c.src)})
-			if err != nil {
-				t.Fatalf("parse: %v", err)
-			}
-			_, _, err = CompileToCTarget(prog, false, targetWindows)
-			if err == nil {
-				t.Fatalf("expected windows preflight to reject %s, got nil", c.name)
-			}
-			if !strings.Contains(err.Error(), c.mentions) || !strings.Contains(err.Error(), "#517") {
-				t.Fatalf("error should mention %q and #517, got: %v", c.mentions, err)
-			}
-		})
-	}
-}
+// checks are toolchain-free (they exercise CompileToCTarget), mirroring the
+// zig-free branches the wasm tests cover.
 
 // SQLite is SUPPORTED on windows as of #517: the same bundled amalgamation the
 // native --static build uses, which carries its own Win32 VFS. The preflight must
@@ -110,6 +85,94 @@ func TestVendoredZlibSourcesAreComplete(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(dir, unwanted)); err == nil {
 			t.Fatalf("%s should not be vendored — machin exposes no gz*/infback API", unwanted)
 		}
+	}
+}
+
+// regex is SUPPORTED on windows as of #517: mingw-w64 has no <regex.h>, so the
+// build compiles the vendored TRE (vendor/tre) — a POSIX ERE drop-in whose
+// tre/regex.h maps regcomp/regexec/regfree onto tre_*. Byte-oriented, matching
+// the C-locale semantics the native build's system regexec already gives.
+func TestWindowsAcceptsRegex(t *testing.T) {
+	prog, err := ParseProgram([]string{normalize(`func main() {
+    println(regex_match("a.c", "abc"))
+    println(regex_find("xx123yy", "[0-9]+"))
+    gs := regex_groups("key=val", "([a-z]+)=([a-z]+)")
+    println(len(gs))
+    println(regex_replace("a1b2", "[0-9]", "#"))
+}`)})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	csrc, _, err := CompileToCTarget(prog, false, targetWindows)
+	if err != nil {
+		t.Fatalf("windows target must accept regex now: %v", err)
+	}
+	if !strings.Contains(csrc, "mfl_regex_match") || !strings.Contains(csrc, "#include <regex.h>") {
+		t.Fatal("emitted C should contain the regex runtime")
+	}
+
+	// End-to-end PE link — self-contained (TRE is vendored, no external libs),
+	// gated only on a runnable zig like TestWindowsBuildsPE.
+	if err := exec.Command(zigPath(), "version").Run(); err != nil {
+		t.Skipf("zig not runnable (%v) — skipping windows regex PE build", err)
+	}
+	out := t.TempDir() + "/re.exe"
+	if err := BuildWindows(prog, out, false); err != nil {
+		t.Fatalf("BuildWindows (regex): %v", err)
+	}
+	b, _ := os.ReadFile(out)
+	if len(b) < 2 || b[0] != 'M' || b[1] != 'Z' {
+		t.Fatal("regex output is not a PE executable")
+	}
+}
+
+// The vendored TRE archive must unpack to the layout the build expects:
+// lib/*.c (minus the TRE_APPROX-only matcher), tre/*.h, the regex.h shim, and
+// the hand-generated tre-config.h. A silently truncated tarball would only
+// show up as a compile error deep inside a cross-compile.
+func TestVendoredTRESources(t *testing.T) {
+	dir, csrcs, err := unpackTRESources()
+	if err != nil {
+		t.Fatalf("unpack: %v", err)
+	}
+	defer os.RemoveAll(dir)
+	if len(csrcs) != 12 {
+		t.Fatalf("expected 12 .c files (approx matcher excluded), got %d: %v", len(csrcs), csrcs)
+	}
+	for _, want := range []string{
+		"regex.h", "tre/tre.h", "tre/regex.h", "tre/tre-config.h",
+		"lib/regcomp.c", "lib/regexec.c", "lib/tre-parse.c",
+	} {
+		if _, err := os.Stat(filepath.Join(dir, want)); err != nil {
+			t.Fatalf("vendored TRE is missing %s: %v", want, err)
+		}
+	}
+	for _, c := range csrcs {
+		if strings.HasSuffix(c, "tre-match-approx.c") {
+			t.Fatal("tre-match-approx.c must not be compiled (no TRE_APPROX)")
+		}
+	}
+}
+
+// unpackVendorTar's corrupt-input paths: a non-gzip blob fails at the gzip
+// reader, and a gzip of non-tar bytes fails at the first tar header. The blob
+// vars are package-level so a test can substitute them.
+func TestUnpackVendorTarBadBlob(t *testing.T) {
+	old := treSrcTarGz
+	defer func() { treSrcTarGz = old }()
+
+	treSrcTarGz = []byte("this is not gzip")
+	if _, _, err := unpackTRESources(); err == nil {
+		t.Fatal("expected a gzip error for a corrupt blob")
+	}
+
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	gw.Write([]byte("not a tar archive"))
+	gw.Close()
+	treSrcTarGz = buf.Bytes()
+	if _, _, err := unpackTRESources(); err == nil {
+		t.Fatal("expected a tar error for a gzip'd non-tar blob")
 	}
 }
 
