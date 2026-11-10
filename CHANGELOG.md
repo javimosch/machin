@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.142.0
+
+**The windows target is feature-complete — issue #517 closed.** All three
+remaining gaps landed: POSIX regex (vendored TRE, below), XEdDSA signatures,
+and with them every subsystem the preflight used to reject. Cross-compiling
+with `zig cc -target x86_64-windows-gnu` now covers core, sockets, TLS,
+crypto/XEdDSA, SQLite, zlib, terminal, concurrency *and* regex; each piece is
+verified by a PE that actually runs on `windows-latest` in CI.
+
+- **POSIX regex on windows via vendored TRE.** mingw-w64 ships no usable
+  `<regex.h>`, so `BuildWindows` now extracts a vendored TRE source tarball
+  and compiles it alongside the generated C whenever the program uses
+  `regex_match`/`regex_find`/`regex_groups`/`regex_replace`. Byte-oriented
+  ERE matching with C-locale semantics matching native `regexec`; extraction
+  rejects malformed archives and path traversal. Verified end-to-end on real
+  Windows 10 hardware and under wine (#692).
+- **XEdDSA on windows.** `xeddsa_sign`/`xeddsa_verify` link against
+  user-supplied mingw static archives: set `MACHIN_WIN_OPENSSL` (UCRT
+  OpenSSL, EVP SHA-512) and `MACHIN_WIN_SODIUM` (UCRT libsodium) — the deps
+  must come from msys2's `ucrt64` packages because zig's windows-gnu target
+  is UCRT, not msvcrt. `-lssl` is only pulled in for TLS; `-lcrypto` covers
+  XEdDSA hashing (#691, supersedes #577).
+- **Package-global initializers that reference globals no longer crash the
+  compiler.** `var g = N` or `var xs = make([]T, n)` at package scope
+  nil-derefed `isBoxed` in the Go compiler and indexed `g_insts[-1]` in the
+  self-hosted one, because the synthetic `$globals` context had no instance
+  records. Both compilers now record global-init call/funclit instances; the
+  selfhost emits byte-identical C for calls and builtins in global inits
+  (verify-cgen h22) (#690).
+
 ## v0.141.0
 
 **`machin check --all` — typecheck declarations before their callers exist.**
