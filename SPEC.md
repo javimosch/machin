@@ -623,7 +623,9 @@ id(42); id("hi"); id(3.14)   // → three native functions
   the libsodium symbols itself, so it links a mingw libsodium's `libsodium.a`
   supplied via `MACHIN_WIN_SODIUM=/path` (e.g. msys2's ucrt64
   `mingw-w64-ucrt-x86_64-libsodium`) plus the same OpenSSL (it hashes with EVP
-  SHA-512). POSIX regex remains unsupported and is rejected at build time.
+  SHA-512). POSIX regex is supported by compiling the vendored TRE
+  (`vendor/tre`, BSD-2) — mingw-w64 ships no `<regex.h>`; byte-oriented ERE
+  matching the C-locale semantics the native build's `regexec` gives.
 
 ---
 

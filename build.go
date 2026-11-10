@@ -42,6 +42,14 @@ var caBundleGz []byte
 //go:embed vendor/zlib/zlib-src.tar.gz
 var zlibSrcTarGz []byte
 
+// TRE (tiny regex engine), so the WINDOWS target can compile POSIX ERE in
+// rather than requiring a libc <regex.h> mingw-w64 does not ship. Native
+// builds still use the system regex and are unaffected. See
+// vendor/tre/README.md and #517.
+//
+//go:embed vendor/tre/tre-src.tar.gz
+var treSrcTarGz []byte
+
 func gunzip(b []byte) ([]byte, error) {
 	r, err := gzip.NewReader(bytes.NewReader(b))
 	if err != nil {
@@ -99,14 +107,36 @@ func hasStaticLib(name string) bool {
 // amalgamation: it is a dozen translation units that expect to be compiled
 // separately, and concatenating them is a portability gamble for no benefit.
 func unpackZlibSources() (dir string, csrcs []string, err error) {
-	dir, err = os.MkdirTemp("", "mfl-zlib-*")
+	// flatten: zlib's archive is a flat list of .c/.h.
+	return unpackVendorTar(zlibSrcTarGz, "zlib sources", true, nil)
+}
+
+// unpackTRESources extracts the vendored TRE sources into a fresh temp dir and
+// returns (dir, the .c files to compile). Unlike zlib's flat archive, TRE keeps
+// its public headers under tre/ (lib sources include <tre/tre.h>), so relative
+// paths are preserved. tre-match-approx.c is skipped: it is only referenced
+// under TRE_APPROX, which the vendored tre-config.h leaves undefined. The
+// caller removes dir.
+func unpackTRESources() (dir string, csrcs []string, err error) {
+	return unpackVendorTar(treSrcTarGz, "TRE sources", false, func(name string) bool {
+		return strings.HasSuffix(name, "tre-match-approx.c")
+	})
+}
+
+// unpackVendorTar extracts a vendored source tarball into a fresh temp dir and
+// returns (dir, the .c files to compile, minus any skipC matches). flatten
+// reduces every entry to its basename (zlib); otherwise relative paths are
+// preserved with each cleaned and verified to stay inside dir (TRE's tre/
+// subdir). The caller removes dir.
+func unpackVendorTar(blob []byte, what string, flatten bool, skipC func(string) bool) (dir string, csrcs []string, err error) {
+	dir, err = os.MkdirTemp("", "mfl-vendor-*")
 	if err != nil {
 		return "", nil, err
 	}
-	gz, err := gzip.NewReader(bytes.NewReader(zlibSrcTarGz))
+	gz, err := gzip.NewReader(bytes.NewReader(blob))
 	if err != nil {
 		os.RemoveAll(dir)
-		return "", nil, fmt.Errorf("zlib sources: %w", err)
+		return "", nil, fmt.Errorf("%s: %w", what, err)
 	}
 	defer gz.Close()
 	tr := tar.NewReader(gz)
@@ -117,28 +147,45 @@ func unpackZlibSources() (dir string, csrcs []string, err error) {
 		}
 		if err != nil {
 			os.RemoveAll(dir)
-			return "", nil, fmt.Errorf("zlib sources: %w", err)
+			return "", nil, fmt.Errorf("%s: %w", what, err)
 		}
 		if hdr.Typeflag != tar.TypeReg {
 			continue
 		}
-		// Flatten: the archive is a flat list of .c/.h, and refusing any path
-		// separator keeps a crafted archive from writing outside dir.
-		name := filepath.Base(hdr.Name)
-		if name != hdr.Name {
-			continue
+		name := hdr.Name
+		out := filepath.Join(dir, name)
+		if flatten {
+			// The archive is a flat list; refusing any path separator keeps a
+			// crafted archive from writing outside dir.
+			name = filepath.Base(name)
+			if name != hdr.Name {
+				continue
+			}
+			out = filepath.Join(dir, name)
+		} else {
+			// Preserve relative paths but refuse anything that could escape dir.
+			name = filepath.Clean(name)
+			out = filepath.Join(dir, name)
+			if !strings.HasPrefix(out, dir+string(os.PathSeparator)) {
+				continue
+			}
 		}
 		data, err := io.ReadAll(tr)
 		if err != nil {
 			os.RemoveAll(dir)
-			return "", nil, fmt.Errorf("zlib sources: %w", err)
+			return "", nil, fmt.Errorf("%s: %w", what, err)
 		}
-		out := filepath.Join(dir, name)
+		if !flatten {
+			if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
+				os.RemoveAll(dir)
+				return "", nil, err
+			}
+		}
 		if err := os.WriteFile(out, data, 0o644); err != nil {
 			os.RemoveAll(dir)
 			return "", nil, err
 		}
-		if strings.HasSuffix(name, ".c") {
+		if strings.HasSuffix(name, ".c") && (skipC == nil || !skipC(name)) {
 			csrcs = append(csrcs, out)
 		}
 	}
@@ -406,10 +453,10 @@ func BuildWasm(prog *Program, outPath string, safe bool) error {
 
 // BuildWindows cross-compiles the program to a Windows x86-64 .exe via
 // `zig cc -target x86_64-windows-gnu` (mingw-w64 + winpthreads, a single-binary
-// cross toolchain like the wasm path). Covers #517: the POSIX-independent core,
-// TCP sockets (winsock2), HTTPS/TLS + OpenSSL crypto builtins, terminal raw
-// mode, SQLite and zlib (both vendored in), and XEdDSA. The preflight still
-// rejects POSIX regex only.
+// cross toolchain like the wasm path). Covers all of #517: the
+// POSIX-independent core, TCP sockets (winsock2), HTTPS/TLS + OpenSSL crypto
+// builtins, terminal raw mode, SQLite, zlib and regex (all three vendored in —
+// mingw-w64 has no <regex.h>, so regex compiles the vendored TRE), and XEdDSA.
 //
 // zig alone suffices EXCEPT for TLS/crypto/XEdDSA, which link OpenSSL/libsodium:
 // zig does not ship these for the windows-gnu target, so the caller must point
@@ -432,6 +479,7 @@ func BuildWindows(prog *Program, outPath string, safe bool) error {
 	usesNet := strings.Contains(csrc, "WSAStartup")
 	usesSqlite := strings.Contains(csrc, "mfl_sqlite_")
 	usesZlib := strings.Contains(csrc, "mfl_zlib_")
+	usesRegex := strings.Contains(csrc, "mfl_regex_")
 	usesSodium := strings.Contains(csrc, "mfl_xeddsa_")
 	// XEdDSA hashes with OpenSSL SHA-512, so it needs OpenSSL too.
 	usesOpenSSL := usesTLS || usesCrypto || usesSodium
@@ -507,6 +555,18 @@ func BuildWindows(prog *Program, outPath string, safe bool) error {
 	// program that calls zlib_compress.
 	if usesZlib {
 		dir, csrcs, err := unpackZlibSources()
+		if err != nil {
+			return err
+		}
+		defer os.RemoveAll(dir)
+		args = append(args, "-I"+dir)
+		srcs = append(srcs, csrcs...)
+	}
+	// regex: mingw-w64 has no <regex.h>, so compile in the vendored TRE —
+	// its tre/regex.h maps regcomp/regexec/regfree onto tre_* and the
+	// top-level regex.h shim makes the generated include resolve to it.
+	if usesRegex {
+		dir, csrcs, err := unpackTRESources()
 		if err != nil {
 			return err
 		}

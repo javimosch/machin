@@ -187,6 +187,12 @@ jobs:
           /tmp/machin encode /tmp/win_tty.src > /tmp/win_tty.mfl
           /tmp/machin build /tmp/win_tty.mfl --target windows -o /tmp/win_tty.exe
           cp /tmp/win_tty.exe /tmp/winart/
+          # regex: mingw-w64 has no <regex.h>, so this compiles the vendored TRE
+          # (#517 — the last unsupported subsystem). Also executed on Windows.
+          printf 'func main() {\n    println(regex_match("abc", "a.c"))\n    println(regex_find("xx123yy", "[0-9]+"))\n    gs := regex_groups("carol:99:admin", "([a-z]+):([0-9]+):([a-z]+)")\n    println(gs[1] + ":" + gs[2] + ":" + gs[3])\n    println(regex_replace("a1b2", "[0-9]", "#"))\n}\n' > /tmp/win_re.src
+          /tmp/machin encode /tmp/win_re.src > /tmp/win_re.mfl
+          /tmp/machin build /tmp/win_re.mfl --target windows -o /tmp/win_re.exe
+          cp /tmp/win_re.exe /tmp/winart/
 
       - uses: actions/upload-artifact@v4
         with:
@@ -267,3 +273,19 @@ jobs:
           check "empty stdin"      ""  "$(printf 'raw_mode=-1\nkey=[]\nrestored')"
           check "one byte waiting" "Z" "$(printf 'raw_mode=-1\nkey=[Z]\nrestored')"
           echo "raw_mode/read_key match the POSIX contract off a tty, and read_key never blocked"
+
+      - name: run the cross-compiled regex binary (vendored TRE)
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./win_re.exe > /tmp/re_out.txt
+          # Windows stdio writes CRLF; strip \r before comparing (same
+          # normalisation the tty gate uses — line endings are a platform
+          # convention, not part of the regex contract).
+          got=$(tr -d '\r' < /tmp/re_out.txt)
+          expected=$(printf 'true\n123\ncarol:99:admin\na#b#')
+          if [ "$got" != "$expected" ]; then
+            echo "::error::windows regex binary produced [$got], expected [$expected]"
+            exit 1
+          fi
+          echo "regex works on Windows: vendored TRE, output matches native"

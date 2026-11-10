@@ -33,38 +33,7 @@ func CompileToCTarget(p *Program, safe bool, target string) (string, []string, e
 	if err != nil {
 		return "", nil, err
 	}
-	if target == targetWindows {
-		if err := windowsUnsupported(g); err != nil {
-			return "", nil, err
-		}
-	}
 	return src, c.ExportNames(), nil
-}
-
-// windowsUnsupported reports the first subsystem a program uses that the windows
-// target does not yet cover. Phase 0 of #517 got the POSIX-independent core
-// compiling under mingw-w64 (stdio, strings/maps/slices, arena, goroutines +
-// channels via winpthreads, math, file I/O); Phase N added TCP sockets
-// (dial/listen/accept/read/write) via winsock2; Phase TLS added HTTPS/TLS + the
-// OpenSSL crypto builtins, which link a user-supplied mingw OpenSSL (see
-// BuildWindows / MACHIN_WIN_OPENSSL). Terminal raw mode now maps onto the
-// console API; SQLite and zlib are compiled in from vendored sources. XEdDSA
-// links a user-supplied mingw libsodium like the native build does (see
-// BuildWindows / MACHIN_WIN_SODIUM). Still not wired: POSIX regex. Failing
-// here — rather than emitting C that dies deep in the linker — keeps the error
-// actionable.
-func windowsUnsupported(g *cgen) error {
-	for _, u := range []struct {
-		used bool
-		what string
-	}{
-		{g.usesRegex, "regex (regex_*)"},
-	} {
-		if u.used {
-			return fmt.Errorf("the windows target does not yet support %s — see issue #517 (supported: the stdio/compute core, TCP sockets, SQLite, HTTPS/TLS+crypto via MACHIN_WIN_OPENSSL, and XEdDSA via MACHIN_WIN_SODIUM)", u.what)
-		}
-	}
-	return nil
 }
 
 // cTypeName renders a declared type string (int, float, bool, string, []elem,
