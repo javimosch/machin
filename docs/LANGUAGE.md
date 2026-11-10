@@ -811,6 +811,12 @@ Values that need to outlive the block (like `checksum` above) must be
 assigned to a variable declared outside it. See
 `examples/complex/arena.mfl` for the full runnable example.
 
+Values stored into package-global `var`s are promoted automatically: a
+string, slice, map, struct, or `bytes` assigned to a global — directly, via
+multi-assign, or as an element/field of a global container — is copied into
+the main arena first, so it stays valid after the assigning goroutine or
+`arena { }` block ends.
+
 ---
 
 ## Safety checks (`--safe`)

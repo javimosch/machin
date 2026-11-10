@@ -316,8 +316,15 @@ func cg_print(iid, call_idx, depth) {
 
 func assign_line(iid, name, val, depth) {
     if name == "_" { return }
+    ref := var_ref(iid, name)
+    if ref == "mfl_g_" + name {
+        // storing into package-global storage: keep arena-backed payload
+        // alive past the assigning goroutine/arena block (#648)
+        gslot, gfound := global_lookup(name)
+        if gfound == 1 { val = cg_promote(type_string_slot(gslot), val) }
+    }
     indent(depth + 1)
-    cemit(var_ref(iid, name) + " = " + val + ";\n")
+    cemit(ref + " = " + val + ";\n")
 }
 
 // mrb_info: multi-return builtin -> (C fn, result struct type, comma-joined fields).
@@ -405,7 +412,13 @@ func cg_multi_assign(iid, idx, depth) {
             cemit("}\n")
             return
         }
-        cemit(var_ref(iid, n.names[0]) + " = " + cg_expr(iid, rhs0) + ";\n")
+        val := cg_expr(iid, rhs0)
+        ref := var_ref(iid, n.names[0])
+        if ref == "mfl_g_" + n.names[0] {
+            gslot, gfound := global_lookup(n.names[0])
+            if gfound == 1 { val = cg_promote(type_string_slot(gslot), val) }
+        }
+        cemit(ref + " = " + val + ";\n")
         return
     }
     // parallel assignment: hoist all RHS into temps, then assign

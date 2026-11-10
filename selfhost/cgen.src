@@ -505,7 +505,15 @@ func cg_stmt(iid, idx, depth) {
         // observes the backing array
         owned := al_owned_append(iid, idx)
         if owned != "" { cemit(var_ref(iid, n.s) + " = " + owned + ";\n")  return }
-        cemit(var_ref(iid, n.s) + " = " + cg_expr(iid, n.a) + ";\n")
+        ref := var_ref(iid, n.s)
+        val := cg_expr(iid, n.a)
+        if ref == "mfl_g_" + n.s {
+            // storing into package-global storage: keep arena-backed payload
+            // alive past the assigning goroutine/arena block (#648)
+            gslot, gfound := global_lookup(n.s)
+            if gfound == 1 { val = cg_promote(type_string_slot(gslot), val) }
+        }
+        cemit(ref + " = " + val + ";\n")
         return
     }
     if k == K_RETURN {

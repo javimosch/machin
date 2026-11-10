@@ -151,6 +151,7 @@ func cg_program() {
     g_goid = 0
     g_tramp = []string{}
     g_jsonfns = []string{}
+    g_jsonprotos = []string{}
     saved := g_out
     g_out = []string{}
     for _, rid := range g_reps { cg_function(rid) }
@@ -207,6 +208,7 @@ func cg_program() {
     //     spliced here — the reference's exact position, right after typedefs and
     //     before globals — for byte-identical output.
     if len(g_jsonfns) > 0 {
+        for _, s := range g_jsonprotos { cemit(s) }
         for _, s := range g_jsonfns { cemit(s) }
         cemit("\n")
     }
