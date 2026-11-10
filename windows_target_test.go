@@ -21,7 +21,6 @@ func TestWindowsPreflightRejects(t *testing.T) {
 		mentions string
 	}{
 		{"regex", `func main() { println(regex_match("a", "a")) }`, "regex"},
-		{"xeddsa", `func main() { println(len(xeddsa_sign(bytes(""), bytes(""), bytes("")))) }`, "XEdDSA"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -297,6 +296,102 @@ func TestWindowsTLSCompiles(t *testing.T) {
 	b, _ := os.ReadFile(out)
 	if len(b) < 2 || b[0] != 'M' || b[1] != 'Z' {
 		t.Fatal("TLS output is not a PE executable")
+	}
+}
+
+// windowsLinkLibs picks the -L/-l tail for a windows build. -lssl only when
+// TLS is used (crypto/XEdDSA need libcrypto alone); XEdDSA additionally needs
+// libsodium's -L/-l; system libs follow whichever subsystems are present.
+func TestWindowsLinkLibs(t *testing.T) {
+	cases := []struct {
+		name                   string
+		tls, ossl, sodium, net bool
+		want                   []string
+	}{
+		{"none", false, false, false, false, nil},
+		{"net only", false, false, false, true, []string{"-lws2_32"}},
+		{"tls", true, true, false, false,
+			[]string{"-L/ssl/lib", "-lssl", "-lcrypto", "-lws2_32", "-lcrypt32", "-lbcrypt", "-ladvapi32"}},
+		{"crypto no tls", false, true, false, false,
+			[]string{"-L/ssl/lib", "-lcrypto", "-lws2_32", "-lcrypt32", "-lbcrypt", "-ladvapi32"}},
+		{"xeddsa", false, true, true, false,
+			[]string{"-L/ssl/lib", "-lcrypto", "-L/sodium/lib", "-lsodium", "-lws2_32", "-lcrypt32", "-lbcrypt", "-ladvapi32"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := windowsLinkLibs(c.tls, c.ossl, c.sodium, c.net, "/ssl", "/sodium")
+			if strings.Join(got, " ") != strings.Join(c.want, " ") {
+				t.Fatalf("windowsLinkLibs = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// #517 XEdDSA: xeddsa_sign/verify cross-compile for Windows, linking a
+// user-supplied mingw libsodium (the runtime declares the symbols itself, so
+// only libsodium.a is needed — no headers). The preflight no longer rejects
+// them, the emitted C contains the XEdDSA runtime, and BuildWindows demands
+// both MACHIN_WIN_OPENSSL (XEdDSA uses OpenSSL SHA-512) and MACHIN_WIN_SODIUM.
+func TestWindowsXEdDSACompiles(t *testing.T) {
+	src := `func main() {
+	priv := bytes("01234567890123456789012345678901")
+	pub := bytes("01234567890123456789012345678901")
+	msg := bytes("hello")
+	rnd := bytes("0123456789012345678901234567890123456789012345678901234567890123")
+	sig := xeddsa_sign(priv, msg, rnd)
+	ok := xeddsa_verify(pub, msg, sig)
+	println(ok)
+}`
+	prog, err := ParseProgram([]string{normalize(src)})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	winC, _, err := CompileToCTarget(prog, false, targetWindows)
+	if err != nil {
+		t.Fatalf("windows XEdDSA compile should succeed, got: %v", err)
+	}
+	for _, sym := range []string{"mfl_xeddsa_sign", "mfl_xeddsa_verify", "mflx_mont_to_ed"} {
+		if !strings.Contains(winC, sym) {
+			t.Fatalf("windows XEdDSA C should contain %q", sym)
+		}
+	}
+	if !strings.Contains(winC, "openssl/evp.h") {
+		t.Fatal("windows XEdDSA C should include OpenSSL")
+	}
+
+	// BuildWindows must demand MACHIN_WIN_OPENSSL first (XEdDSA needs OpenSSL).
+	t.Setenv("MACHIN_WIN_OPENSSL", "")
+	t.Setenv("MACHIN_WIN_SODIUM", "")
+	err = BuildWindows(prog, t.TempDir()+"/xeddsa.exe", false)
+	if err == nil || !strings.Contains(err.Error(), "MACHIN_WIN_OPENSSL") {
+		t.Fatalf("expected a MACHIN_WIN_OPENSSL requirement error, got: %v", err)
+	}
+
+	// With OpenSSL set, it must demand MACHIN_WIN_SODIUM for libsodium.
+	t.Setenv("MACHIN_WIN_OPENSSL", "/tmp/fake-openssl")
+	err = BuildWindows(prog, t.TempDir()+"/xeddsa.exe", false)
+	if err == nil || !strings.Contains(err.Error(), "MACHIN_WIN_SODIUM") {
+		t.Fatalf("expected a MACHIN_WIN_SODIUM requirement error, got: %v", err)
+	}
+
+	// End-to-end link, gated on runnable zig + mingw OpenSSL + libsodium.
+	sslDir := os.Getenv("MACHIN_WIN_OPENSSL_TEST")
+	sodiumDir := os.Getenv("MACHIN_WIN_SODIUM_TEST")
+	if sslDir == "" || sodiumDir == "" {
+		t.Skip("set MACHIN_WIN_OPENSSL_TEST and MACHIN_WIN_SODIUM_TEST to a mingw OpenSSL and libsodium dir to link-test windows XEdDSA")
+	}
+	if err := exec.Command(zigPath(), "version").Run(); err != nil {
+		t.Skipf("zig not runnable: %v", err)
+	}
+	t.Setenv("MACHIN_WIN_OPENSSL", sslDir)
+	t.Setenv("MACHIN_WIN_SODIUM", sodiumDir)
+	out := t.TempDir() + "/xeddsa.exe"
+	if err := BuildWindows(prog, out, false); err != nil {
+		t.Fatalf("BuildWindows (XEdDSA): %v", err)
+	}
+	b, _ := os.ReadFile(out)
+	if len(b) < 2 || b[0] != 'M' || b[1] != 'Z' {
+		t.Fatal("XEdDSA output is not a PE executable")
 	}
 }
 

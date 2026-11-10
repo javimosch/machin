@@ -406,16 +406,21 @@ func BuildWasm(prog *Program, outPath string, safe bool) error {
 
 // BuildWindows cross-compiles the program to a Windows x86-64 .exe via
 // `zig cc -target x86_64-windows-gnu` (mingw-w64 + winpthreads, a single-binary
-// cross toolchain like the wasm path). Covers #517 Phases 0+N+TLS: the
-// POSIX-independent core, TCP sockets (winsock2), and HTTPS/TLS + OpenSSL crypto
-// builtins. The preflight still rejects XEdDSA, terminal raw mode, SQLite, regex.
+// cross toolchain like the wasm path). Covers #517: the POSIX-independent core,
+// TCP sockets (winsock2), HTTPS/TLS + OpenSSL crypto builtins, terminal raw
+// mode, SQLite and zlib (both vendored in), and XEdDSA. The preflight still
+// rejects POSIX regex only.
 //
-// zig alone suffices EXCEPT for TLS/crypto, which link OpenSSL: zig does not ship
-// an OpenSSL for the windows-gnu target, so the caller must point MACHIN_WIN_OPENSSL
-// at a mingw-w64 OpenSSL install (a dir with include/ and lib/ holding libssl.a /
-// libcrypto.a, e.g. from msys2's mingw-w64-x86_64-openssl). This mirrors how the
-// native --static + TLS build already requires libssl-dev's static archives on the
-// build host. Override the zig binary with $ZIG.
+// zig alone suffices EXCEPT for TLS/crypto/XEdDSA, which link OpenSSL/libsodium:
+// zig does not ship these for the windows-gnu target, so the caller must point
+// MACHIN_WIN_OPENSSL at a mingw-w64 OpenSSL install (a dir with include/ and lib/
+// holding libssl.a / libcrypto.a, e.g. from msys2's ucrt64 environment —
+// mingw-w64-ucrt-x86_64-openssl; zig's windows-gnu target is UCRT, so the
+// msvcrt-flavored mingw64 packages fail at link with dllimport errors) and, for
+// xeddsa_*, MACHIN_WIN_SODIUM at a mingw-w64 libsodium (a dir with lib/
+// holding libsodium.a — the runtime declares the symbols itself, so no headers
+// are needed). This mirrors how the native build already requires libssl-dev
+// and libsodium-dev on the build host. Override the zig binary with $ZIG.
 func BuildWindows(prog *Program, outPath string, safe bool) error {
 	csrc, _, err := CompileToCTarget(prog, safe, targetWindows)
 	if err != nil {
@@ -427,12 +432,23 @@ func BuildWindows(prog *Program, outPath string, safe bool) error {
 	usesNet := strings.Contains(csrc, "WSAStartup")
 	usesSqlite := strings.Contains(csrc, "mfl_sqlite_")
 	usesZlib := strings.Contains(csrc, "mfl_zlib_")
-	usesOpenSSL := usesTLS || usesCrypto
+	usesSodium := strings.Contains(csrc, "mfl_xeddsa_")
+	// XEdDSA hashes with OpenSSL SHA-512, so it needs OpenSSL too.
+	usesOpenSSL := usesTLS || usesCrypto || usesSodium
 
-	// TLS/crypto need a mingw OpenSSL the caller supplies out of band.
+	// TLS/crypto/XEdDSA need a mingw OpenSSL the caller supplies out of band.
 	sslDir := os.Getenv("MACHIN_WIN_OPENSSL")
 	if usesOpenSSL && sslDir == "" {
-		return fmt.Errorf("the windows target needs an OpenSSL built for x86_64-windows-gnu to link this program's TLS/crypto: set MACHIN_WIN_OPENSSL=/path to a mingw OpenSSL (a dir with include/ and lib/ — e.g. msys2's mingw-w64-x86_64-openssl). See issue #517")
+		return fmt.Errorf("the windows target needs an OpenSSL built for x86_64-windows-gnu to link this program's TLS/crypto/XEdDSA: set MACHIN_WIN_OPENSSL=/path to a mingw OpenSSL (a dir with include/ and lib/ — e.g. msys2's ucrt64 mingw-w64-ucrt-x86_64-openssl; zig's windows-gnu target is UCRT, so msvcrt mingw64 builds fail to link). See issue #517")
+	}
+
+	// XEdDSA additionally needs a mingw libsodium the caller supplies out of band.
+	sodiumDir := ""
+	if usesSodium {
+		sodiumDir = os.Getenv("MACHIN_WIN_SODIUM")
+		if sodiumDir == "" {
+			return fmt.Errorf("the windows target needs a libsodium built for x86_64-windows-gnu to link this program's XEdDSA builtins: set MACHIN_WIN_SODIUM=/path to a mingw libsodium (a dir with lib/ holding libsodium.a — e.g. msys2's ucrt64 mingw-w64-ucrt-x86_64-libsodium). See issue #517")
+		}
 	}
 
 	tmp, err := os.CreateTemp("", "mfl-*.c")
@@ -500,19 +516,40 @@ func BuildWindows(prog *Program, outPath string, safe bool) error {
 	}
 	args = append(args, "-o", outPath, tmp.Name())
 	args = append(args, srcs...)
-	// Libraries come after the sources. OpenSSL on Windows pulls in the system
-	// crypto (crypt32/bcrypt) and winsock; ws2_32 is also needed by any socket use.
-	if usesOpenSSL {
-		args = append(args, "-L"+filepath.Join(sslDir, "lib"), "-lssl", "-lcrypto", "-lcrypt32", "-lbcrypt")
-	}
-	if usesNet || usesOpenSSL {
-		args = append(args, "-lws2_32")
-	}
+	args = append(args, windowsLinkLibs(usesTLS, usesOpenSSL, usesSodium, usesNet, sslDir, sodiumDir)...)
 	cmd := exec.Command(zigPath(), args...)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("%s failed: %v\n%s", zigPath(), err, out)
 	}
 	return nil
+}
+
+// windowsLinkLibs returns the -L/-l tail of the `zig cc` command for a windows
+// build, given which subsystems the emitted C uses. -lssl is only added when
+// TLS is actually used: crypto/XEdDSA need libcrypto alone. libsodium needs
+// OpenSSL too (XEdDSA hashes with EVP SHA-512), so usesSodium implies
+// usesOpenSSL. System libs: ws2_32 for sockets/TLS; crypt32/bcrypt for
+// OpenSSL's crypto and libsodium's randomness; advapi32 for libsodium's RNG
+// fallback.
+func windowsLinkLibs(usesTLS, usesOpenSSL, usesSodium, usesNet bool, sslDir, sodiumDir string) []string {
+	var args []string
+	if usesOpenSSL {
+		args = append(args, "-L"+filepath.Join(sslDir, "lib"))
+		if usesTLS {
+			args = append(args, "-lssl")
+		}
+		args = append(args, "-lcrypto")
+	}
+	if usesSodium {
+		args = append(args, "-L"+filepath.Join(sodiumDir, "lib"), "-lsodium")
+	}
+	if usesNet || usesOpenSSL {
+		args = append(args, "-lws2_32")
+	}
+	if usesOpenSSL {
+		args = append(args, "-lcrypt32", "-lbcrypt", "-ladvapi32")
+	}
+	return args
 }
 
 // RunCaptured builds the program to a temp binary, runs it, and returns stdout.
