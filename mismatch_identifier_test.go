@@ -285,7 +285,7 @@ func TestMismatchErrorCarriesFileLine(t *testing.T) {
 func TestMismatchFileLineMultiFile(t *testing.T) {
 	combined := "func a() {\n\tq := 1 + \"x\"\n\tprintln(q)\n}\n\nfunc main() { a() }\n"
 	files := []DiagFile{{Path: "one.src", Start: 1}, {Path: "two.src", Start: 6}}
-	res := analyzeSourceSpan(combined, []string{"one.src", "two.src"}, files)
+	res := analyzeSourceSpan(combined, []string{"one.src", "two.src"}, files, false)
 	if res.OK || len(res.Diagnostics) == 0 {
 		t.Fatalf("expected a diagnostic, got ok=%v diags=%v", res.OK, res.Diagnostics)
 	}

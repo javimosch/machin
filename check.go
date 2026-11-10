@@ -49,7 +49,7 @@ type CheckResult struct {
 }
 
 func cmdCheck(args []string) error {
-	jsonOut, stdin := false, false
+	jsonOut, stdin, allRoots := false, false, false
 	var files []string
 	for _, a := range args {
 		switch a {
@@ -57,6 +57,10 @@ func cmdCheck(args []string) error {
 			jsonOut = true
 		case "--stdin":
 			stdin = true
+		case "--all":
+			// #645: every declaration is a typecheck root, not just main's
+			// reachable set — for checking libraries before their callers exist
+			allRoots = true
 		case "--symbols":
 			// reserved for a future outline mode; v1 ignores it
 		default:
@@ -97,19 +101,21 @@ func cmdCheck(args []string) error {
 		srcNames = files
 	}
 
-	return emitCheck(analyzeSourceSpan(combined.String(), srcNames, diagFiles), jsonOut)
+	return emitCheck(analyzeSourceSpan(combined.String(), srcNames, diagFiles, allRoots), jsonOut)
 }
 
 // analyzeSource is the pure core: source text -> verdict. No I/O, no exit (so tests can
 // call it directly). lex -> parse (per declaration, collecting all errors) -> typecheck.
 func analyzeSource(combined string, srcNames []string) CheckResult {
-	return analyzeSourceSpan(combined, srcNames, nil)
+	return analyzeSourceSpan(combined, srcNames, nil, false)
 }
 
 // analyzeSourceSpan is analyzeSource plus per-file line spans, so typecheck
 // errors can report "at file:line" in multi-file checks. files is nil for
 // tests / single unnamed sources — errors then carry no position suffix.
-func analyzeSourceSpan(combined string, srcNames []string, files []DiagFile) CheckResult {
+// allRoots selects CheckAll (#645): every declaration typechecks, reachable
+// or not.
+func analyzeSourceSpan(combined string, srcNames []string, files []DiagFile, allRoots bool) CheckResult {
 	diags := []Diagnostic{}
 	var warns []Diagnostic
 
@@ -156,7 +162,13 @@ func analyzeSourceSpan(combined string, srcNames []string, files []DiagFile) Che
 			if files != nil {
 				prog.Diag = sourceDiag(files, decls, blockLines)
 			}
-			c, cerr := Check(prog)
+			var c *Checker
+			var cerr error
+			if allRoots {
+				c, cerr = CheckAll(prog)
+			} else {
+				c, cerr = Check(prog)
+			}
 			if cerr != nil {
 				msg := strings.TrimPrefix(cerr.Error(), "typecheck: ")
 				decl, line := locateCheckError(msg, decls, blockLines)

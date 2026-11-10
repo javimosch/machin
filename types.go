@@ -190,6 +190,8 @@ type rangeUse struct {
 	key    int
 	val    int
 	hasVal bool
+	// in names the source function — see fieldUse.in.
+	in string
 }
 
 // indexUse defers x[i]: once base resolves to a slice or map, idx and result
@@ -198,6 +200,9 @@ type indexUse struct {
 	base   int
 	idx    int
 	result int
+	// in names the source function, so a deferred-resolution failure can say
+	// where — same role as fieldUse.in.
+	in string
 }
 
 type plusCons struct {
@@ -695,6 +700,19 @@ func (c *Checker) instantiate(name string) (string, error) {
 
 // Check infers types for the program, returning an error on a type clash.
 func Check(p *Program) (*Checker, error) {
+	return checkImpl(p, false)
+}
+
+// CheckAll is Check with every declared function as an instantiation root
+// (#645): `machin check --all` typechecks library functions that nothing
+// calls yet — exactly the case where completeness matters more than
+// dead-code pruning. Monomorphization is unchanged; this only widens the
+// root set.
+func CheckAll(p *Program) (*Checker, error) {
+	return checkImpl(p, true)
+}
+
+func checkImpl(p *Program, allRoots bool) (*Checker, error) {
 	c := &Checker{
 		funcs:       map[string]*FuncDecl{},
 		funcParam:   map[string][]int{},
@@ -775,7 +793,9 @@ func Check(p *Program) (*Checker, error) {
 	c.hasMainFn = hasMain
 	// A program needs an entry point: a main, or — for a library target (wasm) —
 	// at least one `export func`. Exported functions are reachability roots too.
-	if !hasMain && len(exported) == 0 {
+	// `check --all` (#645) checks libraries that have neither — every declaration
+	// is a root, so no entry point is required.
+	if !hasMain && len(exported) == 0 && !allRoots {
 		return nil, fmt.Errorf("no main function defined (and no exported functions)")
 	}
 	// register foreign (extern) functions; their signatures are fixed, not inferred
@@ -877,6 +897,27 @@ func Check(p *Program) (*Checker, error) {
 	for _, name := range exported {
 		if _, err := c.instantiate(name); err != nil {
 			return nil, err
+		}
+	}
+	// --all (#645): every declaration with NO instance yet is also a root, so
+	// unreachable library functions get typechecked too. Functions already
+	// instantiated as callees are skipped — their bodies were checked under
+	// real call-site types, and a free-param root would only add false
+	// positives (e.g. an ambiguous struct field the caller already pinned).
+	// Declaration order keeps instance naming deterministic.
+	if allRoots {
+		instantiated := map[string]bool{}
+		for _, inst := range c.instOrder {
+			instantiated[c.instFn[inst].Name] = true
+		}
+		for _, fn := range p.Funcs {
+			if instantiated[fn.Name] {
+				continue
+			}
+			instantiated[fn.Name] = true
+			if _, err := c.instantiate(fn.Name); err != nil {
+				return nil, err
+			}
 		}
 	}
 	// 3. solve
@@ -992,6 +1033,69 @@ func (c *Checker) checkTypeName(t string) error {
 	return fmt.Errorf("unknown type %q", t)
 }
 
+// inferIndexBase commits an index expression's still-unbound base to a concrete
+// kind (#645): `check --all` roots give parameters no caller to pin their type,
+// so `xs[i]` alone cannot resolve. Every kind-forcing constraint (append,
+// delete, arithmetic, …) has already run by the time this fires — a base still
+// KVar is constrained ONLY by deferred uses, so either commitment yields a
+// consistent typing for this throwaway instance. A concretely non-int index
+// key (string/bool/struct/…) can only be a map; anything else defaults to
+// slice, the common case. Ambiguity that matters (e.g. `m[k]` on a generic
+// accessor) still typechecks — callers get their own instances.
+func (c *Checker) inferIndexBase(iu indexUse) (bool, error) {
+	root := c.find(iu.base)
+	wantMap := false
+	for _, o := range c.indexUses {
+		if c.find(o.base) != root {
+			continue
+		}
+		switch c.kindOf(o.idx) {
+		case KString, KBool, KStruct, KBytes, KSlice, KMap, KChan, KFunc:
+			wantMap = true
+		}
+	}
+	var bs int
+	if wantMap {
+		bs = newMapSlot(c, newSlot(c, KVar), newSlot(c, KVar))
+	} else {
+		bs = newSliceSlot(c, newSlot(c, KVar))
+	}
+	if _, err := c.union(iu.base, bs); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// inferFieldStruct resolves a field access on an unbound base (#645) by
+// finding the declared struct the access must mean: exactly one struct in the
+// program may declare the field, otherwise the access is ambiguous and stays
+// deferred. On a unique match it unifies the base with that struct's slot and
+// reports true; the caller's next fixpoint round then resolves the result.
+func (c *Checker) inferFieldStruct(fu fieldUse) (bool, error) {
+	match := ""
+	count := 0
+	for name := range c.structs {
+		if _, ok := c.fieldType(name, fu.field); ok {
+			match = name
+			count++
+			if count > 1 {
+				return false, nil
+			}
+		}
+	}
+	if count != 1 {
+		return false, nil
+	}
+	ss, err := c.typeSlot(match)
+	if err != nil {
+		return false, err
+	}
+	if _, err := c.union(fu.base, ss); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // resolveDeferred ties off deferred x[i] index and struct field uses. Each is
 // resolved once its base expression has a concrete kind; resolving one may give
 // another its type (e.g. m[k].field), so this runs to a fixpoint, re-solving
@@ -1005,6 +1109,17 @@ func (c *Checker) resolveDeferred() error {
 		for i, iu := range c.indexUses {
 			if indexDone[i] {
 				continue
+			}
+			// #645: an unbound base (a --all root param) gets committed to
+			// slice/map so the index can resolve — see inferIndexBase.
+			if c.kindOf(iu.base) == KVar {
+				ok, err := c.inferIndexBase(iu)
+				if err != nil {
+					return err
+				}
+				if ok {
+					progressed = true
+				}
 			}
 			ok, err := c.tryIndex(iu)
 			if err != nil {
@@ -1029,7 +1144,26 @@ func (c *Checker) resolveDeferred() error {
 			}
 		}
 		for i, fu := range c.fieldUses {
-			if fieldDone[i] || c.kindOf(fu.base) != KStruct {
+			if fieldDone[i] {
+				continue
+			}
+			if c.kindOf(fu.base) != KStruct {
+				// #645: an unbound base (a `check --all` root param, or an
+				// `export func` with no caller to pin its type) can still be
+				// inferred when exactly one declared struct has this field —
+				// that is the only type the access can mean. Ambiguous or
+				// already-committed bases stay deferred to the error below.
+				if c.kindOf(fu.base) == KVar {
+					ok, err := c.inferFieldStruct(fu)
+					if err != nil {
+						return err
+					}
+					// base is now a struct — leave fieldDone unset so the
+					// next round resolves fu.result through the normal path.
+					if ok {
+						progressed = true
+					}
+				}
 				continue
 			}
 			name := c.sname[c.find(fu.base)]
@@ -1056,20 +1190,29 @@ func (c *Checker) resolveDeferred() error {
 	}
 	for i, fu := range c.fieldUses {
 		if !fieldDone[i] {
-			return fmt.Errorf("cannot infer struct type for field .%s", fu.field)
+			return fmt.Errorf("cannot infer struct type for field .%s%s", fu.field, whereIn(fu.in))
 		}
 	}
-	for i := range c.indexUses {
+	for i, iu := range c.indexUses {
 		if !indexDone[i] {
-			return fmt.Errorf("cannot index a non-slice/map value")
+			return fmt.Errorf("cannot index a non-slice/map value%s", whereIn(iu.in))
 		}
 	}
-	for i := range c.rangeUses {
+	for i, ru := range c.rangeUses {
 		if !rangeDone[i] {
-			return fmt.Errorf("cannot range over this value (need a slice, map, string, or channel)")
+			return fmt.Errorf("cannot range over this value (need a slice, map, string, or channel)%s", whereIn(ru.in))
 		}
 	}
 	return nil
+}
+
+// whereIn renders " in <fn>" for deferred-resolution errors, or "" when the
+// use has no recorded function.
+func whereIn(fn string) string {
+	if fn == "" {
+		return ""
+	}
+	return " in " + fn
 }
 
 // tryRange resolves one for-range loop once its base kind is known.
@@ -1464,7 +1607,7 @@ func (c *Checker) genStmt(fn *FuncDecl, s Stmt) error {
 		if err != nil {
 			return err
 		}
-		c.indexUses = append(c.indexUses, indexUse{base: xs, idx: is, result: vs})
+		c.indexUses = append(c.indexUses, indexUse{base: xs, idx: is, result: vs, in: srcFnName(fn.Name)})
 		return nil
 	case *FieldAssign:
 		xs, err := c.genExpr(fn, st.Target.X)
@@ -1563,7 +1706,7 @@ func (c *Checker) genStmt(fn *FuncDecl, s Stmt) error {
 		}
 		keySlot := bind(st.Key)
 		valSlot := bind(st.Val)
-		c.rangeUses = append(c.rangeUses, rangeUse{base: xs, key: keySlot, val: valSlot, hasVal: st.Val != ""})
+		c.rangeUses = append(c.rangeUses, rangeUse{base: xs, key: keySlot, val: valSlot, hasVal: st.Val != "", in: srcFnName(fn.Name)})
 		for _, s := range st.Body {
 			if err := c.genStmt(fn, s); err != nil {
 				return err
@@ -1668,7 +1811,7 @@ func (c *Checker) genExprInner(fn *FuncDecl, e Expr) (int, error) {
 			return 0, err
 		}
 		res := newSlot(c, KVar)
-		c.indexUses = append(c.indexUses, indexUse{base: xs, idx: is, result: res})
+		c.indexUses = append(c.indexUses, indexUse{base: xs, idx: is, result: res, in: srcFnName(fn.Name)})
 		return res, nil
 	case *SliceExpr:
 		xs, err := c.genExpr(fn, ex.X)
