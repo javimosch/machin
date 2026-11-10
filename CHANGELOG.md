@@ -1,5 +1,70 @@
 # Changelog
 
+## v0.141.0
+
+**`machin check --all` — typecheck declarations before their callers exist.**
+`check` only instantiated functions reachable from `main`/`export func`, so a
+broken library function nothing called yet passed clean and the error surfaced
+only after wiring up a caller. `--all` makes every declaration with no existing
+instance a typecheck root, and lifts the no-main rule for the mode so a library
+file checks before its callers exist. Making it work on real code required two
+checker completions in deferred resolution: a field access on an unbound
+parameter now infers the unique struct declaring that field (ambiguous still
+errors — no guessing), and an unbound index base commits to slice (or map for a
+non-int key). Both fire only where the checker previously hard-errored, and as
+a bonus fix `export func` with struct/slice parameters, which failed the same
+way. Deferred index/range errors now name their function. Verified clean on the
+full nanite demo (#645).
+
+- **`--race-safe` understands machweb.** `serve`, `serve_on`,
+  `serve_on_quiet`, `serve_tls` and `serve_router` handlers are now modeled as
+  the per-request goroutines they are — a handler writing a package global
+  fails the gate instead of dying later as an arena use-after-free, with
+  false-positive guards for same-named user functions and unserved routes
+  (#647).
+- **Arena-backed values stored into package globals are promoted.** A string,
+  slice, map or struct written to a global from a goroutine used to dangle once
+  the writer's arena was reclaimed; global stores now copy the payload into the
+  main arena (`mfl_promote_strs`, JSON round-trip for containers). This also
+  taught the JSON serializer/parser the `bytes` type (base64 round-trip) and
+  emit serializer prototypes before bodies so recursive types order correctly —
+  two latent bugs the Redis framework's `[]bytes` field exposed (#648).
+- **Channels can't deliver a send to its own sender.** Machin channels are
+  unbounded queues, but a node could be dequeued by the goroutine that queued
+  it — `ch <- 1; <-ch` in one goroutine completed both ops, so the keeper-lock
+  idiom spun at 100% CPU. Receives now treat own-sent head nodes as
+  nothing-receivable and park; the deadlock watchdog catches the genuine
+  self-deadlock, matching Go's detectable-deadlock behavior (#673).
+- **The full peek/poke width matrix.** `poke_*`/`peek_*` now cover
+  i8/i16/i32/i64, u8/u16/u32/u64, f32/f64 and ptr — signed reads sign-extend,
+  unsigned zero-extend (`peek_u32` matters for RGBA/length fields where
+  `peek_i32` flips ≥2³¹) (#675).
+- **SQLite errors are actually reported.** `sqlite_exec` returns the sqlite3
+  result code (nonzero on failure — a lost write is detectable) and databases
+  open with a 5s `busy_timeout` so lock races wait instead of vanishing;
+  `sqlite_query` returns `""` on failure (distinct from a valid `"[]"`) with
+  `sqlite_errmsg` saying why (#646, #672).
+- **`read_file`/`read_file_bytes` read procfs and sysfs.** Those files report
+  size 0, so the old `ftell`-sized read returned nothing; both now read to EOF
+  with `ftell` as a capacity hint only (#668).
+- **Struct/cstruct typedefs emit in dependency order**, so forward references
+  between cstructs and user structs compile instead of failing on an
+  undeclared type (#650).
+- **Selfhost compiler parity:** `make([]T, n[, cap])` slice allocation, the
+  `<-` send/less-than disambiguation, float exponent literals, and `sort` —
+  the self-hosted compiler now builds the entire nanite demo byte-identically
+  to the Go compiler (#678).
+- machweb `serve_on` (bind a second port) and `serve_on_quiet` (caller
+  announces its own bind), with `X-Forwarded-For` trusted only from the
+  configured proxy (#671, #674); typecheck errors name the function and source
+  position on mismatches (#676); static OpenSSL builds probe and link `.a`
+  archives (#677).
+- **`framework/json.src` — correct JSON string encode/decode.** `json_get`
+  returns the raw token, so a string value arrives quoted *and* escaped; the
+  obvious `substr` strip is wrong for every escape. `json_unquote`/`json_quote`/
+  `json_str` round-trip any string — quotes, backslashes, control bytes, emoji —
+  for building documents by concatenation and reading string fields (#649).
+
 ## v0.140.0
 
 **`map_free` — reclaim a transient map on the main goroutine's arena.**
