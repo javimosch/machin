@@ -48,7 +48,9 @@ func CompileToCTarget(p *Program, safe bool, target string) (string, []string, e
 // (dial/listen/accept/read/write) via winsock2; Phase TLS added HTTPS/TLS + the
 // OpenSSL crypto builtins, which link a user-supplied mingw OpenSSL (see
 // BuildWindows / MACHIN_WIN_OPENSSL). Terminal raw mode now maps onto the
-// console API. Still not wired: XEdDSA (libsodium) and POSIX regex. Failing
+// console API; SQLite and zlib are compiled in from vendored sources. XEdDSA
+// links a user-supplied mingw libsodium like the native build does (see
+// BuildWindows / MACHIN_WIN_SODIUM). Still not wired: POSIX regex. Failing
 // here — rather than emitting C that dies deep in the linker — keeps the error
 // actionable.
 func windowsUnsupported(g *cgen) error {
@@ -56,11 +58,10 @@ func windowsUnsupported(g *cgen) error {
 		used bool
 		what string
 	}{
-		{g.usesXEdDSA, "XEdDSA (xeddsa_* — needs libsodium for Windows, not yet wired)"},
 		{g.usesRegex, "regex (regex_*)"},
 	} {
 		if u.used {
-			return fmt.Errorf("the windows target does not yet support %s — see issue #517 (supported: the stdio/compute core, TCP sockets, SQLite, and HTTPS/TLS+crypto via a user-supplied OpenSSL)", u.what)
+			return fmt.Errorf("the windows target does not yet support %s — see issue #517 (supported: the stdio/compute core, TCP sockets, SQLite, HTTPS/TLS+crypto via MACHIN_WIN_OPENSSL, and XEdDSA via MACHIN_WIN_SODIUM)", u.what)
 		}
 	}
 	return nil

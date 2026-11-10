@@ -611,14 +611,19 @@ id(42); id("hi"); id(3.14)   // → three native functions
   (`https_*`/`wss_*`) and the OpenSSL crypto builtins. Portability is handled by
   `#ifdef _WIN32` guards in the emitted runtime (so the same C still builds native
   and wasm). TLS/crypto link a mingw OpenSSL the caller supplies via
-  `MACHIN_WIN_OPENSSL=/path` (a dir with `include/` and `lib/`); the CA root
+  `MACHIN_WIN_OPENSSL=/path` (a dir with `include/` and `lib/` — e.g. msys2's
+  ucrt64 `mingw-w64-ucrt-x86_64-openssl`; zig's windows-gnu target is UCRT, so
+  msvcrt mingw64 builds fail to link); the CA root
   bundle is compiled in so certificates verify with no external files. Terminal
   raw mode works via the console API — `raw_mode` clears
   `ENABLE_LINE_INPUT|ENABLE_ECHO_INPUT` with `SetConsoleMode`, `read_key` uses
   `_kbhit`/`_getch` and peeks a redirected stdin so it never blocks. Off a tty the
   two targets agree exactly: `raw_mode` returns `-1` and `read_key` returns at
-  once. XEdDSA (libsodium) and regex remain unsupported and are rejected at build
-  time.
+  once. XEdDSA (`xeddsa_sign`/`xeddsa_verify`) is supported: the runtime declares
+  the libsodium symbols itself, so it links a mingw libsodium's `libsodium.a`
+  supplied via `MACHIN_WIN_SODIUM=/path` (e.g. msys2's ucrt64
+  `mingw-w64-ucrt-x86_64-libsodium`) plus the same OpenSSL (it hashes with EVP
+  SHA-512). POSIX regex remains unsupported and is rejected at build time.
 
 ---
 
