@@ -8350,7 +8350,13 @@ func (g *cgen) binaryCombine(ex *Binary, l, r string) string {
 // isBoxed reports whether a variable in the current instance is captured by a
 // closure and therefore heap-boxed (captured by reference).
 func (g *cgen) isBoxed(name string) bool {
-	return g.c.SrcFunc(g.curFn).Boxed[name]
+	sf := g.c.SrcFunc(g.curFn)
+	// "$globals" (package-var initializers) is a synthetic context with no
+	// FuncDecl instance — it has no locals, so nothing can be boxed there.
+	if sf == nil {
+		return false
+	}
+	return sf.Boxed[name]
 }
 
 // varRef is the C lvalue/rvalue for a variable: a plain local, or a dereference

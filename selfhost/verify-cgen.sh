@@ -421,6 +421,21 @@ func main() {
 EOF
 run "$T/h20.src"
 
+# h22 — global initializers may reference earlier globals AND call functions /
+# builtins (idents inside make() sizes, arithmetic, Call nodes). The "$globals"
+# synthetic context has no FuncDecl instance; Go's isBoxed nil-derefed on it,
+# and the selfhost dropped cur_cnodes/cur_cinsts/cur_lit* for iid == -1 lookups.
+cat > "$T/h22.src" <<'EOF'
+var n = 3
+var m = n + 1
+var xs = make([]int, n, m * 2)
+func dbl(x) { return x * 2 }
+var d = dbl(n)
+var s = str(n) + "!"
+func main() { println(m + len(xs) + d + len(s)) }
+EOF
+run "$T/h22.src"
+
 # SELF-APPLICATION: the MFL codegen emits byte-identical C for the compiler's OWN
 # source (checker + full codegen) — the fixpoint-adjacent milestone.
 $N "$MACHIN" encode selfhost/lex.src selfhost/parse.src selfhost/check.src \
