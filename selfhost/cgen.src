@@ -372,32 +372,57 @@ func seq_operands(iid, idxs) (names, decls, wrapped) {
 
 // callee_cname: the C name of the callee instance for the call node `idx` in iid.
 func callee_cname(iid, idx) (cn) {
+    cn = "/*?*/"
+    if iid < 0 {
+        // $globals context: call records live in g_glob_cn/g_glob_ci
+        j := 0
+        for j < len(g_glob_cn) {
+            if g_glob_cn[j] == idx { cn = g_insts[g_glob_ci[j]].cname  return cn }
+            j = j + 1
+        }
+        return cn
+    }
     ins := g_insts[iid]
     j := 0
     for j < len(ins.cnodes) {
         if ins.cnodes[j] == idx { cn = g_insts[ins.cinsts[j]].cname  return cn }
         j = j + 1
     }
-    cn = "/*?*/"
 }
 
 // funclit_cname: the C name of the lifted function for the K_FUNCLIT node `idx` in
 // iid (#308) — mirrors callee_cname exactly, over litnodes/litinsts instead of
 // cnodes/cinsts.
 func funclit_cname(iid, idx) (cn) {
+    cn = "/*?*/"
+    if iid < 0 {
+        j := 0
+        for j < len(g_glob_ln) {
+            if g_glob_ln[j] == idx { cn = g_insts[g_glob_li[j]].cname  return cn }
+            j = j + 1
+        }
+        return cn
+    }
     ins := g_insts[iid]
     j := 0
     for j < len(ins.litnodes) {
         if ins.litnodes[j] == idx { cn = g_insts[ins.litinsts[j]].cname  return cn }
         j = j + 1
     }
-    cn = "/*?*/"
 }
 
 // funclit_inst: the lambda instance id for the K_FUNCLIT node `idx` in iid (#308 Phase 2)
 // — mirrors funclit_cname, returning the instance id (for its capture count/names).
 func funclit_inst(iid, idx) (lid) {
     lid = -1
+    if iid < 0 {
+        j := 0
+        for j < len(g_glob_ln) {
+            if g_glob_ln[j] == idx { lid = g_glob_li[j]  return lid }
+            j = j + 1
+        }
+        return lid
+    }
     ins := g_insts[iid]
     j := 0
     for j < len(ins.litnodes) {

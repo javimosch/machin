@@ -131,6 +131,10 @@ func compile_to_c(path, full) {
     }
     g_glob_nn = cur_nn
     g_glob_ns = cur_ns
+    g_glob_cn = cur_cnodes
+    g_glob_ci = cur_cinsts
+    g_glob_ln = cur_litnodes
+    g_glob_li = cur_litinsts
     if has_main == 1 { instantiate("main") }
     for _, en := range exported { instantiate(en) }
     if g_unsupported == 1 { g_compile_rc = 3  return }

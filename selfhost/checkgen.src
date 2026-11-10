@@ -58,9 +58,15 @@ var g_insts = []Inst{}
 var cur_nn = []int{}
 var cur_ns = []int{}
 // the $globals context: node->slot recordings for package-global initializer exprs
-// (codegen queries these with iid == -1).
+// (codegen queries these with iid == -1), plus the call/funclit instance records —
+// without them a Call or K_FUNCLIT inside a global init segfaulted cg_call's
+// g_insts[-1] lookup.
 var g_glob_nn = []int{}
 var g_glob_ns = []int{}
+var g_glob_cn = []int{}
+var g_glob_ci = []int{}
+var g_glob_ln = []int{}
+var g_glob_li = []int{}
 var cur_cnodes = []int{}
 var cur_cinsts = []int{}
 var cur_litnodes = []int{}   // #308: K_FUNCLIT node indices ...

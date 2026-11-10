@@ -104,6 +104,28 @@ export func bump(d) (n) { count = count + d  n = count }
 	}
 }
 
+// A global initializer may reference earlier globals — including inside
+// make() sizes. These compile in the synthetic "$globals" context, which has
+// no FuncDecl instance; varRef must not dereference it looking for boxed
+// captures (previously a nil-pointer panic in isBoxed).
+func TestGlobalInitReferencesGlobal(t *testing.T) {
+	prog := progFromSrc(t, `
+var n = 3
+var m = n + 1
+var xs = make([]int, n, m * 2)
+func dbl(x) { return x * 2 }
+var d = dbl(n)
+func main() { println(m)  println(len(xs))  println(d) }
+`)
+	out, err := RunCaptured(prog)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := strings.Fields(out); len(got) != 3 || got[0] != "4" || got[1] != "3" || got[2] != "6" {
+		t.Fatalf("global-referencing init wrong: %q (want 4 3 6)", out)
+	}
+}
+
 // Multiple globals maintain independent state across calls; each can be
 // modified separately and both persist between function calls.
 func TestMultipleGlobalsIndependent(t *testing.T) {
