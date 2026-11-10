@@ -341,6 +341,93 @@ func TestRace_ClosureReadVsMainWrite(t *testing.T) {
 	}
 }
 
+// ── machweb handler spawn sites (#647) ───────────────────────────────────────
+// serve-family calls run their func-valued handler on a per-request goroutine,
+// so handler global accesses race with sibling handlers exactly like `go`.
+
+func TestRace_MachwebHandlerWrite(t *testing.T) {
+	// the issue repro shape: an inline handler writing a package global. `serve`
+	// qualifies as a spawn entry only because its body contains a `go`.
+	fs := rcCheck(t,
+		"var hits = []int{}",
+		"func worker(){println(\"x\")}",
+		"func serve(port, handler){go worker() println(port)}",
+		"func main(){serve(1, func(x){hits=[]int{} println(\"h\")})}")
+	rcReport(t, "machweb handler global write", fs)
+	if len(fs) != 1 || fs[0].Root != "hits" || fs[0].Kind != "write/write" {
+		t.Fatalf("want 1 write/write race on hits, got %+v", fs)
+	}
+	if !strings.Contains(fs[0].Writers[0], "machweb request handler") {
+		t.Fatalf("want machweb handler desc, got %q", fs[0].Writers[0])
+	}
+}
+
+func TestRace_MachwebHandlerClosureVar(t *testing.T) {
+	// a closure bound to a local then passed to serve resolves the same way.
+	fs := rcCheck(t,
+		"var hits = []int{}",
+		"func worker(){println(\"x\")}",
+		"func serve(port, handler){go worker() println(port)}",
+		"func main(){h:=func(x){hits=append(hits,1)} serve(1,h)}")
+	rcReport(t, "machweb handler via closure var", fs)
+	if len(fs) != 1 || fs[0].Root != "hits" {
+		t.Fatalf("want 1 race on hits, got %+v", fs)
+	}
+}
+
+func TestRace_MachwebRouteHandlers(t *testing.T) {
+	// route() handlers run on serve_router's per-request goroutines; two routes
+	// writing the same global race with each other.
+	fs := rcCheck(t,
+		"var count = 0",
+		"func worker(){println(\"x\")}",
+		"func serve(port, handler){go worker() println(port)}",
+		"func serve_router(port, router){serve(port, func(req){return 0})}",
+		"func route(router, method, path, handler){router[method+\" \"+path]=handler}",
+		"func main(){r:=make(map[string]func) route(r,\"GET\",\"/a\",func(req){count=count+1}) route(r,\"GET\",\"/b\",func(req){count=count+1}) serve_router(1,r)}")
+	rcReport(t, "machweb route handlers write/write", fs)
+	if len(fs) != 1 || fs[0].Root != "count" || fs[0].Kind != "write/write" {
+		t.Fatalf("want 1 write/write race on count, got %+v", fs)
+	}
+}
+
+func TestRace_MachwebHandlerReadOnly(t *testing.T) {
+	// a handler that only reads a global nobody else writes concurrently is safe.
+	fs := rcCheck(t,
+		"var base = 100",
+		"func worker(){println(\"x\")}",
+		"func serve(port, handler){go worker() println(port)}",
+		"func main(){serve(1, func(x){println(base)})}")
+	rcReport(t, "machweb read-only handler", fs)
+	if len(fs) != 0 {
+		t.Fatalf("want CLEAN (no writer), got %+v", fs)
+	}
+}
+
+func TestRace_MachwebUserServeNoGo(t *testing.T) {
+	// a same-named user function whose body has no `go` is NOT a spawn site.
+	fs := rcCheck(t,
+		"var hits = []int{}",
+		"func serve(port, handler){handler(port)}",
+		"func main(){serve(1, func(x){hits=[]int{} println(\"h\")})}")
+	rcReport(t, "user serve without go", fs)
+	if len(fs) != 0 {
+		t.Fatalf("want CLEAN (serve doesn't spawn), got %+v", fs)
+	}
+}
+
+func TestRace_MachwebRouteWithoutRouter(t *testing.T) {
+	// route() handlers only spawn when a router is actually served.
+	fs := rcCheck(t,
+		"var count = 0",
+		"func route(router, method, path, handler){router[method+\" \"+path]=handler}",
+		"func main(){r:=make(map[string]func) route(r,\"GET\",\"/a\",func(req){count=count+1}) route(r,\"GET\",\"/b\",func(req){count=count+1})}")
+	rcReport(t, "route without serve_router", fs)
+	if len(fs) != 0 {
+		t.Fatalf("want CLEAN (router never served), got %+v", fs)
+	}
+}
+
 // ── banner ──────────────────────────────────────────────────────────────────
 
 func TestRace_ZZZBanner(t *testing.T) {
