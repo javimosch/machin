@@ -5587,6 +5587,10 @@ const sqliteRuntime = `#include <sqlite3.h>
 static int64_t mfl_sqlite_open(const char* path) {
     sqlite3* db = NULL;
     if (sqlite3_open(path, &db) != SQLITE_OK) { sqlite3_close(db); return 0; }
+    /* #646: SQLite's default busy_timeout is 0, so a writer that loses a lock
+       race gets SQLITE_BUSY instantly and the write silently does not happen.
+       Wait up to 5s instead — the issue's own workaround, made the default. */
+    sqlite3_busy_timeout(db, 5000);
     return (int64_t)(intptr_t)db;
 }
 static int64_t mfl_sqlite_exec(int64_t h, const char* sql) {

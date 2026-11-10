@@ -942,6 +942,24 @@ func TestSQLiteQueryError(t *testing.T) {
 	}
 }
 
+// #646: sqlite_exec returns the sqlite3 result code — 0 on success, nonzero on
+// failure (e.g. 19 SQLITE_CONSTRAINT). The rc channel exists; this pins it.
+func TestSQLiteExecRc(t *testing.T) {
+	main := `func main() {
+	db := sqlite_open(":memory:")
+	sqlite_exec(db, "CREATE TABLE t(k TEXT PRIMARY KEY)")
+	a := sqlite_exec(db, "INSERT INTO t VALUES(?)", []string{"x"})
+	b := sqlite_exec(db, "INSERT INTO t VALUES(?)", []string{"x"})
+	println(str(a) + " " + str(b))
+	sqlite_close(db)
+}`
+	out, _ := buildRun(t, main)
+	fields := strings.Fields(out)
+	if len(fields) != 2 || fields[0] != "0" || fields[1] == "0" {
+		t.Fatalf("sqlite_exec rc: got %q, want '0 <nonzero>'", out)
+	}
+}
+
 // url_encode follows RFC 3986 (space -> %20, reserved chars escaped, unreserved
 // kept); url_decode reverses it and also treats '+' as space.
 func TestURLEncoding(t *testing.T) {
