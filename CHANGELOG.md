@@ -59,6 +59,11 @@ full nanite demo (#645).
   configured proxy (#671, #674); typecheck errors name the function and source
   position on mismatches (#676); static OpenSSL builds probe and link `.a`
   archives (#677).
+- **`framework/json.src` — correct JSON string encode/decode.** `json_get`
+  returns the raw token, so a string value arrives quoted *and* escaped; the
+  obvious `substr` strip is wrong for every escape. `json_unquote`/`json_quote`/
+  `json_str` round-trip any string — quotes, backslashes, control bytes, emoji —
+  for building documents by concatenation and reading string fields (#649).
 
 ## v0.140.0
 
