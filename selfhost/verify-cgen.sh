@@ -345,6 +345,27 @@ func main() {
 }
 EOF
 run "$T/h18.src"
+# h19 — full peek/poke width matrix (#675): every signed/unsigned width plus
+# f64 and ptr must emit the same mfl_* call in both compilers.
+cat > "$T/h19.src" <<'EOF'
+func main() {
+    p := alloc(64)
+    poke_i8(p, 0, -100)
+    poke_u16(p, 4, 65535)
+    poke_i32(p, 8, -70000)
+    poke_u32(p, 12, 4000000000)
+    poke_i64(p, 16, -9000000000)
+    poke_u64(p, 24, 0x7FFFFFFFFFFFFFFF)
+    poke_f32(p, 32, 2.5)
+    poke_f64(p, 40, 3.14159)
+    poke_ptr(p, 48, p)
+    println(peek_i8(p, 0), peek_u16(p, 4), peek_i32(p, 8), peek_u32(p, 12))
+    println(peek_i64(p, 16), peek_u64(p, 24), peek_f32(p, 32), peek_f64(p, 40))
+    println(peek_ptr(p, 48) == p)
+    free(p)
+}
+EOF
+run "$T/h19.src"
 
 # SELF-APPLICATION: the MFL codegen emits byte-identical C for the compiler's OWN
 # source (checker + full codegen) — the fixpoint-adjacent milestone.

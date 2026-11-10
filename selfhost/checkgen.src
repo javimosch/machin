@@ -1103,10 +1103,10 @@ func bspec(name) (s) {
     if name == "alloc" { s = "i>i"  return s }
     if name == "free" { s = "i>v"  return s }
     if name == "madvise_free" { s = "ii>v"  return s }
-    if name == "poke_f32" { s = "iin>v"  return s }
-    if name == "poke_i32" || name == "poke_u8" || name == "poke_u16" || name == "poke_ptr" { s = "iii>v"  return s }
-    if name == "peek_f32" { s = "ii>f"  return s }
-    if name == "peek_i32" || name == "peek_i8" || name == "peek_u8" { s = "ii>i"  return s }
+    if name == "poke_f32" || name == "poke_f64" { s = "iin>v"  return s }
+    if name == "poke_i8" || name == "poke_i16" || name == "poke_i32" || name == "poke_i64" || name == "poke_u8" || name == "poke_u16" || name == "poke_u32" || name == "poke_u64" || name == "poke_ptr" { s = "iii>v"  return s }
+    if name == "peek_f32" || name == "peek_f64" { s = "ii>f"  return s }
+    if name == "peek_i8" || name == "peek_i16" || name == "peek_i32" || name == "peek_i64" || name == "peek_u8" || name == "peek_u16" || name == "peek_u32" || name == "peek_u64" || name == "peek_ptr" { s = "ii>i"  return s }
     if name == "dot_i8" { s = "iii>i"  return s }
     if name == "dot_q8" { s = "iiiiii>f"  return s }
     if name == "matmul_q8_batch" { s = "iiiiiiiiiii>v"  return s }

@@ -695,8 +695,10 @@ extern "m" { header "math.h" link "m" fn sqrt(float) float fn pow(float, float) 
 
 **Raw memory** (pointers are `int`s, like `ptr`) lets MFL build C buffers and
 structs to hand to a foreign function: `alloc(n) -> int` (n **zeroed** bytes),
-`free(p)`, `poke_f32`/`poke_i32`/`poke_u8`/`poke_u16`/`poke_ptr(p, byteOffset, v)`,
-`peek_f32`/`peek_i32(p, byteOffset)`, and `ptr_str(p) -> string` (read a
+`free(p)`, `poke_f32`/`poke_f64`/`poke_i8`/`poke_i16`/`poke_i32`/`poke_i64`/
+`poke_u8`/`poke_u16`/`poke_u32`/`poke_u64`/`poke_ptr(p, byteOffset, v)`,
+`peek_f32`/`peek_f64`/`peek_i8`/`peek_i16`/`peek_i32`/`peek_i64`/
+`peek_u8`/`peek_u16`/`peek_u32`/`peek_u64`/`peek_ptr(p, byteOffset)`, and `ptr_str(p) -> string` (read a
 NUL-terminated C string at `p`). The pattern for a GPU mesh: `poke` the
 vertex/colour arrays and a `Mesh` struct into `alloc`'d memory, `UploadMesh(p, ...)`
 (a `ptr` param — `void*` converts to `Mesh*`, and the call writes the VAO/VBO ids
