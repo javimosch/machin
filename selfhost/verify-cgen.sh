@@ -290,6 +290,62 @@ func main() {
 EOF
 run "$T/h14.src"
 
+# h15 — make([]T, n[, cap]) slice allocation (#678: was a selfhost parse gap).
+cat > "$T/h15.src" <<'EOF'
+func main() {
+    a := make([]int, 4)
+    a[0] = 7
+    a[3] = 9
+    println(len(a), a[0], a[3])
+    b := make([]float, 3, 8)
+    b[1] = 2.5
+    println(len(b), b[1])
+    s := make([]string, 2)
+    s[0] = "hi"
+    println(s[0], len(s))
+}
+EOF
+run "$T/h15.src"
+
+# h16 — `<-` lexer ambiguity (issue #208): `a < -2` tightens to `a<-2` in the
+# canonical .mfl and must still parse as less-than + unary minus, while a real
+# send `ch <- v` keeps its meaning.
+cat > "$T/h16.src" <<'EOF'
+func main() {
+    a := 5
+    b := a < -2
+    c := a<-2
+    println(b, c)
+}
+EOF
+run "$T/h16.src"
+
+# h17 — float exponent literals (1e-30, 2.5e3, 1E+2).
+cat > "$T/h17.src" <<'EOF'
+func main() {
+    a := 1e-30
+    b := 2.5e3
+    c := 1E+2
+    d := 1e3
+    println(a, b, c, d)
+}
+EOF
+run "$T/h17.src"
+
+# h18 — sort(xs): copy-sort builtin (#580). sort_by needs a closure arg, which
+# still hits the pre-existing $lambda C-name divergence — covered by hand check.
+cat > "$T/h18.src" <<'EOF'
+func main() {
+    xs := []int{}
+    xs = append(xs, 3)
+    xs = append(xs, 1)
+    xs = append(xs, 2)
+    ys := sort(xs)
+    println(ys[0], ys[1], ys[2], len(xs))
+}
+EOF
+run "$T/h18.src"
+
 # SELF-APPLICATION: the MFL codegen emits byte-identical C for the compiler's OWN
 # source (checker + full codegen) — the fixpoint-adjacent milestone.
 $N "$MACHIN" encode selfhost/lex.src selfhost/parse.src selfhost/check.src \

@@ -268,6 +268,7 @@ func cg_expr(iid, idx) (out) {
         out = "mfl_make_chan(sizeof(" + ect + "), 0, 0, " + str(len(offs)) + ", " + join(casted, ", ") + ")"
         return out
     }
+    if k == K_MAKESLICE { out = cg_makeslice(iid, idx)  return out }
     if k == K_RECV {
         out = "({ " + node_ctype(iid, idx) + " _r; mfl_chan_recv(" + cg_expr(iid, n.a) + ", &_r); _r; })"
         return out

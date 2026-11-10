@@ -238,6 +238,22 @@ func cg_builtin(iid, call_idx, callee, names) (out) {
     }
     if callee == "noise2" { out = "mfl_noise2((double)(" + names[0] + "), (double)(" + names[1] + "))"  return out }
     if callee == "noise3" { out = "mfl_noise3((double)(" + names[0] + "), (double)(" + names[1] + "), (double)(" + names[2] + "))"  return out }
+    if callee == "sort" {
+        ect := elem_ctype(iid, argn[0])
+        lt := sort_lt(ect)
+        if lt == "" { g_cg_unsup = 1  out = "0"  return out }
+        out = "mfl_sort_copy(" + names[0] + ", sizeof(" + ect + "), " + lt + ", NULL)"
+        return out
+    }
+    if callee == "sort_by" {
+        ect := elem_ctype(iid, argn[0])
+        cmp := sort_comparator(ect)
+        id := g_scbid
+        g_scbid = g_scbid + 1
+        ids := str(id)
+        out = "({ mfl_closure _sc" + ids + " = " + names[1] + "; mfl_sort_copy(" + names[0] + ", sizeof(" + ect + "), " + cmp + ", &_sc" + ids + "); })"
+        return out
+    }
     if callee == "json" || callee == "parse" { g_cg_unsup = 1  out = "0"  return out }
     // copy (#639) emits a per-type deep copier, generated on demand and placed
     // ahead of the function bodies — the same shape as the JSON serializers,

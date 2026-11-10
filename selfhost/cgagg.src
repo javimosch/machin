@@ -365,6 +365,54 @@ func cg_makemap(iid, idx) (out) {
     out = "mfl_make_map(" + str(ki) + ", sizeof(" + map_val_ctype(iid, idx) + "))"
 }
 
+// cg_makeslice: make([]T, len[, cap]) — a defaults to len when absent (n.b < 0).
+func cg_makeslice(iid, idx) (out) {
+    n := nodes[idx]
+    lx := cg_expr(iid, n.a)
+    cx := lx
+    if n.b >= 0 { cx = cg_expr(iid, n.b) }
+    out = "mfl_make_slice(" + lx + ", " + cx + ", sizeof(" + elem_ctype(iid, idx) + "))"
+}
+
+// ---- sort / sort_by (#580) ----
+// g_sortfns collects the per-element-type comparator bridges generated on demand
+// during body emission; cgprog splices them before the globals, matching the
+// reference's sortFns position. g_scbid is the statement-expression temp counter.
+var g_sortfns = []string{}
+var g_sortmemo_k = []string{}
+var g_sortmemo_v = []string{}
+var g_sortid = 0
+var g_scbid = 0
+
+// sort_lt picks the mfl_lt_* comparator for a slice element C type; "" = unordered.
+func sort_lt(ect) (fn) {
+    fn = ""
+    if ect == "int64_t" { fn = "mfl_lt_i64"  return fn }
+    if ect == "double" { fn = "mfl_lt_f64"  return fn }
+    if ect == "char*" { fn = "mfl_lt_str"  return fn }
+}
+
+// sort_comparator ensures the bridge between mfl_sort_run's raw comparator and an
+// MFL `less` closure exists for element C type `ect`, returning its name. Port of
+// (*cgen).sortComparator — the closure is read back out of ctx and invoked through
+// the same env-leading convention as any function value.
+func sort_comparator(ect) (name) {
+    i := 0
+    for i < len(g_sortmemo_k) {
+        if g_sortmemo_k[i] == ect { name = g_sortmemo_v[i]  return name }
+        i = i + 1
+    }
+    name = "mfl_ltby_" + str(g_sortid)
+    g_sortid = g_sortid + 1
+    g_sortmemo_k = append(g_sortmemo_k, ect)
+    g_sortmemo_v = append(g_sortmemo_v, name)
+    fn := "static int " + name + "(const void* _a, const void* _b, void* _ctx) {\n" +
+        "    mfl_closure _c = *(mfl_closure*)_ctx;\n" +
+        "    return ((int(*)(void*, " + ect + ", " + ect + "))_c.fn)(_c.env, *(const " + ect + "*)_b, *(const " + ect + "*)_a);\n" +
+        "}\n"
+    g_sortfns = append(g_sortfns, fn)
+}
+
 // ---- statement emitters (caller has emitted the leading indent) ----
 func cg_index_assign(iid, idx, depth) {
     n := nodes[idx]
