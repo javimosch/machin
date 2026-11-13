@@ -1,0 +1,282 @@
+// wsclient.src — a pure-MFL WebSocket (RFC 6455) CLIENT for cleartext ws:// endpoints.
+// The TLS sibling is the wss_* builtin family (wss_open/wss_send/wss_recv/wss_close);
+// this file is the plaintext side, written in MFL over dial()/read_bytes/write_bytes —
+// no cgo, same self-contained shape as framework/postgres.src. It is a CLIENT only:
+// for the server side (machweb upgrade + frame codec) compose framework/ws.src.
+//
+//   c, ok := wsc_open("127.0.0.1", 8080, "/chat")          // ws://host:port/path
+//   if ok == 1 {
+//       n := wsc_send(c, "hello")
+//       msg, good := wsc_recv(c)                             // next whole message
+//       bin, bok := wsc_recv_bin(c)                          // NUL-safe bytes variant
+//       wsc_close(c)
+//   }
+//
+// wsc_open_h is the same handshake plus caller-supplied header lines
+// ([]string{"Authorization: Bearer x", ...}) — e.g. for a token-gated endpoint.
+// A line containing CR or LF is REFUSED (ok=0, nothing sent), the same fails-closed
+// rule as wss_open's headers argument: embedded CRLF would forge extra headers.
+//
+// Compose standalone — no machweb needed:
+//   machin encode framework/wsclient.src yourapp.src > app.mfl
+//
+// Protocol notes: client->server frames are masked with fresh randomness per frame
+// (RFC 6455 §5.3); server->client frames are unmasked (a masked one is still
+// decoded). Pings are answered with pongs automatically and fragmented messages
+// are reassembled, so wsc_recv/wsc_recv_bin return ONE whole message per call.
+// Same limits as the wss_* builtins: no permessage-deflate, no
+// Sec-WebSocket-Protocol negotiation. A single message over 64 MiB is refused
+// rather than buffered without bound. Do not touch c after wsc_close — the fd is
+// gone and MFL structs are values, so the close is not recorded back.
+
+type WSClient struct { fd int  buf []bytes }
+
+func wsc_attach(fd) (c) {
+    bx := []bytes{}
+    bx = append(bx, bytes(""))
+    c = WSClient{fd: fd, buf: bx}
+}
+
+// ---- buffered reads (the slice-box trick: buf[0] is mutated in place, so the
+// buffer persists across calls even though WSClient is passed by value) ----
+
+// wsc_fill ensures >= n bytes are buffered; ok=0 on EOF.
+func wsc_fill(c, n) (ok) {
+    ok = 1
+    while len(c.buf[0]) < n {
+        chunk := read_bytes(c.fd)
+        if len(chunk) == 0 { ok = 0  return }
+        c.buf[0] = bytes_concat(c.buf[0], chunk)
+    }
+}
+
+// wsc_take consumes and returns the first n buffered bytes.
+func wsc_take(c, n) (b) {
+    b = bytes_sub(c.buf[0], 0, n)
+    c.buf[0] = bytes_sub(c.buf[0], n, len(c.buf[0]))
+}
+
+func wsc_hex2(n) (s) {
+    d := "0123456789abcdef"
+    s = charat(d, (n >> 4) & 15) + charat(d, n & 15)
+}
+
+// wsc_u8 is an int 0-255 -> a one-byte bytes value.
+func wsc_u8(n) (b) { b = from_hex(wsc_hex2(n)) }
+
+// wsc_frame builds one MASKED client frame (FIN set) for an opcode + payload.
+func wsc_frame(opcode, payload) (f) {
+    mask := rand_bytes(4)
+    n := len(payload)
+    f = wsc_u8(128 | opcode)
+    if n < 126 {
+        f = bytes_concat(f, wsc_u8(128 | n))
+    } else {
+        if n < 65536 {
+            f = bytes_concat(f, wsc_u8(128 | 126))
+            f = bytes_concat(f, wsc_u8((n >> 8) & 255))
+            f = bytes_concat(f, wsc_u8(n & 255))
+        } else {
+            f = bytes_concat(f, wsc_u8(128 | 127))
+            i := 7
+            while i >= 0 { f = bytes_concat(f, wsc_u8((n >> (i * 8)) & 255))  i = i - 1 }
+        }
+    }
+    f = bytes_concat(f, mask)
+    hx := ""
+    i := 0
+    while i < n {
+        hx = hx + wsc_hex2(byte_at(payload, i) ^ byte_at(mask, i & 3))
+        i = i + 1
+    }
+    f = bytes_concat(f, from_hex(hx))
+}
+
+// wsc_frame_in reads ONE frame -> (fin, opcode, payload, ok). ok=0 on EOF/error.
+// Server frames are unmasked; a masked one is still decoded (nonconforming peers).
+// A declared payload over 64 MiB — or a negative length (>= 2^63) — is refused
+// rather than buffered without bound.
+func wsc_frame_in(c) (fin, opcode, payload, ok) {
+    fin = 0
+    opcode = 0
+    payload = bytes("")
+    ok = 0
+    if wsc_fill(c, 2) == 0 { return }
+    h := wsc_take(c, 2)
+    b0 := byte_at(h, 0)
+    b1 := byte_at(h, 1)
+    if (b0 & 128) != 0 { fin = 1 }
+    opcode = b0 & 15
+    masked := b1 & 128
+    n := b1 & 127
+    if n == 126 {
+        if wsc_fill(c, 2) == 0 { return }
+        e := wsc_take(c, 2)
+        n = (byte_at(e, 0) << 8) | byte_at(e, 1)
+    }
+    if n == 127 {
+        if wsc_fill(c, 8) == 0 { return }
+        e := wsc_take(c, 8)
+        n = 0
+        i := 0
+        while i < 8 { n = (n << 8) | byte_at(e, i)  i = i + 1 }
+    }
+    if n < 0 || n > 67108864 { return }
+    mask := bytes("")
+    if masked != 0 {
+        if wsc_fill(c, 4) == 0 { return }
+        mask = wsc_take(c, 4)
+    }
+    if wsc_fill(c, n) == 0 { return }
+    raw := wsc_take(c, n)
+    if masked != 0 {
+        hx := ""
+        i := 0
+        while i < n {
+            hx = hx + wsc_hex2(byte_at(raw, i) ^ byte_at(mask, i & 3))
+            i = i + 1
+        }
+        payload = from_hex(hx)
+    } else {
+        payload = raw
+    }
+    ok = 1
+}
+
+// wsc_next reads frames until one complete MESSAGE is reassembled -> (payload, ok).
+// Control frames are handled inline: ping -> pong, pong dropped, close -> ok=0.
+// ok=0 also on EOF or a refused oversized frame.
+func wsc_next(c) (msg, ok) {
+    msg = bytes("")
+    ok = 0
+    if c.fd < 0 { return }
+    while 1 == 1 {
+        fin, opcode, pl, good := wsc_frame_in(c)
+        if good == 0 { return }
+        if opcode == 8 { return }
+        if opcode == 9 {
+            w := write_bytes(c.fd, wsc_frame(10, pl))
+            if w < 0 { return }
+            continue
+        }
+        if opcode == 10 { continue }
+        msg = bytes_concat(msg, pl)
+        if fin != 0 { ok = 1  return }
+    }
+}
+
+// ---- the handshake ----
+
+// wsc_dial does the TCP connect + HTTP Upgrade handshake. hdrblock is pre-joined
+// "Name: Value\r\n" lines ("" for none). The 101 status AND the Sec-WebSocket-Accept
+// proof are both verified, so an endpoint that isn't really a WebSocket server
+// can't fake a successful open. Any failure closes the fd and returns ok=0.
+func wsc_dial(host, port, path, hdrblock) (c, ok) {
+    ok = 0
+    fd := dial(host, port)
+    if fd < 0 { c = wsc_attach(fd)  return }
+    c = wsc_attach(fd)
+    if path == "" { path = "/" }
+    hosthdr := host
+    if port != 80 { hosthdr = host + ":" + str(port) }
+    key := base64_encode_bytes(rand_bytes(16))
+    req := "GET " + path + " HTTP/1.1\r\n" +
+        "Host: " + hosthdr + "\r\n" +
+        "Upgrade: websocket\r\n" +
+        "Connection: Upgrade\r\n" +
+        "Sec-WebSocket-Key: " + key + "\r\n" +
+        "Sec-WebSocket-Version: 13\r\n" +
+        hdrblock + "\r\n"
+    w := write(fd, req)
+    if w <= 0 { close(fd)  c = wsc_attach(-1)  return }
+
+    // Read until the header-terminating blank line; bytes past it stay buffered —
+    // the server's first frame can share the same packet.
+    while 1 == 1 {
+        idx := bytes_index(c.buf[0], bytes("\r\n\r\n"), 0)
+        if idx >= 0 {
+            head := bytes_str(bytes_sub(c.buf[0], 0, idx + 4))
+            c.buf[0] = bytes_sub(c.buf[0], idx + 4, len(c.buf[0]))
+            accept := base64_encode_bytes(sha1_bytes(bytes(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")))
+            if contains(head, " 101") == false { close(fd)  c = wsc_attach(-1)  return }
+            if contains(head, accept) == false { close(fd)  c = wsc_attach(-1)  return }
+            ok = 1
+            return
+        }
+        if len(c.buf[0]) > 262144 { close(fd)  c = wsc_attach(-1)  return }
+        chunk := read_bytes(fd)
+        if len(chunk) == 0 { close(fd)  c = wsc_attach(-1)  return }
+        c.buf[0] = bytes_concat(c.buf[0], chunk)
+    }
+}
+
+// wsc_open connects + handshakes a ws:// endpoint -> (WSClient, ok). ok=0 on any
+// failure (dial, non-101, bad accept key, oversized/garbage handshake).
+func wsc_open(host, port, path) (c, ok) {
+    dc, dok := wsc_dial(host, port, path, "")
+    c = dc
+    ok = dok
+}
+
+// wsc_open_h is wsc_open plus extra handshake header lines ([]string). A line
+// containing CR or LF is refused up front — ok=0, nothing sent.
+func wsc_open_h(host, port, path, headers) (c, ok) {
+    c = wsc_attach(-1)
+    ok = 0
+    hb := ""
+    for _, h := range headers {
+        if h == "" { continue }
+        if contains(h, "\r") || contains(h, "\n") { return }
+        hb = hb + h + "\r\n"
+    }
+    dc, dok := wsc_dial(host, port, path, hb)
+    c = dc
+    ok = dok
+}
+
+// ---- the session ----
+
+// wsc_send writes one MASKED text message -> bytes written (-1 on a dead conn).
+func wsc_send(c, msg) (n) {
+    n = -1
+    if c.fd < 0 { return }
+    n = write_bytes(c.fd, wsc_frame(1, bytes(msg)))
+}
+
+// wsc_send_bin writes one MASKED binary message (opcode 0x2) — NUL-safe.
+func wsc_send_bin(c, b) (n) {
+    n = -1
+    if c.fd < 0 { return }
+    n = write_bytes(c.fd, wsc_frame(2, b))
+}
+
+// wsc_recv returns the next complete message as a string: (text, ok), ok=0 on
+// close/EOF. Truncates at an embedded NUL (same caveat as wss_recv) — for binary
+// payloads use wsc_recv_bin.
+func wsc_recv(c) (text, ok) {
+    text = ""
+    ok = 0
+    msg, good := wsc_next(c)
+    if good == 0 { return }
+    text = bytes_str(msg)
+    ok = 1
+}
+
+// wsc_recv_bin is wsc_recv's NUL-safe variant -> (payload bytes, ok).
+func wsc_recv_bin(c) (payload, ok) {
+    payload = bytes("")
+    ok = 0
+    msg, good := wsc_next(c)
+    if good == 0 { return }
+    payload = msg
+    ok = 1
+}
+
+// wsc_close sends a masked close frame and closes the fd -> 0 (-1 on a dead conn).
+func wsc_close(c) (n) {
+    n = -1
+    if c.fd < 0 { return }
+    w := write_bytes(c.fd, wsc_frame(8, bytes("")))
+    close(c.fd)
+    if w >= 0 { n = 0 }
+}
