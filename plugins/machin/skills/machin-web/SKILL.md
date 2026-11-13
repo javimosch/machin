@@ -90,6 +90,10 @@ func main() { serve(48080, func(req) { return handle(req) }) }
   [machin-tinystats](https://github.com/javimosch/machin-tinystats) (a 71 KB metrics
   dashboard: HTTP + WS + hub broadcast + a `getState chan chan string` for REST endpoints
   that need the current state synchronously without waiting for the next broadcast).
+  The cleartext `ws://` CLIENT is [`framework/wsclient.src`](../../framework/wsclient.src)
+  — `wsc_open`/`wsc_send`/`wsc_recv`/`wsc_close` (+ `_bin` variants, `wsc_open_h` for
+  handshake headers), pure MFL over `dial()`, no machweb needed (the `wss_*` builtins
+  remain the TLS side).
 - **A database:** machin has SQLite builtins — `sqlite_open(path)` / `sqlite_exec(db,
   sql)` / `sqlite_exec(db, sql, []string params)` (`?`-bind, injection-safe) /
   `sqlite_query(db, sql[, params]) -> string` (a **JSON-array-of-rows string**) /
