@@ -40,7 +40,7 @@ rebuilds and re-runs without you re-naming the source — and a crash the record
 | Files | `read_file`/`read_file_bytes` contents are logged, so replay reproduces even after the files are gone — the trace is self-contained ("the crash you can mail") |
 | Raw sockets | `dial`/`listen`/`accept`/`read`/`read_bytes`/`write`/`socket_timeout`/`peer_addr` are logged; replay serves the whole exchange from the trace — no network, no peer, works even while another process holds the port |
 | HTTP | `http_get`/`http_request`/`https_get`/`https_post` results (status + body + err) are logged; a program that crashes processing an API response replays with the exact response baked in, offline |
-| TLS / WebSocket | `tls_accept`/`tls_read`/`tls_write` and `wss_open`/`wss_recv`/`wss_send` are logged like raw sockets — the encrypted exchange replays with no handshake |
+| TLS / WebSocket | `tls_accept`/`tls_read`/`tls_write`, `wss_open`/`wss_recv`/`wss_send`, and the cleartext `ws_open`/`ws_recv`/`ws_send` are logged like raw sockets — the exchange replays with no handshake or network |
 
 Goroutine ids are **parent-relative paths** (`0`, `0.1`, `0.1.2`) assigned in the
 spawning goroutine's program order, so they're stable across record and replay even

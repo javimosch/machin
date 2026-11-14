@@ -1001,9 +1001,9 @@ func gen_builtin(callee, argslots) (handled, slot) {
         slot = c_string
         return handled, slot
     }
-    // wss_open takes an optional []string of header lines, so it cannot be
-    // described by the fixed-arity signature table below
-    if callee == "wss_open" {
+    // wss_open/ws_open take an optional []string of header lines, so they cannot
+    // be described by the fixed-arity signature table below
+    if callee == "wss_open" || callee == "ws_open" {
         if len(argslots) != 1 && len(argslots) != 2 { g_check_err = 1  return handled, slot }
         add_pair(argslots[0], c_string)
         if len(argslots) == 2 { add_pair(argslots[1], new_slice_slot(c_string)) }
@@ -1162,12 +1162,12 @@ func bspec(name) (s) {
     if name == "sqlite_open" { s = "s>i"  return s }
     if name == "sqlite_close" { s = "i>i"  return s }
     if name == "sqlite_errmsg" { s = "i>s"  return s }
-    // websockets (wss_open is variable-arity — handled in gen_builtin)
-    if name == "wss_send" { s = "is>i"  return s }
-    if name == "wss_recv" { s = "i>s"  return s }
-    if name == "wss_send_bin" { s = "iy>i"  return s }
-    if name == "wss_recv_bin" { s = "i>y"  return s }
-    if name == "wss_close" { s = "i>i"  return s }
+    // websockets (wss_open/ws_open are variable-arity — handled in gen_builtin)
+    if name == "wss_send" || name == "ws_send" { s = "is>i"  return s }
+    if name == "wss_recv" || name == "ws_recv" { s = "i>s"  return s }
+    if name == "wss_send_bin" || name == "ws_send_bin" { s = "iy>i"  return s }
+    if name == "wss_recv_bin" || name == "ws_recv_bin" { s = "i>y"  return s }
+    if name == "wss_close" || name == "ws_close" { s = "i>i"  return s }
     if name == "write" { s = "is>i"  return s }
     if name == "sleep" { s = "i>v"  return s }
     s = ""

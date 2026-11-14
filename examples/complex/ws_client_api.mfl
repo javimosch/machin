@@ -1,0 +1,2 @@
+func main(){url:="ws://127.0.0.1:8080/chat" h:=ws_open(url)if h==0{println("OPEN-FAIL "+url+" — start a ws:// server first")return}ws_send(h,"hello from machin")println("echo: "+ws_recv(h))ws_send_bin(h,from_hex("00ff10"))b:=ws_recv_bin(h)println("bin: "+to_hex(b))ws_close(h)println("DONE")}
+

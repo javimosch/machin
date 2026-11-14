@@ -20,6 +20,7 @@ func emit_prelude_gated() {
     if g_uses_tls == 1 || g_uses_wss == 1 { cemit(base64_decode(CG_PRELUDE_TLSCORE)) }
     if g_uses_tls == 1 { cemit(base64_decode(CG_PRELUDE_TLS)) }
     if g_uses_wss == 1 { cemit(base64_decode(CG_PRELUDE_WSS)) }
+    if g_uses_ws == 1 { cemit(base64_decode(CG_PRELUDE_WS)) }
     if g_uses_math == 1 { cemit(base64_decode(CG_PRELUDE_MATH)) }
     if g_uses_noise == 1 { cemit(base64_decode(CG_PRELUDE_NOISE)) }
     if g_uses_regex == 1 { cemit(base64_decode(CG_PRELUDE_REGEX)) }

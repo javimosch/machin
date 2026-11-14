@@ -1,8 +1,12 @@
 // wsclient.src — a pure-MFL WebSocket (RFC 6455) CLIENT for cleartext ws:// endpoints.
-// The TLS sibling is the wss_* builtin family (wss_open/wss_send/wss_recv/wss_close);
-// this file is the plaintext side, written in MFL over dial()/read_bytes/write_bytes —
-// no cgo, same self-contained shape as framework/postgres.src. It is a CLIENT only:
-// for the server side (machweb upgrade + frame codec) compose framework/ws.src.
+// For most programs the ws_open/ws_send/ws_recv/ws_close builtins (+ _bin variants)
+// are the shorter path — same wire protocol, no framework compose; this file remains
+// for the ok-flag API and for verifying the Sec-WebSocket-Accept proof (which the
+// builtins skip, like wss_*). The TLS sibling is the wss_* builtin family
+// (wss_open/wss_send/wss_recv/wss_close); this file is the plaintext side, written
+// in MFL over dial()/read_bytes/write_bytes — no cgo, same self-contained shape as
+// framework/postgres.src. It is a CLIENT only: for the server side (machweb upgrade
+// + frame codec) compose framework/ws.src.
 //
 //   c, ok := wsc_open("127.0.0.1", 8080, "/chat")          // ws://host:port/path
 //   if ok == 1 {
