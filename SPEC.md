@@ -401,6 +401,12 @@ An invalid ERE pattern (a `regcomp` failure) is not an error — there's no erro
 | `wss_send_bin` | `(int, bytes) -> int` | send a binary message (opcode `0x2`) — NUL-safe |
 | `wss_recv_bin` | `(int) -> bytes` | next message as `bytes` (blocks); empty `bytes` on close |
 | `wss_close` | `(int) -> int` | send close and tear down the connection |
+| `ws_open` | `(string[, []string]) -> int` | open a `ws://` WebSocket (cleartext — the `wss_*` sibling, no TLS); a connection handle, or 0 on failure. Same optional `"Key: Value"` header lines and CR/LF refusal as `wss_open` |
+| `ws_send` | `(int, string) -> int` | send a text message on a `ws://` connection |
+| `ws_recv` | `(int) -> string` | next message (blocks); `""` on close (auto ping/pong) |
+| `ws_send_bin` | `(int, bytes) -> int` | send a binary message (opcode `0x2`) — NUL-safe |
+| `ws_recv_bin` | `(int) -> bytes` | next message as `bytes` (blocks); empty `bytes` on close |
+| `ws_close` | `(int) -> int` | send close and tear down the connection |
 | `tls_server_ctx` | `(string, string) -> int` | load a cert+key (PEM files) → a server TLS context handle (0 on fail); for terminating HTTPS/TLS yourself, see `serve_tls` |
 | `tls_accept` | `(int, int) -> int` | `(ctx, fd)` — complete a server-side TLS handshake on an `accept()`'d fd → a tls handle (0 on fail) |
 | `tls_client_fd` | `(int, string) -> int` | `(fd, hostname)` — the STARTTLS primitive: upgrade an already-connected, plaintext-negotiated fd to a verified TLS handle in place (0 on fail) |
@@ -589,7 +595,9 @@ id(42); id("hi"); id(3.14)   // → three native functions
   `https_get`/`https_post` and `wss_open`/`wss_send`/`wss_recv`/`wss_close`
   additionally emit a TLS runtime (HTTPS and/or RFC 6455 WebSocket framing over a
   shared TLS core) and link OpenSSL (`-lssl -lcrypto`) — but only when used, so
-  programs that touch neither stay libc-only.
+  programs that touch neither stay libc-only. The cleartext `ws_*` WebSocket
+  builtins emit their own framing runtime over a plain `dial()` fd — no
+  OpenSSL — likewise only when used.
 - **Targets.** The default target is a native binary via `cc -O2` (the C compiler
   defaults to `cc`; set `CC` to override it, e.g. `CC=clang machin build app.mfl
   -o app`). `machin build
@@ -608,7 +616,7 @@ id(42); id("hi"); id(3.14)   // → three native functions
   stdio, strings/maps/slices, `json()`, arena blocks + `arena_reset()`,
   goroutines/channels (winpthreads), math, file I/O — plus TCP sockets
   (`dial`/`listen`/`accept`/`read`/`write`/`close`) via winsock2, plus HTTPS/TLS
-  (`https_*`/`wss_*`) and the OpenSSL crypto builtins. Portability is handled by
+  (`https_*`/`wss_*`/`ws_*`) and the OpenSSL crypto builtins. Portability is handled by
   `#ifdef _WIN32` guards in the emitted runtime (so the same C still builds native
   and wasm). TLS/crypto link a mingw OpenSSL the caller supplies via
   `MACHIN_WIN_OPENSSL=/path` (a dir with `include/` and `lib/` — e.g. msys2's

@@ -101,9 +101,10 @@ func ws_take(c, n) (b) {
     c.buf[0] = bytes_sub(c.buf[0], n, len(c.buf[0]))
 }
 
-// ws_recv reads one frame -> (opcode, payload, ok). Client frames are unmasked here.
+// ws_frame_in reads one frame -> (opcode, payload, ok). Client frames are unmasked here.
 // ok == 0 on close/EOF. Control frames (ping 9, pong 10, close 8) are returned as-is.
-func ws_recv(c) (opcode, payload, ok) {
+// (Named _in, not ws_recv: ws_recv is now a builtin — the ws:// client family.)
+func ws_frame_in(c) (opcode, payload, ok) {
     opcode = 0
     payload = bytes("")
     ok = 0
@@ -154,7 +155,7 @@ func ws_next_text(c) (text, ok) {
     text = ""
     ok = 0
     while 1 == 1 {
-        op, payload, good := ws_recv(c)
+        op, payload, good := ws_frame_in(c)
         if good == 0 { return }
         if op == 8 { return }                                   // close
         if op == 9 { p := ws_send_pong(c.fd, payload)  continue }   // ping -> pong
