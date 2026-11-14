@@ -3361,6 +3361,47 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		}
 		c.addPair(argSlots[0], c.cInt)
 		return c.cInt, nil
+	case "ws_open":
+		if len(argSlots) != 1 && len(argSlots) != 2 {
+			return 0, fmt.Errorf("ws_open: 1 or 2 args (url string[, headers []string])")
+		}
+		c.addPair(argSlots[0], c.cString)
+		if len(argSlots) == 2 {
+			c.addPair(argSlots[1], newSliceSlot(c, c.cString))
+		}
+		return c.cInt, nil
+	case "ws_send":
+		if len(argSlots) != 2 {
+			return 0, fmt.Errorf("ws_send: 2 args (conn int, msg string)")
+		}
+		c.addPair(argSlots[0], c.cInt)
+		c.addPair(argSlots[1], c.cString)
+		return c.cInt, nil
+	case "ws_recv":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("ws_recv: 1 arg (conn int)")
+		}
+		c.addPair(argSlots[0], c.cInt)
+		return c.cString, nil
+	case "ws_send_bin":
+		if len(argSlots) != 2 {
+			return 0, fmt.Errorf("ws_send_bin: 2 args (conn int, payload bytes)")
+		}
+		c.addPair(argSlots[0], c.cInt)
+		c.addPair(argSlots[1], c.cBytes)
+		return c.cInt, nil
+	case "ws_recv_bin":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("ws_recv_bin: 1 arg (conn int)")
+		}
+		c.addPair(argSlots[0], c.cInt)
+		return c.cBytes, nil
+	case "ws_close":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("ws_close: 1 arg (conn int)")
+		}
+		c.addPair(argSlots[0], c.cInt)
+		return c.cInt, nil
 	case "tls_client_fd":
 		if len(argSlots) != 2 {
 			return 0, fmt.Errorf("tls_client_fd: 2 args (fd int, hostname string)")

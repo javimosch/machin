@@ -18,10 +18,11 @@ var g_uses_crypto = 0
 var g_uses_xeddsa = 0
 var g_uses_tls = 0
 var g_uses_wss = 0
+var g_uses_ws = 0
 
 func reset_features() {
     g_uses_math = 0  g_uses_noise = 0  g_uses_regex = 0  g_uses_sqlite = 0
-    g_uses_crypto = 0  g_uses_xeddsa = 0  g_uses_tls = 0  g_uses_wss = 0
+    g_uses_crypto = 0  g_uses_xeddsa = 0  g_uses_tls = 0  g_uses_wss = 0  g_uses_ws = 0
 }
 
 func is_crypto_builtin(name) (b) {
@@ -43,6 +44,7 @@ func note_feature(name) {
     if name == "xeddsa_sign" || name == "xeddsa_verify" { g_uses_xeddsa = 1 }
     if name == "https_get" || name == "https_post" || name == "http_get" || name == "http_request" { g_uses_tls = 1 }
     if name == "wss_open" || name == "wss_send" || name == "wss_recv" || name == "wss_send_bin" || name == "wss_recv_bin" || name == "wss_close" { g_uses_wss = 1 }
+    if name == "ws_open" || name == "ws_send" || name == "ws_recv" || name == "ws_send_bin" || name == "ws_recv_bin" || name == "ws_close" { g_uses_ws = 1 }
 }
 
 func is_math1(name) (b) {
@@ -187,6 +189,11 @@ func builtin_cfn(name) (s) {
     if name == "wss_send_bin" { s = "mfl_wss_send_bin"  return s }
     if name == "wss_recv_bin" { s = "mfl_wss_recv_bin"  return s }
     if name == "wss_close" { s = "mfl_wss_close"  return s }
+    if name == "ws_send" { s = "mfl_ws_send"  return s }
+    if name == "ws_recv" { s = "mfl_ws_recv"  return s }
+    if name == "ws_send_bin" { s = "mfl_ws_send_bin"  return s }
+    if name == "ws_recv_bin" { s = "mfl_ws_recv_bin"  return s }
+    if name == "ws_close" { s = "mfl_ws_close"  return s }
     if name == "pi" { s = "mfl_math_pi"  return s }
     s = ""
 }
@@ -237,6 +244,10 @@ func cg_builtin(iid, call_idx, callee, names) (out) {
     }
     if callee == "wss_open" {
         if len(names) == 2 { out = "mfl_wss_open_h(" + join(names, ", ") + ")" } else { out = "mfl_wss_open(" + join(names, ", ") + ")" }
+        return out
+    }
+    if callee == "ws_open" {
+        if len(names) == 2 { out = "mfl_ws_open_h(" + join(names, ", ") + ")" } else { out = "mfl_ws_open(" + join(names, ", ") + ")" }
         return out
     }
     if is_math1(callee) {

@@ -68,6 +68,7 @@ machin build examples/complex/primes.mfl --emit-c   # see the generated C
 | `base64`          | `base64_encode`/`base64_decode`: standard padded encode, lenient decode (standard + URL-safe alphabets, ignores padding) |
 | `url_encode`      | `url_encode`/`url_decode`: RFC 3986 percent-encoding round-trip, `+`→space, malformed `%XX` passthrough |
 | `http_client_api` | HTTP client: `http_get` multi-assign + error branch, `http_request` with auth/Accept headers (real network calls) |
+| `ws_client_api`   | ws:// WebSocket client: `ws_open`/`ws_send`/`ws_recv`/`ws_send_bin`/`ws_recv_bin`/`ws_close` — cleartext; the `wss_*` builtins are the TLS side |
 | `router_api`      | HTTP router — dispatch by method+path, extract path params |
 | `sqlite_crud`     | SQLite: `sqlite_open`/`sqlite_exec`/`sqlite_query`/`sqlite_close` — in-memory CRUD with parameterized queries, `parse()` row decode, and `json_get` single-field access |
 | `arena`           | scoped `arena{}` allocation |

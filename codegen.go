@@ -186,6 +186,7 @@ type cgen struct {
 	safe         bool            // emit runtime bounds / div-by-zero / overflow checks
 	usesTLS      bool            // program calls https_get/https_post -> emit + link OpenSSL
 	usesWSS      bool            // program calls wss_* -> emit WebSocket runtime + link OpenSSL
+	usesWS       bool            // program calls ws_* -> emit cleartext WebSocket runtime
 	usesRegex    bool            // program calls regex_* -> emit POSIX regex runtime
 	usesSQLite   bool            // program calls sqlite_* -> emit SQLite runtime + link -lsqlite3
 	usesCrypto   bool            // program calls crypto builtins -> emit crypto runtime + link -lcrypto
@@ -5780,6 +5781,277 @@ static int64_t mfl_wss_close(int64_t h) {
 }
 `
 
+// wsRuntime is a WebSocket (RFC 6455) client over CLEARTEXT TCP — the ws://
+// sibling of wssRuntime, with the same API shape (ws_open/ws_send/ws_recv/
+// ws_send_bin/ws_recv_bin/ws_close) and the same frame codec, but the transport
+// is a plain mfl_dial fd instead of TLS: no OpenSSL, so a program that only
+// speaks ws:// links no TLS stack. Emitted only when a program calls ws_*.
+// Record/replay mirrors wss_*: the handshake is external I/O, logged like the
+// raw-socket builtins so a recording replays with no network.
+const wsRuntime = `
+typedef struct { int64_t fd; } mfl_wst;
+
+/* randomness for masks + the handshake key, without OpenSSL: /dev/urandom on
+   POSIX, rand_s on Windows; a seeded rand() as last resort — masks need
+   unpredictability, not secrecy. */
+static void mfl_wst_rand(unsigned char* buf, int n) {
+#ifdef _WIN32
+    for (int i = 0; i < n; i++) { unsigned int r = 0; rand_s(&r); buf[i] = (unsigned char)r; }
+#else
+    FILE* f = fopen("/dev/urandom", "rb");
+    if (f) {
+        size_t got = fread(buf, 1, (size_t)n, f);
+        fclose(f);
+        if (got == (size_t)n) return;
+    }
+    static int seeded = 0;
+    if (!seeded) { seeded = 1; srand((unsigned)(time(NULL) ^ (unsigned)getpid())); }
+    for (int i = 0; i < n; i++) buf[i] = (unsigned char)(rand() & 0xff);
+#endif
+}
+
+/* read exactly n bytes from the socket; 0 ok, -1 on EOF/error */
+static int mfl_wst_read_n(int64_t fd, unsigned char* buf, size_t n) {
+    size_t got = 0;
+    mfl_dl_io_park(1);
+    while (got < n) {
+        ssize_t r = MFL_SOCK_READ(fd, buf + got, n - got);
+        if (r <= 0) { mfl_dl_io_park(0); return -1; }
+        got += (size_t)r;
+    }
+    mfl_dl_io_park(0);
+    mfl_dl_note();
+    return 0;
+}
+
+/* write every byte; 0 ok, -1 on error/short write */
+static int mfl_wst_write_all(int64_t fd, const unsigned char* buf, size_t n) {
+    size_t off = 0;
+    while (off < n) {
+        ssize_t w = MFL_SOCK_WRITE(fd, buf + off, n - off);
+        if (w <= 0) return -1;
+        off += (size_t)w;
+    }
+    return 0;
+}
+
+/* write one masked client frame (opcode, payload). Client frames must be masked. */
+static void mfl_wst_frame(mfl_wst* w, int opcode, const unsigned char* payload, size_t len) {
+    unsigned char hdr[14];
+    int h = 0;
+    hdr[h++] = (unsigned char)(0x80 | (opcode & 0x0f));
+    if (len < 126) {
+        hdr[h++] = (unsigned char)(0x80 | len);
+    } else if (len < 65536) {
+        hdr[h++] = 0x80 | 126;
+        hdr[h++] = (unsigned char)((len >> 8) & 0xff);
+        hdr[h++] = (unsigned char)(len & 0xff);
+    } else {
+        hdr[h++] = 0x80 | 127;
+        for (int s = 56; s >= 0; s -= 8) hdr[h++] = (unsigned char)((len >> s) & 0xff);
+    }
+    unsigned char mask[4];
+    mfl_wst_rand(mask, 4);
+    unsigned char* buf = (unsigned char*)malloc(h + 4 + len);
+    memcpy(buf, hdr, h);
+    memcpy(buf + h, mask, 4);
+    h += 4;
+    for (size_t k = 0; k < len; k++) buf[h + k] = payload[k] ^ mask[k & 3];
+    mfl_wst_write_all(w->fd, buf, h + len);
+    free(buf);
+}
+
+/* extra: pre-joined "Name: Value\r\n" lines to append to the handshake, or "".
+   The caller has already rejected any line containing CR or LF, so this cannot
+   inject headers or smuggle a second request. */
+static int64_t mfl_ws_open_real(const char* url, const char* extra) {
+    char host[256] = {0}, path[2048] = {0}, hosthdr[300] = {0};
+    int port = 80;
+    const char* p = url;
+    if (strncmp(p, "ws://", 5) == 0) p += 5;
+    else return 0; /* cleartext only — wss:// is the TLS sibling */
+    int i = 0;
+    while (*p && *p != '/' && *p != ':' && i < 255) host[i++] = *p++;
+    host[i] = 0;
+    if (*p == ':') { p++; port = atoi(p); while (*p && *p != '/') p++; }
+    if (*p == '/') strncpy(path, p, sizeof(path) - 1);
+    else { path[0] = '/'; path[1] = 0; }
+    if (port == 80) snprintf(hosthdr, sizeof(hosthdr), "%s", host);
+    else snprintf(hosthdr, sizeof(hosthdr), "%s:%d", host, port);
+
+    int64_t fd = mfl_dial(host, port);
+    if (fd < 0) return 0;
+
+    unsigned char rnd[16];
+    mfl_wst_rand(rnd, 16);
+    mfl_bytes kb; kb.data = rnd; kb.len = 16;
+    const char* key = mfl_base64_encode_bytes(kb);
+    /* sized to fit: a fixed request buffer truncated silently once callers
+       could append their own header lines, producing a malformed handshake */
+    size_t reqcap = 512 + strlen(path) + strlen(hosthdr) + strlen(key) + strlen(extra);
+    char* req = (char*)malloc(reqcap);
+    if (!req) { MFL_CLOSESOCK(fd); return 0; }
+    int rl = snprintf(req, reqcap,
+        "GET %s HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\nUser-Agent: machin/0.9\r\n%s\r\n",
+        path, hosthdr, key, extra);
+    int wok = mfl_wst_write_all(fd, (const unsigned char*)req, (size_t)rl);
+    free(req);
+    if (wok != 0) { MFL_CLOSESOCK(fd); return 0; }
+
+    /* read the handshake response one byte at a time so we stop exactly at the
+       blank line and never swallow the first data frame */
+    char resp[4096];
+    int ro = 0;
+    while (ro < (int)sizeof(resp) - 1) {
+        unsigned char ch;
+        if (mfl_wst_read_n(fd, &ch, 1) < 0) break;
+        resp[ro++] = (char)ch;
+        if (ro >= 4 && resp[ro-4] == '\r' && resp[ro-3] == '\n' && resp[ro-2] == '\r' && resp[ro-1] == '\n') break;
+    }
+    resp[ro] = 0;
+    if (!strstr(resp, " 101")) { MFL_CLOSESOCK(fd); return 0; }
+
+    mfl_wst* w = (mfl_wst*)malloc(sizeof(mfl_wst));
+    w->fd = fd;
+    return (int64_t)(intptr_t)w;
+}
+/* record/replay: the handshake is external I/O — replay returns the recorded handle
+   sentinel (no real connect); record logs whatever the real open returned. */
+static int64_t mfl_ws_open(const char* url) {
+    if (mfl_rr_mode == 2) return mfl_rr_io_pop_i64();
+    int64_t r = mfl_ws_open_real(url, "");
+    if (mfl_rr_mode == 1) mfl_rr_io_log_i64(r);
+    return r;
+}
+
+/* ws_open(url, headers): same handshake, plus caller-supplied header lines --
+   e.g. an Authorization: Bearer line a server checks during the upgrade. A line
+   holding CR or LF is REFUSED (returns 0) rather than sent: embedding CRLF would
+   let a token forge additional headers or a second request. Fails closed. */
+static int64_t mfl_ws_open_h(const char* url, mfl_slice headers) {
+    if (mfl_rr_mode == 2) return mfl_rr_io_pop_i64();
+    size_t tot = 1;
+    for (int64_t i = 0; i < headers.len; i++) { char* h = ((char**)headers.data)[i]; if (h) tot += strlen(h) + 2; }
+    char* hb = (char*)malloc(tot);
+    if (!hb) return 0;
+    size_t o = 0;
+    int bad = 0;
+    for (int64_t i = 0; i < headers.len; i++) {
+        char* h = ((char**)headers.data)[i];
+        if (!h || !*h) continue;
+        if (strpbrk(h, "\r\n")) { bad = 1; break; }
+        size_t l = strlen(h);
+        memcpy(hb + o, h, l); o += l; hb[o++] = '\r'; hb[o++] = '\n';
+    }
+    hb[o] = 0;
+    int64_t r = bad ? 0 : mfl_ws_open_real(url, hb);
+    free(hb);
+    if (mfl_rr_mode == 1) mfl_rr_io_log_i64(r);
+    return r;
+}
+
+static int64_t mfl_ws_send(int64_t h, const char* msg) {
+    if (mfl_rr_mode == 2) return mfl_rr_io_pop_i64();
+    mfl_wst* w = (mfl_wst*)(intptr_t)h;
+    int64_t r = w ? 0 : -1;
+    if (w) mfl_wst_frame(w, 0x1, (const unsigned char*)msg, strlen(msg));
+    if (mfl_rr_mode == 1) mfl_rr_io_log_i64(r);
+    return r;
+}
+
+/* core: block until a full message; returns a malloc'd buffer (caller frees) and
+   its length via *outlen, or NULL on close/error. Replies to pings, ignores
+   pongs, reassembles fragments. An empty message returns a non-NULL 1-byte buf. */
+static unsigned char* mfl_wst_recv_raw(mfl_wst* w, size_t* outlen) {
+    *outlen = 0;
+    if (!w) return NULL;
+    unsigned char* msg = NULL;
+    size_t mlen = 0;
+    for (;;) {
+        unsigned char hd[2];
+        if (mfl_wst_read_n(w->fd, hd, 2) < 0) { free(msg); return NULL; }
+        int fin = hd[0] & 0x80;
+        int opcode = hd[0] & 0x0f;
+        int masked = hd[1] & 0x80;
+        uint64_t len = hd[1] & 0x7f;
+        if (len == 126) {
+            unsigned char e[2];
+            if (mfl_wst_read_n(w->fd, e, 2) < 0) { free(msg); return NULL; }
+            len = ((uint64_t)e[0] << 8) | e[1];
+        } else if (len == 127) {
+            unsigned char e[8];
+            if (mfl_wst_read_n(w->fd, e, 8) < 0) { free(msg); return NULL; }
+            len = 0;
+            for (int s = 0; s < 8; s++) len = (len << 8) | e[s];
+        }
+        unsigned char mk[4] = {0,0,0,0};
+        if (masked && mfl_wst_read_n(w->fd, mk, 4) < 0) { free(msg); return NULL; }
+        unsigned char* pl = (unsigned char*)malloc(len ? len : 1);
+        if (len && mfl_wst_read_n(w->fd, pl, len) < 0) { free(pl); free(msg); return NULL; }
+        if (masked) for (uint64_t k = 0; k < len; k++) pl[k] ^= mk[k & 3];
+
+        if (opcode == 0x9) { mfl_wst_frame(w, 0xA, pl, len); free(pl); continue; } /* ping -> pong */
+        if (opcode == 0xA) { free(pl); continue; }                                /* pong */
+        if (opcode == 0x8) { mfl_wst_frame(w, 0x8, pl, len); free(pl); free(msg); return NULL; } /* close */
+
+        unsigned char* nm = (unsigned char*)realloc(msg, mlen + len);
+        msg = nm;
+        if (len) memcpy(msg + mlen, pl, len);
+        mlen += len;
+        free(pl);
+        if (fin) { *outlen = mlen; return msg ? msg : (unsigned char*)calloc(1, 1); }
+    }
+}
+
+/* text recv: "" on close/error (truncates at an embedded NUL — for binary use ws_recv_bin) */
+static char* mfl_ws_recv(int64_t h) {
+    if (mfl_rr_mode == 2) { size_t L; char* s = mfl_hexdec(mfl_io_pop(), &L); char* a = mfl_dup_arena(s, L); free(s); return a; }
+    size_t n;
+    unsigned char* m = mfl_wst_recv_raw((mfl_wst*)(intptr_t)h, &n);
+    char* r = m ? mfl_dup_arena((char*)m, n) : mfl_dup_arena("", 0);
+    if (mfl_rr_mode == 1) mfl_rr_io_log_bytes(m ? (char*)m : "", m ? n : 0);
+    free(m);
+    return r;
+}
+
+/* binary recv: a NUL-safe bytes message; empty bytes on close/error */
+static mfl_bytes mfl_ws_recv_bin(int64_t h) {
+    if (mfl_rr_mode == 2) {
+        size_t L; char* s = mfl_hexdec(mfl_io_pop(), &L);
+        mfl_bytes b; b.data = (uint8_t*)mfl_alloc(L ? L : 1); b.len = (int64_t)L;
+        if (L) memcpy(b.data, s, L); free(s); return b;
+    }
+    size_t n = 0;
+    unsigned char* m = mfl_wst_recv_raw((mfl_wst*)(intptr_t)h, &n);
+    mfl_bytes b; b.len = m ? (int64_t)n : 0; b.data = (uint8_t*)mfl_alloc(b.len ? b.len : 1);
+    if (m) { memcpy(b.data, m, n); free(m); }
+    if (mfl_rr_mode == 1) mfl_rr_io_log_bytes((char*)b.data, (size_t)b.len);
+    return b;
+}
+
+/* binary send: one masked binary frame (opcode 0x2) carrying the bytes payload */
+static int64_t mfl_ws_send_bin(int64_t h, mfl_bytes b) {
+    if (mfl_rr_mode == 2) return mfl_rr_io_pop_i64();
+    mfl_wst* w = (mfl_wst*)(intptr_t)h;
+    int64_t r = w ? 0 : -1;
+    if (w) mfl_wst_frame(w, 0x2, b.data, (size_t)b.len);
+    if (mfl_rr_mode == 1) mfl_rr_io_log_i64(r);
+    return r;
+}
+
+/* close: side-effect with a constant return; on replay skip the real hangup (sentinel
+   handle). No I/O-queue entry either way, so the queue stays balanced. */
+static int64_t mfl_ws_close(int64_t h) {
+    if (mfl_rr_mode == 2) return 0;
+    mfl_wst* w = (mfl_wst*)(intptr_t)h;
+    if (!w) return -1;
+    mfl_wst_frame(w, 0x8, NULL, 0);
+    MFL_CLOSESOCK(w->fd);
+    free(w);
+    return 0;
+}
+`
+
 // noiseRuntime is Ken Perlin's improved gradient noise (3D; noise2 is the z=0
 // slice), emitted (and linked -lm for floor) only when a program calls noise*.
 // Deterministic — a fixed permutation. Range ~[-1, 1]. Layer it (fbm) in MFL.
@@ -6888,12 +7160,12 @@ func (g *cgen) program(p *Program) (string, error) {
 		// dependency (#517). The windows preflight in CompileToCTarget rejects programs
 		// that DO use net/tty, so on that target these stay unemitted.
 		portableBase := !g.wasm() && !g.windows()
-		// socket portability shims: needed by any socket runtime (net, TLS, WSS)
-		if portableBase || g.usesNet || g.usesTLS || g.usesWSS {
+		// socket portability shims: needed by any socket runtime (net, TLS, WSS, WS)
+		if portableBase || g.usesNet || g.usesTLS || g.usesWSS || g.usesWS {
 			out.WriteString(sockCompatRuntime)
 			out.WriteByte('\n')
 		}
-		if portableBase || g.usesNet {
+		if portableBase || g.usesNet || g.usesWS {
 			out.WriteString(netRuntime)
 			out.WriteByte('\n')
 		}
@@ -6911,6 +7183,10 @@ func (g *cgen) program(p *Program) (string, error) {
 		}
 		if g.usesWSS {
 			out.WriteString(wssRuntime)
+			out.WriteByte('\n')
+		}
+		if g.usesWS {
+			out.WriteString(wsRuntime)
 			out.WriteByte('\n')
 		}
 		if g.usesMath {
@@ -9858,6 +10134,27 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 	case "wss_close":
 		g.usesWSS = true
 		return fmt.Sprintf("mfl_wss_close(%s)", args[0]), nil
+	case "ws_open":
+		g.usesWS = true
+		if len(args) == 2 {
+			return fmt.Sprintf("mfl_ws_open_h(%s, %s)", args[0], args[1]), nil
+		}
+		return fmt.Sprintf("mfl_ws_open(%s)", args[0]), nil
+	case "ws_send":
+		g.usesWS = true
+		return fmt.Sprintf("mfl_ws_send(%s, %s)", args[0], args[1]), nil
+	case "ws_recv":
+		g.usesWS = true
+		return fmt.Sprintf("mfl_ws_recv(%s)", args[0]), nil
+	case "ws_send_bin":
+		g.usesWS = true
+		return fmt.Sprintf("mfl_ws_send_bin(%s, %s)", args[0], args[1]), nil
+	case "ws_recv_bin":
+		g.usesWS = true
+		return fmt.Sprintf("mfl_ws_recv_bin(%s)", args[0]), nil
+	case "ws_close":
+		g.usesWS = true
+		return fmt.Sprintf("mfl_ws_close(%s)", args[0]), nil
 	case "tls_client_fd":
 		g.usesTLS = true
 		return fmt.Sprintf("mfl_tls_client_fd(%s, %s)", args[0], args[1]), nil

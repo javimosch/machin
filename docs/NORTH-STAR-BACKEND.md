@@ -22,7 +22,7 @@ paid for two: `read_bytes` and binary-safe base64.
 | MySQL / MariaDB | ✅ | `framework/mysql.src`: wire protocol + mysql_native_password (SHA-1) auth; typed JSON rows → `parse([]T{})`. **Gap left:** caching_sha2 auth, prepared statements, pooling |
 | MongoDB | ✅ | `framework/mongo.src` + `bson.src`: OP_MSG + BSON; insert/find/count/drop, docs → JSON → `parse([]T{})`. **SCRAM-SHA-256 auth**, doubles, cursor pagination, query/delete by `_id`, **connection pooling** |
 | HTTP server | ✅ | `framework/machweb.src` (router, body, response builders, binary path) |
-| HTTP/TLS client | ✅ | `https_get`/`https_post`/`http_request`; `wss_*` WebSocket |
+| HTTP/TLS client | ✅ | `https_get`/`https_post`/`http_request`; `wss_*`/`ws_*` WebSocket |
 | Crypto | ✅ | sha256, hmac, hkdf, ed25519, x25519, aes-gcm/cbc, rand_bytes; bitwise ops |
 | Sessions / cookies | ✅ | `cookie(req,name)` + `set_cookie`/`clear_cookie`; signed sessions `set_session`/`get_session` (HMAC tag, unforgeable) |
 | SSO / OAuth2 / OIDC | ✅ | `framework/sso.src`: authorization-code login on machweb sessions; identity via the userinfo endpoint (no JWT/RSA). **Gap left:** local id_token (RS256) verification |

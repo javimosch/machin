@@ -516,6 +516,10 @@ first := users[0]                                // value copy
 | `wss_send(h, msg)` / `wss_recv(h)` | send/receive a text message (`wss_recv` blocks; `""` on close; auto ping/pong) |
 | `wss_send_bin(h, b)` / `wss_recv_bin(h)` | send/receive a binary message, NUL-safe |
 | `wss_close(h)`              | send close and tear down a WebSocket handle  |
+| `ws_open(url[, headers])`   | open a `ws://` WebSocket (cleartext — the `wss_*` sibling) → handle (`0` on fail); same optional `"Key: Value"` header lines + CR/LF refusal as `wss_open` |
+| `ws_send(h, msg)` / `ws_recv(h)` | send/receive a text message on a `ws://` connection (`ws_recv` blocks; `""` on close; auto ping/pong) |
+| `ws_send_bin(h, b)` / `ws_recv_bin(h)` | send/receive a binary message on a `ws://` connection, NUL-safe |
+| `ws_close(h)`               | send close and tear down a `ws://` handle  |
 | `tls_server_ctx(cert, key)` | load a cert+key (PEM files) → a server TLS context handle (`0` on fail) — for terminating HTTPS/TLS yourself |
 | `tls_accept(ctx, fd)`       | complete a server-side TLS handshake on an accepted `fd` → a tls handle (`0` on fail) |
 | `tls_client_fd(fd, hostname)` | upgrade an already-connected, plaintext fd to a verified TLS handle in place (STARTTLS) |
