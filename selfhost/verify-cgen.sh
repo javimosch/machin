@@ -420,6 +420,20 @@ func main() {
 }
 EOF
 run "$T/h20.src"
+# h21 — #697: a types-only extern (cstructs, no fn) parses and emits the same
+# cstruct typedefs + marshaling converters as the Go codegen.
+cat > "$T/h21.src" <<'EOF'
+extern "types" {
+    cstruct Point { x i32 y i32 }
+    cstruct Size { w i32  h i32 }
+}
+func main() {
+    p := Point{x: 1, y: 2}
+    s := Size{w: 3, h: 4}
+    println(p.x + p.y + s.w + s.h)
+}
+EOF
+run "$T/h21.src"
 
 # h22 — global initializers may reference earlier globals AND call functions /
 # builtins (idents inside make() sizes, arithmetic, Call nodes). The "$globals"

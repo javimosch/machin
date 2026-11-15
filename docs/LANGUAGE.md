@@ -865,6 +865,10 @@ func main() {
   (`link "raylib" link "GL" link "m"`); they are emitted in order.
 - `cflags "..."` — passes extra flags (`-I`/`-L` paths, etc.) to the C compiler.
 - `fn Name(t, …) ret` — a foreign function. A missing return type means `void`.
+- A block must declare at least one `fn` or `cstruct`; `header`/`link`/`cflags`
+  alone are modifiers. A **types-only** block (cstructs, no fns) is allowed —
+  it shares C layouts across modules, or declares types whose functions are
+  bound through a C shim header.
 
 See `examples/complex/ffi_math.mfl` for the runnable version.
 
