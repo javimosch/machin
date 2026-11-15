@@ -95,6 +95,14 @@ func main() { serve(48080, func(req) { return handle(req) }) }
   [`framework/wsclient.src`](../../framework/wsclient.src) (`wsc_open`/`wsc_send`/`wsc_recv`/`wsc_close`,
   `wsc_open_h` for handshake headers) is the pure-MFL alternative that also verifies the
   Sec-WebSocket-Accept proof — no machweb needed for either.
+- **A streaming HTTP/SSE client** (`framework/httpstream.src`): `http_get`/
+  `http_request` return the whole body; for responses that trickle (LLM token
+  streams, `text/event-stream`) compose `httpstream.src` and use
+  `hs_open(method, url, headers, body)` → `hs_read(h)` (incremental decoded
+  chunks — handles chunked, Content-Length, and close-delimited bodies; https://
+  upgrades via `tls_client_fd`) or `hs_sse_next(h)` → `(event, data, ok)` for
+  server-sent events. `hs_status`/`hs_header` read the response head,
+  `hs_close(h)` ends it. One response per open (`Connection: close`).
 - **A database:** machin has SQLite builtins — `sqlite_open(path)` / `sqlite_exec(db,
   sql)` / `sqlite_exec(db, sql, []string params)` (`?`-bind, injection-safe) /
   `sqlite_query(db, sql[, params]) -> string` (a **JSON-array-of-rows string**) /
