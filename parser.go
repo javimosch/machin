@@ -341,8 +341,8 @@ func (p *Parser) parseExternDecl() (*ExternDecl, error) {
 	if _, err := p.expect(TPunct, "}"); err != nil {
 		return nil, err
 	}
-	if len(ed.Funcs) == 0 {
-		return nil, fmt.Errorf("extern %q: no fn declarations", ed.Lib)
+	if len(ed.Funcs) == 0 && len(ed.Structs) == 0 {
+		return nil, fmt.Errorf("extern %q: no fn or cstruct declarations", ed.Lib)
 	}
 	return ed, nil
 }

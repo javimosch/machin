@@ -465,6 +465,9 @@ func parse_extern_decl() (idx) {
         if tp == before { g_err = 1  break }
     }
     eat("}")
+    // a block must declare at least one foreign entity: an fn or a cstruct
+    // (header/link/cflags alone are modifiers — port of parser.go's check)
+    if len(fns) == 0 && len(cstructs) == 0 { g_err = 1 }
     idx = emit(Node{kind: K_EXTERN, s: lib, s2: header, s3: cflags, names: links, kids: cstructs, kids2: fns})
 }
 

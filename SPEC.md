@@ -683,6 +683,10 @@ extern "m" { header "math.h" link "m" fn sqrt(float) float fn pow(float, float) 
   library with transitive dependencies). `link ":libname.a"` forces a static
   archive over a shared `.so`.
 - `cflags "..."` — passes extra flags (e.g. `-I`/`-L` paths) to the C compiler.
+- A block must declare at least one `fn` or `cstruct` — `header`/`link`/`cflags`
+  are modifiers, not declarations. A **types-only** block (cstructs, no fns) is
+  allowed: it shares C layouts across modules or declares types whose functions
+  are bound through a C shim header.
 - `cstruct Name { field ctype ... }` — declares a C struct's layout (Phase 2).
   machin synthesizes a matching MFL struct `Name` (so MFL can construct and
   field-access it) and marshals between the MFL value and the C struct by value
