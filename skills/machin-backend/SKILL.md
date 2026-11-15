@@ -107,6 +107,15 @@ message over plaintext SMTP + `AUTH LOGIN` (`user=""` skips auth) — transactio
 `sink` (a local SMTP catcher + web inbox). STARTTLS/implicit TLS isn't here yet — point it
 at a relay that accepts plaintext submission, or a local catcher.
 
+## Reading mail (`framework/imap.src`)
+
+`imap_connect(host, port, user, pass, use_tls)` opens an IMAP4rev1 session —
+`use_tls=1` requires STARTTLS (fails closed if the server doesn't advertise it),
+`use_tls=0` is plaintext for loopback/dev. Then `imap_list(c)` → JSON mailbox
+names, `imap_select(c, "INBOX")` → `(ok, exists)`, `imap_search(c, criteria)` →
+JSON seq numbers, `imap_fetch(c, seqset, items)` → raw FETCH text with literals
+inlined (low-level; parse the fetch grammar yourself), `imap_logout(c)`.
+
 ## Crypto you'll reach for
 
 `sha256` / `hmac_sha256` (hex), `sha256_bytes` / `hmac_sha256_bytes` / `sha1_bytes`

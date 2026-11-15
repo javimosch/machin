@@ -1,0 +1,451 @@
+// httpstream.src — a pure-MFL STREAMING HTTP/1.1 client: incremental body reads and
+// server-sent events (SSE), over dial() for http:// and tls_client_fd for https://.
+// http_get/http_request return the WHOLE body; this module is for responses that
+// never end (LLM token streams, text/event-stream) or bodies too big to buffer.
+//
+//   h, ok := hs_open("GET", "http://127.0.0.1:8080/stream", []string{}, "")
+//   if ok == 1 {
+//       println("status=" + str(hs_status(h)))
+//       chunk, more := hs_read(h)          // next decoded chunk; more=0 at EOF
+//       while more == 1 {
+//           print(chunk)
+//           chunk, more = hs_read(h)
+//       }
+//       hs_close(h)
+//   }
+//
+// For SSE (Content-Type: text/event-stream) read EVENTS instead of raw chunks:
+//
+//   event, data, evok := hs_sse_next(h)    // one event per call; evok=0 at EOF
+//   while evok == 1 { println("[" + event + "] " + data)  event, data, evok = hs_sse_next(h) }
+//
+// hs_open(method, url, headers, body): headers is []string of "Name: value" lines
+// (a line containing CR or LF is REFUSED — ok=0, nothing sent, same fails-closed
+// rule as http_request). http:// and https:// only; default ports 80/443.
+// hs_read returns up to the bytes currently available — it never waits for the
+// whole body, so a trickling response yields chunks as they arrive. hs_read_bin
+// is the NUL-safe bytes variant. hs_sse_next returns (event, data, ok): `event`
+// is "message" unless the stream set an `event:` field; `data` is the joined
+// data: lines; comment lines (keepalives) are skipped. Trailers after a chunked
+// body's 0-chunk are consumed and ignored.
+//
+// One response per hs_open — no keep-alive reuse (the request sends
+// Connection: close). Body framing handled: chunked, Content-Length, and
+// close-delimited (HTTP/1.0-style / SSE). HEAD, 1xx, 204 and 304 yield an empty
+// body. Response headers are capped at 1 MiB. Do not touch h after hs_close.
+//
+// Compose standalone — no machweb needed:
+//   machin encode framework/httpstream.src yourapp.src > app.mfl
+
+type HttpStream struct {
+    fd      int
+    tls     int       // 0 = plaintext fd; else a tls_client_fd handle
+    buf     []bytes   // raw socket bytes not yet decoded
+    lbuf    []bytes   // decoded body bytes not yet consumed by the SSE line reader
+    st      []int     // boxed scalar state (element writes persist across calls)
+    status  int
+    headers string    // raw header block (status line excluded)
+}
+
+// st[] indices: 0=body mode (0 unset, 1 chunked, 2 content-length, 3 until-close)
+// 1=content-length remaining, 2=current chunk payload remaining,
+// 3=eof flag, 4=pending CRLF after a chunk's payload.
+
+func hs_attach(fd, tls) (h) {
+    bx := []bytes{}
+    bx = append(bx, bytes(""))
+    lx := []bytes{}
+    lx = append(lx, bytes(""))
+    sx := []int{0, 0, 0, 0, 0}
+    h = HttpStream{fd: fd, tls: tls, buf: bx, lbuf: lx, st: sx, status: 0, headers: ""}
+}
+
+// ---- raw socket I/O (tls-aware) ----
+
+func hs_read1(h) (b) {
+    if h.tls != 0 { b = tls_read_bytes(h.tls) } else { b = read_bytes(h.fd) }
+}
+
+// hs_fill ensures >= n raw bytes are buffered; ok=0 on EOF/error.
+func hs_fill(h, n) (ok) {
+    ok = 1
+    while len(h.buf[0]) < n {
+        chunk := hs_read1(h)
+        if len(chunk) == 0 { ok = 0  return }
+        h.buf[0] = bytes_concat(h.buf[0], chunk)
+    }
+}
+
+// hs_take consumes and returns the first n buffered bytes.
+func hs_take(h, n) (b) {
+    b = bytes_sub(h.buf[0], 0, n)
+    h.buf[0] = bytes_sub(h.buf[0], n, len(h.buf[0]))
+}
+
+func hs_write_str(h, s) (n) {
+    if h.tls != 0 { n = tls_write(h.tls, s) } else { n = write(h.fd, s) }
+}
+
+func hs_write_bytes(h, b) (n) {
+    if h.tls != 0 { n = tls_write_bytes(h.tls, b) } else { n = write_bytes(h.fd, b) }
+}
+
+// hs_raw_line reads one CRLF/LF-terminated line from the RAW buffer (used for
+// chunk headers/trailers). Returns the line without the terminator, ok=0 on EOF
+// with nothing buffered.
+func hs_raw_line(h) (line, ok) {
+    line = ""
+    ok = 0
+    while 1 == 1 {
+        idx := bytes_index(h.buf[0], bytes("\n"), 0)
+        if idx >= 0 {
+            raw := bytes_sub(h.buf[0], 0, idx)
+            h.buf[0] = bytes_sub(h.buf[0], idx + 1, len(h.buf[0]))
+            line = bytes_str(raw)
+            if len(line) > 0 { if charat(line, len(line) - 1) == "\r" { line = substr(line, 0, len(line) - 1) } }
+            ok = 1
+            return
+        }
+        chunk := hs_read1(h)
+        if len(chunk) == 0 {
+            if len(h.buf[0]) > 0 { line = bytes_str(h.buf[0])  h.buf[0] = bytes("")  ok = 1 }
+            return
+        }
+        h.buf[0] = bytes_concat(h.buf[0], chunk)
+    }
+}
+
+// hs_hex parses the leading hex digits of s (stops at ';' extensions, space, \r).
+func hs_hex(s) (n) {
+    n = 0
+    d := "0123456789abcdef"
+    sl := to_lower(s)
+    i := 0
+    while i < len(sl) {
+        v := index(d, charat(sl, i))
+        if v < 0 { return }
+        n = n * 16 + v
+        i = i + 1
+    }
+}
+
+// hs_decode returns the next available DECODED body bytes (chunk payload,
+// content-length slice, or raw until-close bytes), ok=0 at body EOF. It performs
+// at most one socket read when the buffer runs dry, so a caller looping on it
+// sees bytes as the peer sends them — never waits for the full body.
+func hs_decode(h) (b, ok) {
+    b = bytes("")
+    ok = 0
+    st := h.st
+    if st[3] == 1 { return }
+    mode := st[0]
+    if mode == 2 {
+        if st[1] <= 0 { st[3] = 1  return }
+        if len(h.buf[0]) == 0 {
+            if hs_fill(h, 1) == 0 { st[3] = 1  return }
+        }
+        n := st[1]
+        if n > len(h.buf[0]) { n = len(h.buf[0]) }
+        b = hs_take(h, n)
+        st[1] = st[1] - n
+        if st[1] <= 0 { st[3] = 1 }
+        ok = 1
+        return
+    }
+    if mode == 3 {
+        if len(h.buf[0]) == 0 {
+            chunk := hs_read1(h)
+            if len(chunk) == 0 { st[3] = 1  return }
+            h.buf[0] = bytes_concat(h.buf[0], chunk)
+        }
+        b = h.buf[0]
+        h.buf[0] = bytes("")
+        ok = 1
+        return
+    }
+    // mode == 1: chunked transfer coding
+    while 1 == 1 {
+        if st[3] == 1 { return }
+        if st[2] > 0 {
+            if len(h.buf[0]) == 0 {
+                if hs_fill(h, 1) == 0 { st[3] = 1  return }
+            }
+            n := st[2]
+            if n > len(h.buf[0]) { n = len(h.buf[0]) }
+            b = hs_take(h, n)
+            st[2] = st[2] - n
+            if st[2] == 0 { st[4] = 1 }
+            ok = 1
+            return
+        }
+        if st[4] == 1 {
+            if hs_fill(h, 2) == 0 { st[3] = 1  return }
+            h.buf[0] = bytes_sub(h.buf[0], 2, len(h.buf[0]))
+            st[4] = 0
+        }
+        line, lok := hs_raw_line(h)
+        if lok == 0 { st[3] = 1  return }
+        sz := hs_hex(line)
+        if sz <= 0 {
+            // last-chunk: consume trailer lines through the blank line
+            while 1 == 1 {
+                tl, tok := hs_raw_line(h)
+                if tok == 0 { break }
+                if tl == "" { break }
+            }
+            st[3] = 1
+            return
+        }
+        st[2] = sz
+    }
+}
+
+// ---- public read API ----
+
+// hs_read -> (chunk, ok): next decoded body chunk as a string (truncates at an
+// embedded NUL — for binary bodies use hs_read_bin). ok=0 at EOF.
+func hs_read(h) (s, ok) {
+    b, ok2 := hs_decode(h)
+    s = bytes_str(b)
+    ok = ok2
+}
+
+func hs_read_bin(h) (b, ok) {
+    b, ok2 := hs_decode(h)
+    ok = ok2
+}
+
+// hs_sse_line reads one \n-terminated line of DECODED body into lbuf.
+func hs_sse_line(h) (line, ok) {
+    line = ""
+    ok = 0
+    while 1 == 1 {
+        idx := bytes_index(h.lbuf[0], bytes("\n"), 0)
+        if idx >= 0 {
+            raw := bytes_sub(h.lbuf[0], 0, idx)
+            h.lbuf[0] = bytes_sub(h.lbuf[0], idx + 1, len(h.lbuf[0]))
+            line = bytes_str(raw)
+            if len(line) > 0 { if charat(line, len(line) - 1) == "\r" { line = substr(line, 0, len(line) - 1) } }
+            ok = 1
+            return
+        }
+        b, dok := hs_decode(h)
+        if dok == 0 {
+            if len(h.lbuf[0]) > 0 { line = bytes_str(h.lbuf[0])  h.lbuf[0] = bytes("")  ok = 1 }
+            return
+        }
+        h.lbuf[0] = bytes_concat(h.lbuf[0], b)
+    }
+}
+
+// hs_sse_next -> (event, data, ok): the next server-sent event. `event` defaults
+// to "message"; `data` is the event's data: lines joined with "\n". Comment
+// lines (": keepalive") and id:/retry: fields are skipped. A blank line dispatches
+// the event; at EOF a pending event is dispatched then ok goes 0.
+func hs_sse_next(h) (event, data, ok) {
+    event = "message"
+    data = ""
+    ok = 0
+    seen := 0
+    while 1 == 1 {
+        line, lok := hs_sse_line(h)
+        if lok == 0 {
+            if seen == 1 { ok = 1 }
+            return
+        }
+        if line == "" {
+            if seen == 1 { ok = 1  return }
+            continue
+        }
+        if charat(line, 0) == ":" { continue }
+        seen = 1
+        colon := index(line, ":")
+        fname := line
+        fval := ""
+        if colon >= 0 {
+            fname = substr(line, 0, colon)
+            fval = substr(line, colon + 1, len(line))
+            if len(fval) > 0 { if charat(fval, 0) == " " { fval = substr(fval, 1, len(fval)) } }
+        }
+        if fname == "data" {
+            if data != "" { data = data + "\n" }
+            data = data + fval
+        } else if fname == "event" {
+            event = fval
+        }
+    }
+}
+
+// ---- response metadata ----
+
+func hs_status(h) (s) { s = h.status }
+
+// hs_header returns a response header value (case-insensitive name, "" if absent).
+func hs_header(h, name) (v) {
+    v = ""
+    want := to_lower(name)
+    for _, line := range split(h.headers, "\n") {
+        ci := index(line, ":")
+        if ci > 0 {
+            if to_lower(trim(substr(line, 0, ci))) == want {
+                v = trim(substr(line, ci + 1, len(line)))
+                return
+            }
+        }
+    }
+}
+
+func hs_close(h) (r) {
+    r = 0
+    if h.tls != 0 { r = tls_close(h.tls) } else { close(h.fd) }
+}
+
+// ---- open ----
+
+// HsUrl is a parsed http(s) URL: tls flag, dial host (no port), port, path
+// (with query), the authority as given (for the Host header), ok=0 on a
+// non-http(s) URL or an unparseable authority.
+type HsUrl struct { tls int  host string  port int  path string  auth string  ok int }
+
+// hs_url splits "scheme://host[:port]/path". Bare IPv6 literals without brackets
+// are unsupported (the first ':' would be read as the port separator).
+func hs_url(url) (u) {
+    u = HsUrl{tls: 0, host: "", port: 80, path: "/", auth: "", ok: 0}
+    rest := url
+    low := to_lower(url)
+    if has_prefix(low, "https://") {
+        u.tls = 1
+        u.port = 443
+        rest = substr(url, 8, len(url))
+    } else if has_prefix(low, "http://") {
+        rest = substr(url, 7, len(url))
+    } else {
+        return
+    }
+    slash := index(rest, "/")
+    authority := rest
+    if slash >= 0 {
+        authority = substr(rest, 0, slash)
+        u.path = substr(rest, slash, len(rest))
+    }
+    if authority == "" { return }
+    u.auth = authority
+    colon := index(authority, ":")
+    if colon >= 0 {
+        // bracketed IPv6 "[::1]:8080": the port colon follows the ']'
+        if charat(authority, 0) == "[" {
+            rb := index(authority, "]")
+            if rb >= 0 && rb + 1 < len(authority) && charat(authority, rb + 1) == ":" {
+                u.host = substr(authority, 1, rb)
+                u.port = parse_int(substr(authority, rb + 2, len(authority)))
+            } else if rb > 1 {
+                u.host = substr(authority, 1, rb)
+            } else {
+                return
+            }
+        } else {
+            u.host = substr(authority, 0, colon)
+            u.port = parse_int(substr(authority, colon + 1, len(authority)))
+        }
+        if u.port <= 0 { if u.tls == 1 { u.port = 443 } else { u.port = 80 } }
+    } else {
+        u.host = authority
+    }
+    if u.host == "" { u.ok = 0  return }
+    u.ok = 1
+}
+
+// hs_open sends one HTTP request and reads the response head. Returns the stream
+// (status + headers parsed, body not yet read) and ok=1; ok=0 on any setup
+// failure (bad URL/scheme, refused header line, dial/TLS failure, no response).
+func hs_open(method, url, headers, body) (h, ok) {
+    h = HttpStream{fd: -1, tls: 0, buf: []bytes{}, lbuf: []bytes{}, st: []int{}, status: 0, headers: ""}
+    ok = 0
+    u := hs_url(url)
+    if u.ok == 0 { return }
+    for _, line := range headers {
+        if index(line, "\r") >= 0 || index(line, "\n") >= 0 { return }
+    }
+    fd := dial(u.host, u.port)
+    if fd < 0 { return }
+    tls := 0
+    if u.tls == 1 {
+        tls = tls_client_fd(fd, u.host)
+        if tls == 0 { close(fd)  return }
+    }
+    hh := hs_attach(fd, tls)
+    // request head: Host carries the authority as given (with port if present)
+    req := method + " " + u.path + " HTTP/1.1\r\n" +
+        "Host: " + u.auth + "\r\n" +
+        "User-Agent: machin-httpstream/1.0\r\n" +
+        "Accept: */*\r\n" +
+        "Connection: close\r\n"
+    for _, line := range headers { req = req + line + "\r\n" }
+    req = req + "Content-Length: " + str(len(body)) + "\r\n\r\n"
+    w := hs_write_str(hh, req)
+    if len(body) > 0 { w = hs_write_bytes(hh, bytes(body)) }
+    // read the response head: header block ends at the first blank line
+    head := ""
+    while 1 == 1 {
+        i4 := bytes_index(hh.buf[0], bytes("\r\n\r\n"), 0)
+        i2 := bytes_index(hh.buf[0], bytes("\n\n"), 0)
+        term := -1
+        tlen := 0
+        if i4 >= 0 && (i2 < 0 || i4 <= i2) { term = i4  tlen = 4 }
+        if i2 >= 0 && (i4 < 0 || i2 < i4) { term = i2  tlen = 2 }
+        if term >= 0 {
+            head = bytes_str(bytes_sub(hh.buf[0], 0, term))
+            hh.buf[0] = bytes_sub(hh.buf[0], term + tlen, len(hh.buf[0]))
+            break
+        }
+        if len(hh.buf[0]) > 1048576 { hs_close(hh)  return }
+        chunk := hs_read1(hh)
+        if len(chunk) == 0 { hs_close(hh)  return }
+        hh.buf[0] = bytes_concat(hh.buf[0], chunk)
+    }
+    // status line: "HTTP/1.1 200 OK" -> status; headers = the rest
+    nl := index(head, "\n")
+    first := head
+    resth := ""
+    if nl >= 0 { first = substr(head, 0, nl)  resth = substr(head, nl + 1, len(head)) }
+    sp := index(first, " ")
+    if sp >= 0 {
+        code := substr(first, sp + 1, len(first))
+        sp2 := index(code, " ")
+        if sp2 >= 0 { code = substr(code, 0, sp2) }
+        hh.status = parse_int(code)
+    }
+    hh.headers = resth
+    // body framing: chunked wins over Content-Length (RFC 7230 §3.3.3); no
+    // length at all means read-until-close. HEAD/1xx/204/304 carry no body.
+    hasbody := 1
+    if hh.status == 204 || hh.status == 304 { hasbody = 0 }
+    if hh.status >= 100 && hh.status < 200 { hasbody = 0 }
+    if to_upper(method) == "HEAD" { hasbody = 0 }
+    if hasbody == 0 {
+        hh.st[3] = 1
+    } else {
+        chunked := 0
+        clen := -1
+        for _, line := range split(resth, "\n") {
+            low := to_lower(trim(line))
+            if has_prefix(low, "transfer-encoding:") {
+                if index(low, "chunked") >= 0 { chunked = 1 }
+            }
+            if has_prefix(low, "content-length:") {
+                ci := index(line, ":")
+                clen = parse_int(trim(substr(line, ci + 1, len(line))))
+            }
+        }
+        if chunked == 1 {
+            hh.st[0] = 1
+        } else if clen >= 0 {
+            hh.st[0] = 2
+            hh.st[1] = clen
+        } else {
+            hh.st[0] = 3
+        }
+    }
+    h = hh
+    ok = 1
+}
