@@ -1,0 +1,360 @@
+// imap.src — a pure-MFL IMAP4rev1 client over dial() (STARTTLS via tls_client_fd),
+// same compose pattern as postgres.src/smtp.src — no cgo, no library.
+//
+//   c, ok := imap_connect("imap.example.com", 993, "me@x.com", "secret", 1)  // use_tls=1
+//   if ok == 1 {
+//       boxes := imap_list(c)                     // JSON array of mailbox names
+//       sok, exists := imap_select(c, "INBOX")    // exists = the EXISTS count
+//       seqs := imap_search(c, "FROM \"alice\"")   // JSON array of message seqs
+//       raw, fok := imap_fetch(c, "1:*", "FLAGS ENVELOPE")  // low-level FETCH text
+//       imap_logout(c)
+//   }
+//
+// imap_connect(host, port, user, pass, use_tls): reads the greeting (OK or
+// PREAUTH), and when use_tls=1 requires CAPABILITY to advertise STARTTLS —
+// issues STARTTLS, upgrades the fd in place with tls_client_fd, re-reads
+// CAPABILITY, then LOGINs. use_tls=0 is plaintext (loopback/dev only). A
+// PREAUTH greeting skips LOGIN entirely. ok=0 on any failure; the fd is closed.
+//
+// imap_list -> a JSON array string of mailbox names (["INBOX","Sent",...]) —
+// decode with parse(boxes, []string{}). imap_select -> (ok, exists): exists is
+// the server's `* n EXISTS` count at SELECT time. imap_search(criteria) -> a
+// JSON array of sequence numbers for a raw SEARCH criterion string
+// (e.g. "FROM \"alice\"", "SINCE 1-Feb-2024", "UNSEEN"). imap_fetch(seqset,
+// items) -> (text, ok): the untagged responses (FETCH lines plus FLAGS/EXISTS
+// noise) as one string — literals are inlined, so BODY[...] text is readable;
+// it is a LOW-LEVEL escape hatch for callers that parse the fetch grammar
+// themselves (ENVELOPE fields, BODY[HEADER] sections, etc.).
+//
+// Protocol notes: commands are tag-numbered (a1, a2, ...); untagged `*` and
+// continuation `+` lines are collected until the tagged OK/NO/BAD. IMAP
+// literals ({n}\r\n<bytes>) are read length-prefixed and inlined into the
+// logical line, so a FETCH response arrives as one string even when the
+// literal contains CRLFs. Strings truncate at an embedded NUL — fine for
+// headers/envelopes, not for arbitrary binary attachments. There is no
+// CONNECTION: reuse model — one ImapConn per session, imap_logout at the end.
+// Compose standalone:
+//   machin encode framework/imap.src yourapp.src > app.mfl
+
+type ImapConn struct {
+    fd   int
+    tls  int        // 0 = plaintext; else a tls_client_fd handle
+    host string     // kept for the STARTTLS upgrade
+    buf  []bytes    // pending socket bytes
+    tags []int      // boxed command-tag counter
+}
+
+func imap_attach(fd, tls, host) (c) {
+    bx := []bytes{}
+    bx = append(bx, bytes(""))
+    tx := []int{0}
+    c = ImapConn{fd: fd, tls: tls, host: host, buf: bx, tags: tx}
+}
+
+func imap_read1(c) (b) {
+    if c.tls != 0 { b = tls_read_bytes(c.tls) } else { b = read_bytes(c.fd) }
+}
+
+func imap_write_str(c, s) (n) {
+    if c.tls != 0 { n = tls_write(c.tls, s) } else { n = write(c.fd, s) }
+}
+
+// imap_take consumes and returns the first n buffered bytes (blocking reads
+// until n are available); ok=0 on EOF first.
+func imap_take(c, n) (b, ok) {
+    b = bytes("")
+    ok = 0
+    while len(c.buf[0]) < n {
+        chunk := imap_read1(c)
+        if len(chunk) == 0 { return }
+        c.buf[0] = bytes_concat(c.buf[0], chunk)
+    }
+    b = bytes_sub(c.buf[0], 0, n)
+    c.buf[0] = bytes_sub(c.buf[0], n, len(c.buf[0]))
+    ok = 1
+}
+
+// imap_physline reads one \n-terminated PHYSICAL segment (no terminator, \r
+// stripped). ok=0 on EOF with nothing buffered.
+func imap_physline(c) (seg, ok) {
+    seg = ""
+    ok = 0
+    while 1 == 1 {
+        idx := bytes_index(c.buf[0], bytes("\n"), 0)
+        if idx >= 0 {
+            raw := bytes_sub(c.buf[0], 0, idx)
+            c.buf[0] = bytes_sub(c.buf[0], idx + 1, len(c.buf[0]))
+            seg = bytes_str(raw)
+            if len(seg) > 0 { if charat(seg, len(seg) - 1) == "\r" { seg = substr(seg, 0, len(seg) - 1) } }
+            ok = 1
+            return
+        }
+        chunk := imap_read1(c)
+        if len(chunk) == 0 {
+            if len(c.buf[0]) > 0 { seg = bytes_str(c.buf[0])  c.buf[0] = bytes("")  ok = 1 }
+            return
+        }
+        c.buf[0] = bytes_concat(c.buf[0], chunk)
+    }
+}
+
+// imap_litlen returns the literal length when seg ends with a "{n}" marker,
+// plus the marker's length; n=-1 when there is none.
+func imap_litlen(seg) (n, mlen) {
+    n = -1
+    mlen = 0
+    L := len(seg)
+    if L < 3 { return }
+    if charat(seg, L - 1) != "}" { return }
+    i := L - 2
+    while i >= 0 {
+        if index("0123456789", charat(seg, i)) < 0 { break }
+        i = i - 1
+    }
+    if i < 0 { return }
+    if charat(seg, i) != "{" { return }
+    if i == L - 2 { return }
+    n = parse_int(substr(seg, i + 1, L - 1))
+    mlen = L - i
+}
+
+// imap_line reads one LOGICAL response line. A segment ending in "{n}" means an
+// IMAP literal follows: the {n} marker is stripped, the n raw bytes are inlined,
+// and reading continues until a segment without a literal marker — so literals
+// containing CRLF still arrive as one line.
+func imap_line(c) (line, ok) {
+    line = ""
+    ok = 0
+    while 1 == 1 {
+        seg, sok := imap_physline(c)
+        if sok == 0 {
+            if line != "" { ok = 1 }
+            return
+        }
+        n, mlen := imap_litlen(seg)
+        if n < 0 {
+            line = line + seg
+            ok = 1
+            return
+        }
+        line = line + substr(seg, 0, len(seg) - mlen)
+        lit, lok := imap_take(c, n)
+        if lok == 0 { return }
+        line = line + bytes_str(lit)
+        // the literal's n bytes are followed directly by the rest of the line
+        // (no extra CRLF — RFC 3501 literal = "{" n "}" CRLF *CHAR)
+    }
+}
+
+// imap_q quotes an IMAP astring (\ and " escaped).
+func imap_q(s) (q) {
+    q = "\""
+    i := 0
+    while i < len(s) {
+        ch := charat(s, i)
+        if ch == "\\" || ch == "\"" { q = q + "\\" }
+        q = q + ch
+        i = i + 1
+    }
+    q = q + "\""
+}
+
+// imap_json escapes a string for embedding in a JSON array element.
+func imap_json(s) (q) {
+    q = "\""
+    i := 0
+    while i < len(s) {
+        ch := charat(s, i)
+        if ch == "\\" { q = q + "\\\\" }
+        else if ch == "\"" { q = q + "\\\"" }
+        else if ch == "\n" { q = q + "\\n" }
+        else if ch == "\r" { q = q + "\\r" }
+        else if ch == "\t" { q = q + "\\t" }
+        else { q = q + ch }
+        i = i + 1
+    }
+    q = q + "\""
+}
+
+// imap_cmd sends one tagged command and collects untagged/continuation lines
+// until the tagged OK/NO/BAD. Returns the untagged text (lines joined with \n)
+// and ok=1 iff the tagged response was OK.
+func imap_cmd(c, cmd) (untag, ok) {
+    untag = ""
+    ok = 0
+    c.tags[0] = c.tags[0] + 1
+    tag := "a" + str(c.tags[0])
+    imap_write_str(c, tag + " " + cmd + "\r\n")
+    prefix := tag + " "
+    while 1 == 1 {
+        line, lok := imap_line(c)
+        if lok == 0 { return }
+        if has_prefix(line, prefix) {
+            if index(line, " OK") >= 0 { ok = 1 }
+            return
+        }
+        untag = untag + line + "\n"
+    }
+}
+
+func imap_close(c) (r) {
+    r = 0
+    if c.tls != 0 { r = tls_close(c.tls) } else { close(c.fd) }
+}
+
+// imap_connect dials host:port, reads the greeting, optionally STARTTLS-upgrades
+// (use_tls=1 requires the capability; a missing STARTTLS fails closed), then
+// LOGINs unless the greeting was PREAUTH. ok=0 on any failure.
+func imap_connect(host, port, user, pass, use_tls) (c, ok) {
+    c = ImapConn{fd: -1, tls: 0, host: host, buf: []bytes{}, tags: []int{}}
+    ok = 0
+    fd := dial(host, port)
+    if fd < 0 { return }
+    cc := imap_attach(fd, 0, host)
+    greet, gok := imap_line(cc)
+    if gok == 0 { imap_close(cc)  return }
+    preauth := 0
+    if has_prefix(greet, "* PREAUTH") {
+        preauth = 1
+    } else if has_prefix(greet, "* OK") {
+        preauth = 0
+    } else {
+        imap_close(cc)
+        return
+    }
+    if use_tls == 1 {
+        caps, cok := imap_cmd(cc, "CAPABILITY")
+        if cok == 0 || index(to_upper(caps), "STARTTLS") < 0 { imap_close(cc)  return }
+        _, sok := imap_cmd(cc, "STARTTLS")
+        if sok == 0 { imap_close(cc)  return }
+        t := tls_client_fd(fd, host)
+        if t == 0 { close(fd)  return }
+        cc.tls = t
+        caps2, _ := imap_cmd(cc, "CAPABILITY") // capabilities can change across the upgrade
+        _ = caps2
+    }
+    if preauth == 0 {
+        _, lok := imap_cmd(cc, "LOGIN " + imap_q(user) + " " + imap_q(pass))
+        if lok == 0 { imap_close(cc)  return }
+    }
+    c = cc
+    ok = 1
+}
+
+func imap_logout(c) (r) {
+    r = 0
+    lu, _ := imap_cmd(c, "LOGOUT")
+    _ = lu
+    r = imap_close(c)
+}
+
+// imap_list -> JSON array of mailbox names from LIST "" "*".
+func imap_list(c) (out) {
+    untag, ok := imap_cmd(c, "LIST \"\" \"*\"")
+    out = "["
+    first := 1
+    if ok == 0 { out = out + "]"  return }
+    for _, line := range split(untag, "\n") {
+        if has_prefix(line, "* LIST") {
+            name := imap_list_name(line)
+            if name != "" {
+                if first == 0 { out = out + "," }
+                first = 0
+                out = out + imap_json(name)
+            }
+        }
+    }
+    out = out + "]"
+}
+
+// imap_list_name pulls the mailbox name (the last token, unquoted) off a
+// `* LIST (flags) delim name` line. Quoted names keep their inner text.
+func imap_list_name(line) (name) {
+    name = ""
+    t := trim(line)
+    // name is the last whitespace-separated token; a quoted name may contain
+    // spaces, so prefer the text between the last pair of '"'
+    last := -1
+    i := 0
+    while i < len(t) {
+        if charat(t, i) == "\"" { last = i }
+        i = i + 1
+    }
+    if last > 0 {
+        prev := -1
+        i = 0
+        while i < last {
+            if charat(t, i) == "\"" { prev = i }
+            i = i + 1
+        }
+        if prev >= 0 && last > prev + 1 {
+            name = substr(t, prev + 1, last)
+            return
+        }
+    }
+    // unquoted atom: last token
+    i = len(t) - 1
+    while i >= 0 {
+        ch := charat(t, i)
+        if ch == " " || ch == "\t" { break }
+        i = i - 1
+    }
+    name = substr(t, i + 1, len(t))
+}
+
+// imap_select -> (ok, exists): SELECT mbox; exists is the `* n EXISTS` count.
+func imap_select(c, mbox) (ok, exists) {
+    ok = 0
+    exists = 0
+    untag, sok := imap_cmd(c, "SELECT " + imap_q(mbox))
+    if sok == 0 { return }
+    ok = 1
+    for _, line := range split(untag, "\n") {
+        idx := index(line, " EXISTS")
+        if idx < 0 { continue }
+        pre := trim(substr(line, 0, idx))
+        i := len(pre) - 1
+        while i >= 0 {
+            ch := charat(pre, i)
+            if ch == " " || ch == "\t" { break }
+            i = i - 1
+        }
+        exists = parse_int(substr(pre, i + 1, len(pre)))
+    }
+}
+
+// imap_search -> JSON array of sequence numbers for a raw SEARCH criterion.
+func imap_search(c, criteria) (out) {
+    untag, ok := imap_cmd(c, "SEARCH " + criteria)
+    out = "["
+    first := 1
+    if ok == 0 { out = out + "]"  return }
+    for _, line := range split(untag, "\n") {
+        if has_prefix(line, "* SEARCH") {
+            rest := trim(substr(line, 7, len(line)))
+            for _, tok := range split(rest, " ") {
+                if tok == "" { continue }
+                n := parse_int(tok)
+                if n <= 0 { continue }
+                if first == 0 { out = out + "," }
+                first = 0
+                out = out + str(n)
+            }
+        }
+    }
+    out = out + "]"
+}
+
+// imap_fetch -> (text, ok): the untagged responses for `FETCH seqset (items)`
+// as one string (literals inlined — a literal's own CRLFs stay inside it, so
+// multi-line BODY[...] text survives intact). Includes any untagged FLAGS/
+// EXISTS noise the server sent in the same command response. Low-level: parse
+// the fetch grammar in the caller.
+func imap_fetch(c, seqset, items) (text, ok) {
+    text = ""
+    ok = 0
+    untag, fok := imap_cmd(c, "FETCH " + seqset + " (" + items + ")")
+    if fok == 0 { return }
+    ok = 1
+    text = untag
+}
