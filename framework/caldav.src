@@ -1,0 +1,504 @@
+// caldav.src — a pure-MFL CalDAV client (RFC 4791/6352) over http_request +
+// framework/xml.src. No cgo, no client library: PROPFIND discovery and
+// collection listing, REPORT calendar-query, and GET/PUT/DELETE of iCalendar
+// objects, all as HTTP with Basic auth.
+//
+//   p, home, ok := caldav_discover("https://caldav.example.com/", "me@x.com", "pw")
+//   cals, ok2 := caldav_list(home, "me@x.com", "pw")
+//   evs, ok3  := caldav_query(home, "me@x.com", "pw", "20260101T000000Z", "20260201T000000Z")
+//   ics, ok4 := caldav_get(home, "me@x.com", "pw", "/calendars/me/home/abc.ics")
+//   ok5      := caldav_put(home, "me@x.com", "pw", "/calendars/me/home/new.ics", ics)
+//   ok6      := caldav_delete(home, "me@x.com", "pw", "/calendars/me/home/abc.ics")
+//
+// caldav_discover(url, user, pass) -> (principal, home, ok): ONE Depth:0
+// PROPFIND asking for current-user-principal and calendar-home-set. Both hrefs
+// come back resolved to absolute URLs against the request URL (server-absolute
+// "/dav/x" and absolute "https://h/dav/x" hrefs both handled). ok=0 on any
+// transport error, a non-2xx status, or an unparsable multistatus body; ok=1
+// requires at least one of the two hrefs to be present (a server that isn't
+// CalDAV yields ok=0, not empty strings).
+//
+// caldav_list(url, user, pass) -> (json, ok): Depth:1 PROPFIND on a calendar
+// home (or any collection) -> a JSON array, one object per member resource:
+//   {"href","displayname","calendar","addressbook","collection","etag","description"}
+// hrefs are absolute URLs; the *_type flags are 0/1; etag keeps its server
+// quotes; description is calendar-description ("" when absent). The collection
+// itself appears as the first member when the server includes it — filter on
+// "collection"/"calendar" as the app needs. Members whose propstat isn't 200 OK
+// contribute no props (skipped when they have no href either).
+//
+// caldav_query(url, user, pass, start, end) -> (json, ok): REPORT
+// calendar-query with a VEVENT comp-filter + time-range. start/end are
+// iCalendar UTC basic format "YYYYMMDDTHHMMSSZ" (anything else -> ok=0, nothing
+// sent). -> a JSON array, one object PER VEVENT block found in each response's
+// calendar-data:
+//   {"href","etag","uid","summary","dtstart","dtend","ics"}
+// uid/summary/dtstart/dtend are the unfolded property VALUES (TZID and other
+// parameters stay in "ics", the raw unfolded VEVENT block — fetch the full
+// object with caldav_get for VTIMEZONEs and anything else). A response whose
+// calendar-data holds no VEVENT still yields one entry with empty
+// uid/summary/dtstart/dtend and ics = the whole calendar-data.
+//
+// caldav_get(url, user, pass, href) -> (ics, ok): GET a calendar object ->
+// the raw text/calendar body. caldav_put(url, user, pass, href, ics) -> ok:
+// PUT text/calendar — an unconditional create/overwrite (no If-Match in v1;
+// use a raw http_request for conditional writes). caldav_delete(url, user,
+// pass, href) -> ok: DELETE. All href arguments may be absolute URLs or
+// server-absolute paths ("/dav/x.ics") — both resolve against url's origin.
+//
+// Auth is HTTP Basic (Authorization: Basic base64(user:pass)); an empty user
+// sends no Authorization header at all (for servers that don't want one).
+// ok=0 everywhere on transport errors and non-2xx statuses (207 Multi-Status
+// counts as success).
+//
+// Compose — xml.src MUST precede this file (shared namespace, no copy):
+//   machin encode framework/xml.src framework/caldav.src yourapp.src > app.mfl
+
+// ---- JSON ------------------------------------------------------------------
+
+// caldav_jstr quotes s as a JSON string (", \, and the C0 controls \n \r \t).
+func caldav_jstr(s) (out) {
+    out = "\""
+    e := replace(s, "\\", "\\\\")
+    e = replace(e, "\"", "\\\"")
+    e = replace(e, "\n", "\\n")
+    e = replace(e, "\r", "\\r")
+    e = replace(e, "\t", "\\t")
+    out = out + e + "\""
+}
+
+// ---- transport -------------------------------------------------------------
+
+// caldav_req issues one CalDAV HTTP request. ok=1 on any 2xx (207 included);
+// ctype/depth "" omit those headers. The raw response body comes back in text.
+func caldav_req(method, url, user, pass, ctype, depth, body) (status, text, ok) {
+    status = 0
+    text = ""
+    ok = 0
+    hs := []string{}
+    if user != "" {
+        hs = append(hs, "Authorization: Basic " + base64_encode(user + ":" + pass))
+    }
+    if ctype != "" { hs = append(hs, "Content-Type: " + ctype) }
+    if depth != "" { hs = append(hs, "Depth: " + depth) }
+    status, text, er := http_request(method, url, hs, body)
+    if er != "" { return }
+    if status < 200 || status >= 300 { return }
+    ok = 1
+}
+
+// ---- URLs ------------------------------------------------------------------
+
+// caldav_origin -> "scheme://authority" of an http(s) URL ("" otherwise).
+func caldav_origin(url) (o) {
+    o = ""
+    low := to_lower(url)
+    rest := ""
+    scheme := ""
+    if has_prefix(low, "https://") {
+        rest = substr(url, 8, len(url))
+        scheme = "https://"
+    } else if has_prefix(low, "http://") {
+        rest = substr(url, 7, len(url))
+        scheme = "http://"
+    } else {
+        return
+    }
+    slash := index(rest, "/")
+    auth := rest
+    if slash >= 0 { auth = substr(rest, 0, slash) }
+    if auth == "" { return }
+    o = scheme + auth
+}
+
+// caldav_resolve maps a server href (absolute URL, server-absolute path, or
+// relative reference) onto an absolute request URL against base's origin.
+// "" when base isn't http(s) or href is empty.
+func caldav_resolve(base, href) (u) {
+    u = ""
+    if href == "" { return }
+    low := to_lower(href)
+    if has_prefix(low, "http://") || has_prefix(low, "https://") {
+        u = href
+        return
+    }
+    o := caldav_origin(base)
+    if o == "" { return }
+    if charat(href, 0) == "/" {
+        u = o + href
+        return
+    }
+    // relative reference: resolve against base's directory (last '/' at or
+    // after the end of the origin — the "://" slashes don't count)
+    i := len(base) - 1
+    start := len(o)
+    while i >= start {
+        if charat(base, i) == "/" { break }
+        i = i - 1
+    }
+    if i < start {
+        u = o + "/" + href
+        return
+    }
+    u = substr(base, 0, i + 1) + href
+}
+
+// ---- multistatus (xml.src node store) ---------------------------------------
+
+// caldav_child -> index of the first DIRECT child element of idx whose local
+// name is ln (-1 if none). Element nodes only (kind 1).
+func caldav_child(idx, ln) (c) {
+    c = -1
+    i := 0
+    while i < len(g_xn[idx].kids) {
+        k := g_xn[idx].kids[i]
+        if g_xn[k].kind == 1 && c14n_local(g_xn[k].name) == ln {
+            c = k
+            return
+        }
+        i = i + 1
+    }
+}
+
+// caldav_kids -> indices of ALL direct child elements of idx named ln.
+func caldav_kids(idx, ln) (out) {
+    out = []int{}
+    i := 0
+    while i < len(g_xn[idx].kids) {
+        k := g_xn[idx].kids[i]
+        if g_xn[k].kind == 1 && c14n_local(g_xn[k].name) == ln {
+            out = append(out, k)
+        }
+        i = i + 1
+    }
+}
+
+// caldav_desc_all -> indices of every descendant-or-self element named ln,
+// depth-first, appended onto acc.
+func caldav_desc_all(idx, ln, acc) (out) {
+    out = acc
+    if g_xn[idx].kind == 1 && c14n_local(g_xn[idx].name) == ln {
+        out = append(out, idx)
+    }
+    i := 0
+    while i < len(g_xn[idx].kids) {
+        out = caldav_desc_all(g_xn[idx].kids[i], ln, out)
+        i = i + 1
+    }
+}
+
+// caldav_prop_ok -> 1 when a <propstat> element's <status> text mentions "200".
+func caldav_prop_ok(idx) (ok) {
+    ok = 0
+    si := caldav_child(idx, "status")
+    if si < 0 { return }
+    if index(trim(xml_text(si)), "200") >= 0 { ok = 1 }
+}
+
+// caldav_props -> indices of the <prop> elements inside every 200-OK propstat
+// of a <response> (a response can split props across several propstats).
+func caldav_props(resp) (props) {
+    props = []int{}
+    for _, ps := range caldav_kids(resp, "propstat") {
+        if caldav_prop_ok(ps) == 1 {
+            pi := caldav_child(ps, "prop")
+            if pi >= 0 { props = append(props, pi) }
+        }
+    }
+}
+
+// caldav_href -> the resolved absolute URL of a <response>'s <href> child
+// ("" when absent or unresolvable).
+func caldav_href(resp, base) (h) {
+    h = ""
+    hi := caldav_child(resp, "href")
+    if hi < 0 { return }
+    h = caldav_resolve(base, trim(xml_text(hi)))
+}
+
+// caldav_prop_xml wraps property elements in a PROPFIND body.
+func caldav_prop_xml(inner) (body) {
+    body = "<?xml version=\"1.0\" encoding=\"utf-8\"?>" +
+        "<D:propfind xmlns:D=\"DAV:\" xmlns:C=\"urn:ietf:params:xml:ns:caldav\">" +
+        "<D:prop>" + inner + "</D:prop></D:propfind>"
+}
+
+// ---- discovery -------------------------------------------------------------
+
+// caldav_discover -> (principal, home, ok): one Depth:0 PROPFIND for
+// current-user-principal + calendar-home-set (see header for the contract).
+func caldav_discover(url, user, pass) (principal, home, ok) {
+    principal = ""
+    home = ""
+    ok = 0
+    body := caldav_prop_xml("<D:current-user-principal/><C:calendar-home-set/>")
+    _, text, rok := caldav_req("PROPFIND", url, user, pass, "application/xml; charset=utf-8", "0", body)
+    if rok == 0 { return }
+    root := xml_parse(text)
+    if root < 0 { return }
+    cp := xml_find_local(root, "current-user-principal")
+    if cp >= 0 {
+        pu := caldav_child(cp, "principal-URL")
+        if pu < 0 { pu = cp }
+        hh := caldav_child(pu, "href")
+        if hh >= 0 { principal = caldav_resolve(url, trim(xml_text(hh))) }
+    }
+    hs := xml_find_local(root, "calendar-home-set")
+    if hs >= 0 {
+        hh := caldav_child(hs, "href")
+        if hh >= 0 { home = caldav_resolve(url, trim(xml_text(hh))) }
+    }
+    if home != "" || principal != "" { ok = 1 }
+}
+
+// ---- collections -------------------------------------------------------------
+
+// caldav_list -> (json, ok): Depth:1 PROPFIND -> JSON array of member objects
+// (see header for the shape).
+func caldav_list(url, user, pass) (out, ok) {
+    out = "[]"
+    ok = 0
+    body := caldav_prop_xml("<D:displayname/><D:resourcetype/><D:getetag/><C:calendar-description/>")
+    _, text, rok := caldav_req("PROPFIND", url, user, pass, "application/xml; charset=utf-8", "1", body)
+    if rok == 0 { return }
+    root := xml_parse(text)
+    if root < 0 { return }
+    ok = 1
+    out = "["
+    first := 1
+    responses := caldav_desc_all(root, "response", []int{})
+    for _, resp := range responses {
+        href := caldav_href(resp, url)
+        if href == "" { continue }
+        dn := ""
+        etag := ""
+        desc := ""
+        cal := 0
+        ab := 0
+        coll := 0
+        for _, p := range caldav_props(resp) {
+            j := 0
+            while j < len(g_xn[p].kids) {
+                k := g_xn[p].kids[j]
+                if g_xn[k].kind == 1 {
+                    nm := c14n_local(g_xn[k].name)
+                    if nm == "displayname" {
+                        dn = trim(xml_text(k))
+                    } else if nm == "getetag" {
+                        etag = trim(xml_text(k))
+                    } else if nm == "calendar-description" {
+                        desc = trim(xml_text(k))
+                    } else if nm == "resourcetype" {
+                        if caldav_child(k, "calendar") >= 0 { cal = 1 }
+                        if caldav_child(k, "addressbook") >= 0 { ab = 1 }
+                        if caldav_child(k, "collection") >= 0 { coll = 1 }
+                    }
+                }
+                j = j + 1
+            }
+        }
+        if first == 0 { out = out + "," }
+        first = 0
+        out = out + "{\"href\":" + caldav_jstr(href) +
+            ",\"displayname\":" + caldav_jstr(dn) +
+            ",\"calendar\":" + str(cal) +
+            ",\"addressbook\":" + str(ab) +
+            ",\"collection\":" + str(coll) +
+            ",\"etag\":" + caldav_jstr(etag) +
+            ",\"description\":" + caldav_jstr(desc) + "}"
+    }
+    out = out + "]"
+}
+
+// ---- queries -----------------------------------------------------------------
+
+// caldav_ics_time_ok -> 1 for "YYYYMMDDTHHMMSSZ" (16 chars, T at 8, Z at 15,
+// digits elsewhere) — the only time-range form v1 accepts.
+func caldav_ics_time_ok(s) (ok) {
+    ok = 0
+    if len(s) != 16 { return }
+    if charat(s, 8) != "T" || charat(s, 15) != "Z" { return }
+    i := 0
+    while i < 16 {
+        if i == 8 || i == 15 {
+            i = i + 1
+            continue
+        }
+        if index("0123456789", charat(s, i)) < 0 { return }
+        i = i + 1
+    }
+    ok = 1
+}
+
+// caldav_report_xml builds the calendar-query REPORT body.
+func caldav_report_xml(start, end) (body) {
+    body = "<?xml version=\"1.0\" encoding=\"utf-8\"?>" +
+        "<C:calendar-query xmlns:D=\"DAV:\" xmlns:C=\"urn:ietf:params:xml:ns:caldav\">" +
+        "<D:prop><D:getetag/><C:calendar-data/></D:prop>" +
+        "<C:filter><C:comp-filter name=\"VCALENDAR\"><C:comp-filter name=\"VEVENT\">" +
+        "<C:time-range start=\"" + start + "\" end=\"" + end + "\"/>" +
+        "</C:comp-filter></C:comp-filter></C:filter></C:calendar-query>"
+}
+
+// caldav_ics_lines -> the unfolded content lines of iCalendar text: CRLF (or
+// LF) line endings, and a line starting with space/tab continues the previous
+// one (the leading WSP is dropped per RFC 5545 unfolding).
+func caldav_ics_lines(ics) (lines) {
+    lines = []string{}
+    raw := split(ics, "\n")
+    i := 0
+    while i < len(raw) {
+        ln := raw[i]
+        if has_suffix(ln, "\r") { ln = substr(ln, 0, len(ln) - 1) }
+        if len(lines) > 0 && len(ln) > 0 {
+            c0 := charat(ln, 0)
+            if c0 == " " || c0 == "\t" {
+                lines[len(lines) - 1] = lines[len(lines) - 1] + substr(ln, 1, len(ln))
+                i = i + 1
+                continue
+            }
+        }
+        lines = append(lines, ln)
+        i = i + 1
+    }
+}
+
+// caldav_event_json -> one JSON object for a VEVENT block (unfolded lines,
+// BEGIN:VEVENT/END:VEVENT inclusive). uid/summary/dtstart/dtend are the first
+// matching property VALUES; params (TZID etc.) stay recoverable in "ics".
+func caldav_event_json(href, etag, blk) (s) {
+    uid := ""
+    summary := ""
+    dtstart := ""
+    dtend := ""
+    lines := caldav_ics_lines(blk)
+    i := 0
+    while i < len(lines) {
+        ln := lines[i]
+        c := index(ln, ":")
+        if c > 0 {
+            head := substr(ln, 0, c)
+            sc := index(head, ";")
+            pname := head
+            if sc >= 0 { pname = substr(head, 0, sc) }
+            up := to_upper(pname)
+            val := substr(ln, c + 1, len(ln))
+            if up == "UID" && uid == "" { uid = val }
+            if up == "SUMMARY" && summary == "" { summary = val }
+            if up == "DTSTART" && dtstart == "" { dtstart = val }
+            if up == "DTEND" && dtend == "" { dtend = val }
+        }
+        i = i + 1
+    }
+    s = "{\"href\":" + caldav_jstr(href) +
+        ",\"etag\":" + caldav_jstr(etag) +
+        ",\"uid\":" + caldav_jstr(uid) +
+        ",\"summary\":" + caldav_jstr(summary) +
+        ",\"dtstart\":" + caldav_jstr(dtstart) +
+        ",\"dtend\":" + caldav_jstr(dtend) +
+        ",\"ics\":" + caldav_jstr(blk) + "}"
+}
+
+// caldav_query -> (json, ok): REPORT calendar-query -> one JSON object per
+// VEVENT (see header for the shape and the time-range format).
+func caldav_query(url, user, pass, start, end) (out, ok) {
+    out = "[]"
+    ok = 0
+    if caldav_ics_time_ok(start) == 0 || caldav_ics_time_ok(end) == 0 { return }
+    body := caldav_report_xml(start, end)
+    _, text, rok := caldav_req("REPORT", url, user, pass, "application/xml; charset=utf-8", "", body)
+    if rok == 0 { return }
+    root := xml_parse(text)
+    if root < 0 { return }
+    ok = 1
+    out = "["
+    first := 1
+    responses := caldav_desc_all(root, "response", []int{})
+    for _, resp := range responses {
+        href := caldav_href(resp, url)
+        if href == "" { continue }
+        etag := ""
+        cdata := ""
+        for _, p := range caldav_props(resp) {
+            j := 0
+            while j < len(g_xn[p].kids) {
+                k := g_xn[p].kids[j]
+                if g_xn[k].kind == 1 {
+                    nm := c14n_local(g_xn[k].name)
+                    if nm == "getetag" {
+                        etag = trim(xml_text(k))
+                    } else if nm == "calendar-data" {
+                        cdata = xml_text(k)
+                    }
+                }
+                j = j + 1
+            }
+        }
+        // split calendar-data into VEVENT blocks on the unfolded lines
+        lines := caldav_ics_lines(cdata)
+        in_ev := 0
+        blk := ""
+        emitted := 0
+        i := 0
+        while i < len(lines) {
+            ln := lines[i]
+            up := to_upper(trim(ln))
+            if up == "BEGIN:VEVENT" {
+                in_ev = 1
+                blk = ln
+            } else if up == "END:VEVENT" && in_ev == 1 {
+                in_ev = 0
+                if blk != "" { blk = blk + "\n" }
+                blk = blk + ln
+                if first == 0 { out = out + "," }
+                first = 0
+                emitted = 1
+                out = out + caldav_event_json(href, etag, blk)
+                blk = ""
+            } else if in_ev == 1 {
+                if blk != "" { blk = blk + "\n" }
+                blk = blk + ln
+            }
+            i = i + 1
+        }
+        if emitted == 0 {
+            // no VEVENT in this response: still surface the object itself
+            if first == 0 { out = out + "," }
+            first = 0
+            out = out + caldav_event_json(href, etag, cdata)
+        }
+    }
+    out = out + "]"
+}
+
+// ---- objects -----------------------------------------------------------------
+
+// caldav_get -> (ics, ok): GET a calendar object -> raw text/calendar body.
+func caldav_get(url, user, pass, href) (ics, ok) {
+    ics = ""
+    ok = 0
+    u := caldav_resolve(url, href)
+    if u == "" { return }
+    _, text, rok := caldav_req("GET", u, user, pass, "", "", "")
+    if rok == 0 { return }
+    ics = text
+    ok = 1
+}
+
+// caldav_put -> ok: PUT text/calendar — unconditional create/overwrite.
+func caldav_put(url, user, pass, href, ics) (ok) {
+    ok = 0
+    u := caldav_resolve(url, href)
+    if u == "" { return }
+    _, _, rok := caldav_req("PUT", u, user, pass, "text/calendar; charset=utf-8", "", ics)
+    ok = rok
+}
+
+// caldav_delete -> ok: DELETE a calendar object.
+func caldav_delete(url, user, pass, href) (ok) {
+    ok = 0
+    u := caldav_resolve(url, href)
+    if u == "" { return }
+    _, _, rok := caldav_req("DELETE", u, user, pass, "", "", "")
+    ok = rok
+}

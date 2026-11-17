@@ -116,6 +116,21 @@ names, `imap_select(c, "INBOX")` → `(ok, exists)`, `imap_search(c, criteria)` 
 JSON seq numbers, `imap_fetch(c, seqset, items)` → raw FETCH text with literals
 inlined (low-level; parse the fetch grammar yourself), `imap_logout(c)`.
 
+## Calendars (`framework/caldav.src`)
+
+CalDAV (calendar sync — as opposed to booking links) is pure MFL over
+`http_request` + `framework/xml.src` (compose `xml.src` FIRST — caldav reads its
+node store). `p, home, ok := caldav_discover(url, user, pass)` does one Depth:0
+PROPFIND → principal + calendar-home-set as absolute URLs. `caldav_list(home,
+user, pass)` → JSON `[{href,displayname,calendar,addressbook,collection,etag,
+description}]`. `caldav_query(home, user, pass, start, end)` → REPORT
+calendar-query → one JSON object per VEVENT `[{href,etag,uid,summary,dtstart,
+dtend,ics}]` (start/end are iCal UTC `YYYYMMDDTHHMMSSZ`; the raw unfolded VEVENT
+block is in `ics`, `caldav_get` fetches the full object for VTIMEZONEs).
+`caldav_get`/`caldav_put`/`caldav_delete` handle objects; hrefs may be absolute
+URLs or server-absolute paths. Auth is HTTP Basic; `ok=0` on transport errors
+and non-2xx (207 Multi-Status counts).
+
 ## Crypto you'll reach for
 
 `sha256` / `hmac_sha256` (hex), `sha256_bytes` / `hmac_sha256_bytes` / `sha1_bytes`
