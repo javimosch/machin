@@ -299,7 +299,7 @@ func cmdRun(args []string) error {
 	if src == "" {
 		src = "."
 	}
-	prog, _, _, err := resolveProjectInput(src, "")
+	prog, _, snapshotPath, _, err := resolveProjectInput(src)
 	if err != nil {
 		return err
 	}
@@ -322,7 +322,11 @@ func cmdRun(args []string) error {
 	cmd.Env = os.Environ()
 	if recordTrace != "" {
 		abs, _ := filepath.Abs(recordTrace)
-		srcAbs, _ := filepath.Abs(src)
+		srcToRecord := src
+		if snapshotPath != "" {
+			srcToRecord = snapshotPath
+		}
+		srcAbs, _ := filepath.Abs(srcToRecord)
 		safeFlag := "0"
 		if safe {
 			safeFlag = "1"
@@ -486,12 +490,9 @@ func cmdBuild(args []string) error {
 	default:
 		return fmt.Errorf("build: unknown --target %q (want native, wasm, or windows)", target)
 	}
-	prog, effectiveOut, _, err := resolveProjectInput(src, out)
+	prog, defaultBase, _, _, err := resolveProjectInput(src)
 	if err != nil {
 		return err
-	}
-	if out == "" && effectiveOut != "" {
-		out = effectiveOut
 	}
 	if raceSafe {
 		if err := raceGate(prog); err != nil {
@@ -508,7 +509,7 @@ func cmdBuild(args []string) error {
 	}
 	if target == "wasm" {
 		if out == "" {
-			out = strings.TrimSuffix(filepath.Base(src), filepath.Ext(src)) + ".wasm"
+			out = defaultBase + ".wasm"
 		}
 		if err := BuildWasm(prog, out, safe); err != nil {
 			return err
@@ -518,7 +519,7 @@ func cmdBuild(args []string) error {
 	}
 	if target == "windows" {
 		if out == "" {
-			out = strings.TrimSuffix(filepath.Base(src), filepath.Ext(src)) + ".exe"
+			out = defaultBase + ".exe"
 		}
 		if err := BuildWindows(prog, out, safe); err != nil {
 			return err
@@ -527,7 +528,7 @@ func cmdBuild(args []string) error {
 		return nil
 	}
 	if out == "" {
-		out = strings.TrimSuffix(filepath.Base(src), filepath.Ext(src))
+		out = defaultBase
 	}
 	if err := BuildBinaryStatic(prog, out, safe, static); err != nil {
 		return err

@@ -26,7 +26,7 @@ func TestProjectResolution_Directory(t *testing.T) {
 	}
 
 	// Resolve project directory
-	prog, outName, isProject, err := resolveProjectInput(tmpDir, "")
+	prog, outName, mflPath, isProject, err := resolveProjectInput(tmpDir)
 	if err != nil {
 		t.Fatalf("resolveProjectInput failed: %v", err)
 	}
@@ -35,6 +35,9 @@ func TestProjectResolution_Directory(t *testing.T) {
 	}
 	if outName == "" {
 		t.Errorf("expected non-empty outName")
+	}
+	if mflPath == "" {
+		t.Errorf("expected non-empty mflPath")
 	}
 	if prog == nil {
 		t.Fatalf("expected non-nil Program AST")
@@ -55,7 +58,7 @@ func TestProjectResolution_SingleSrcFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	prog, outName, isProject, err := resolveProjectInput(srcPath, "")
+	prog, outName, mflPath, isProject, err := resolveProjectInput(srcPath)
 	if err != nil {
 		t.Fatalf("resolveProjectInput failed: %v", err)
 	}
@@ -70,7 +73,30 @@ func TestProjectResolution_SingleSrcFile(t *testing.T) {
 	}
 
 	expectedMfl := filepath.Join(tmpDir, "app.mfl")
+	if mflPath != expectedMfl {
+		t.Errorf("expected mflPath %s, got %s", expectedMfl, mflPath)
+	}
 	if _, err := os.Stat(expectedMfl); os.IsNotExist(err) {
 		t.Errorf("expected generated .mfl at %s", expectedMfl)
+	}
+}
+
+func TestProjectResolution_RootNamedBuildOrVendor(t *testing.T) {
+	tmpDir := t.TempDir()
+	buildDir := filepath.Join(tmpDir, "build")
+	if err := os.MkdirAll(buildDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(buildDir, "main.src"), []byte("func main() { println(42) }"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Traversing when the target root ITSELF is named "build" should work
+	prog, outName, _, isProject, err := resolveProjectInput(buildDir)
+	if err != nil {
+		t.Fatalf("failed to resolve root named 'build': %v", err)
+	}
+	if !isProject || prog == nil || outName != "build" {
+		t.Errorf("expected valid resolution for root named build, got outName=%q", outName)
 	}
 }
