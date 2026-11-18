@@ -65,6 +65,7 @@ machin build examples/complex/primes.mfl --emit-c   # see the generated C
 | `zlib`            | `zlib_compress`/`zlib_decompress` over raw `bytes` — level 6 round-trip with a Go `compress/zlib` stream |
 | `sha256`          | `sha256(s)` → lowercase hex; `hmac_sha256(key, msg)` → lowercase hex; webhook signature verification |
 | `crypto`          | OpenSSL crypto suite: SHA-256, HMAC, AES-GCM round-trip (`ct\|\|tag` layout), Ed25519 sign/verify |
+| `argon2`          | Argon2 KDF (`argon2d`/`argon2i`/`argon2id`) — RFC 9106 password hashing for KDBX4/KeePassXC |
 | `base64`          | `base64_encode`/`base64_decode`: standard padded encode, lenient decode (standard + URL-safe alphabets, ignores padding) |
 | `url_encode`      | `url_encode`/`url_decode`: RFC 3986 percent-encoding round-trip, `+`→space, malformed `%XX` passthrough |
 | `http_client_api` | HTTP client: `http_get` multi-assign + error branch, `http_request` with auth/Accept headers (real network calls) |

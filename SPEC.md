@@ -351,6 +351,7 @@ startup (before `main`; at `_initialize` for a wasm reactor).
 | `hmac_sha256_bytes` | `(bytes, bytes) -> bytes` | HMAC-SHA256(key, msg) → 32 bytes |
 | `hkdf_sha256` | `(bytes, bytes, bytes, int) -> bytes` | HKDF-SHA256(ikm, salt, info, length) |
 | `pbkdf2_sha256` | `(bytes, bytes, int, int) -> bytes` | PBKDF2-HMAC-SHA256(password, salt, iterations, dklen) |
+| `argon2d` / `argon2i` / `argon2id` | `(bytes, bytes, int, int, int, int) -> bytes` | Argon2 password KDF (RFC 9106) — (password, salt, iterations, memoryKiB, parallelism, outLen) -> outLen-byte key; memoryKiB capped at 4 GiB; empty bytes on bad params/alloc |
 | `x25519_pub` | `(bytes) -> bytes` | X25519 public key from a 32-byte private key |
 | `x25519_shared` | `(bytes, bytes) -> bytes` | X25519 ECDH shared secret (my private, their public) |
 | `ed25519_pub` | `(bytes) -> bytes` | Ed25519 public key from a 32-byte seed |

@@ -1,0 +1,27 @@
+//argon2:password-based key derivation(KDBX4/KeePassXC).argon2id is the RFC 9106
+//hybrid default;argon2d/argon2i are the pure variants.memoryKiB is capped at 4 GiB;
+//empty bytes on bad params.(password,salt,iterations,memoryKiB,parallelism,outLen)
+
+func main(){
+pwd:=bytes("correct horse battery staple")
+salt:=bytes("0123456789abcdef")//KDF salts are random>=8 bytes;this one is fixed for the demo
+
+//---argon2id:the KDBX4 default---
+k:=argon2id(pwd,salt,3,65536,4,32)//64 MiB,4 lanes,32-byte key
+println("argon2id key: ",to_hex(k))
+
+//---argon2d/argon2i:pure data-dependent/independent variants---
+kd:=argon2d(pwd,salt,2,32,1,32)
+ki:=argon2i(pwd,salt,1,64,2,32)
+println("argon2d key: ",to_hex(kd))
+println("argon2i key: ",to_hex(ki))
+
+//---params matter:each knob changes the key---
+k2:=argon2id(pwd,salt,3,65536,4,16)//shorter output
+println("outLen=16: ",to_hex(k2))
+println("different: ",to_hex(k)!=to_hex(kd))
+
+//---bad params fail closed:empty bytes,never a panic---
+bad:=argon2id(pwd,bytes("short"),3,65536,4,32)//salt<8 bytes
+println("bad salt len: ",len(bad))
+}
