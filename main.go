@@ -297,9 +297,9 @@ func cmdRun(args []string) error {
 		}
 	}
 	if src == "" {
-		return fmt.Errorf("run: need exactly one .mfl file")
+		src = "."
 	}
-	prog, err := loadMFL(src)
+	prog, _, snapshotPath, _, err := resolveProjectInput(src)
 	if err != nil {
 		return err
 	}
@@ -322,7 +322,11 @@ func cmdRun(args []string) error {
 	cmd.Env = os.Environ()
 	if recordTrace != "" {
 		abs, _ := filepath.Abs(recordTrace)
-		srcAbs, _ := filepath.Abs(src)
+		srcToRecord := src
+		if snapshotPath != "" {
+			srcToRecord = snapshotPath
+		}
+		srcAbs, _ := filepath.Abs(srcToRecord)
 		safeFlag := "0"
 		if safe {
 			safeFlag = "1"
@@ -470,7 +474,7 @@ func cmdBuild(args []string) error {
 		}
 	}
 	if src == "" {
-		return fmt.Errorf("build: need a .mfl file")
+		src = "."
 	}
 	switch target {
 	case "", "native":
@@ -486,7 +490,7 @@ func cmdBuild(args []string) error {
 	default:
 		return fmt.Errorf("build: unknown --target %q (want native, wasm, or windows)", target)
 	}
-	prog, err := loadMFL(src)
+	prog, defaultBase, _, _, err := resolveProjectInput(src)
 	if err != nil {
 		return err
 	}
@@ -505,7 +509,7 @@ func cmdBuild(args []string) error {
 	}
 	if target == "wasm" {
 		if out == "" {
-			out = strings.TrimSuffix(filepath.Base(src), filepath.Ext(src)) + ".wasm"
+			out = defaultBase + ".wasm"
 		}
 		if err := BuildWasm(prog, out, safe); err != nil {
 			return err
@@ -515,7 +519,7 @@ func cmdBuild(args []string) error {
 	}
 	if target == "windows" {
 		if out == "" {
-			out = strings.TrimSuffix(filepath.Base(src), filepath.Ext(src)) + ".exe"
+			out = defaultBase + ".exe"
 		}
 		if err := BuildWindows(prog, out, safe); err != nil {
 			return err
@@ -524,7 +528,7 @@ func cmdBuild(args []string) error {
 		return nil
 	}
 	if out == "" {
-		out = strings.TrimSuffix(filepath.Base(src), filepath.Ext(src))
+		out = defaultBase
 	}
 	if err := BuildBinaryStatic(prog, out, safe, static); err != nil {
 		return err
