@@ -621,6 +621,7 @@ when any crypto builtin is used.
 | `hmac_sha256_bytes(key, msg)`                  | HMAC-SHA256(key, msg) → 32 bytes                                |
 | `hkdf_sha256(ikm, salt, info, length)`         | HKDF-SHA256 key derivation → `length` bytes                     |
 | `pbkdf2_sha256(pass, salt, iters, dklen)`      | PBKDF2-HMAC-SHA256 → derived key of `dklen` bytes (password hashing) |
+| `argon2d/i/id(pw, salt, iters, memKiB, lanes, outLen)` | Argon2 KDF (RFC 9106) → `outLen`-byte key; `memKiB` capped at 4 GiB; `argon2id` is the KeePassXC/KDBX4 default |
 | `x25519_pub(priv32)`                           | X25519 public key from a 32-byte private key                    |
 | `x25519_shared(priv32, pub32)`                 | X25519 ECDH shared secret → 32 bytes                            |
 | `ed25519_pub(seed32)`                          | Ed25519 public key from a 32-byte seed                          |

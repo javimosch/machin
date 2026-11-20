@@ -71,3 +71,33 @@ func main() {
 		}
 	}
 }
+
+// argon2id/argon2d/argon2i must match the RFC 9106 reference vectors (verified
+// against argon2-cffi / the PHC reference implementation). Covers the KDBX4
+// password-KDF path from issue #694.
+func TestArgon2(t *testing.T) {
+	prog := progFromSrc(t, `
+func main() {
+    pwd := bytes("password")
+    salt := bytes("somesalt123")
+
+    println(to_hex(argon2id(pwd, salt, 2, 32, 1, 32)))
+    println(to_hex(argon2d(pwd, salt, 2, 32, 1, 32)))
+    println(to_hex(argon2i(pwd, salt, 1, 64, 2, 32)))
+    println("bad_params_empty=" + str(len(argon2id(pwd, bytes("short"), 2, 32, 1, 32)) == 0))
+}`)
+	out, err := RunCaptured(prog)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	for _, want := range []string{
+		"103298319f4ba264de20dd231623722586c29776640ec40219d0fd8fb01dbdf3",
+		"5be130f7b50d39f0cc74440144c0a23393aa2ef0c7a44af51de48a0a921afc68",
+		"d59bd7ac3b22bf06bcb49a3448a645bdab247e77d4b0d4d1a04aa75dfd041d23",
+		"bad_params_empty=true",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in:\n%s", want, out)
+		}
+	}
+}

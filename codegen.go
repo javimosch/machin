@@ -6840,6 +6840,243 @@ static mfl_bytes mfl_crypto_secp256k1_recover(mfl_bytes hash, mfl_bytes sig) {
     if (group) EC_GROUP_free(group);
     return out;
 }
+
+/* ---- Argon2 (RFC 9106) — self-contained Blake2b + BlaMka, no OpenSSL ----
+   Faithful port of the PHC reference implementation (single-threaded; lane
+   order is deterministic so output is identical to the threaded reference).
+   Needed for KDBX4 password hashing — issue #694. Working memory is transient
+   malloc/free; only the derived key lands in the arena via mfl_crypto_buf. */
+typedef struct { uint64_t h[8], t[2], f[2]; uint8_t buf[128]; size_t buflen; uint8_t outlen; } mfl_a2_b2s;
+static const uint64_t mfl_a2_iv[8] = {
+    0x6a09e667f3bcc908ULL, 0xbb67ae8584caa73bULL,
+    0x3c6ef372fe94f82bULL, 0xa54ff53a5f1d36f1ULL,
+    0x510e527fade682d1ULL, 0x9b05688c2b3e6c1fULL,
+    0x1f83d9abfb41bd6bULL, 0x5be0cd19137e2179ULL };
+static const uint8_t mfl_a2_sig[12][16] = {
+    {0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15},
+    {14,10,4,8,9,15,13,6,1,12,0,2,11,7,5,3},
+    {11,8,12,0,5,2,15,13,10,14,3,6,7,1,9,4},
+    {7,9,3,1,13,12,11,14,2,6,5,10,4,0,15,8},
+    {9,0,5,7,2,4,10,15,14,1,11,12,6,8,3,13},
+    {2,12,6,10,0,11,8,3,4,13,7,5,15,14,1,9},
+    {12,5,1,15,14,13,4,10,0,7,6,3,9,2,8,11},
+    {13,11,7,14,12,1,3,9,5,0,15,4,8,6,2,10},
+    {6,15,14,9,11,3,0,8,12,2,13,7,1,4,10,5},
+    {10,2,8,4,7,6,1,5,15,11,9,14,3,12,13,0},
+    {0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15},
+    {14,10,4,8,9,15,13,6,1,12,0,2,11,7,5,3} };
+static uint64_t mfl_a2_ld64(const uint8_t *p){ uint64_t w=0; for(int i=0;i<8;i++) w|=(uint64_t)p[i]<<(8*i); return w; }
+static void mfl_a2_st64(uint8_t *p, uint64_t w){ for(int i=0;i<8;i++) p[i]=(uint8_t)(w>>(8*i)); }
+static void mfl_a2_st32(uint8_t *p, uint32_t w){ for(int i=0;i<4;i++) p[i]=(uint8_t)(w>>(8*i)); }
+static uint64_t mfl_a2_rotr(uint64_t w, int c){ return (w>>c)|(w<<(64-c)); }
+static void mfl_a2_compress(mfl_a2_b2s *S, const uint8_t *blk){
+    uint64_t m[16], v[16];
+    for(int i=0;i<16;i++) m[i]=mfl_a2_ld64(blk+i*8);
+    for(int i=0;i<8;i++) v[i]=S->h[i];
+    v[8]=mfl_a2_iv[0]; v[9]=mfl_a2_iv[1]; v[10]=mfl_a2_iv[2]; v[11]=mfl_a2_iv[3];
+    v[12]=mfl_a2_iv[4]^S->t[0]; v[13]=mfl_a2_iv[5]^S->t[1];
+    v[14]=mfl_a2_iv[6]^S->f[0]; v[15]=mfl_a2_iv[7]^S->f[1];
+    for(int r=0;r<12;r++){
+        const uint8_t *s=mfl_a2_sig[r];
+#define MFL_A2_B2G(a,b,c,d,x,y) do{ a=a+b+m[x]; d=mfl_a2_rotr(d^a,32); c=c+d; b=mfl_a2_rotr(b^c,24); a=a+b+m[y]; d=mfl_a2_rotr(d^a,16); c=c+d; b=mfl_a2_rotr(b^c,63);}while(0)
+        MFL_A2_B2G(v[0],v[4],v[8],v[12], s[0],s[1]);
+        MFL_A2_B2G(v[1],v[5],v[9],v[13], s[2],s[3]);
+        MFL_A2_B2G(v[2],v[6],v[10],v[14],s[4],s[5]);
+        MFL_A2_B2G(v[3],v[7],v[11],v[15],s[6],s[7]);
+        MFL_A2_B2G(v[0],v[5],v[10],v[15],s[8],s[9]);
+        MFL_A2_B2G(v[1],v[6],v[11],v[12],s[10],s[11]);
+        MFL_A2_B2G(v[2],v[7],v[8],v[13], s[12],s[13]);
+        MFL_A2_B2G(v[3],v[4],v[9],v[14], s[14],s[15]);
+    }
+    for(int i=0;i<8;i++) S->h[i]^=v[i]^v[i+8];
+}
+static void mfl_a2_b2init(mfl_a2_b2s *S, size_t outlen){
+    memset(S,0,sizeof(*S));
+    for(int i=0;i<8;i++) S->h[i]=mfl_a2_iv[i];
+    S->h[0]^=0x01010000ULL | (uint64_t)outlen;
+    S->outlen=(uint8_t)outlen;
+}
+static void mfl_a2_b2update(mfl_a2_b2s *S, const uint8_t *in, size_t inlen){
+    while(inlen>0){
+        size_t left=128-S->buflen, fill=inlen<left?inlen:left;
+        memcpy(S->buf+S->buflen,in,fill);
+        S->buflen+=fill; in+=fill; inlen-=fill;
+        if(S->buflen==128){
+            S->t[0]+=128; if(S->t[0]<128) S->t[1]++;
+            mfl_a2_compress(S,S->buf); S->buflen=0;
+        }
+    }
+}
+static void mfl_a2_b2final(mfl_a2_b2s *S, uint8_t *out){
+    uint8_t ob[64];
+    S->t[0]+=(uint64_t)S->buflen; if(S->t[0]<(uint64_t)S->buflen) S->t[1]++;
+    S->f[0]=~0ULL;
+    memset(S->buf+S->buflen,0,128-S->buflen);
+    mfl_a2_compress(S,S->buf);
+    for(int i=0;i<8;i++) mfl_a2_st64(ob+i*8,S->h[i]);
+    memcpy(out,ob,S->outlen);
+}
+/* Argon2's variable-length hash: LE32(outlen) || in, then 32-byte counter
+   expansion for outlen > 64 (NOT plain Blake2b — verified vs reference). */
+static void mfl_a2_b2long(uint8_t *out, size_t outlen, const uint8_t *in, size_t inlen){
+    uint8_t ob[4]; mfl_a2_st32(ob,(uint32_t)outlen);
+    if(outlen<=64){
+        mfl_a2_b2s S; mfl_a2_b2init(&S,outlen); mfl_a2_b2update(&S,ob,4); mfl_a2_b2update(&S,in,inlen); mfl_a2_b2final(&S,out); return;
+    }
+    uint8_t obuf[64], ibuf[64]; uint32_t top=(uint32_t)outlen-32;
+    mfl_a2_b2s S; mfl_a2_b2init(&S,64); mfl_a2_b2update(&S,ob,4); mfl_a2_b2update(&S,in,inlen); mfl_a2_b2final(&S,obuf);
+    memcpy(out,obuf,32); out+=32;
+    while(top>64){
+        memcpy(ibuf,obuf,64);
+        mfl_a2_b2s S2; mfl_a2_b2init(&S2,64); mfl_a2_b2update(&S2,ibuf,64); mfl_a2_b2final(&S2,obuf);
+        memcpy(out,obuf,32); out+=32; top-=32;
+    }
+    memcpy(ibuf,obuf,64);
+    mfl_a2_b2s S3; mfl_a2_b2init(&S3,top); mfl_a2_b2update(&S3,ibuf,64); mfl_a2_b2final(&S3,obuf);
+    memcpy(out,obuf,top);
+}
+
+typedef struct { uint64_t v[128]; } mfl_a2_blk;
+static uint64_t mfl_a2_mka(uint64_t x, uint64_t y){
+    const uint64_t m=0xFFFFFFFFULL;
+    return x + y + 2*((x&m)*(y&m));
+}
+#define MFL_A2_G(a,b,c,d) do{ a=mfl_a2_mka(a,b); d=mfl_a2_rotr(d^a,32); c=mfl_a2_mka(c,d); b=mfl_a2_rotr(b^c,24); a=mfl_a2_mka(a,b); d=mfl_a2_rotr(d^a,16); c=mfl_a2_mka(c,d); b=mfl_a2_rotr(b^c,63);}while(0)
+#define MFL_A2_ROUND(v0,v1,v2,v3,v4,v5,v6,v7,v8,v9,v10,v11,v12,v13,v14,v15) do{ \
+    MFL_A2_G(v0,v4,v8,v12); MFL_A2_G(v1,v5,v9,v13); MFL_A2_G(v2,v6,v10,v14); MFL_A2_G(v3,v7,v11,v15); \
+    MFL_A2_G(v0,v5,v10,v15); MFL_A2_G(v1,v6,v11,v12); MFL_A2_G(v2,v7,v8,v13); MFL_A2_G(v3,v4,v9,v14);}while(0)
+
+static void mfl_a2_fill_block(const mfl_a2_blk *prev, const mfl_a2_blk *ref, mfl_a2_blk *next, int wx){
+    mfl_a2_blk R,T; uint64_t *rv=R.v,*tv=T.v,*nv=next->v;
+    for(int i=0;i<128;i++) rv[i]=ref->v[i]^prev->v[i];
+    memcpy(T.v,R.v,sizeof(T.v));
+    if(wx) for(int i=0;i<128;i++) tv[i]^=nv[i];
+    for(int i=0;i<8;i++)
+        MFL_A2_ROUND(rv[16*i],rv[16*i+1],rv[16*i+2],rv[16*i+3],rv[16*i+4],rv[16*i+5],rv[16*i+6],rv[16*i+7],
+             rv[16*i+8],rv[16*i+9],rv[16*i+10],rv[16*i+11],rv[16*i+12],rv[16*i+13],rv[16*i+14],rv[16*i+15]);
+    for(int i=0;i<8;i++)
+        MFL_A2_ROUND(rv[2*i],rv[2*i+1],rv[2*i+16],rv[2*i+17],rv[2*i+32],rv[2*i+33],rv[2*i+48],rv[2*i+49],
+             rv[2*i+64],rv[2*i+65],rv[2*i+80],rv[2*i+81],rv[2*i+96],rv[2*i+97],rv[2*i+112],rv[2*i+113]);
+    for(int i=0;i<128;i++) nv[i]=tv[i]^rv[i];
+}
+static void mfl_a2_next_addresses(mfl_a2_blk *addr, mfl_a2_blk *in, mfl_a2_blk *zero){
+    in->v[6]++;
+    mfl_a2_fill_block(zero,in,addr,0);
+    mfl_a2_fill_block(zero,addr,addr,0);
+}
+typedef struct { mfl_a2_blk *mem; uint32_t lanes, lane_len, seg_len, mem_blocks, passes; int type; } mfl_a2_inst;
+static uint32_t mfl_a2_index_alpha(mfl_a2_inst *in, int pass, int slice, uint32_t index, uint32_t pr, int same){
+    uint32_t ras; uint64_t rel; uint32_t start;
+    if(pass==0){
+        if(slice==0) ras=index-1;
+        else if(same) ras=slice*in->seg_len+index-1;
+        else ras=slice*in->seg_len+((index==0)?0xFFFFFFFFu:0u);
+    } else {
+        if(same) ras=in->lane_len-in->seg_len+index-1;
+        else ras=in->lane_len-in->seg_len+((index==0)?0xFFFFFFFFu:0u);
+    }
+    rel=(uint64_t)pr; rel=rel*rel>>32;
+    rel=(uint64_t)ras-1-((uint64_t)ras*rel>>32);
+    start=0;
+    if(pass!=0) start=(slice==3)?0u:(slice+1)*in->seg_len;
+    return (uint32_t)((start+rel)%(uint64_t)in->lane_len);
+}
+static void mfl_a2_fill_segment(mfl_a2_inst *in, int pass, int lane, int slice){
+    mfl_a2_blk addr_blk, in_blk, zero_blk;
+    uint64_t pr; uint32_t ref_lane, ref_idx, prev_off, curr_off, start_idx, i;
+    int di = (in->type==1) || (in->type==2 && pass==0 && slice<2);
+    if(di){
+        memset(&zero_blk,0,sizeof(zero_blk)); memset(&in_blk,0,sizeof(in_blk));
+        in_blk.v[0]=pass; in_blk.v[1]=lane; in_blk.v[2]=slice;
+        in_blk.v[3]=in->mem_blocks; in_blk.v[4]=in->passes; in_blk.v[5]=in->type;
+    }
+    start_idx=0;
+    if(pass==0 && slice==0){
+        start_idx=2;
+        if(di) mfl_a2_next_addresses(&addr_blk,&in_blk,&zero_blk);
+    }
+    curr_off=(uint32_t)lane*in->lane_len + (uint32_t)slice*in->seg_len + start_idx;
+    if(curr_off % in->lane_len==0) prev_off=curr_off+in->lane_len-1; else prev_off=curr_off-1;
+    for(i=start_idx;i<in->seg_len;i++,curr_off++,prev_off++){
+        if(curr_off % in->lane_len==1) prev_off=curr_off-1;
+        if(di){
+            if(i%128==0) mfl_a2_next_addresses(&addr_blk,&in_blk,&zero_blk);
+            pr=addr_blk.v[i%128];
+        } else {
+            pr=in->mem[prev_off].v[0];
+        }
+        ref_lane=(uint32_t)((pr>>32)%(uint64_t)in->lanes);
+        if(pass==0 && slice==0) ref_lane=lane;
+        ref_idx=mfl_a2_index_alpha(in,pass,slice,i,(uint32_t)(pr&0xFFFFFFFFu), ref_lane==lane);
+        mfl_a2_fill_block(in->mem+prev_off, in->mem+(size_t)in->lane_len*ref_lane+ref_idx, in->mem+curr_off, pass!=0);
+    }
+}
+static void mfl_a2_loadblk(mfl_a2_blk *b, const uint8_t *p){ for(int i=0;i<128;i++) b->v[i]=mfl_a2_ld64(p+i*8); }
+static void mfl_a2_storeblk(uint8_t *p, const mfl_a2_blk *b){ for(int i=0;i<128;i++) mfl_a2_st64(p+i*8,b->v[i]); }
+/* type: 0=argon2d 1=argon2i 2=argon2id. Returns 0 ok. */
+static int mfl_a2_hash(uint8_t *out, uint32_t outlen,
+                       const uint8_t *pw, uint32_t pwdlen,
+                       const uint8_t *salt, uint32_t saltlen,
+                       uint32_t t, uint32_t m, uint32_t p, int type){
+    uint64_t mb=(uint64_t)m, minmb=(uint64_t)8*p, seg;
+    uint32_t lanes, passes, mblocks, seglen, ll;
+    mfl_a2_blk *mem;
+    uint8_t h0[64], bh[72];
+    mfl_a2_b2s S;
+    if(mb<minmb) mb=minmb;
+    seg=mb/((uint64_t)4*p);
+    mb=seg*((uint64_t)4*p);
+    if(mb>0xFFFFFFFFULL) return -4;
+    lanes=p; passes=t; mblocks=(uint32_t)mb; seglen=(uint32_t)seg; ll=(uint32_t)(seg*4);
+    mem=(mfl_a2_blk*)malloc((size_t)mblocks*sizeof(mfl_a2_blk));
+    if(!mem) return -5;
+    mfl_a2_b2init(&S,64);
+#define MFL_A2_UPD32(x) do{uint8_t b[4];mfl_a2_st32(b,(uint32_t)(x));mfl_a2_b2update(&S,b,4);}while(0)
+    MFL_A2_UPD32(lanes); MFL_A2_UPD32(outlen); MFL_A2_UPD32(m); MFL_A2_UPD32(t); MFL_A2_UPD32(0x13u); MFL_A2_UPD32(type);
+    MFL_A2_UPD32(pwdlen); if(pwdlen) mfl_a2_b2update(&S,pw,pwdlen);
+    MFL_A2_UPD32(saltlen); mfl_a2_b2update(&S,salt,saltlen);
+    MFL_A2_UPD32(0u); MFL_A2_UPD32(0u);
+    mfl_a2_b2final(&S,h0);
+    memcpy(bh,h0,64);
+    for(uint32_t l=0;l<lanes;l++){
+        uint8_t ob[1024];
+        mfl_a2_st32(bh+64,0); mfl_a2_st32(bh+68,l);
+        mfl_a2_b2long(ob,1024,bh,72); mfl_a2_loadblk(&mem[(size_t)l*ll+0],ob);
+        mfl_a2_st32(bh+64,1); mfl_a2_st32(bh+68,l);
+        mfl_a2_b2long(ob,1024,bh,72); mfl_a2_loadblk(&mem[(size_t)l*ll+1],ob);
+    }
+    {
+        mfl_a2_inst in; in.mem=mem; in.lanes=lanes; in.lane_len=ll; in.seg_len=seglen;
+        in.mem_blocks=mblocks; in.passes=passes; in.type=type;
+        for(uint32_t r=0;r<passes;r++) for(int s=0;s<4;s++) for(uint32_t l=0;l<lanes;l++)
+            mfl_a2_fill_segment(&in,(int)r,l,s);
+    }
+    {
+        mfl_a2_blk bh2; uint8_t bb[1024];
+        memcpy(bh2.v, mem[ll-1].v, sizeof(bh2.v));
+        for(uint32_t l=1;l<lanes;l++){
+            mfl_a2_blk *last=&mem[(size_t)l*ll+ll-1];
+            for(int i=0;i<128;i++) bh2.v[i]^=last->v[i];
+        }
+        mfl_a2_storeblk(bb,&bh2);
+        mfl_a2_b2long(out,outlen,bb,1024);
+    }
+    free(mem);
+    return 0;
+}
+static mfl_bytes mfl_a2_kdf(mfl_bytes pw, mfl_bytes salt, int64_t t, int64_t m, int64_t p, int64_t ol, int type){
+    mfl_bytes out; out.len=0; out.data=NULL;
+    if(ol<4 || ol>16777216) return out;
+    if(salt.len<8) return out;
+    if(t<1 || t>4294967295LL || p<1 || p>16777215 || m<8 || m>4194304) return out;
+    out=mfl_crypto_buf(ol);
+    if(mfl_a2_hash(out.data,(uint32_t)ol, pw.len>0?pw.data:NULL,(uint32_t)pw.len,
+                   salt.data,(uint32_t)salt.len,(uint32_t)t,(uint32_t)m,(uint32_t)p,type)!=0) out.len=0;
+    return out;
+}
+static mfl_bytes mfl_crypto_argon2d(mfl_bytes pw, mfl_bytes salt, int64_t t, int64_t m, int64_t p, int64_t ol){ return mfl_a2_kdf(pw,salt,t,m,p,ol,0); }
+static mfl_bytes mfl_crypto_argon2i(mfl_bytes pw, mfl_bytes salt, int64_t t, int64_t m, int64_t p, int64_t ol){ return mfl_a2_kdf(pw,salt,t,m,p,ol,1); }
+static mfl_bytes mfl_crypto_argon2id(mfl_bytes pw, mfl_bytes salt, int64_t t, int64_t m, int64_t p, int64_t ol){ return mfl_a2_kdf(pw,salt,t,m,p,ol,2); }
 `
 
 // xeddsaRuntime implements XEdDSA (Curve25519 signatures, the scheme Signal /
@@ -9659,6 +9896,15 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 	case "pbkdf2_sha256":
 		g.usesCrypto = true
 		return fmt.Sprintf("mfl_crypto_pbkdf2(%s, %s, %s, %s)", args[0], args[1], args[2], args[3]), nil
+	case "argon2d":
+		g.usesCrypto = true
+		return fmt.Sprintf("mfl_crypto_argon2d(%s, %s, %s, %s, %s, %s)", args[0], args[1], args[2], args[3], args[4], args[5]), nil
+	case "argon2i":
+		g.usesCrypto = true
+		return fmt.Sprintf("mfl_crypto_argon2i(%s, %s, %s, %s, %s, %s)", args[0], args[1], args[2], args[3], args[4], args[5]), nil
+	case "argon2id":
+		g.usesCrypto = true
+		return fmt.Sprintf("mfl_crypto_argon2id(%s, %s, %s, %s, %s, %s)", args[0], args[1], args[2], args[3], args[4], args[5]), nil
 	case "x25519_pub":
 		g.usesCrypto = true
 		return fmt.Sprintf("mfl_crypto_x25519_pub(%s)", args[0]), nil

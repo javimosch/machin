@@ -1087,6 +1087,7 @@ func bspec(name) (s) {
     if name == "aes_gcm_encrypt" || name == "aes_gcm_decrypt" { s = "yyyy>y"  return s }
     if name == "hkdf_sha256" { s = "yyyi>y"  return s }
     if name == "pbkdf2_sha256" { s = "yyii>y"  return s }
+    if name == "argon2d" || name == "argon2i" || name == "argon2id" { s = "yyiiii>y"  return s }
     // strings
     if name == "http_body" || name == "to_upper" || name == "to_lower" || name == "trim" { s = "s>s"  return s }
     if name == "contains" || name == "has_prefix" || name == "has_suffix" || name == "regex_match" { s = "ss>b"  return s }
