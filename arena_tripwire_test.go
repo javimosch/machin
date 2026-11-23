@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -54,5 +55,35 @@ func TestArenaTripwireDisabled(t *testing.T) {
 	_, errs := tripwireRun(t, tripwireLoop, "0")
 	if strings.Contains(errs, "arena passed") {
 		t.Fatalf("MFL_ARENA_WARN_MB=0 must silence the tripwire: %q", errs)
+	}
+}
+
+// mfl_js_str used to allocate strlen(*p)+1 — the whole REMAINING document —
+// per string token, so parsing a multi-hundred-KB JSON file blew the arena
+// past the tripwire on pure input churn (>1 GB live for an 882 KB lockfile).
+// The fix bounds the buffer by the raw token span. A 200 KB array of ~2000
+// strings would have allocated ~200 MB under the old code; with the fix the
+// live arena stays ~input-sized, so a 4 MB tripwire must not fire.
+func TestJSONParseBigDocDoesNotTrip(t *testing.T) {
+	var sb strings.Builder
+	sb.WriteString("[")
+	for i := 0; i < 2000; i++ {
+		if i > 0 {
+			sb.WriteString(",")
+		}
+		sb.WriteString(`"item-` + strings.Repeat("x", 96) + `"`)
+	}
+	sb.WriteString("]")
+	doc := filepath.Join(t.TempDir(), "big.json")
+	if err := os.WriteFile(doc, []byte(sb.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	src := `func main() { raw := read_file("` + doc + `")  xs := parse(raw, []string{})  println(str(len(xs))) }`
+	out, errs := tripwireRun(t, src, "4")
+	if strings.TrimSpace(out) != "2000" {
+		t.Fatalf("stdout changed: %q", out)
+	}
+	if strings.Contains(errs, "arena passed") {
+		t.Fatalf("parsing a 200KB JSON doc must not trip the 4MB tripwire: %q", errs)
 	}
 }

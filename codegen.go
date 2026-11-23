@@ -3961,7 +3961,15 @@ static char* mfl_js_str(const char** p) {
     if (mfl_js_null(p)) return mfl_dup("");
     if (**p != '"') return mfl_dup("");
     (*p)++;
-    char* out = mfl_alloc(strlen(*p) + 1); size_t j = 0;
+    /* Bound the allocation by the raw token span, not strlen(*p): the old code
+       sized the buffer to the ENTIRE remaining document, so every string in an
+       N-byte document cost ~N bytes — O(doc^2) arena growth and a quadratic
+       strlen scan on big inputs (882 KB lockfile: >1 GB arena). A decoded
+       string is never longer than its raw token (every escape shrinks), so the
+       span to the unescaped closing quote is a tight upper bound. */
+    size_t max = 0;
+    while ((*p)[max] && (*p)[max] != '"') { if ((*p)[max] == '\\' && (*p)[max+1]) max++; max++; }
+    char* out = mfl_alloc(max + 1); size_t j = 0;
     while (**p && **p != '"') {
         char c = **p;
         if (c == '\\') {
