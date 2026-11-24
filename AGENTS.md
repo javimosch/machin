@@ -127,6 +127,18 @@ go vet ./... && go test ./...  # must be green before a PR
 make examples                  # run every example (also: examples/run.sh)
 ```
 
+CI runs the suite in **two tiers** (#708): a `gate` job (required on every PR,
+~4min — `go test -short -skip=<slow-tail list>` + MFL suites + coverage floor +
+prelude-diff + examples) and a `test-full` job (the whole suite + ASan +
+selfhost gates + cross-target smokes — required on `main`, non-blocking on
+PRs). When you add a test that is inherently slow — coverage ratchets, static
+OpenSSL/sqlite links, multi-second network or RSS probes (>2s rule of thumb) —
+add it to the `-skip` list in the gate step of `.github/workflows/ci.yml`. Do
+**not** tag it `testing.Short()` to keep it out of the gate: the coverage
+floor's reentry runs `go test -short`, so a self-tag also removes the test's
+covered statements from the floor's measurement (a tag-based first attempt
+sank it 0.10pp under 87%).
+
 Author MFL by writing loose Go-like `.src` text and minting `.mfl` from it:
 
 ```bash
