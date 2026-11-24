@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.142.1
+
+**JSON decode memory fix — `mfl_js_str` no longer allocates the rest of the document per token.** The string decoder sized its output buffer with `strlen(*p)+1`, i.e. the length of the entire remaining input, so each of N strings in an N-byte document cost ~N bytes of arena plus an O(doc²) `strlen` scan. Real-world blast radius: any CLI parsing a large JSON file (e.g. an 882 KB plugin lockfile) allocated >1 GB of arena and tripped the arena-growth tripwire on every invocation. The buffer is now bounded by the raw token span (a decoded string is never longer than its source token), dropping arena growth to ~input size and decode to linear time.
+
 ## v0.142.0
 
 **The windows target is feature-complete — issue #517 closed.** All three
