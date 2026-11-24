@@ -166,6 +166,14 @@ regenerating the prelude; changing an **emitter** means editing the matching
 `selfhost/cg*.src`. Run all three locally before pushing — together they take
 about 30 seconds.
 
+> **`gen-prelude.py` builds the prelude with `./bin/machin` by default** — not
+> the compiler you just changed. If that binary is stale, the regen produces an
+> *identical file*: no diff, no error, and your runtime change silently never
+> reaches the self-hosted compiler. Always pass the freshly built one:
+> `MACHIN=/tmp/machin-new python3 selfhost/gen-prelude.py` (or `go build -o
+> bin/machin .` first). Symptom you got it wrong: `git status` shows
+> `cgprelude.src` unmodified right after a runtime edit.
+
 ### Branch → PR → merge
 
 Feature work goes on a branch, then a PR, then squash-merge + delete the branch.
@@ -178,6 +186,11 @@ Feature work goes on a branch, then a PR, then squash-merge + delete the branch.
   deleted on merge. If you stack, expect to rebase the child onto `main`
   (`git rebase origin/main` — already-merged commits drop out as duplicate
   patches) and open a fresh PR against `main`.
+- `selfhost/cgprelude.src` is generated and **will conflict on rebase** whenever
+  main touched the runtime underneath you. Take upstream's copy
+  (`git checkout origin/main -- selfhost/cgprelude.src`), regenerate with the
+  freshly built compiler (`MACHIN=... python3 selfhost/gen-prelude.py`), `git
+  add` it, `git rebase --continue`. Never hand-merge base64 blocks.
 
 ## Releasing
 
@@ -247,6 +260,30 @@ GitHub release.
    gh run list --workflow=release.yml --limit 1
    gh run watch <run-id> --exit-status
    ```
+
+**Release snags that cost real time (v0.142.1):**
+
+- **Tagged too early?** The squash merge creates a *fresh* `ci` run on `main`
+  for the new commit — the release PR's green check was on the branch, not the
+  squash SHA. Tag before that run finishes and the verify step reads
+  `ci conclusion: none` and fails. Recovery is **not** a re-tag: wait for the
+  `ci` run on the tagged SHA to go green, then `gh run rerun <release-run-id>`
+  — the workflow re-verifies and proceeds.
+- **The workflow that runs is the one AT THE TAG COMMIT.** A fix to
+  `release.yml` merged after tagging changes nothing for that tag — the run
+  still executes the old file. Either land workflow fixes *before* tagging, or
+  move the tag forward (`git tag -f vX.Y.Z <new-main-sha>` + `git push -f`) —
+  safe while the release never published assets.
+- **Keep `release.yml`'s `Test` step in parity with `ci.yml`.** v0.142.1 died
+  because ci.yml ran `go test -timeout 20m` but release.yml ran plain `go test`
+  and the ~10min suite hit the 600s default mid-flight. Any test-invocation
+  change (flags, splits, timeouts) must land in both files.
+- **Wall-clock floor:** each PR costs ~11–13min of `ci`, the release run ~9min.
+  A fix→release two-PR cycle cannot beat ~35–45min end to end. To go faster:
+  batch *all* pending changes into the single release PR (the bump covers
+  whatever is already merged), pre-stage the `release/vX.Y.Z` branch while the
+  feature PR's CI runs, and arm `gh pr merge --squash --auto --delete-branch`
+  on both PRs so merges land the moment checks pass.
 
 5. **Verify the assets landed — and that the shipped binary is the version you
    think it is:**
