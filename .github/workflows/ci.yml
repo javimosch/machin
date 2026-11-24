@@ -1,17 +1,34 @@
 name: ci
 
-# Runs on every push to main and every PR: build, the full Go test suite
-# (compiles + executes real MFL programs natively — needs a C compiler and
-# CGO enabled, unlike release.yml's cross-compiled CGO_ENABLED=0 binaries),
-# and every non-server/non-GUI example as an integration smoke test.
+# Two tiers (issue #708):
+#
+#   gate       — REQUIRED on every PR and on main. ~4min. `go test -short`
+#                (the slow tail is tagged `testing.Short()`), the MFL suites,
+#                the coverage floor, the prelude-diff check, and the examples
+#                smoke run. This is the merge gate.
+#   test-full  — the whole suite: `go test -timeout 20m`, ASan, the selfhost
+#                gates, the wasm/windows smoke builds, and the windows-run
+#                execution check. Required on `main` pushes (it is exactly the
+#                verification the release tag-check demands); on PRs it runs
+#                too, so the full signal is visible — it just does not block
+#                the merge. Anything that slips the gate is caught here within
+#                minutes and can never ship: release.yml re-runs the full suite
+#                before publishing.
 
 on:
   push:
     branches: [main]
   pull_request:
 
+# Retriggering on a force-push should cancel the stale run — but never cancel
+# on main: the release tag-check looks up a *completed* ci run for the exact
+# squash SHA, and a cancelled run reads as 'none' (the v0.142.1 tag race).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
-  test:
+  gate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -26,6 +43,70 @@ jobs:
         # references their symbols (see build.go's static-crypto libs note;
         # OpenSSL 3.5+ uses jitterentropy for the RNG; Ubuntu names the -dev
         # package libjitterentropy3-dev).
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev libsqlite3-dev zlib1g-dev libzstd-dev libjitterentropy3-dev
+
+      - name: Build
+        run: |
+          go build ./...
+          go build -o bin/machin .
+
+      # The gate suite: -short plus an explicit -skip list for the slow tail.
+      # NOT tagged `testing.Short()` in source — deliberately: the coverage
+      # floor's reentry runs `go test -short`, so a self-tag would also remove
+      # the test's covered statements from the floor's measurement (the first
+      # version of this split sank it 0.10pp under 87%). -skip excludes them
+      # here only; they still run in test-full AND in the floor's own reentry.
+      # Slow means >2s (measured 2026-11-24): static OpenSSL links, coverage
+      # ratchets, multi-second network/RSS/integration probes.
+      - name: Test (core suite)
+        run: |
+          go test -short -timeout 5m \
+            -skip='TestTypesCoverageFloor|TestStaticBuildBundlesSqlite|TestCertifyCodegenPaths|TestGemmF32AllTransposeCombos|TestDeadlockStrictIO|TestReadBytesLoopReassemblesLargePayload|TestAttnCausalFwdBwdF32|TestParseIntStrtollContract|TestHttpStreamRoundTrip|TestParseFloatStrtodContract|TestScopedArenaReclaimsMaps|TestScopedArenaReturnsPagesToTheOS|TestSafeChecks|TestCaldavClient' \
+            ./...
+
+      # The MFL test suites — the ones written IN machin and run through the
+      # `machin test` CLI, not the Go harness. Its own step so a failure here is
+      # attributable to the framework module rather than to the compiler.
+      - name: MFL test suites (machin test)
+        run: |
+          bin/machin test framework/flags.src framework/tests/flags_test.src
+          bin/machin test framework/bson.src framework/tests/bson_test.src
+          bin/machin test framework/xml.src framework/tests/xml_test.src
+          bin/machin test framework/reactive.src framework/tests/reactive_test.src
+          bin/machin test framework/reactive.src framework/router.src framework/tests/router_test.src
+
+      # Coverage FLOOR, not a report: a ratchet set just under what the suites
+      # measure today, so a regression fails here rather than being noticed later.
+      # Raise it as #593 adds suites; lowering it must be deliberate and explained.
+      - name: MFL coverage floor
+        run: make mfl-cov-floor
+
+      # Gate-side prelude check: the generated file must track the Go runtime on
+      # every PR, not just on main. Needs ./bin/machin (built above) — the
+      # generator's MACHIN default.
+      - name: Selfhost prelude is regenerated (#626)
+        run: |
+          python3 selfhost/gen-prelude.py
+          if ! git diff --quiet selfhost/cgprelude.src; then
+            echo "::error::selfhost/cgprelude.src is stale — the C runtime changed without re-running selfhost/gen-prelude.py. Run: python3 selfhost/gen-prelude.py"
+            git diff --stat selfhost/cgprelude.src
+            exit 1
+          fi
+          echo "prelude matches the Go runtime"
+
+      - name: Run every example (integration smoke test)
+        run: ./examples/run.sh
+
+  test-full:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install system deps (crypto + sqlite builtins link against these)
         run: sudo apt-get update && sudo apt-get install -y libssl-dev libsqlite3-dev zlib1g-dev libzstd-dev libjitterentropy3-dev
 
       - name: Build
@@ -47,32 +128,10 @@ jobs:
       # below them they SKIPPED in CI, and a broken windows target shipped in
       # v0.122.0 and survived two releases while `TestWindowsNetCompiles` and
       # `TestWindowsBuildsPE` were red on every developer machine (#549, #517).
-      - name: Test
+      - name: Test (full suite)
         # The suite runs ~10min on the ubuntu-26.04 runner — right at go test's
         # default 10m panic timeout (static OpenSSL links are the slow tail).
         run: go test -timeout 20m ./...
-
-      # The MFL test suites — the ones written IN machin and run through the
-      # `machin test` CLI, not the Go harness. Its own step so a failure here is
-      # attributable to the framework module rather than to the compiler.
-      #
-      # framework/tests/flags_test.src previously sat in the repo executed by
-      # nothing: the Go test that appears to cover flags.src writes its own inline
-      # snippet instead. Its documented invocation had silently stopped working.
-      - name: MFL test suites (machin test)
-        run: |
-          go build -o /tmp/machin-ci .
-          /tmp/machin-ci test framework/flags.src framework/tests/flags_test.src
-          /tmp/machin-ci test framework/bson.src framework/tests/bson_test.src
-          /tmp/machin-ci test framework/xml.src framework/tests/xml_test.src
-          /tmp/machin-ci test framework/reactive.src framework/tests/reactive_test.src
-          /tmp/machin-ci test framework/reactive.src framework/router.src framework/tests/router_test.src
-
-      # Coverage FLOOR, not a report: a ratchet set just under what the suites
-      # measure today, so a regression fails here rather than being noticed later.
-      # Raise it as #593 adds suites; lowering it must be deliberate and explained.
-      - name: MFL coverage floor
-        run: make mfl-cov-floor
 
       # The adversarial alias suite under AddressSanitizer (#578 step 2). It runs
       # as part of `go test ./...` above too, but it SKIPS when libasan is missing —
@@ -101,9 +160,12 @@ jobs:
       # claim until now: every selfhost/verify-*.sh was manual-only, and BOTH the
       # embedded prelude and the codegen had silently drifted from the Go
       # reference for an unknown number of commits (#625, #626).
-
+      # The generated-file half of the check lives in `gate` so stale preludes
+      # also block merges; this job re-runs it because a main push must be fully
+      # verified for the release tag-check to trust it.
       - name: Selfhost prelude is regenerated (#626)
         run: |
+          go build -o bin/machin .
           python3 selfhost/gen-prelude.py
           if ! git diff --quiet selfhost/cgprelude.src; then
             echo "::error::selfhost/cgprelude.src is stale — the C runtime changed without re-running selfhost/gen-prelude.py. The self-hosted compiler embeds its OWN copy of the runtime, so a stale prelude means it builds programs against an OLDER runtime than the Go compiler does. Run: python3 selfhost/gen-prelude.py"
@@ -129,9 +191,6 @@ jobs:
             echo "::error::the self-hosting fixpoint FAILED — the compiler no longer reproduces itself byte-for-byte, or its codegen diverged from the Go reference"
             exit 1
           }
-
-      - name: Run every example (integration smoke test)
-        run: ./examples/run.sh
 
       # Guard the wasm target: a POSIX-only helper (mmap, madvise, a <sys/*> include)
       # that lands in the always-on cRuntime compiles fine natively but breaks
@@ -204,7 +263,7 @@ jobs:
   # nothing about whether it runs — which is exactly how the windows target stayed
   # broken across two releases (#549, #517).
   windows-run:
-    needs: test
+    needs: test-full
     runs-on: windows-latest
     steps:
       - uses: actions/download-artifact@v4
