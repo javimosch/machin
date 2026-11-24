@@ -81,7 +81,9 @@ jobs:
           echo "/tmp/zig" >> "$GITHUB_PATH"
 
       - name: Test
-        run: go test ./...
+        # Same override as ci.yml: the suite runs ~10min on the ubuntu runner,
+        # at the 10m default limit — v0.142.1's release died here on it.
+        run: go test -timeout 20m ./...
 
       - name: Build binaries
         env:
