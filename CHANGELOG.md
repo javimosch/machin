@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.143.0
+
+**Four walls hit by a JS -> MFL transpiler (machin-js), cleared (#710 #711 #712 #713).**
+
+- **A top-level function name is a value** (#710): `serve(8080, handle)`,
+  `sort_by(xs, less)` and FFI callbacks work; it means a func literal forwarding
+  to the function. A local, parameter or global of the same name wins. Builtins,
+  externs, variadic and multi-return functions, and global initializers still need
+  the literal, and the error now says so instead of `undefined variable`.
+  Mirrored in the self-hosted compiler.
+- **Fixed:** a func literal inside a `select` case failed with
+  `unknown expression *main.FuncLit` — closure conversion never walked `select`.
+- **`machin encode --no-check`** (#711) canonicalizes without parsing or
+  typechecking, so one library file with no `main` encodes alone.
+- **`machin guide`** (#712): every builtin now carries `params`, `variadic` and
+  `returns` beside `sig`; `guide --framework <name>` lists a module's functions
+  and structs with types inferred from its source. `flags`, `httpstream`, `redis`
+  and `wsclient` cannot be typed without a calling program and report
+  `typed: false` with `any`. `mmap_file`'s signature now reads `(int, int)`.
+- **`machin build --cflags/--ldflags/--static-link <name>`** (#713): use a
+  vendored C library, statically if wanted, with no paths in the source.
+  `CFLAGS`/`LDFLAGS` environment variables are still not read.
+- **Behavior change:** `build` and `encode` now reject unknown flags instead of
+  treating them as file names or ignoring them.
+
 ## v0.142.1
 
 **JSON decode memory fix — `mfl_js_str` no longer allocates the rest of the document per token.** The string decoder sized its output buffer with `strlen(*p)+1`, i.e. the length of the entire remaining input, so each of N strings in an N-byte document cost ~N bytes of arena plus an O(doc²) `strlen` scan. Real-world blast radius: any CLI parsing a large JSON file (e.g. an 882 KB plugin lockfile) allocated >1 GB of arena and tripped the arena-growth tripwire on every invocation. The buffer is now bounded by the raw token span (a decoded string is never longer than its source token), dropping arena growth to ~input size and decode to linear time.
