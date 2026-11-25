@@ -49,7 +49,8 @@ precede an app-specific file), splits the combined text into per-function
 blocks, strips comments, and normalizes each block to the single-line
 canonical form described above. The result is parsed and type-checked before
 it is printed — `encode` fails loudly on a type error rather than emitting a
-broken `.mfl`.
+broken `.mfl`. To canonicalize a single library file of a larger program, use
+`machin encode --no-check lib.src` (text only: no parse, no typecheck).
 
 `framework/` is a worked example of this workflow: `framework/run.sh` builds
 an app's `.mfl` with exactly this pattern —
@@ -180,6 +181,10 @@ func main() {
   the closure. See `examples/complex/counter.mfl` for a closure that mutates
   a captured counter across calls.
 - A function value holds a single return value (or none).
+- A top-level function's name is a value too: `map_slice(xs, double)` is short
+  for `map_slice(xs, func(a) { return double(a) })`. A variable of the same name
+  wins. Builtins, externs, variadic and multi-return functions, and global
+  initializers still need the literal.
 
 ---
 

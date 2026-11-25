@@ -250,6 +250,70 @@ func BuildBinary(prog *Program, outPath string, safe bool) error {
 // vendor/certs/README.md and issue #283. Server-side TLS/STARTTLS is a separate,
 // still-open capability gap — see issue #260.
 func BuildBinaryStatic(prog *Program, outPath string, safe, static bool) error {
+	return BuildBinaryLinked(prog, outPath, safe, static, LinkOptions{})
+}
+
+// LinkOptions are per-machine build inputs (#713), kept out of the source: where
+// a vendored library lives, and which libraries to link from their archive.
+type LinkOptions struct {
+	CFlags      []string // before the generated C and any extern cflags, so they win the include search
+	LDFlags     []string // after every library the program links
+	StaticLinks []string // library names (as in `link "raylib"`) to resolve to lib<name>.a
+}
+
+func (o LinkOptions) empty() bool {
+	return len(o.CFlags) == 0 && len(o.LDFlags) == 0 && len(o.StaticLinks) == 0
+}
+
+// staticLinkArgs replaces -l<name> in libs with the path of lib<name>.a for each
+// requested name. The archive is searched in the -L directories of flags, then in
+// the C compiler's own search path. A path (rather than -Wl,-Bstatic or -l:file)
+// works with every linker, and a missing archive fails here instead of silently
+// linking the shared library.
+func staticLinkArgs(libs, flags, names []string) ([]string, error) {
+	var dirs []string
+	for i, f := range flags {
+		if f == "-L" && i+1 < len(flags) {
+			dirs = append(dirs, flags[i+1])
+		} else if strings.HasPrefix(f, "-L") && len(f) > 2 {
+			dirs = append(dirs, f[2:])
+		}
+	}
+	for _, name := range names {
+		file := "lib" + name + ".a"
+		path := ""
+		for _, d := range dirs {
+			p := filepath.Join(d, file)
+			if st, err := os.Stat(p); err == nil && !st.IsDir() {
+				path = p
+				break
+			}
+		}
+		if path == "" && hasStaticLib(name) {
+			out, err := exec.Command(ccPath(), "-print-file-name="+file).Output()
+			if err != nil {
+				return nil, fmt.Errorf("--static-link %s: %w", name, err)
+			}
+			path = strings.TrimSpace(string(out))
+		}
+		if path == "" {
+			return nil, fmt.Errorf("--static-link %s: %s not found in any -L directory or the compiler's search path", name, file)
+		}
+		used := false
+		for i, l := range libs {
+			if l == "-l"+name {
+				libs[i], used = path, true
+			}
+		}
+		if !used {
+			return nil, fmt.Errorf("--static-link %s: the program does not link %q (add link %q to its extern block)", name, name, name)
+		}
+	}
+	return libs, nil
+}
+
+// BuildBinaryLinked is BuildBinaryStatic plus per-machine compile and link inputs.
+func BuildBinaryLinked(prog *Program, outPath string, safe, static bool, link LinkOptions) error {
 	csrc, err := CompileToC(prog, safe)
 	if err != nil {
 		return err
@@ -328,6 +392,8 @@ func BuildBinaryStatic(prog *Program, outPath string, safe, static bool) error {
 		fmt.Fprintln(os.Stderr, note)
 	}
 
+	args = append(args, link.CFlags...)
+
 	var libs []string
 	for _, ed := range prog.Externs {
 		if ed.CFlags != "" {
@@ -393,9 +459,17 @@ func BuildBinaryStatic(prog *Program, outPath string, safe, static bool) error {
 			libs = append(libs, "-ldl")
 		}
 	}
+	if len(link.StaticLinks) > 0 {
+		// args holds the cflags so far, which may carry -L too (extern cflags do)
+		search := append(append([]string{}, link.LDFlags...), args...)
+		if libs, err = staticLinkArgs(libs, search, link.StaticLinks); err != nil {
+			return err
+		}
+	}
 	args = append(args, "-o", outPath, tmp.Name())
 	args = append(args, srcs...)
 	args = append(args, libs...)
+	args = append(args, link.LDFlags...)
 
 	cmd := exec.Command(ccPath(), args...)
 	if out, err := cmd.CombinedOutput(); err != nil {

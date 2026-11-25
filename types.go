@@ -66,6 +66,8 @@ func (k Kind) String() string {
 func isNumeric(k Kind) bool { return k == KInt || k == KFloat || k == KNum }
 
 type Checker struct {
+	free map[int]bool // roots of slots no constraint ever typed (before int defaulting)
+
 	parent []int
 	kind   []Kind
 	elem   []int      // for KSlice/KChan slots: the element slot; -1 otherwise
@@ -713,7 +715,18 @@ func CheckAll(p *Program) (*Checker, error) {
 }
 
 func checkImpl(p *Program, allRoots bool) (*Checker, error) {
+	return checkMode(p, allRoots, false)
+}
+
+// checkSurface types a library for `guide --framework` (#712): every function is
+// a root, callers before callees, and c.free records the slots nothing constrained.
+func checkSurface(p *Program) (*Checker, error) {
+	return checkMode(p, true, true)
+}
+
+func checkMode(p *Program, allRoots, surface bool) (*Checker, error) {
 	c := &Checker{
+		free:        map[int]bool{},
 		funcs:       map[string]*FuncDecl{},
 		funcParam:   map[string][]int{},
 		funcRets:    map[string][]int{},
@@ -910,7 +923,11 @@ func checkImpl(p *Program, allRoots bool) (*Checker, error) {
 		for _, inst := range c.instOrder {
 			instantiated[c.instFn[inst].Name] = true
 		}
-		for _, fn := range p.Funcs {
+		roots := p.Funcs
+		if surface {
+			roots = callersFirst(p.Funcs)
+		}
+		for _, fn := range roots {
 			if instantiated[fn.Name] {
 				continue
 			}
@@ -932,6 +949,9 @@ func checkImpl(p *Program, allRoots bool) (*Checker, error) {
 	// function with no return slots is void.
 	for i := range c.parent {
 		r := c.find(i)
+		if c.kind[r] == KVar {
+			c.free[r] = true // unconstrained; only surfaceType tells it from a real int
+		}
 		if c.kind[r] == KVar || c.kind[r] == KNum {
 			c.kind[r] = KInt
 		}
@@ -1748,6 +1768,32 @@ func (c *Checker) genExpr(fn *FuncDecl, e Expr) (int, error) {
 	return slot, nil
 }
 
+// undefinedIdent explains an unresolved identifier. A name that IS known, just
+// not usable as a value (#710), says so and shows the wrapper to write.
+func (c *Checker) undefinedIdent(in, name string) error {
+	why := ""
+	if f := c.funcs[name]; f != nil {
+		why = funcValueObstacle(f)
+		if why == "" {
+			if in != "$globals" {
+				// the only other way a value-able function goes unresolved: the
+				// enclosing function declares the same name as a local later on
+				return fmt.Errorf("%s: %q is used before the local of the same name is declared; that local shadows the function %q in the whole function — rename it", in, name, name)
+			}
+			why = "a global initializer cannot name it directly" // not closure-converted
+		}
+		why = "is a function and " + why
+	} else if c.externs[name] != nil {
+		why = "is an extern function, not a value"
+	} else if isBuiltinName(name) {
+		why = "is a builtin, not a value"
+	}
+	if why == "" {
+		return fmt.Errorf("%s: undefined variable %q", in, name)
+	}
+	return fmt.Errorf("%s: %q %s; wrap it in a func literal: func(x) { return %s(x) }", in, name, why, name)
+}
+
 func (c *Checker) genExprInner(fn *FuncDecl, e Expr) (int, error) {
 	switch ex := e.(type) {
 	case *IntLit:
@@ -1767,7 +1813,7 @@ func (c *Checker) genExprInner(fn *FuncDecl, e Expr) (int, error) {
 		if s, ok := c.globalSlot[ex.Name]; ok { // a package global, in scope everywhere
 			return s, nil
 		}
-		return 0, fmt.Errorf("%s: undefined variable %q", fn.Name, ex.Name)
+		return 0, c.undefinedIdent(fn.Name, ex.Name)
 	case *Unary:
 		xs, err := c.genExpr(fn, ex.X)
 		if err != nil {

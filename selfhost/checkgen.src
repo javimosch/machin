@@ -627,7 +627,11 @@ func scan_expr_captures(idx) {
     if k == K_SLICE { for _, e := range n.kids { scan_expr_captures(e) }  return }
     if k == K_MAKESLICE { scan_expr_captures(n.a)  if n.b >= 0 { scan_expr_captures(n.b) }  return }
     if k == K_STRUCT { for _, e := range n.kids { scan_expr_captures(e) }  return }
-    if k == K_FUNCLIT { g_lit_bail = 1  return }   // nested closures: still deferred
+    if k == K_FUNCLIT {
+        if n.s2 == "fnref" { return }   // a lowered function name (#710) captures nothing
+        g_lit_bail = 1                  // nested closures: still deferred
+        return
+    }
     // K_INT/K_FLOAT/K_STR/K_BOOL/K_NIL/K_MAKEMAP/K_MAKECHAN: no identifier refs
 }
 
@@ -688,6 +692,48 @@ func scan_stmt_captures(idx) {
     if k == K_SELECT { g_lit_bail = 1  return }   // select in a closure: still deferred
 }
 
+// lower_func_value rewrites the unresolved identifier node `idx` in place into
+// the func literal a bare function name stands for (#710): `double` becomes
+// `func(a){ return double(a) }` — port of the reference lifter's funcValue. The
+// scope test already happened: the caller found no local or global of that name.
+// Marked s2="fnref" so the capture scan treats it as the captureless leaf it is
+// (it must not trip the nested-closure bail when an instance is re-checked).
+func lower_func_value(idx) (ok) {
+    ok = 0
+    name := nodes[idx].s
+    root := func_root(name)
+    if root < 0 { return ok }
+    if nodes[root].b == 1 { return ok }   // variadic
+    arity := func_arity_of(root)
+    if arity > 1 { return ok }
+    prefix := "_a"
+    if has_prefix(name, prefix) { prefix = "_fa" }
+    params := []string{}
+    args := []int{}
+    i := 0
+    for i < len(nodes[root].names) {
+        p := prefix + str(i)
+        params = append(params, p)
+        args = append(args, emit(Node{kind: K_ID, s: p}))
+        i = i + 1
+    }
+    call := emit(Node{kind: K_CALL, s: name, kids: args})
+    st := -1
+    if arity == 0 {
+        st = emit(Node{kind: K_EXPRSTMT, a: call})
+    } else {
+        vals := []int{}
+        vals = append(vals, call)
+        st = emit(Node{kind: K_RETURN, kids: vals})
+    }
+    body := []int{}
+    body = append(body, st)
+    nodes[idx] = Node{kind: K_FUNCLIT, s2: "fnref", names: params, kids: body}
+    g_func_names = append(g_func_names, "$lambda_" + str(idx))
+    g_func_roots = append(g_func_roots, idx)
+    ok = 1
+}
+
 // gen_expr returns the slot for expression node `idx`, recording node->slot for the
 // active instance so codegen can query each expression's kind.
 func gen_expr(idx) (slot) {
@@ -709,6 +755,7 @@ func gen_expr_inner(idx) (slot) {
         if found == 1 { slot = s  return slot }
         gs, gfound := global_lookup(n.s)
         if gfound == 1 { slot = gs  return slot }
+        if lower_func_value(idx) == 1 { slot = gen_expr_inner(idx)  return slot }
         g_check_err = 1   // undefined variable
         slot = c_void
         return slot

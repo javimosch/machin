@@ -10,6 +10,10 @@ func cc_path() (cc) {
     if cc == "" { cc = "cc" }
 }
 
+// per-machine inputs from `build --cflags/--ldflags` (#713)
+var g_user_cflags = ""
+var g_user_ldflags = ""
+
 // build_binary: compile the .mfl at `path` to a native executable at `out`.
 // Returns 0 on success; 1/2/3 = parse/check/unsupported; 10 = cc failed.
 func build_binary(path, out, safe) (rc) {
@@ -21,7 +25,7 @@ func build_binary(path, out, safe) (rc) {
     write_file(tmpc, csrc)
 
     // FFI (extern) blocks: cflags go BEFORE the source, -l<link> libs AFTER (Go's order).
-    cflags := ""
+    cflags := g_user_cflags
     libs := ""
     for _, eb := range g_extblocks {
         if eb.cflags != "" { cflags = cflags + " " + eb.cflags }
@@ -37,7 +41,7 @@ func build_binary(path, out, safe) (rc) {
     if contains(csrc, "mfl_crypto" + "_") { libs = libs + " -lcrypto" }
     if contains(csrc, "mfl_xeddsa" + "_") { libs = libs + " -lsodium -lcrypto" }
 
-    cmd := cc_path() + " -O2 -std=c11 -pthread" + cflags + " -o " + out + " " + tmpc + libs
+    cmd := cc_path() + " -O2 -std=c11 -pthread" + cflags + " -o " + out + " " + tmpc + libs + g_user_ldflags
     ec := system(cmd)
     if ec != 0 { rc = 10  return rc }     // keep tmpc on failure for debugging
     remove(tmpc)
