@@ -12,7 +12,8 @@ func main() {
     if sub == "encode" {
         paths := []string{}
         i := 2
-        for i < len(a) { paths = append(paths, a[i])  i = i + 1 }
+        // --no-check (#711) is accepted as-is: this encode is textual only.
+        for i < len(a) { if a[i] != "--no-check" { paths = append(paths, a[i]) }  i = i + 1 }
         if len(paths) == 0 { write(2, "encode: need at least one source file\n")  exit(2) }
         out := encode_files(paths)
         if g_enc_err == 1 { write(2, "encode: unbalanced braces\n")  exit(1) }
@@ -27,7 +28,15 @@ func main() {
         safe := 0
         i := 2
         for i < len(a) {
-            if a[i] == "-o" {
+            if a[i] == "--cflags" || a[i] == "--ldflags" {
+                flag := a[i]
+                i = i + 1
+                if i >= len(a) { write(2, "build: " + flag + " needs a value\n")  exit(2) }
+                if flag == "--cflags" { g_user_cflags = g_user_cflags + " " + a[i] } else { g_user_ldflags = g_user_ldflags + " " + a[i] }
+            } else if a[i] == "--static-link" {
+                write(2, "build: --static-link is not supported by the self-hosted driver\n")
+                exit(2)
+            } else if a[i] == "-o" {
                 i = i + 1
                 if i < len(a) { out = a[i] }
             } else {

@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"sort"
+	"strings"
 )
 
 // liftClosures rewrites function literals into top-level "lifted" functions plus
@@ -14,6 +15,19 @@ func liftClosures(prog *Program) {
 	worklist := make([]*FuncDecl, len(prog.Funcs))
 	copy(worklist, prog.Funcs)
 	var lifted []*FuncDecl
+
+	// Top-level functions and globals, for resolving a bare function name used as
+	// a value (#710). Lifted lambdas are never nameable.
+	funcs := map[string]*FuncDecl{}
+	for _, fn := range prog.Funcs {
+		if !fn.IsLambda {
+			funcs[fn.Name] = fn
+		}
+	}
+	globals := map[string]bool{}
+	for _, g := range prog.Globals {
+		globals[g.Name] = true
+	}
 
 	for len(worklist) > 0 {
 		fn := worklist[0]
@@ -28,6 +42,8 @@ func liftClosures(prog *Program) {
 		l := &lifter{
 			bound:     bound,
 			enclosing: fn,
+			funcs:     funcs,
+			globals:   globals,
 			counter:   &counter,
 			emit: func(nf *FuncDecl) {
 				lifted = append(lifted, nf)
@@ -44,6 +60,8 @@ func liftClosures(prog *Program) {
 type lifter struct {
 	bound     map[string]bool
 	enclosing *FuncDecl // the function whose body is being lifted
+	funcs     map[string]*FuncDecl
+	globals   map[string]bool
 	counter   *int
 	emit      func(*FuncDecl)
 }
@@ -82,8 +100,55 @@ func (l *lifter) lift(lit *FuncLit) Expr {
 	return &MakeClosure{FuncName: name, Captures: caps}
 }
 
+// funcValue builds the literal a bare function name stands for when used as a
+// value (#710): `double` lowers to `func(a){ return double(a) }`. ok is false
+// when the name resolves to a variable, is not a top-level function, or the
+// function's shape has no closure form (multi-return, variadic) — the checker
+// diagnoses those. bound is the current function's own scope; an enclosing
+// local it refers to has already become a captured param.
+func (l *lifter) funcValue(name string) (*FuncLit, bool) {
+	fn := l.funcs[name]
+	if fn == nil || l.bound[name] || l.globals[name] || funcValueObstacle(fn) != "" {
+		return nil, false
+	}
+	// The forwarding params must not collide with the target's name.
+	prefix := "_a"
+	if strings.HasPrefix(name, prefix) {
+		prefix = "_fa"
+	}
+	lit := &FuncLit{}
+	var args []Expr
+	for i := range fn.Params {
+		p := fmt.Sprintf("%s%d", prefix, i)
+		lit.Params = append(lit.Params, p)
+		args = append(args, &Ident{Name: p})
+	}
+	call := &Call{Callee: name, Args: args}
+	if funcArity(fn) == 0 {
+		lit.Body = []Stmt{&ExprStmt{X: call}}
+	} else {
+		lit.Body = []Stmt{&ReturnStmt{Vals: []Expr{call}}}
+	}
+	return lit, true
+}
+
+// funcValueObstacle says why fn cannot be used as a value ("" = it can).
+func funcValueObstacle(fn *FuncDecl) string {
+	if fn.Variadic {
+		return "it is variadic"
+	}
+	if funcArity(fn) > 1 {
+		return "it returns more than one value"
+	}
+	return ""
+}
+
 func (l *lifter) expr(e Expr) Expr {
 	switch ex := e.(type) {
+	case *Ident:
+		if lit, ok := l.funcValue(ex.Name); ok {
+			return l.lift(lit)
+		}
 	case *FuncLit:
 		return l.lift(ex)
 	case *Unary:
@@ -160,6 +225,18 @@ func (l *lifter) stmt(s Stmt) {
 		l.exprs(st.Call.Args)
 	case *ArenaStmt:
 		l.stmts(st.Body)
+	case *SelectStmt:
+		for i := range st.Cases {
+			sc := &st.Cases[i]
+			if sc.RecvCh != nil {
+				sc.RecvCh = l.expr(sc.RecvCh)
+			} else {
+				sc.SendCh = l.expr(sc.SendCh)
+				sc.SendVal = l.expr(sc.SendVal)
+			}
+			l.stmts(sc.Body)
+		}
+		l.stmts(st.Default)
 	}
 }
 
@@ -212,6 +289,16 @@ func collectDeclared(body []Stmt, set map[string]bool) {
 			collectDeclared(st.Body, set)
 		case *ArenaStmt:
 			collectDeclared(st.Body, set)
+		case *SelectStmt:
+			for _, sc := range st.Cases {
+				for _, n := range []string{sc.Name, sc.OkName} {
+					if n != "" && n != "_" {
+						set[n] = true
+					}
+				}
+				collectDeclared(sc.Body, set)
+			}
+			collectDeclared(st.Default, set)
 		}
 	}
 }
@@ -328,6 +415,21 @@ func freeIdents(body []Stmt, params []string) map[string]bool {
 			}
 		case *ArenaStmt:
 			for _, t := range st.Body {
+				ws(t)
+			}
+		case *SelectStmt:
+			for _, sc := range st.Cases {
+				if sc.RecvCh != nil {
+					we(sc.RecvCh)
+				} else {
+					we(sc.SendCh)
+					we(sc.SendVal)
+				}
+				for _, t := range sc.Body {
+					ws(t)
+				}
+			}
+			for _, t := range st.Default {
 				ws(t)
 			}
 		}

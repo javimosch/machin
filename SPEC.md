@@ -1,6 +1,6 @@
 # The MFL Language Specification
 
-Version 0.142.1
+Version 0.143.0
 
 MFL (Machine-First Language) is a statically-typed, Go-flavored backend language
 **shaped for machine authoring**: minimal syntax, no type annotations, one
@@ -72,7 +72,10 @@ files of loose, Go-like declaration text (any whitespace, comments allowed),
 concatenates them in the order given, splits the combined text into
 per-function blocks, strips comments, and normalizes each block to one
 canonical line. The result is parsed and type-checked before being printed, so
-`encode` fails on a type error instead of emitting a broken `.mfl`. Passing
+`encode` fails on a type error instead of emitting a broken `.mfl`.
+`--no-check` canonicalizes only (no parse, no typecheck), so one file of a larger
+program — with no `main`, and calls or types defined elsewhere — encodes alone;
+syntax errors then surface only when the whole program is built. Passing
 multiple files lets a shared module (e.g. a framework) precede an
 app-specific file — see [`docs/LANGUAGE.md`](docs/LANGUAGE.md#authoring-machin-encode)
 and [`framework/`](framework/) for a worked example.
@@ -480,6 +483,14 @@ value (or none). Compilation is by closure conversion (lambda-lifting): a
 literal becomes a top-level function plus an environment of pointers to the
 captured cells.
 
+A **top-level function's name** is also a value: `apply(double, 4)` means
+`apply(func(a) { return double(a) }, 4)`, and works wherever a literal does,
+including as an FFI callback. A local, parameter, or global of the same name
+takes precedence (locals are function-scoped, so one declared anywhere in a
+function hides the name throughout it). Builtins, externs, variadic functions,
+multi-return functions, and names in a global initializer are not values; the
+diagnostic says to write the literal.
+
 ### 11.2 Generics
 
 Functions are **implicitly generic**: because parameter types are inferred, a
@@ -684,6 +695,12 @@ extern "m" { header "math.h" link "m" fn sqrt(float) float fn pow(float, float) 
   library with transitive dependencies). `link ":libname.a"` forces a static
   archive over a shared `.so`.
 - `cflags "..."` — passes extra flags (e.g. `-I`/`-L` paths) to the C compiler.
+  Machine-specific paths belong on the command line instead, so the source stays
+  portable: `machin build --cflags "-I<dir>" --ldflags "-L<dir>"` (repeatable;
+  values split on spaces; `CFLAGS`/`LDFLAGS` environment variables are not read).
+  `--static-link <name>` links `lib<name>.a` in place of `-l<name>` for a library
+  the program links, searching the `-L` directories and then the compiler's own
+  path, and fails if no archive is found. These apply to native builds only.
 - A block must declare at least one `fn` or `cstruct` — `header`/`link`/`cflags`
   are modifiers, not declarations. A **types-only** block (cstructs, no fns) is
   allowed: it shares C layouts across modules or declares types whose functions

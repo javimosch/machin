@@ -131,14 +131,15 @@ usage:
   machin build <file.mfl> --target windows  cross-compile to a Windows .exe (needs zig; stdio/compute core, no net/TLS yet — #517)
   machin build <file.mfl> --static   fully static binary (bundles SQLite; pair with CC=musl-gcc for FROM scratch)
   machin build <file.mfl> --emit-c   print the generated C and stop
+  machin build <file.mfl> --cflags "-I<dir>" --ldflags "-L<dir>" [--static-link <name>]  vendored C libraries; --static-link takes lib<name>.a
   machin build|run <file.mfl> --safe  insert bounds / div-zero / overflow checks
   machin build|run <file.mfl> --race-safe  refuse to build if a data race is inferred
   machin check <src...>|--stdin      lex+parse+typecheck only (no cc); --all also typechecks uncalled functions; --json for machine-readable diagnostics
   machin test [--json] [--cover] <src...>  run MFL test files (framework/test.src: assert/assert_eq_int/assert_eq_str; --cover adds function/statement coverage)
-  machin encode <src>                mint canonical MFL from loose Go-like text (framework/*.src resolve from the binary)
+  machin encode [--no-check] <src...>  mint canonical MFL from loose Go-like text (framework/*.src resolve from the binary); --no-check formats a library file alone
   machin framework list|<name>|--vendor   the embedded framework modules (machweb, db drivers, …)
   machin pack  <file.mfl>            emit the dense base64 form (distribution)
-  machin guide                       full feature catalog as JSON (--text for prose)
+  machin guide                       full feature catalog as JSON (--text for prose); --framework <name> lists a module's functions and types
   machin skill install               register the agent skills where coding agents look
 
 Agents: run "machin guide" for the complete, version-exact feature surface —
@@ -443,6 +444,7 @@ func cmdReplay(args []string) error {
 func cmdBuild(args []string) error {
 	var src, out, target string
 	emitC, safe, static, raceSafe := false, false, false, false
+	var link LinkOptions
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "-o":
@@ -457,6 +459,19 @@ func cmdBuild(args []string) error {
 			}
 			i++
 			target = args[i]
+		case "--cflags", "--ldflags", "--static-link":
+			if i+1 >= len(args) {
+				return fmt.Errorf("build: %s needs a value", args[i])
+			}
+			i++
+			switch args[i-1] {
+			case "--cflags":
+				link.CFlags = append(link.CFlags, strings.Fields(args[i])...)
+			case "--ldflags":
+				link.LDFlags = append(link.LDFlags, strings.Fields(args[i])...)
+			default:
+				link.StaticLinks = append(link.StaticLinks, args[i])
+			}
 		case "--emit-c":
 			emitC = true
 		case "--safe":
@@ -466,6 +481,9 @@ func cmdBuild(args []string) error {
 		case "--race-safe":
 			raceSafe = true
 		default:
+			if strings.HasPrefix(args[i], "-") {
+				return fmt.Errorf("build: unknown flag %q", args[i])
+			}
 			src = args[i]
 		}
 	}
@@ -485,6 +503,9 @@ func cmdBuild(args []string) error {
 		}
 	default:
 		return fmt.Errorf("build: unknown --target %q (want native, wasm, or windows)", target)
+	}
+	if !link.empty() && (target != "native" || emitC) {
+		return fmt.Errorf("build: --cflags/--ldflags/--static-link apply only to a native binary build")
 	}
 	prog, err := loadMFL(src)
 	if err != nil {
@@ -526,7 +547,7 @@ func cmdBuild(args []string) error {
 	if out == "" {
 		out = strings.TrimSuffix(filepath.Base(src), filepath.Ext(src))
 	}
-	if err := BuildBinaryStatic(prog, out, safe, static); err != nil {
+	if err := BuildBinaryLinked(prog, out, safe, static, link); err != nil {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "built %s\n", out)
@@ -538,11 +559,34 @@ func cmdBuild(args []string) error {
 // concatenated in order, so a framework can be composed with an app:
 //
 //	machin encode framework/machweb.src myapp.src > app.mfl
+//
+// --no-check canonicalizes only (#711): no parse, no typecheck, so one file of a
+// larger program — no main, calls and types defined elsewhere — encodes alone.
 func cmdEncode(args []string) error {
-	if len(args) < 1 {
+	var paths []string
+	noCheck := false
+	for _, a := range args {
+		switch {
+		case a == "--no-check":
+			noCheck = true
+		case strings.HasPrefix(a, "--"):
+			return fmt.Errorf("encode: unknown flag %q (want --no-check)", a)
+		default:
+			paths = append(paths, a)
+		}
+	}
+	if len(paths) < 1 {
 		return fmt.Errorf("encode: need at least one source file")
 	}
-	_, out, err := composeSources(args)
+	var out string
+	var err error
+	if noCheck {
+		var cs canonicalSources
+		cs, err = canonicalize(paths)
+		out = cs.text
+	} else {
+		_, out, err = composeSources(paths)
+	}
 	if err != nil {
 		return err
 	}
@@ -557,40 +601,59 @@ func cmdEncode(args []string) error {
 // text (what `machin encode` prints) — shared by cmdEncode and cmdTest so
 // composing a framework module ahead of a file behaves identically in both.
 func composeSources(paths []string) (*Program, string, error) {
+	cs, err := canonicalize(paths)
+	if err != nil {
+		return nil, "", err
+	}
+	prog, err := ParseProgram(cs.decls)
+	if err != nil {
+		return nil, "", fmt.Errorf("parse: %w", err)
+	}
+	prog.Diag = sourceDiag(cs.files, cs.decls, cs.lines)
+	if _, err := Check(prog); err != nil {
+		return nil, "", fmt.Errorf("typecheck: %w", err)
+	}
+	return prog, cs.text, nil
+}
+
+// canonicalSources is the textual half of encode: the normalized declarations,
+// the joined canonical text, and what diagnostics need to point back at source.
+type canonicalSources struct {
+	decls []string
+	text  string
+	files []DiagFile
+	lines []int
+}
+
+// canonicalize reads, splits and normalizes sources without parsing them.
+func canonicalize(paths []string) (canonicalSources, error) {
+	var cs canonicalSources
 	var combined strings.Builder
-	var files []DiagFile
 	nl := 0
 	for _, path := range paths {
 		data, err := readModule(path) // local file, else an embedded framework module
 		if err != nil {
-			return nil, "", err
+			return cs, err
 		}
-		files = append(files, DiagFile{Path: path, Start: nl + 1})
+		cs.files = append(cs.files, DiagFile{Path: path, Start: nl + 1})
 		combined.Write(data)
 		combined.WriteByte('\n')
 		nl += strings.Count(string(data), "\n") + 1
 	}
 	blocks, blockLines, err := splitFunctionsLoc(combined.String())
 	if err != nil {
-		return nil, "", err
+		return cs, err
 	}
-	var decls []string
+	cs.lines = blockLines
 	var out strings.Builder
 	for _, b := range blocks {
 		n := normalize(b)
-		decls = append(decls, n)
+		cs.decls = append(cs.decls, n)
 		out.WriteString(n)
 		out.WriteString("\n\n")
 	}
-	prog, err := ParseProgram(decls)
-	if err != nil {
-		return nil, "", fmt.Errorf("parse: %w", err)
-	}
-	prog.Diag = sourceDiag(files, decls, blockLines)
-	if _, err := Check(prog); err != nil {
-		return nil, "", fmt.Errorf("typecheck: %w", err)
-	}
-	return prog, out.String(), nil
+	cs.text = out.String()
+	return cs, nil
 }
 
 // cmdPack emits the dense base64 "packed" form of a .mfl: one base64 line per

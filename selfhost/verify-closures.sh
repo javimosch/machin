@@ -156,6 +156,21 @@ func main() {
 EOF
 run cap_loop
 
+# ---- #710: a bare function name used as a value ----
+cat > "$T/fnref.src" <<'EOF'
+func double(x) (r) { r = x * 2 }
+func apply(g, x) (r) { r = g(x) }
+func pick() { return double }
+func fact(n) (r) { r = 1  if n > 1 { f := fact  r = n * f(n - 1) } }
+func main() {
+    println(str(apply(double, 21)))
+    g := pick()
+    println(str(g(5)))
+    println(str(fact(5)))
+}
+EOF
+run fnref
+
 rm -rf "$T"
 echo "----"
 echo "PASS $pass  FAIL $fail"
