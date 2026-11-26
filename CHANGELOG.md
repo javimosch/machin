@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **Fixed:** every finished goroutine leaked its id string, about 31 bytes each
+  (#724, goroutine half). Channels are still never freed.
+
 ## v0.144.3
 
 **The other copies of JSON string escaping (follow-up to #715).**
