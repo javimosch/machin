@@ -4520,15 +4520,49 @@ static int64_t mfl_system(const char* cmd) {
    text is NUL-terminated — a command producing binary output should redirect it to
    a file itself (e.g. mongodump --archive piped to gzip > out.gz). */
 typedef struct { int64_t code; char* out; char* err; } mfl_exec_result;
+/* a mkstemp template under $TMPDIR, else /tmp (#725): Android has no /tmp.
+   Windows keeps /tmp, as before. malloc'd; NULL if out of memory. */
+static char* mfl_exec_template(void) {
+    const char* dir = NULL;
+#ifndef _WIN32
+    dir = getenv("TMPDIR");
+#endif
+    if (!dir || !*dir) dir = "/tmp";
+    size_t n = strlen(dir) + sizeof "/mfl-exec-XXXXXX";
+    char* t = (char*)malloc(n);
+    if (t) snprintf(t, n, "%s/mfl-exec-XXXXXX", dir);
+    return t;
+}
+/* a path as one shell word: $TMPDIR is data, never shell code. malloc'd. */
+static char* mfl_exec_word(const char* s) {
+#ifdef _WIN32
+    return strdup(s); /* cmd.exe does not treat ' as a quote; the path is fixed there */
+#else
+    char* r = (char*)malloc(strlen(s) * 4 + 3);
+    if (!r) return NULL;
+    size_t j = 0;
+    r[j++] = '\'';
+    for (; *s; s++) {
+        if (*s == '\'') { memcpy(r + j, "'\\''", 4); j += 4; } /* close, literal quote, reopen */
+        else r[j++] = *s;
+    }
+    r[j++] = '\''; r[j] = 0;
+    return r;
+#endif
+}
 static mfl_exec_result mfl_exec(const char* cmd) {
     mfl_exec_result R; R.code = -1; R.out = mfl_dup(""); R.err = mfl_dup("");
-    char op[] = "/tmp/mfl-exec-XXXXXX", ep[] = "/tmp/mfl-exec-XXXXXX";
-    int fo = mkstemp(op); if (fo < 0) return R; close(fo);
-    int fe = mkstemp(ep); if (fe < 0) { unlink(op); return R; } close(fe);
-    size_t n = strlen(cmd) + strlen(op) + strlen(ep) + 16;
-    char* full = (char*)malloc(n);
+    char* op = mfl_exec_template();
+    char* ep = mfl_exec_template();
+    if (!op || !ep) { free(op); free(ep); return R; }
+    int fo = mkstemp(op); if (fo < 0) { free(op); free(ep); return R; } close(fo);
+    int fe = mkstemp(ep); if (fe < 0) { unlink(op); free(op); free(ep); return R; } close(fe);
+    char* qo = mfl_exec_word(op);
+    char* qe = mfl_exec_word(ep);
+    size_t n = strlen(cmd) + (qo ? strlen(qo) : 0) + (qe ? strlen(qe) : 0) + 16;
+    char* full = qo && qe ? (char*)malloc(n) : NULL;
     if (full) {
-        snprintf(full, n, "( %s ) >%s 2>%s", cmd, op, ep);
+        snprintf(full, n, "( %s ) >%s 2>%s", cmd, qo, qe);
         int r = system(full);
 #ifdef _WIN32
         R.code = (r == -1) ? -1 : (int64_t)r;
@@ -4540,6 +4574,7 @@ static mfl_exec_result mfl_exec(const char* cmd) {
         free(full);
     }
     unlink(op); unlink(ep);
+    free(qo); free(qe); free(op); free(ep);
     return R;
 }
 #endif

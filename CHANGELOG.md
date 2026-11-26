@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- **Fixed:** `exec()` wrote its capture files to a hardcoded `/tmp`, so it
+  returned -1 where there is none, as on Android (#725). It now uses `$TMPDIR`,
+  falling back to `/tmp`. The self-hosted `run` does the same. Not on Windows.
+
 ## v0.144.3
 
 **The other copies of JSON string escaping (follow-up to #715).**
