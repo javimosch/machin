@@ -746,6 +746,44 @@ static void mfl_chan_close(mfl_chan* c) {
     mfl_dl_note(); /* a close lets parked receivers drain — channel progress */
     mfl_rr_exit();
 }
+/* chan_free: hand a channel's memory back (#724). Channels are malloc'd and
+   were never freed anywhere — not even close() — so a program that keeps
+   making channels grew without bound (~156 bytes each). Queued messages are
+   discarded with it: each node's payload is freed, including the frozen
+   (malloc'd) string/bytes copies a string-mode element carries at its stroff
+   offsets; a JSON-mode element's payload is one malloc'd string.
+
+   THE CHANNEL MUST NOT BE USED AFTERWARDS — this is free(), not a hint. In
+   particular no other goroutine may hold it: a receiver blocked in
+   mfl_chan_recv2, or any later send/recv/close, dereferences freed memory.
+   chan_free is for a channel whose references are all local and done — the
+   per-iteration make(chan) of a long-running loop. */
+static void mfl_chan_free(mfl_chan* c) {
+    if (!c) return;
+    pthread_mutex_lock(&c->mu);
+    mfl_cnode* n = c->head;
+    while (n) {
+        mfl_cnode* nx = n->next;
+        if (c->nstr > 0) { /* string mode: n->data holds frozen malloc'd strings */
+            for (int i = 0; i < c->nstr; i++) {
+                if (c->stroff[i] < 0) { /* bytes field: -(1+offset) */
+                    mfl_bytes* b = (mfl_bytes*)((char*)n->data + (-c->stroff[i] - 1));
+                    free(b->data);
+                } else {
+                    char** p = (char**)((char*)n->data + c->stroff[i]);
+                    free(*p);
+                }
+            }
+        }
+        free(n->data); free(n); n = nx;
+    }
+    c->head = c->tail = NULL;
+    pthread_mutex_unlock(&c->mu);
+    pthread_mutex_destroy(&c->mu);
+    pthread_cond_destroy(&c->cnd);
+    free(c->stroff);
+    free(c);
+}
 /* ---- record/replay (Phase 0 spike) ------------------------------------------
    SOUND because the program is proved data-race-free: the only inter-goroutine
    nondeterminism is the ORDER channel operations complete. We record that order
@@ -10477,6 +10515,8 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		}
 		g.usesNet = true
 		return fmt.Sprintf("mfl_close(%s)", args[0]), nil
+	case "chan_free":
+		return fmt.Sprintf("mfl_chan_free(%s)", args[0]), nil
 	case "input":
 		return "mfl_input()", nil
 	case "read_stdin":

@@ -2513,6 +2513,17 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 			return 0, err
 		}
 		return c.cVoid, nil
+	case "chan_free":
+		// Hands a channel's memory back (#724). One arg, the channel; it must
+		// not be used — or shared with another goroutine — afterwards, exactly
+		// like free() for an FFI pointer. chanElem pins the arg to chan T.
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("chan_free: 1 arg (chan)")
+		}
+		if _, err := c.chanElem(argSlots[0]); err != nil {
+			return 0, err
+		}
+		return c.cVoid, nil
 	case "has", "delete":
 		if len(argSlots) != 2 {
 			return 0, fmt.Errorf("%s: 2 args (map, key)", ex.Callee)

@@ -396,6 +396,7 @@ An invalid ERE pattern (a `regcomp` failure) is not an error — there's no erro
 | `listen`, `accept` | `(int) -> int` | open / accept on a TCP socket; `listen` returns `-1` if the port cannot be bound |
 | `read`, `write` | `(int[, string]) -> string\|int` | socket/fd I/O — `read` is one `read(2)` of up to 65535 bytes, not a whole message; loop `read_bytes` (NUL-safe) to reassemble a complete request (see `framework/machweb.src`'s `read_request_bytes`, and issue #91) |
 | `close` | `(int\|chan) -> ` | close a socket/fd, or a channel (dispatched by argument) |
+| `chan_free` | `(chan T) -> ` | free a channel and any messages still queued in it; the channel must not be used afterwards, and no other goroutine may hold it (unchecked, like `free`) |
 | `https_get` | `(string) -> string` | HTTPS GET over TLS; response body ("" on error) |
 | `https_post` | `(string, string) -> string` | HTTPS POST (JSON body) over TLS; response body |
 | `http_get` | `(string) -> (int, string, string)` | GET (plain `http://` or `https://`) returning `(status, body, err)`; `err==""` ⇒ a response, else `"dns"`/`"connect"`/`"tls"`. Multi-assign only. |

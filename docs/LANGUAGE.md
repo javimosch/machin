@@ -754,6 +754,23 @@ v, ok := <-ch   // ok == false once ch is closed and drained
 `for v := range ch { ... }` ranges over a channel, receiving values until it
 is closed and drained — a shorthand for looping on the comma-ok receive.
 
+Channels are malloc'd and are **not** reclaimed by `close` or by any arena —
+a program that keeps making channels grows without bound (~150 bytes each).
+`chan_free(ch)` hands the memory back, including messages still queued in it.
+It is unchecked, like `free`: the channel must not be used afterwards, and no
+other goroutine may hold a reference to it (a receiver blocked on it, or any
+shared use, becomes a use-after-free). It fits a channel created and consumed
+inside one iteration of a long-running loop:
+
+```go
+while i < n {
+    c := make(chan int)
+    // ... use c locally ...
+    chan_free(c)
+    i = i + 1
+}
+```
+
 `select { ... }` waits on multiple channel operations at once and runs the
 first case that's ready (a `default` case runs immediately if none are):
 
