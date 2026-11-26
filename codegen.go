@@ -1137,6 +1137,11 @@ static void mfl_dl_deadlock(void) {
         }
     }
     fflush(stderr);
+    /* _exit skips the stdio flush, which loses piped output and the --record
+       trace. Flush just those two and keep _exit: other threads are still alive
+       here, so running exit handlers under them is best avoided. */
+    fflush(stdout);
+    if (mfl_rr_out) fflush(mfl_rr_out);
     _exit(2);
 }
 
