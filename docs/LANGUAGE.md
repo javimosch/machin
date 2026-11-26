@@ -473,6 +473,7 @@ first := users[0]                                // value copy
 | `sort_by(xs, less)`         | sort by your own `less(a, b) bool` → a **new** slice; stable; the comparator may capture |
 | `json(x)`                   | serialize any value to a JSON string         |
 | `parse(s, T{})`             | parse a JSON string into a value of `T`'s type |
+| `json_valid(s)`             | strict RFC 8259 check of the whole string → `bool` (nesting ≤ 512); syntax only |
 | `json_get(json, path)`      | value at a jq-style path → `(value, err)`; `err` is `""`/`"notfound"`/`"path"`/`"parse"` — **multi-assign only** |
 | `http_body(req)`            | the body of an HTTP message (after the blank line) |
 | `substr(s, i, j)`           | the substring `s[i:j]` (bounds-clamped)      |
@@ -709,6 +710,11 @@ s := json(Todo{id: 1, title: "ship it", done: false})
 title, err := json_get(s, ".title")   // title == `"ship it"`, err == ""
 _, err = json_get(s, ".nope")         // err == "notfound"
 ```
+
+`parse` never reports an error, and `json_get` only scans as far as its path, so
+malformed or truncated input can look valid. Check untrusted input first:
+`if !json_valid(body) { /* answer 400 */ }`. It checks syntax only, not
+whether fields exist or have the right types.
 
 See `examples/complex/json_get.mfl`, and `sqlite_query`'s use of it for
 single-field access on query rows.

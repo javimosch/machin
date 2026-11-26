@@ -174,6 +174,8 @@ detached server and returns: `system(args()[0] + " serve " + port + " >log 2>&1 
   Use the pool + acquire/release per request, releasing on **every** return path.
 - **Wire reads are NUL-binary** — the drivers use `read_bytes` (not `read`, which is a
   C string and truncates at a NUL) and binary-safe `base64_*_bytes` (for SCRAM).
+- **`parse` never fails** — garbage or a truncated body decodes to zero/partial values. Check
+  `json_valid(body)` first and answer 400 (syntax only; validate required fields yourself).
 - **`json_get` returns the raw token** — a string field comes back quoted (`"Ada"`).
   Prefer `parse(rows, []T{})`; strip quotes only when pulling one field.
 - **Parameterize** (`?` / `$1` / Mongo filter docs) for user input; `mysql_escape` for the

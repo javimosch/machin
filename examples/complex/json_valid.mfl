@@ -1,0 +1,6 @@
+type Todo struct{title string}
+
+func handle(body){if!json_valid(body){println("400",json(body))return}t:=parse(body,Todo{})println("200",t.title)}
+
+func main(){handle("{\"title\":\"ship it\"}")handle("{\"title\":\"trunc\"")handle("{\"title\":\"x\"}garbage")handle(url_decode("bad%01%08%0C"))}
+

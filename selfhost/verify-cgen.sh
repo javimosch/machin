@@ -467,6 +467,16 @@ func main() {
 EOF
 run "$T/h23.src"
 
+# h24 — json_valid (#716). json()/parse are not self-hosted, so only the check.
+cat > "$T/h24.src" <<'EOF'
+func check(body) {
+    if !json_valid(body) { println("400")  return }
+    println("200")
+}
+func main() { check("{}")  check("{") }
+EOF
+run "$T/h24.src"
+
 # SELF-APPLICATION: the MFL codegen emits byte-identical C for the compiler's OWN
 # source (checker + full codegen) — the fixpoint-adjacent milestone.
 $N "$MACHIN" encode selfhost/lex.src selfhost/parse.src selfhost/check.src \

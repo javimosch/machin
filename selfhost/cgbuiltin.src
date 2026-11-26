@@ -90,6 +90,7 @@ func builtin_cfn(name) (s) {
     if name == "contains" { s = "mfl_contains"  return s }
     if name == "has_prefix" { s = "mfl_has_prefix"  return s }
     if name == "has_suffix" { s = "mfl_has_suffix"  return s }
+    if name == "json_valid" { s = "mfl_json_valid"  return s }
     if name == "index" { s = "mfl_index"  return s }
     if name == "substr" { s = "mfl_substr"  return s }
     if name == "charat" { s = "mfl_charat"  return s }
