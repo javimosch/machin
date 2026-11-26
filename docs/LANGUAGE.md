@@ -842,6 +842,8 @@ Passing `--safe` to `machin build` or `machin run` inserts runtime checks for:
 - **bounds** — slice/array/string indexing out of range
 - **div-zero** — integer division or modulo by zero
 - **overflow** — integer arithmetic overflow
+- **stack overflow** — runaway recursion prints `panic: stack overflow` and keeps
+  earlier output (depth limit 1,000,000; override with `MFL_MAX_DEPTH`)
 
 ```
 machin build app.mfl --safe

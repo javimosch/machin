@@ -1,6 +1,6 @@
 # The MFL Language Specification
 
-Version 0.144.0
+Version 0.144.1
 
 MFL (Machine-First Language) is a statically-typed, Go-flavored backend language
 **shaped for machine authoring**: minimal syntax, no type annotations, one
@@ -588,6 +588,14 @@ id(42); id("hi"); id(3.14)   // → three native functions
   integer division/modulo by zero, or integer `+`/`-`/`*` overflow prints a
   `panic:` message to stderr and exits non-zero. `--safe` is opt-in; the default
   build has zero check overhead.
+- `--safe` also stops runaway recursion with `panic: stack overflow`, keeping
+  output already printed. It fires when a thread is nearly out of stack, or at a
+  call depth of 1,000,000 (override with the `MFL_MAX_DEPTH` environment
+  variable). The count also covers recursion the C compiler would otherwise turn
+  into an endless loop, so a legitimate tail recursion deeper than that needs the
+  override. Call-heavy code runs measurably slower. Under `--target wasm` the
+  runtime's own stack trap normally fires first. The self-hosted compiler has no
+  safe mode.
 
 ---
 
