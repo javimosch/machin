@@ -767,9 +767,18 @@ opaque handle held as an `int`** (the pointer value, round-tripped through
 window/texture handles, etc. `ptr` and `string` may not be `cstruct` fields
 (only numeric scalars).
 
+A `string` **result** is copied into machin-managed memory at the call site, so
+the C side may return a borrowed pointer — a string literal, a `static` buffer,
+or a buffer the callee reuses on its next call — and strings MFL already holds
+stay stable (MFL strings are immutable values). A `NULL` return reads as `""`.
+The cost: a C function that returns `malloc`'d memory has no way to hand
+ownership to MFL — the copy leaks the original buffer — so bridges that
+allocate should free on the C side (or return a `ptr` and manage it by hand).
+
 A call to a declared name compiles to a **direct C call**: scalar arguments are
 cast to their C type, `ptr` arguments to `void*`, and struct arguments are
-marshaled into the C layout (struct/`ptr` returns are converted back). The call
+marshaled into the C layout (struct returns are converted back, `string`
+results copied, `ptr` returns held as an `int`). The call
 is type-checked against the declared arity/types like any other.
 
 Phases 1–3 (scalars, **by-value structs**, **opaque handles/pointers**) are

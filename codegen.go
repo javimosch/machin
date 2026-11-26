@@ -10295,6 +10295,11 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		switch {
 		case ef.Ret == "ptr": // void* -> MFL int
 			return fmt.Sprintf("(int64_t)(intptr_t)(%s)", call), nil
+		case ef.Ret == "string":
+			// A C string result is borrowed — the callee may reuse or free its
+			// buffer on a later call (#731). Copy it into the arena so held
+			// strings stay stable; NULL maps to "" like every string op.
+			return fmt.Sprintf("mfl_dup(mfl_s(%s))", call), nil
 		case ef.Ret != "" && !isFFIScalar(ef.Ret):
 			return fmt.Sprintf("mfl_from_%s(%s)", ef.Ret, call), nil
 		}

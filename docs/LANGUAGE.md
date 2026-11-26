@@ -924,8 +924,14 @@ See `examples/complex/ffi_math.mfl` for the runnable version.
 | `float` / `f64` | `double` |                                        |
 | `f32`    | `float`       |                                             |
 | `bool`   | `int`         |                                             |
-| `string` | `const char*` |                                             |
+| `string` | `const char*` | result is copied (see below)              |
 | `ptr`    | `void*`       | opaque handle, held as `int` in MFL (see below) |
+
+A `string` **result** is copied into managed memory at the call, so the C
+function may return a borrowed pointer (a `static`/reused buffer) and strings
+you already hold don't change on the next call; `NULL` reads as `""`. A C
+function that returns `malloc`'d memory leaks it (there is no ownership
+transfer) — free on the C side, or return `ptr` and manage it yourself.
 
 ### `cstruct` — by-value C structs
 
