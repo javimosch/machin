@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **New: `--target android-lib`** builds an MFL program as `libmfl.so` plus the
+  Java class that calls it (needs the Android NDK). A panic becomes a Java
+  exception instead of ending the app, including panics on goroutines. See
+  `docs/ANDROID.md` for what it supports and what can still hang.
+
 - **Fixed:** `exec()` wrote its capture files to a hardcoded `/tmp`, so it
   returned -1 where there is none, as on Android (#725). It now uses `$TMPDIR`,
   falling back to `/tmp`. The self-hosted `run` does the same. Not on Windows.

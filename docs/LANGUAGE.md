@@ -835,6 +835,12 @@ the main arena first, so it stays valid after the assigning goroutine or
 
 ---
 
+## Android libraries
+
+`machin build lib.mfl --target android-lib --java-package com.example.app` builds
+the `export func`s as a library with a generated Java class. See
+[ANDROID.md](ANDROID.md).
+
 ## Safety checks (`--safe`)
 
 Passing `--safe` to `machin build` or `machin run` inserts runtime checks for:

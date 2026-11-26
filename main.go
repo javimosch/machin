@@ -129,6 +129,8 @@ usage:
   machin build <file.mfl> [-o out]   compile to a native binary
   machin build <file.mfl> --target wasm  compile to a WebAssembly module (needs zig; mark exports with export func)
   machin build <file.mfl> --target windows  cross-compile to a Windows .exe (needs zig; stdio/compute core, no net/TLS yet — #517)
+  machin build <file.mfl> --target android-lib --java-package <pkg> [--abi arm64-v8a,x86_64] [-o dir]
+                                     libmfl.so + Mfl.java for an Android app (needs the NDK; always --safe)
   machin build <file.mfl> --static   fully static binary (bundles SQLite; pair with CC=musl-gcc for FROM scratch)
   machin build <file.mfl> --emit-c   print the generated C and stop
   machin build <file.mfl> --cflags "-I<dir>" --ldflags "-L<dir>" [--static-link <name>]  vendored C libraries; --static-link takes lib<name>.a
@@ -445,8 +447,20 @@ func cmdBuild(args []string) error {
 	var src, out, target string
 	emitC, safe, static, raceSafe := false, false, false, false
 	var link LinkOptions
+	var javaPkg string
+	var abis []string
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
+		case "--java-package", "--abi":
+			if i+1 >= len(args) {
+				return fmt.Errorf("build: %s needs a value", args[i])
+			}
+			i++
+			if args[i-1] == "--abi" {
+				abis = append(abis, strings.Split(args[i], ",")...)
+			} else {
+				javaPkg = args[i]
+			}
 		case "-o":
 			if i+1 >= len(args) {
 				return fmt.Errorf("build: -o needs a path")
@@ -455,7 +469,7 @@ func cmdBuild(args []string) error {
 			out = args[i]
 		case "--target":
 			if i+1 >= len(args) {
-				return fmt.Errorf("build: --target needs a value (native|wasm)")
+				return fmt.Errorf("build: --target needs a value (native|wasm|windows|android-lib)")
 			}
 			i++
 			target = args[i]
@@ -501,10 +515,18 @@ func cmdBuild(args []string) error {
 		if static {
 			return fmt.Errorf("build: --static applies to the native target, not windows")
 		}
+	case targetAndroidLib:
+		if static || len(link.StaticLinks) > 0 {
+			return fmt.Errorf("build: --static and --static-link apply to the native target, not android-lib")
+		}
+		safe = true // an unchecked bad index would segfault the host app
 	default:
-		return fmt.Errorf("build: unknown --target %q (want native, wasm, or windows)", target)
+		return fmt.Errorf("build: unknown --target %q (want native, wasm, windows, or android-lib)", target)
 	}
-	if !link.empty() && (target != "native" || emitC) {
+	if target != targetAndroidLib && (javaPkg != "" || len(abis) > 0) {
+		return fmt.Errorf("build: --java-package and --abi apply only to --target android-lib")
+	}
+	if !link.empty() && ((target != "native" && target != targetAndroidLib) || emitC) {
 		return fmt.Errorf("build: --cflags/--ldflags/--static-link apply only to a native binary build")
 	}
 	prog, err := loadMFL(src)
@@ -515,6 +537,24 @@ func cmdBuild(args []string) error {
 		if err := raceGate(prog); err != nil {
 			return err
 		}
+	}
+	if target == targetAndroidLib {
+		if emitC { // the program plus its JNI bridge
+			lib, err := generateAndroidLibrary(prog, javaPkg)
+			if err != nil {
+				return err
+			}
+			fmt.Print(lib.csrc)
+			return nil
+		}
+		if out == "" {
+			out = strings.TrimSuffix(filepath.Base(src), filepath.Ext(src)) + "-android"
+		}
+		if err := BuildAndroidLib(prog, out, javaPkg, abis, link); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "built %s (android-lib): add %s/jniLibs and %s/java to the app's sources\n", out, out, out)
+		return nil
 	}
 	if emitC {
 		c, _, err := CompileToCTarget(prog, safe, target)
