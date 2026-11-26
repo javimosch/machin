@@ -1,17 +1,23 @@
 # Changelog
 
-## Unreleased
+## v0.145.0
 
+**Android libraries, and two leaks and a path that stood in their way.**
+
+- **New: `chan_free(ch)`** frees a channel and any messages still queued in it
+  (#724). Channels are still not freed automatically. It is unchecked, like
+  `free`: use after free, double free, or freeing a channel another goroutine
+  still uses can crash or hang, even with `--safe`. Not in the self-hosted
+  compiler.
 - **New: `--target android-lib`** builds an MFL program as `libmfl.so` plus the
   Java class that calls it (needs the Android NDK). A panic becomes a Java
   exception instead of ending the app, including panics on goroutines. See
   `docs/ANDROID.md` for what it supports and what can still hang.
-
 - **Fixed:** `exec()` wrote its capture files to a hardcoded `/tmp`, so it
   returned -1 where there is none, as on Android (#725). It now uses `$TMPDIR`,
   falling back to `/tmp`. The self-hosted `run` does the same. Not on Windows.
 - **Fixed:** every finished goroutine leaked its id string, about 31 bytes each
-  (#724, goroutine half). Channels are still never freed.
+  (#724, goroutine half).
 
 ## v0.144.3
 
