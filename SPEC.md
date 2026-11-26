@@ -1,6 +1,6 @@
 # The MFL Language Specification
 
-Version 0.144.1
+Version 0.144.2
 
 MFL (Machine-First Language) is a statically-typed, Go-flavored backend language
 **shaped for machine authoring**: minimal syntax, no type annotations, one

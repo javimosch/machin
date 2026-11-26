@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## v0.144.2
+
+**Output is kept when a program deadlocks.**
 
 - **Fixed:** the deadlock detector discarded buffered output: with stdout piped,
   everything printed before the deadlock was lost, as was the tail of a
