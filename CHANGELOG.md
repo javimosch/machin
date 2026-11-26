@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.144.3
+
+**The other copies of JSON string escaping (follow-up to #715).**
+
+- **Fixed (regression in v0.144.0):** `machin certify` reported `MISCOMPILED` for
+  correct code returning a string with a control character: its own copy of
+  `json()` escaping had not been updated.
+- **Fixed:** the escapers in the `bson`, `caldav`, `mysql`, `redis` and
+  `postgres` frameworks left control characters raw, so query results and decoded
+  documents could be invalid JSON.
+
 ## v0.144.2
 
 **Output is kept when a program deadlocks.**

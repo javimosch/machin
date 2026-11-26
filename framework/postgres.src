@@ -174,11 +174,25 @@ func pg_is_number(oid) (yes) {
     if oid == 1700 { yes = 1 }
 }
 
+// pg_jctrl \u-escapes any control byte still raw in e: JSON allows none (RFC 8259).
+func pg_jctrl(e) (out) {
+    out = e
+    b := bytes(e)
+    i := 0
+    while i < len(b) {
+        if byte_at(b, i) < 32 {
+            one := bytes_sub(b, i, i + 1)
+            out = replace(out, bytes_str(one), "\\u00" + to_hex(one))
+        }
+        i = i + 1
+    }
+}
+
 func json_str(s) (out) {
     e := replace(s, "\\", "\\\\")
     e = replace(e, "\"", "\\\"")
     e = replace(e, "\n", "\\n")
-    out = "\"" + e + "\""
+    out = "\"" + pg_jctrl(e) + "\""
 }
 
 // pg_collect reads the response stream until ReadyForQuery -> JSON-array-of-rows string.
