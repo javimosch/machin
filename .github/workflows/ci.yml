@@ -61,7 +61,7 @@ jobs:
       - name: Test (core suite)
         run: |
           go test -short -timeout 5m \
-            -skip='TestAndroidLibOnDesktopJVM|TestTypesCoverageFloor|TestStaticBuildBundlesSqlite|TestCertifyCodegenPaths|TestGemmF32AllTransposeCombos|TestDeadlockStrictIO|TestReadBytesLoopReassemblesLargePayload|TestAttnCausalFwdBwdF32|TestParseIntStrtollContract|TestHttpStreamRoundTrip|TestParseFloatStrtodContract|TestScopedArenaReclaimsMaps|TestScopedArenaReturnsPagesToTheOS|TestSafeChecks|TestCaldavClient' \
+            -skip='TestAndroidLibOnDesktopJVM|TestAndroidLibIgnoresHostLocale|TestTypesCoverageFloor|TestStaticBuildBundlesSqlite|TestCertifyCodegenPaths|TestGemmF32AllTransposeCombos|TestDeadlockStrictIO|TestReadBytesLoopReassemblesLargePayload|TestAttnCausalFwdBwdF32|TestParseIntStrtollContract|TestHttpStreamRoundTrip|TestParseFloatStrtodContract|TestScopedArenaReclaimsMaps|TestScopedArenaReturnsPagesToTheOS|TestSafeChecks|TestCaldavClient' \
             ./...
 
       # The MFL test suites — the ones written IN machin and run through the
@@ -128,9 +128,19 @@ jobs:
       # below them they SKIPPED in CI, and a broken windows target shipped in
       # v0.122.0 and survived two releases while `TestWindowsNetCompiles` and
       # `TestWindowsBuildsPE` were red on every developer machine (#549, #517).
+      # TestAndroidLibIgnoresHostLocale proves nothing in a C-only environment:
+      # install locales that change regex ranges and the decimal point, and
+      # make their absence a failure.
+      - name: Install non-C locales
+        run: |
+          sudo apt-get install -y locales
+          sudo locale-gen en_US.UTF-8 fr_FR.UTF-8
+
       - name: Test (full suite)
         # The suite runs ~10min on the ubuntu-26.04 runner — right at go test's
         # default 10m panic timeout (static OpenSSL links are the slow tail).
+        env:
+          MFL_REQUIRE_LOCALES: "1"
         run: go test -timeout 20m ./...
 
       # The adversarial alias suite under AddressSanitizer (#578 step 2). It runs
