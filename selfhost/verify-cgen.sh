@@ -477,6 +477,30 @@ func main() { check("{}")  check("{") }
 EOF
 run "$T/h24.src"
 
+# h25 — non-scalar slice literals: [][]T, []Struct, []map, []chan (#718).
+cat > "$T/h25.src" <<'EOF'
+type T struct { n int }
+func main() {
+    a := [][]string{[]string{"x"}, []string{"y", "z"}}
+    println(a[1][0], a[1][1])
+    b := [][][]int{[][]int{[]int{1}}}
+    println(b[0][0][0])
+    c := [][]T{[]T{T{n: 7}}}
+    println(c[0][0].n)
+    m := []map[string]int{}
+    mm := make(map[string]int)
+    mm["k"] = 3
+    m = append(m, mm)
+    println(m[0]["k"])
+    ch := []chan int{make(chan int)}
+    go feed(ch[0])
+    println(<-ch[0])
+    println(len(a), len([][]int{}))
+}
+func feed(c) { c <- 9 }
+EOF
+run "$T/h25.src"
+
 # SELF-APPLICATION: the MFL codegen emits byte-identical C for the compiler's OWN
 # source (checker + full codegen) — the fixpoint-adjacent milestone.
 $N "$MACHIN" encode selfhost/lex.src selfhost/parse.src selfhost/check.src \

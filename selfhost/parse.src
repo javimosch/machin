@@ -267,7 +267,7 @@ func parse_call_args() (kids, spread) {
 func parse_slice_lit() (idx) {
     eat("[")
     eat("]")
-    elem := adv().val
+    elem := parse_type_name()
     eat("{")
     kids := []int{}
     while at("}") == false {

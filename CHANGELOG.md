@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.144.1
+
+**Nested slice literals, and a diagnostic for runaway recursion (#718 #719).**
+
+- **Fixed:** `[][]T{...}` did not parse (#718); slice literals of maps and
+  channels failed too. Non-empty literals now work for any element type, in the
+  self-hosted compiler as well (including `[]struct`, which it used to decline).
+- **`--safe` reports stack overflow** (#719): `panic: stack overflow`, exit 1,
+  with earlier output kept, instead of a bare segfault or an endless loop. It
+  fires when stack space runs low or at depth 1,000,000 (`MFL_MAX_DEPTH`).
+- **Behaviour change in `--safe`:** a tail recursion deeper than 1,000,000 that
+  the optimizer had turned into a loop now panics unless `MFL_MAX_DEPTH` is
+  raised. Call-heavy code is slower (about 2x on a recursion benchmark).
+  Default builds are unchanged.
+
 ## v0.144.0
 
 **JSON: valid output, and a way to reject invalid input (#715 #716).**

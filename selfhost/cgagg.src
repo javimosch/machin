@@ -334,12 +334,13 @@ func cg_slice_lit(iid, idx) (out) {
     n := nodes[idx]
     if len(n.kids) == 0 { out = "(mfl_slice){0}"  return out }
     ek := elem_kind_of(iid, idx)
+    if ek != 2 && ek != 3 && ek != 4 && ek != 5 { out = cg_array_slice_lit(iid, idx)  return out }
     builder := ""
     cast := ""
     if ek == 3 { builder = "mfl_lit_f64"  cast = "double" } else {
     if ek == 5 { builder = "mfl_lit_str"  cast = "char*" } else {
     if ek == 2 || ek == 4 { builder = "mfl_lit_i64"  cast = "int64_t" } else {
-        g_cg_unsup = 1  out = "0"  return out    // struct / nested-slice elems: build via append
+        g_cg_unsup = 1  out = "0"  return out
     }}}
     names, decls, wrapped := seq_operands(iid, n.kids)
     parts := str(len(n.kids))
@@ -347,6 +348,22 @@ func cg_slice_lit(iid, idx) (out) {
     for i < len(names) { parts = parts + ", (" + cast + ")(" + names[i] + ")"  i = i + 1 }
     body := builder + "(" + parts + ")"
     if wrapped == 1 { out = "({ " + decls + body + "; })" } else { out = body }
+}
+
+// Port of codegen.go's arraySliceLit: struct / slice / map / ... elements.
+func cg_array_slice_lit(iid, idx) (out) {
+    n := nodes[idx]
+    ct := elem_ctype(iid, idx)
+    names := []string{}
+    for _, e := range n.kids { names = append(names, cg_expr(iid, e)) }
+    id := g_tmpid
+    g_tmpid = g_tmpid + 1
+    arr := "_arrlit" + str(id)
+    count := str(len(n.kids))
+    body := ct + "* " + arr + " = (" + ct + "*)mfl_alloc(" + count + " * sizeof(" + ct + ")); "
+    i := 0
+    for i < len(names) { body = body + arr + "[" + str(i) + "] = " + names[i] + "; "  i = i + 1 }
+    out = "({ " + body + "(mfl_slice){" + arr + ", " + count + ", " + count + "}; })"
 }
 
 func cg_struct_lit(iid, idx) (out) {

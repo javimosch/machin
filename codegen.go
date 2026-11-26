@@ -964,6 +964,60 @@ static void mfl_panic(const char* msg) {
     exit(1);
 }
 
+/* ---- --safe call-depth guard (#719) ----
+   A runaway recursion otherwise dies as a bare SIGSEGV, which also drops
+   buffered stdout; or, when cc -O2 turns it into a loop, never ends. Two
+   limits: stack headroom (frame sizes and thread stack sizes vary too much for
+   a count alone) and a depth count (a loop consumes no stack). MFL_MAX_DEPTH
+   overrides the count. Only --safe functions call mfl_enter. */
+static _Thread_local int64_t mfl_depth = 0;
+static _Thread_local uintptr_t mfl_stack_floor = 0; /* 0 = not measured, 1 = unknown */
+static int64_t mfl_max_depth = 1000000;
+static pthread_once_t mfl_max_depth_once = PTHREAD_ONCE_INIT;
+static void mfl_max_depth_init(void) {
+    const char* e = getenv("MFL_MAX_DEPTH");
+    if (e && atoll(e) > 0) mfl_max_depth = atoll(e);
+}
+static uintptr_t mfl_stack_floor_measure(void) {
+    char* low = NULL;
+    size_t size = 0;
+#if defined(__linux__)
+    pthread_attr_t a;
+    if (pthread_getattr_np(pthread_self(), &a) == 0) {
+        void* addr = NULL;
+        if (pthread_attr_getstack(&a, &addr, &size) == 0) low = (char*)addr;
+        pthread_attr_destroy(&a);
+    }
+#elif defined(__APPLE__)
+    size = pthread_get_stacksize_np(pthread_self());
+    low = (char*)pthread_get_stackaddr_np(pthread_self()) - size;
+#elif defined(_WIN32)
+    MEMORY_BASIC_INFORMATION mbi; /* the stack is one reservation; its base is the low end */
+    if (VirtualQuery(&mbi, &mbi, sizeof mbi)) {
+        low = (char*)mbi.AllocationBase;
+        size = (size_t)((char*)&mbi - low);
+    }
+#endif
+    if (!low) return 1;
+    size_t margin = size / 4 < 65536 ? size / 4 : 65536; /* room for runtime calls and the panic */
+    return (uintptr_t)low + margin;
+}
+static void mfl_stack_panic(const char* why) {
+    char b[160];
+    snprintf(b, sizeof b, "stack overflow (%s at call depth %lld)", why, (long long)mfl_depth);
+    mfl_panic(b);
+}
+static inline char mfl_enter(void) {
+    if (mfl_stack_floor == 0) {
+        pthread_once(&mfl_max_depth_once, mfl_max_depth_init);
+        mfl_stack_floor = mfl_stack_floor_measure();
+    }
+    if (++mfl_depth > mfl_max_depth) mfl_stack_panic("depth limit, see MFL_MAX_DEPTH,");
+    if ((uintptr_t)__builtin_frame_address(0) < mfl_stack_floor) mfl_stack_panic("out of stack space");
+    return 0;
+}
+static inline void mfl_leave(char* unused) { (void)unused; mfl_depth--; }
+
 /* runtime deadlock detector. machin channels are unbounded queues — a send
    never blocks — but a goroutine can never receive its OWN queued sends (#673),
    so the only blocking op is a receive with no receivable node: an empty open
@@ -7890,6 +7944,9 @@ func (g *cgen) function(inst string) error {
 	fn := g.c.SrcFunc(inst)
 	g.curFn = inst
 	g.buf.WriteString(g.signature(inst) + " {\n")
+	if g.safe { // #719: cleanup runs on every return path
+		g.buf.WriteString("    __attribute__((cleanup(mfl_leave))) char _mfl_frame = mfl_enter();\n")
+	}
 	// Function-entry coverage (#589). Keyed by SOURCE name, so every
 	// monomorphized instance of a generic marks the one function the author wrote.
 	if g.cover {
@@ -9214,11 +9271,8 @@ func (g *cgen) sliceLit(ex *SliceLit) (string, error) {
 		builder, cast = "mfl_lit_str", "char*"
 	case KInt, KBool:
 		builder, cast = "mfl_lit_i64", "int64_t"
-	case KStruct:
-		return g.structSliceLit(ex)
-	default:
-		// nested-slice elements: build empty + append in source instead
-		return "", fmt.Errorf("non-empty []%s literals are not supported; build with append", ek)
+	default: // struct, slice, map, chan, func, ...: assigned one element at a time
+		return g.arraySliceLit(ex)
 	}
 	return g.seqExprs(ex.Elems, func(names []string) (string, error) {
 		parts := []string{strconv.Itoa(len(ex.Elems))}
@@ -9229,11 +9283,11 @@ func (g *cgen) sliceLit(ex *SliceLit) (string, error) {
 	})
 }
 
-// structSliceLit builds a non-empty []T literal whose element T is a struct:
-// an arena-backed T array sized to the literal, filled one element per
+// arraySliceLit builds a non-empty []T literal whose element T has no variadic
+// builder (struct, slice, map, ...): an arena-backed T array sized to the literal, filled one element per
 // assignment (the same shape the append-based workaround writes by hand),
 // wrapped in an mfl_slice.
-func (g *cgen) structSliceLit(ex *SliceLit) (string, error) {
+func (g *cgen) arraySliceLit(ex *SliceLit) (string, error) {
 	ct := g.c.ElemCType(g.curFn, ex)
 	n := len(ex.Elems)
 	names := make([]string, n)
