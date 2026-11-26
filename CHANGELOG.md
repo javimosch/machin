@@ -7,6 +7,9 @@
   exception instead of ending the app, including panics on goroutines. See
   `docs/ANDROID.md` for what it supports and what can still hang.
 
+- **Fixed:** `exec()` wrote its capture files to a hardcoded `/tmp`, so it
+  returned -1 where there is none, as on Android (#725). It now uses `$TMPDIR`,
+  falling back to `/tmp`. The self-hosted `run` does the same. Not on Windows.
 - **Fixed:** every finished goroutine leaked its id string, about 31 bytes each
   (#724, goroutine half). Channels are still never freed.
 
