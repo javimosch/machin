@@ -1,6 +1,6 @@
 # The MFL Language Specification
 
-Version 0.143.0
+Version 0.144.0
 
 MFL (Machine-First Language) is a statically-typed, Go-flavored backend language
 **shaped for machine authoring**: minimal syntax, no type annotations, one
@@ -328,6 +328,7 @@ startup (before `main`; at `_initialize` for a wasm reactor).
 | `copy` | `(T) -> T` | a value sharing no backing storage with its argument. Slices, maps and structs are rebuilt recursively; scalars and strings are returned as they are (strings are immutable, so a shared pointer is indistinguishable from a private one). A channel or a function value is refused, because a copy of either would be an alias. **The opt-out from §4.2.** |
 | `json` | `(any) -> string` | serialize to JSON |
 | `parse` | `(string, T{}) -> T` | parse JSON into `T`'s type (witness) |
+| `json_valid` | `(string) -> bool` | strict RFC 8259 check of the whole string: one value, no trailing data, valid UTF-8, nesting ≤ 512. `parse` never fails and `json_get` only scans as far as its path, so check untrusted input with this first. Syntax only, not field types. |
 | `json_get` | `(string, string) -> (string, string)` | value at a jq-style path → `(value, err)`; `value` is raw JSON text, `err` is `""`/`"notfound"`/`"path"`/`"parse"`. Multi-assign only. |
 | `http_body` | `(string) -> string` | body of an HTTP message |
 | `substr` | `(string, int, int) -> string` | substring |

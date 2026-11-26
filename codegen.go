@@ -3902,7 +3902,13 @@ static char* mfl_hmac_sha256(const char* key, const char* msg) {
 static char* mfl_json_str(const char* s) { /* quote + escape a string */
     if (!s) s = "";
     size_t n = strlen(s), j = 0;
-    char* b = mfl_alloc(n*2 + 3);
+    size_t cap = n + 3; /* exact: a control byte grows to 2 or 6 bytes */
+    for (size_t i = 0; i < n; i++) {
+        unsigned char u = (unsigned char)s[i];
+        if (u=='"' || u=='\\' || u=='\n' || u=='\t' || u=='\r' || u=='\b' || u=='\f') cap += 1;
+        else if (u < 0x20) cap += 5;
+    }
+    char* b = mfl_alloc(cap);
     b[j++] = '"';
     for (size_t i = 0; i < n; i++) {
         char c = s[i];
@@ -3910,6 +3916,12 @@ static char* mfl_json_str(const char* s) { /* quote + escape a string */
         else if (c=='\n') { b[j++]='\\'; b[j++]='n'; }
         else if (c=='\t') { b[j++]='\\'; b[j++]='t'; }
         else if (c=='\r') { b[j++]='\\'; b[j++]='r'; }
+        else if (c=='\b') { b[j++]='\\'; b[j++]='b'; }
+        else if (c=='\f') { b[j++]='\\'; b[j++]='f'; }
+        else if ((unsigned char)c < 0x20) { /* RFC 8259 section 7: no raw control bytes */
+            b[j++]='\\'; b[j++]='u'; b[j++]='0'; b[j++]='0';
+            b[j++]="0123456789abcdef"[(c >> 4) & 15]; b[j++]="0123456789abcdef"[c & 15];
+        }
         else b[j++]=c;
     }
     b[j++]='"'; b[j]=0;
@@ -3992,6 +4004,8 @@ static char* mfl_js_str(const char** p) {
             else if (e=='n') { out[j++]='\n'; (*p)++; }
             else if (e=='t') { out[j++]='\t'; (*p)++; }
             else if (e=='r') { out[j++]='\r'; (*p)++; }
+            else if (e=='b') { out[j++]='\b'; (*p)++; }
+            else if (e=='f') { out[j++]='\f'; (*p)++; }
             else { out[j++] = e; (*p)++; }
         } else { out[j++] = c; (*p)++; }
     }
@@ -4594,6 +4608,94 @@ static mfl_json_result mfl_json_get(const char* json, const char* path) {
     if (!end) { R.err = mfl_dup_arena("parse", 5); return R; }
     R.value = mfl_dup_arena(cur, (size_t)(end - cur));
     return R;
+}
+/* ---- json_valid: strict RFC 8259 check of the WHOLE input ----
+   json_get only scans as far as its path, and parse never fails, so neither can
+   tell a server that a body is malformed. Nesting is capped because the check
+   (like parse) recurses on input that may be hostile. */
+#define MFL_JSON_MAX_DEPTH 512
+static int mfl_jv_utf8(const unsigned char* s) { /* length of one valid sequence, else 0 */
+    unsigned char c = s[0], lo = 0x80, hi = 0xBF;
+    int n, i;
+    if (c >= 0xC2 && c <= 0xDF) n = 2;
+    else if (c >= 0xE0 && c <= 0xEF) { n = 3; if (c == 0xE0) lo = 0xA0; if (c == 0xED) hi = 0x9F; }
+    else if (c >= 0xF0 && c <= 0xF4) { n = 4; if (c == 0xF0) lo = 0x90; if (c == 0xF4) hi = 0x8F; }
+    else return 0;
+    if (s[1] < lo || s[1] > hi) return 0;
+    for (i = 2; i < n; i++) if (s[i] < 0x80 || s[i] > 0xBF) return 0;
+    return n;
+}
+static int mfl_jv_hex(char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'); }
+static const char* mfl_jv_str(const char* p) {
+    if (*p != '"') return NULL;
+    p++;
+    while (*p != '"') {
+        unsigned char c = (unsigned char)*p;
+        if (c < 0x20) return NULL; /* includes the terminating NUL */
+        if (c == '\\') {
+            char e = p[1];
+            if (e == 'u') {
+                int i;
+                for (i = 2; i < 6; i++) if (!mfl_jv_hex(p[i])) return NULL;
+                p += 6;
+            } else if (e == '"' || e == '\\' || e == '/' || e == 'b' || e == 'f' || e == 'n' || e == 'r' || e == 't') p += 2;
+            else return NULL;
+        } else if (c < 0x80) p++;
+        else {
+            int n = mfl_jv_utf8((const unsigned char*)p);
+            if (!n) return NULL;
+            p += n;
+        }
+    }
+    return p + 1;
+}
+static const char* mfl_jv_digits(const char* p) {
+    if (*p < '0' || *p > '9') return NULL;
+    while (*p >= '0' && *p <= '9') p++;
+    return p;
+}
+static const char* mfl_jv_num(const char* p) {
+    if (*p == '-') p++;
+    if (*p == '0') p++;
+    else if (!(p = mfl_jv_digits(p))) return NULL;
+    if (*p == '.' && !(p = mfl_jv_digits(p + 1))) return NULL;
+    if (*p == 'e' || *p == 'E') {
+        p++;
+        if (*p == '+' || *p == '-') p++;
+        p = mfl_jv_digits(p);
+    }
+    return p;
+}
+static const char* mfl_jv_val(const char* p, int depth) {
+    p = mfl_jq_ws(p);
+    if (*p == '"') return mfl_jv_str(p);
+    if (*p == '{' || *p == '[') {
+        int obj = *p == '{';
+        char close = obj ? '}' : ']';
+        if (depth >= MFL_JSON_MAX_DEPTH) return NULL;
+        p = mfl_jq_ws(p + 1);
+        if (*p == close) return p + 1;
+        for (;;) {
+            if (obj) {
+                p = mfl_jv_str(mfl_jq_ws(p)); if (!p) return NULL;
+                p = mfl_jq_ws(p);
+                if (*p != ':') return NULL;
+                p++;
+            }
+            p = mfl_jv_val(p, depth + 1); if (!p) return NULL;
+            p = mfl_jq_ws(p);
+            if (*p == ',') { p++; continue; }
+            return *p == close ? p + 1 : NULL;
+        }
+    }
+    if (strncmp(p, "true", 4) == 0 || strncmp(p, "null", 4) == 0) return p + 4;
+    if (strncmp(p, "false", 5) == 0) return p + 5;
+    return mfl_jv_num(p);
+}
+static int mfl_json_valid(const char* s) {
+    if (!s) return 0;
+    const char* end = mfl_jv_val(s, 0);
+    return end && *mfl_jq_ws(end) == 0;
 }
 `
 
@@ -10002,6 +10104,8 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("mfl_contains(%s, %s)", args[0], args[1]), nil
 	case "has_prefix":
 		return fmt.Sprintf("mfl_has_prefix(%s, %s)", args[0], args[1]), nil
+	case "json_valid":
+		return fmt.Sprintf("mfl_json_valid(%s)", args[0]), nil
 	case "has_suffix":
 		return fmt.Sprintf("mfl_has_suffix(%s, %s)", args[0], args[1]), nil
 	case "index":

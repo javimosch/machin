@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.144.0
+
+**JSON: valid output, and a way to reject invalid input (#715 #716).**
+
+- **Fixed:** `json()` wrote most control characters as raw bytes, producing
+  invalid JSON — one `%01` in a request could break an echoed response. All of
+  U+0000-U+001F are now escaped (SQLite row JSON too).
+- **Fixed:** `parse` decoded `\b` and `\f` as the letters `b` and `f`.
+- **`json_valid(s) -> bool`** (#716): strict RFC 8259 check of the whole string
+  (no trailing data, valid UTF-8, nesting <= 512). `parse` and `json_get` behave
+  as before; check untrusted input first. Syntax only, not field types. Works
+  with the self-hosted compiler too.
+
 ## v0.143.0
 
 **Four walls hit by a JS -> MFL transpiler (machin-js), cleared (#710 #711 #712 #713).**

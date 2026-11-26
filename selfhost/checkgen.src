@@ -1139,6 +1139,7 @@ func bspec(name) (s) {
     if name == "http_body" || name == "to_upper" || name == "to_lower" || name == "trim" { s = "s>s"  return s }
     if name == "contains" || name == "has_prefix" || name == "has_suffix" || name == "regex_match" { s = "ss>b"  return s }
     if name == "index" { s = "ss>i"  return s }
+    if name == "json_valid" { s = "s>b"  return s }
     if name == "substr" { s = "sii>s"  return s }
     if name == "charat" { s = "si>s"  return s }
     if name == "replace" || name == "regex_replace" { s = "sss>s"  return s }

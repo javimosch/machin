@@ -2590,6 +2590,12 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		}
 		c.addPair(argSlots[0], c.cString)
 		return c.cString, nil
+	case "json_valid":
+		if len(argSlots) != 1 {
+			return 0, fmt.Errorf("json_valid: 1 arg")
+		}
+		c.addPair(argSlots[0], c.cString)
+		return c.cBool, nil
 	case "contains", "has_prefix", "has_suffix":
 		if len(argSlots) != 2 {
 			return 0, fmt.Errorf("%s: 2 args", ex.Callee)
