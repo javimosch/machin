@@ -41,18 +41,23 @@ func build_binary(path, out, safe) (rc) {
     if contains(csrc, "mfl_crypto" + "_") { libs = libs + " -lcrypto" }
     if contains(csrc, "mfl_xeddsa" + "_") { libs = libs + " -lsodium -lcrypto" }
 
-    cmd := cc_path() + " -O2 -std=c11 -pthread" + cflags + " -o " + out + " " + tmpc + libs + g_user_ldflags
+    cmd := cc_path() + " -O2 -std=c11 -pthread" + cflags + " -o " + shell_word(out) + " " + shell_word(tmpc) + libs + g_user_ldflags
     ec := system(cmd)
     if ec != 0 { rc = 10  return rc }     // keep tmpc on failure for debugging
     remove(tmpc)
 }
 
+// shell_word quotes a path as one shell word.
+func shell_word(s) (q) { q = "'" + replace(s, "'", "'\\''") + "'" }
+
 // run_program: build to a temp binary and exec it; returns the child's exit code.
 func run_program(path, safe) (rc) {
-    tmpbin := "/tmp/mfl-run-bin"
+    dir := env("TMPDIR")   // #725: not every system has /tmp
+    if dir == "" { dir = "/tmp" }
+    tmpbin := dir + "/mfl-run-bin"
     rc = build_binary(path, tmpbin, safe)
     if rc != 0 { return rc }
-    ec := system(tmpbin)
+    ec := system(shell_word(tmpbin))
     remove(tmpbin)
     rc = ec
 }

@@ -759,7 +759,10 @@ a program that keeps making channels grows without bound (~150 bytes each).
 `chan_free(ch)` hands the memory back, including messages still queued in it.
 It is unchecked, like `free`: the channel must not be used afterwards, and no
 other goroutine may hold a reference to it (a receiver blocked on it, or any
-shared use, becomes a use-after-free). It fits a channel created and consumed
+shared use, becomes a use-after-free). Nothing checks this, with or without
+`--safe` or `--race-safe`: misuse can crash with no MFL message, or hang (freeing
+under a blocked receiver), which the deadlock detector does not report. Freeing
+after you have received a goroutine's final send is fine. It fits a channel created and consumed
 inside one iteration of a long-running loop:
 
 ```go
@@ -851,6 +854,12 @@ the main arena first, so it stays valid after the assigning goroutine or
 `arena { }` block ends.
 
 ---
+
+## Android libraries
+
+`machin build lib.mfl --target android-lib --java-package com.example.app` builds
+the `export func`s as a library with a generated Java class. See
+[ANDROID.md](ANDROID.md).
 
 ## Safety checks (`--safe`)
 
