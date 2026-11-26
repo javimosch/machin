@@ -67,11 +67,25 @@ func bson_finish(acc) (doc) {
 
 // ---- decoder (BSON document/array bytes -> JSON string) ----
 
+// bs_jctrl \u-escapes any control byte still raw in e: JSON allows none (RFC 8259).
+func bs_jctrl(e) (out) {
+    out = e
+    b := bytes(e)
+    i := 0
+    while i < len(b) {
+        if byte_at(b, i) < 32 {
+            one := bytes_sub(b, i, i + 1)
+            out = replace(out, bytes_str(one), "\\u00" + to_hex(one))
+        }
+        i = i + 1
+    }
+}
+
 func bs_jstr(s) (out) {
     e := replace(s, "\\", "\\\\")
     e = replace(e, "\"", "\\\"")
     e = replace(e, "\n", "\\n")
-    out = "\"" + e + "\""
+    out = "\"" + bs_jctrl(e) + "\""
 }
 
 // bs_val parses one value of type t at offset i -> (json, next-offset).

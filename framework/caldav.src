@@ -56,7 +56,21 @@
 
 // ---- JSON ------------------------------------------------------------------
 
-// caldav_jstr quotes s as a JSON string (", \, and the C0 controls \n \r \t).
+// caldav_jctrl \u-escapes any control byte still raw in e: JSON allows none (RFC 8259).
+func caldav_jctrl(e) (out) {
+    out = e
+    b := bytes(e)
+    i := 0
+    while i < len(b) {
+        if byte_at(b, i) < 32 {
+            one := bytes_sub(b, i, i + 1)
+            out = replace(out, bytes_str(one), "\\u00" + to_hex(one))
+        }
+        i = i + 1
+    }
+}
+
+// caldav_jstr quotes s as a JSON string.
 func caldav_jstr(s) (out) {
     out = "\""
     e := replace(s, "\\", "\\\\")
@@ -64,7 +78,7 @@ func caldav_jstr(s) (out) {
     e = replace(e, "\n", "\\n")
     e = replace(e, "\r", "\\r")
     e = replace(e, "\t", "\\t")
-    out = out + e + "\""
+    out = out + caldav_jctrl(e) + "\""
 }
 
 // ---- transport -------------------------------------------------------------

@@ -111,11 +111,25 @@ func myopen(host, port, user, password, db) (c, ok) {
 
 // ---- result helpers (pure) ----
 
+// my_jctrl \u-escapes any control byte still raw in e: JSON allows none (RFC 8259).
+func my_jctrl(e) (out) {
+    out = e
+    b := bytes(e)
+    i := 0
+    while i < len(b) {
+        if byte_at(b, i) < 32 {
+            one := bytes_sub(b, i, i + 1)
+            out = replace(out, bytes_str(one), "\\u00" + to_hex(one))
+        }
+        i = i + 1
+    }
+}
+
 func jstr(s) (out) {
     e := replace(s, "\\", "\\\\")
     e = replace(e, "\"", "\\\"")
     e = replace(e, "\n", "\\n")
-    out = "\"" + e + "\""
+    out = "\"" + my_jctrl(e) + "\""
 }
 func mysql_escape(s) (out) {
     out = replace(s, "\\", "\\\\")
