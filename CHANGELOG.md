@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.144.2
+
+**Output is kept when a program deadlocks.**
+
+- **Fixed:** the deadlock detector discarded buffered output: with stdout piped,
+  everything printed before the deadlock was lost, as was the tail of a
+  `--record` trace.
+
 ## v0.144.1
 
 **Nested slice literals, and a diagnostic for runaway recursion (#718 #719).**
