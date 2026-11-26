@@ -651,7 +651,7 @@ static void mfl_sleep(int64_t ms) {
    Scalar elements need neither and are a plain memcpy. */
 static char* mfl_dup_arena(const char* s, size_t n); /* defined later in the runtime */
 typedef struct { uint8_t* data; int64_t len; } mfl_bytes;
-typedef struct mfl_cnode { struct mfl_cnode* next; void* data; const char* gid; } mfl_cnode;
+typedef struct mfl_cnode { struct mfl_cnode* next; void* data; uint64_t sender; } mfl_cnode;
 typedef struct {
     pthread_mutex_t mu; pthread_cond_t cnd;
     mfl_cnode *head, *tail; int64_t es; int closed;
@@ -1038,7 +1038,10 @@ static void* mfl_dl_watchdog(void* _p);
 __attribute__((constructor)) static void mfl_dl_init(void) { if (getenv("MFL_DL_STRICT")) mfl_dl_strict = 1; }
 static void mfl_dl_note(void)    { pthread_mutex_lock(&mfl_dl_mu); mfl_dl_gen++;  pthread_mutex_unlock(&mfl_dl_mu); }
 static void mfl_dl_spawn(void)   { pthread_mutex_lock(&mfl_dl_mu); mfl_dl_live++; pthread_mutex_unlock(&mfl_dl_mu); }
-static void mfl_dl_finish(void)  { pthread_mutex_lock(&mfl_dl_mu); mfl_dl_live--; pthread_mutex_unlock(&mfl_dl_mu); }
+static void mfl_dl_finish(void) { /* the last thing a goroutine trampoline does */
+    pthread_mutex_lock(&mfl_dl_mu); mfl_dl_live--; pthread_mutex_unlock(&mfl_dl_mu);
+    free(mfl_gid_path); mfl_gid_path = NULL; /* every other holder keeps its own copy (#724) */
+}
 
 /* wait table: which goroutine (its stable gid path) is parked receiving on which channel
    id. Populated as goroutines block, so a declared deadlock can print the exact wait-cycle
@@ -1145,10 +1148,20 @@ static void mfl_dl_deadlock(void) {
     _exit(2);
 }
 
+/* Which goroutine this is, for as long as a queued message may need to know. A
+   number, not the gid path: a message can outlive its sender, so holding the
+   path pointer meant no finished goroutine's path could ever be freed (#724). */
+static uint64_t mfl_serial_ctr = 0;
+static _Thread_local uint64_t mfl_serial = 0; /* 0 = not assigned yet */
+static uint64_t mfl_thread_serial(void) {
+    if (!mfl_serial) mfl_serial = __atomic_add_fetch(&mfl_serial_ctr, 1, __ATOMIC_RELAXED);
+    return mfl_serial;
+}
+
 static void mfl_chan_send(mfl_chan* c, const void* v) {
     mfl_rr_enter();
     mfl_cnode* n = malloc(sizeof(mfl_cnode));
-    n->gid = mfl_gid_path;   /* sender id — receivers never take their own nodes (#673) */
+    n->sender = mfl_thread_serial(); /* receivers never take their own nodes (#673) */
     if (c->ser) {
         char* j = c->ser(v);                 /* arena JSON of the whole value */
         size_t L = strlen(j);
@@ -1173,8 +1186,7 @@ static void mfl_chan_send(mfl_chan* c, const void* v) {
    followed by a receive in one goroutine satisfied itself and spun at 100% CPU —
    the keeper-lock idiom turned into a busy loop. */
 static int mfl_chan_head_mine(mfl_chan* c) {
-    const char* me = mfl_gid_path ? mfl_gid_path : "0";
-    return c->head && c->head->gid && strcmp(c->head->gid, me) == 0;
+    return c->head && c->head->sender == mfl_thread_serial();
 }
 /* deliver node n's payload into out (receiver arena), then free the node. */
 static void mfl_chan_deliver(mfl_chan* c, mfl_cnode* n, void* out) {
