@@ -28,6 +28,14 @@ constrain a parameter the body does not otherwise pin down (it defaults to int).
 Calls block their thread. Globals are shared by all calls and are not
 synchronized for you.
 
+## Locale
+
+MFL runs in the `C` locale, whatever the app's locale is, so patterns, number
+formatting and parsing, and `to_upper`/`to_lower` behave as in a standalone
+program. Only the calling thread is switched, and it is restored when the call
+returns. Without this, `[a-z]` could match `é`, `json(2.5)` produce `2,5` and
+`parse_float("1.5")` return 1.
+
 ## Panics
 
 The library is always built `--safe`. A panic does not exit the app:

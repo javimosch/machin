@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- **Fixed:** `android-lib` code ran in the host app's locale. A validation
+  pattern such as `[a-z]` could accept accented letters, and with a comma-decimal
+  locale `json()` wrote invalid JSON and `parse_float("1.5")` returned 1. Library
+  calls and goroutines now run in the `C` locale.
+
 ## v0.145.0
 
 **Android libraries, and two leaks and a path that stood in their way.**

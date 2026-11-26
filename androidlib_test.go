@@ -120,7 +120,10 @@ public class Main {
 }
 `
 
-func TestAndroidLibOnDesktopJVM(t *testing.T) {
+// runAndroidLibOnJVM builds a library for the desktop JVM and returns a runner
+// for Main.java; env is added to the Java process's environment.
+func runAndroidLibOnJVM(t *testing.T, mflSrc, javaMain string) func(env ...string) string {
+	t.Helper()
 	javac, err := exec.LookPath("javac")
 	if err != nil || runtime.GOOS == "windows" {
 		t.Skip("needs a JDK on a unix host")
@@ -134,7 +137,7 @@ func TestAndroidLibOnDesktopJVM(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(include, "jni.h")); err != nil {
 		t.Skip("JDK has no jni.h")
 	}
-	prog, err := wallsCompose(t, androidTestLib)
+	prog, err := wallsCompose(t, mflSrc)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,15 +155,17 @@ func TestAndroidLibOnDesktopJVM(t *testing.T) {
 		filepath.Join(dir, "lib.c"):            lib.csrc,
 		filepath.Join(pkgDir, "Mfl.java"):      lib.mflJava,
 		filepath.Join(pkgDir, "MflPanic.java"): lib.panicJava,
-		filepath.Join(dir, "Main.java"):        androidTestJava,
+		filepath.Join(dir, "Main.java"):        javaMain,
 	} {
 		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
+	var env []string
 	run := func(name string, args ...string) string {
 		cmd := exec.Command(name, args...)
 		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), env...)
 		var out, errs strings.Builder
 		cmd.Stdout, cmd.Stderr = &out, &errs
 		if err := cmd.Run(); err != nil {
@@ -177,7 +182,14 @@ func TestAndroidLibOnDesktopJVM(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got := run(filepath.Join(home, "bin", "java"), "-Xcheck:jni", "-Dfile.encoding=UTF-8", "-Dstdout.encoding=UTF-8", "-Djava.library.path=.", "-cp", ".", "Main")
+	return func(extra ...string) string {
+		env = extra
+		return run(filepath.Join(home, "bin", "java"), "-Xcheck:jni", "-Dfile.encoding=UTF-8", "-Dstdout.encoding=UTF-8", "-Djava.library.path=.", "-cp", ".", "Main")
+	}
+}
+
+func TestAndroidLibOnDesktopJVM(t *testing.T) {
+	got := runAndroidLibOnJVM(t, androidTestLib, androidTestJava)()
 	want := `greet: hello é 𝄞
 add: 42
 half: 2.5
@@ -273,4 +285,56 @@ func main() { c := make(chan int)  go w(c)  select { case v := <-c: println(v) }
 			t.Errorf("native program code mentions %s", s)
 		}
 	}
+}
+
+// A JVM adopts the user's locale, and an app can set any. MFL must behave as it
+// does standalone ("C"): under en_US.UTF-8, [a-z] otherwise matches é, which
+// turns a validation pattern into a weaker one without a word.
+func TestAndroidLibIgnoresHostLocale(t *testing.T) {
+	java := runAndroidLibOnJVM(t, `
+var at_load = regex_match("ja-é", "^[a-z-]+$")
+
+func check(c, s) { c <- regex_match(s, "^[a-z0-9-]+$") }
+
+export func valid(s) (r) { r = regex_match(s, "^[a-z0-9-]+$") }
+export func valid_on_goroutine(s) (r) { c := make(chan bool)  go check(c, s)  r = <-c }
+export func slug(s) (r) { r = regex_replace(s, "[^a-z0-9]+", "-") }
+export func upper(s) (r) { r = to_upper(s) }
+export func number(x) (r) { r = json(x / 2.0) + " " + str(parse_float("1.5")) }
+export func loaded() (r) { r = at_load }
+export func boom(i) (r) { xs := []int{1}  r = xs[i] }
+`, `
+import com.example.my_app.Mfl;
+import com.example.my_app.MflPanic;
+
+public class Main {
+    public static void main(String[] args) {
+        System.out.println(Mfl.valid("ja-\u00e9") + " " + Mfl.valid_on_goroutine("ja-\u00e9") + " " + Mfl.valid("ja-ok"));
+        System.out.println(Mfl.slug("\u00c9t\u00e9 2026"));
+        System.out.println(Mfl.upper("a\u00e9i"));
+        System.out.println(Mfl.number(5) + " " + Mfl.loaded());
+        try { Mfl.boom(9); } catch (MflPanic e) { System.out.println("panic"); }
+        System.out.println(Mfl.valid("ja-\u00e9"));
+    }
+}
+`)
+	want := "false false true\n-t-2026\nAéI\n2.5 1.5 false\npanic\nfalse\n"
+	tried := []string{"C"}
+	if out, err := exec.Command("locale", "-a").Output(); err == nil {
+		have := strings.ToLower(string(out))
+		for _, l := range []string{"en_US", "fr_FR", "de_DE", "tr_TR"} {
+			if strings.Contains(have, strings.ToLower(l)+".utf") {
+				tried = append(tried, l+".UTF-8")
+			}
+		}
+	}
+	if os.Getenv("MFL_REQUIRE_LOCALES") != "" && !strings.Contains(strings.Join(tried, " "), "fr_FR") {
+		t.Fatalf("MFL_REQUIRE_LOCALES is set but only %v are available", tried)
+	}
+	for _, l := range tried {
+		if got := java("LC_ALL=" + l); got != want {
+			t.Errorf("host locale %s: got\n%s\nwant\n%s", l, got, want)
+		}
+	}
+	t.Logf("host locales tried: %v", tried)
 }

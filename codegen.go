@@ -994,6 +994,22 @@ static void mfl_rr_finish(void) {
    Every thread running MFL (a host call, or a goroutine) has a trap to return
    to. A "scope" is one host call plus every goroutine it transitively starts. */
 #include <setjmp.h>
+#include <locale.h>
+#ifdef __APPLE__
+#include <xlocale.h>
+#endif
+/* The host picks the process locale (a JVM adopts the user's), and libc follows
+   it: [a-z] matches é, a double prints as 2,5, "1.5" parses as 1. MFL runs in
+   "C", as a standalone program does: uselocale changes only the calling thread,
+   so each call and goroutine switches itself and the host never notices. */
+static locale_t mfl_c_locale;
+static pthread_once_t mfl_c_locale_once = PTHREAD_ONCE_INIT;
+static void mfl_c_locale_init(void) { mfl_c_locale = newlocale(LC_ALL_MASK, "C", (locale_t)0); }
+static locale_t mfl_enter_c_locale(void) { /* returns what to restore */
+    pthread_once(&mfl_c_locale_once, mfl_c_locale_init);
+    return mfl_c_locale ? uselocale(mfl_c_locale) : (locale_t)0;
+}
+static void mfl_leave_c_locale(locale_t prev) { if (prev) uselocale(prev); }
 static _Thread_local jmp_buf* mfl_trap = NULL; /* set on host calls and goroutines */
 static _Thread_local char mfl_trap_msg[320];
 
@@ -1156,13 +1172,14 @@ static __attribute__((noinline)) void mfl_go_guard(void (*body)(void*), void* ar
     body(arg);
     mfl_trap = NULL;
 }
-typedef struct { mfl_arena arena; mfl_arena* prev_arena; jmp_buf* prev_trap; int64_t depth; mfl_scope *scope, *prev_scope; } mfl_call;
+typedef struct { mfl_arena arena; mfl_arena* prev_arena; jmp_buf* prev_trap; int64_t depth; mfl_scope *scope, *prev_scope; locale_t prev_locale; } mfl_call;
 static mfl_call* mfl_call_begin(jmp_buf* jb) {
     mfl_call* c = (mfl_call*)calloc(1, sizeof(mfl_call));
     mfl_scope* s = c ? mfl_scope_new() : NULL;
     if (!s) { free(c); return NULL; }
     c->prev_arena = mfl_arena_cur; c->prev_trap = mfl_trap; c->depth = mfl_depth;
     c->scope = s; c->prev_scope = mfl_scope_cur;
+    c->prev_locale = mfl_enter_c_locale();
     mfl_arena_cur = &c->arena; mfl_scope_cur = s; mfl_trap = jb;
     return c;
 }
@@ -1178,6 +1195,7 @@ static const char* mfl_call_end(mfl_call* c) {
     mfl_trap = c->prev_trap; mfl_depth = c->depth; mfl_scope_cur = c->prev_scope;
     mfl_arena_cur = &c->arena; mfl_arena_free(&c->arena); mfl_arena_cur = c->prev_arena;
     mfl_scope_release(c->scope);
+    mfl_leave_c_locale(c->prev_locale);
     free(c);
     return r;
 }
@@ -8078,7 +8096,13 @@ func (g *cgen) program(p *Program) (string, error) {
 			fmt.Fprintf(&ctor, "    mfl_g_%s = %s;\n", gv.Name, e)
 		}
 		out.WriteString("__attribute__((constructor)) static void mfl_globals_init(void) {\n")
+		if g.library() { // runs while the host loads the library, in its locale
+			out.WriteString("    locale_t _host = mfl_enter_c_locale();\n")
+		}
 		out.WriteString(ctor.String())
+		if g.library() {
+			out.WriteString("    mfl_leave_c_locale(_host);\n")
+		}
 		out.WriteString("}\n")
 	}
 	// wasm reactor has no exit() to flush stdio, so buffered output is lost when an
@@ -9039,6 +9063,9 @@ func (g *cgen) goStmt(st *GoStmt) error {
 	}
 	fmt.Fprintf(&g.tramp, "static void* mfl_go_run_%d(void* p) { mfl_arena _a = {0}; mfl_arena_cur = &_a; struct mfl_go_%d* s = (struct mfl_go_%d*)p; mfl_gid_path = mfl_path_child(s->_ppath, s->_cidx); mfl_spawn_ctr = 0; free(s->_ppath);\n",
 		id, id, id)
+	if g.library() { // before the arguments are decoded: that parses numbers
+		g.tramp.WriteString("    mfl_enter_c_locale(); /* the thread ends with the goroutine */\n")
+	}
 	for i := 0; i < n; i++ {
 		if j, ok := jsonArgs[i]; ok {
 			fmt.Fprintf(&g.tramp, "    { const char* _p = s->_j%d; s->a%d = %s(&_p); } free(s->_j%d);\n", i, i, j.des, i)
