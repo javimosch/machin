@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **New: `--target android-lib`** builds an MFL program as `libmfl.so` plus the
+  Java class that calls it (needs the Android NDK). A panic becomes a Java
+  exception instead of ending the app, including panics on goroutines. See
+  `docs/ANDROID.md` for what it supports and what can still hang.
+
 - **Fixed:** every finished goroutine leaked its id string, about 31 bytes each
   (#724, goroutine half). Channels are still never freed.
 

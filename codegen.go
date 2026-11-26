@@ -235,7 +235,12 @@ const (
 	targetNative  = "native"
 	targetWasm    = "wasm"
 	targetWindows = "windows"
+	// targetAndroidLib is a shared library inside a host app (androidlib.go).
+	targetAndroidLib = "android-lib"
 )
+
+// library: the program is a guest in a host process (see MFL_LIBRARY).
+func (g *cgen) library() bool { return g.target == targetAndroidLib }
 
 func (g *cgen) wasm() bool    { return g.target == targetWasm }
 func (g *cgen) windows() bool { return g.target == targetWindows }
@@ -945,7 +950,86 @@ static void mfl_rr_finish(void) {
    emit a structured causal report an agent reads instead of reproduces -- the
    panicking goroutine, the message, the schedule position, and the causal chain
    (the sequence of channel-op goroutines that led to the crash). */
+#ifdef MFL_LIBRARY
+/* ---- library mode (--target android-lib) ----------------------------------
+   The program is a guest in someone else's process, so a panic must not exit it.
+   Every thread running MFL (a host call, or a goroutine) has a trap to return
+   to. A "scope" is one host call plus every goroutine it transitively starts. */
+#include <setjmp.h>
+static _Thread_local jmp_buf* mfl_trap = NULL; /* set on host calls and goroutines */
+static _Thread_local char mfl_trap_msg[320];
+
+typedef struct mfl_waiting { struct mfl_waiting *next, *prev; mfl_chan* c; } mfl_waiting;
+typedef struct {
+    pthread_mutex_t mu;
+    int refs;           /* the host call + each live goroutine */
+    int active;         /* the host call has not returned yet */
+    int failed;         /* a goroutine panicked while it was active */
+    char msg[256];      /* the first such panic */
+    mfl_waiting* waiting; /* scope members parked (or about to park) on a channel */
+} mfl_scope;
+static _Thread_local mfl_scope* mfl_scope_cur = NULL;
+
+/* panics nobody is waiting for: the call that started the goroutine is gone */
+static pthread_mutex_t mfl_bg_mu = PTHREAD_MUTEX_INITIALIZER;
+static char mfl_bg_msg[256];
+static int64_t mfl_bg_count = 0;
+
+static mfl_scope* mfl_scope_new(void) {
+    mfl_scope* s = (mfl_scope*)calloc(1, sizeof(mfl_scope));
+    if (s) { pthread_mutex_init(&s->mu, NULL); s->refs = 1; s->active = 1; }
+    return s;
+}
+static mfl_scope* mfl_scope_retain(mfl_scope* s) { if (s) __atomic_add_fetch(&s->refs, 1, __ATOMIC_RELAXED); return s; }
+static void mfl_scope_release(mfl_scope* s) {
+    if (s && __atomic_sub_fetch(&s->refs, 1, __ATOMIC_ACQ_REL) == 0) { pthread_mutex_destroy(&s->mu); free(s); }
+}
+static int mfl_scope_broken(void) { return mfl_scope_cur && __atomic_load_n(&mfl_scope_cur->failed, __ATOMIC_ACQUIRE); }
+
+/* Register BEFORE taking c->mu and unregister AFTER releasing it: the failing
+   goroutine takes s->mu then c->mu, so no member may hold them the other way. */
+static void mfl_scope_wait_begin(mfl_waiting* w, mfl_chan* c) {
+    mfl_scope* s = mfl_scope_cur;
+    if (!s) return;
+    w->c = c; w->prev = NULL;
+    pthread_mutex_lock(&s->mu);
+    w->next = s->waiting; if (w->next) w->next->prev = w; s->waiting = w;
+    pthread_mutex_unlock(&s->mu);
+}
+static void mfl_scope_wait_end(mfl_waiting* w) {
+    mfl_scope* s = mfl_scope_cur;
+    if (!s) return;
+    pthread_mutex_lock(&s->mu);
+    if (w->prev) w->prev->next = w->next; else s->waiting = w->next;
+    if (w->next) w->next->prev = w->prev;
+    pthread_mutex_unlock(&s->mu);
+}
+static void mfl_goroutine_panicked(const char* msg) {
+    mfl_scope* s = mfl_scope_cur;
+    if (s) {
+        pthread_mutex_lock(&s->mu);
+        if (s->failed) { pthread_mutex_unlock(&s->mu); return; } /* a knock-on of the first */
+        if (s->active) {
+            snprintf(s->msg, sizeof s->msg, "%s", msg);
+            __atomic_store_n(&s->failed, 1, __ATOMIC_RELEASE);
+            for (mfl_waiting* w = s->waiting; w; w = w->next) { /* wake: what they wait for may never come */
+                pthread_mutex_lock(&w->c->mu); pthread_cond_broadcast(&w->c->cnd); pthread_mutex_unlock(&w->c->mu);
+            }
+            pthread_mutex_unlock(&s->mu);
+            return;
+        }
+        pthread_mutex_unlock(&s->mu);
+    }
+    pthread_mutex_lock(&mfl_bg_mu);
+    snprintf(mfl_bg_msg, sizeof mfl_bg_msg, "%s", msg);
+    mfl_bg_count++;
+    pthread_mutex_unlock(&mfl_bg_mu);
+}
+#endif /* MFL_LIBRARY */
 static void mfl_panic(const char* msg) {
+#ifdef MFL_LIBRARY
+    if (mfl_trap) { snprintf(mfl_trap_msg, sizeof mfl_trap_msg, "%s", msg); _longjmp(*mfl_trap, 1); } /* no signal-mask save */
+#endif
     if (mfl_rr_mode != 0 && mfl_rr_json) {
         fputs("{\"panic\":\"", stderr);
         for (const char* p = msg; *p; p++) { if (*p == '"' || *p == '\\') fputc('\\', stderr); fputc(*p, stderr); }
@@ -1017,6 +1101,49 @@ static inline char mfl_enter(void) {
     return 0;
 }
 static inline void mfl_leave(char* unused) { (void)unused; mfl_depth--; }
+#ifdef MFL_LIBRARY
+static void mfl_scope_abort(void) { /* a waiter in a failed scope gives up */
+    char b[300];
+    snprintf(b, sizeof b, "goroutine panicked: %s", mfl_scope_cur->msg);
+    mfl_panic(b);
+}
+/* The frame that calls _setjmp must not own what changes before the longjmp
+   (C leaves such locals indeterminate), so call state lives on the heap and a
+   goroutine body runs below this noinline guard. */
+static __attribute__((noinline)) void mfl_go_guard(void (*body)(void*), void* arg) {
+    mfl_arena* const arena = mfl_arena_cur;
+    jmp_buf jb;
+    if (_setjmp(jb)) { mfl_trap = NULL; mfl_depth = 0; mfl_arena_cur = arena; mfl_goroutine_panicked(mfl_trap_msg); return; }
+    mfl_trap = &jb;
+    body(arg);
+    mfl_trap = NULL;
+}
+typedef struct { mfl_arena arena; mfl_arena* prev_arena; jmp_buf* prev_trap; int64_t depth; mfl_scope *scope, *prev_scope; } mfl_call;
+static mfl_call* mfl_call_begin(jmp_buf* jb) {
+    mfl_call* c = (mfl_call*)calloc(1, sizeof(mfl_call));
+    mfl_scope* s = c ? mfl_scope_new() : NULL;
+    if (!s) { free(c); return NULL; }
+    c->prev_arena = mfl_arena_cur; c->prev_trap = mfl_trap; c->depth = mfl_depth;
+    c->scope = s; c->prev_scope = mfl_scope_cur;
+    mfl_arena_cur = &c->arena; mfl_scope_cur = s; mfl_trap = jb;
+    return c;
+}
+/* Ends a call, however it ended. Returns the goroutine panic that happened
+   during it, or NULL. */
+static const char* mfl_call_end(mfl_call* c) {
+    static _Thread_local char failed[300];
+    const char* r = NULL;
+    pthread_mutex_lock(&c->scope->mu);
+    c->scope->active = 0;
+    if (c->scope->failed) { snprintf(failed, sizeof failed, "goroutine panicked: %s", c->scope->msg); r = failed; }
+    pthread_mutex_unlock(&c->scope->mu);
+    mfl_trap = c->prev_trap; mfl_depth = c->depth; mfl_scope_cur = c->prev_scope;
+    mfl_arena_cur = &c->arena; mfl_arena_free(&c->arena); mfl_arena_cur = c->prev_arena;
+    mfl_scope_release(c->scope);
+    free(c);
+    return r;
+}
+#endif /* MFL_LIBRARY */
 
 /* runtime deadlock detector. machin channels are unbounded queues — a send
    never blocks — but a goroutine can never receive its OWN queued sends (#673),
@@ -1115,7 +1242,13 @@ static void mfl_dl_block(int64_t chan) {
     pthread_mutex_lock(&mfl_dl_mu);
     mfl_dl_blocked++;
     mfl_dl_wait_add(mfl_gid_path, chan);
+#ifdef MFL_LIBRARY
+    /* no watchdog: it assumes every thread that can send is main or a goroutine,
+       but host threads send too and are not counted */
+    int start = 0; (void)mfl_dl_watchdog;
+#else
     int start = !mfl_dl_wd; mfl_dl_wd = 1;
+#endif
     pthread_mutex_unlock(&mfl_dl_mu);
     if (start) { pthread_t t; pthread_create(&t, NULL, mfl_dl_watchdog, NULL); pthread_detach(t); }
 }
@@ -1203,26 +1336,40 @@ static void mfl_chan_deliver(mfl_chan* c, mfl_cnode* n, void* out) {
    channel and the comma-ok receive. */
 static int mfl_chan_recv2(mfl_chan* c, void* out) {
     mfl_rr_enter();
+#ifdef MFL_LIBRARY
+    mfl_waiting _w; mfl_scope_wait_begin(&_w, c);
+#define MFL_WAIT_END() mfl_scope_wait_end(&_w)
+#define MFL_BROKEN() mfl_scope_broken()
+#else
+#define MFL_WAIT_END() ((void)0)
+#define MFL_BROKEN() 0
+#endif
     pthread_mutex_lock(&c->mu);
     if (!c->closed && (!c->head || mfl_chan_head_mine(c))) {
         /* empty, or the head node is this goroutine's own send — either way
            there is nothing THIS goroutine may receive; park. A dequeue by
            another receiver broadcasts below so we re-check the new head. */
         mfl_dl_block(c->id); /* about to park on an empty open channel */
-        while (!c->closed && (!c->head || mfl_chan_head_mine(c)))
+        while (!c->closed && (!c->head || mfl_chan_head_mine(c)) && !MFL_BROKEN())
             pthread_cond_wait(&c->cnd, &c->mu);
         mfl_dl_unblock();
+#ifdef MFL_LIBRARY
+        if (!c->closed && (!c->head || mfl_chan_head_mine(c))) { /* only a failed scope gets here */
+            pthread_mutex_unlock(&c->mu); MFL_WAIT_END(); mfl_scope_abort();
+        }
+#endif
     }
     mfl_cnode* n = c->head;
     /* draining a closed+empty channel (returns "not ok") is still an observable,
        ordered op — it must record/gate a turn like a real receive, or record and
        replay disagree on the op count and replay hangs. */
-    if (!n) { mfl_rr_mark(); pthread_mutex_unlock(&c->mu); mfl_rr_exit(); return 0; }
+    if (!n) { mfl_rr_mark(); pthread_mutex_unlock(&c->mu); MFL_WAIT_END(); mfl_rr_exit(); return 0; }
     c->head = n->next;
     if (!c->head) c->tail = NULL;
     pthread_cond_broadcast(&c->cnd);   /* head changed — wake receivers skipping own nodes */
     mfl_rr_mark();
     pthread_mutex_unlock(&c->mu);
+    MFL_WAIT_END();
     mfl_chan_deliver(c, n, out);
     mfl_rr_exit();
     return 1;
@@ -7569,6 +7716,9 @@ func (g *cgen) program(p *Program) (string, error) {
 	// MFL codegens produce this identically, so diffing it verifies the emission logic
 	// without embedding the ~2000-line runtime prelude in MFL.
 	if !g.bodyOnly {
+		if g.library() {
+			out.WriteString("#define MFL_LIBRARY 1\n")
+		}
 		out.WriteString(cRuntime)
 		out.WriteByte('\n')
 		// POSIX socket + tty runtimes: always present for the native target; for the
@@ -8392,7 +8542,11 @@ func (g *cgen) selectStmt(st *SelectStmt, depth int) error {
 	if st.HasDefault {
 		fmt.Fprintf(&g.buf, "{ _sel%d = %d; break; }\n", id, len(st.Cases))
 	} else {
-		fmt.Fprintf(&g.buf, "if (!_selpk%d) { _selpk%d = 1; mfl_dl_block(-1); } mfl_sleep(1);\n", id, id)
+		giveUp := ""
+		if g.library() { // a select polls, so it looks at its scope on each idle turn
+			giveUp = "if (mfl_scope_broken()) { mfl_dl_unblock(); mfl_scope_abort(); } "
+		}
+		fmt.Fprintf(&g.buf, "if (!_selpk%d) { _selpk%d = 1; mfl_dl_block(-1); } %smfl_sleep(1);\n", id, id, giveUp)
 	}
 	indentC(&g.buf, depth+2)
 	g.buf.WriteString("}\n")
@@ -8796,7 +8950,20 @@ func (g *cgen) goStmt(st *GoStmt) error {
 			}
 		}
 	}
+	if g.library() {
+		g.tramp.WriteString(" mfl_scope* _scope;")
+	}
 	g.tramp.WriteString(" };\n")
+	// In a library the call runs in its own function, below mfl_go_guard: the
+	// frame that calls _setjmp must not own the arena the call changes.
+	var callArgs []string
+	for i := 0; i < n; i++ {
+		callArgs = append(callArgs, fmt.Sprintf("s->a%d", i))
+	}
+	if g.library() {
+		fmt.Fprintf(&g.tramp, "static void mfl_go_body_%d(void* p) { struct mfl_go_%d* s = (struct mfl_go_%d*)p; %s(%s); }\n",
+			id, id, id, cname, strings.Join(callArgs, ", "))
+	}
 	fmt.Fprintf(&g.tramp, "static void* mfl_go_run_%d(void* p) { mfl_arena _a = {0}; mfl_arena_cur = &_a; struct mfl_go_%d* s = (struct mfl_go_%d*)p; mfl_gid_path = mfl_path_child(s->_ppath, s->_cidx); mfl_spawn_ctr = 0; free(s->_ppath);\n",
 		id, id, id)
 	for i := 0; i < n; i++ {
@@ -8821,14 +8988,12 @@ func (g *cgen) goStmt(st *GoStmt) error {
 		}
 		g.tramp.WriteString("    }\n")
 	}
-	g.tramp.WriteString("    " + cname + "(")
-	for i := 0; i < n; i++ {
-		if i > 0 {
-			g.tramp.WriteString(", ")
-		}
-		fmt.Fprintf(&g.tramp, "s->a%d", i)
+	if g.library() {
+		fmt.Fprintf(&g.tramp, "    mfl_scope_cur = s->_scope; mfl_go_guard(mfl_go_body_%d, s); mfl_scope_release(mfl_scope_cur); mfl_scope_cur = NULL;\n", id)
+		g.tramp.WriteString("    free(s); mfl_arena_free(&_a); mfl_dl_finish(); return NULL; }\n")
+	} else {
+		g.tramp.WriteString("    " + cname + "(" + strings.Join(callArgs, ", ") + "); free(s); mfl_arena_free(&_a); mfl_dl_finish(); return NULL; }\n")
 	}
-	g.tramp.WriteString("); free(s); mfl_arena_free(&_a); mfl_dl_finish(); return NULL; }\n")
 
 	// call site: populate every field from the SPAWNING goroutine's (current)
 	// arena, then freeze it against that arena being freed before the new
@@ -8869,6 +9034,9 @@ func (g *cgen) goStmt(st *GoStmt) error {
 		}
 		g.buf.WriteString("        }\n")
 	}
+	if g.library() {
+		g.buf.WriteString("        s->_scope = mfl_scope_retain(mfl_scope_cur);\n")
+	}
 	// CHECK THE SPAWN. Ignoring pthread_create's result means that when the
 	// system is out of threads (EAGAIN — a real possibility under a loaded CI
 	// box or a low RLIMIT_NPROC) the goroutine silently never runs, and the
@@ -8877,7 +9045,11 @@ func (g *cgen) goStmt(st *GoStmt) error {
 	// turns an unreproducible hang into one line naming the cause.
 	fmt.Fprintf(&g.buf, "        pthread_t t;\n")
 	fmt.Fprintf(&g.buf, "        if (pthread_create(&t, NULL, mfl_go_run_%d, s) != 0) {\n", id)
-	g.buf.WriteString("            perror(\"go: pthread_create\"); exit(1);\n")
+	if g.library() { // the host must survive this too
+		g.buf.WriteString("            mfl_scope_release(s->_scope); free(s->_ppath); free(s); mfl_panic(\"go: could not create a thread\");\n")
+	} else {
+		g.buf.WriteString("            perror(\"go: pthread_create\"); exit(1);\n")
+	}
 	g.buf.WriteString("        }\n")
 	g.buf.WriteString("        pthread_detach(t);\n")
 	g.buf.WriteString("    }\n")
