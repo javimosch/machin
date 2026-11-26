@@ -3902,14 +3902,23 @@ static char* mfl_hmac_sha256(const char* key, const char* msg) {
 static char* mfl_json_str(const char* s) { /* quote + escape a string */
     if (!s) s = "";
     size_t n = strlen(s), j = 0;
-    char* b = mfl_alloc(n*2 + 3);
+    /* RFC 8259 §7: every C0 control char must be escaped — \b \f take their
+       short forms, the rest go out as \u00XX (6 bytes), so the bound is 6n+3. */
+    char* b = mfl_alloc(n*6 + 3);
     b[j++] = '"';
     for (size_t i = 0; i < n; i++) {
-        char c = s[i];
+        unsigned char c = (unsigned char)s[i];
         if (c=='"' || c=='\\') { b[j++]='\\'; b[j++]=c; }
         else if (c=='\n') { b[j++]='\\'; b[j++]='n'; }
         else if (c=='\t') { b[j++]='\\'; b[j++]='t'; }
         else if (c=='\r') { b[j++]='\\'; b[j++]='r'; }
+        else if (c=='\b') { b[j++]='\\'; b[j++]='b'; }
+        else if (c=='\f') { b[j++]='\\'; b[j++]='f'; }
+        else if (c < 0x20) {
+            b[j++]='\\'; b[j++]='u'; b[j++]='0'; b[j++]='0';
+            b[j++]="0123456789abcdef"[c >> 4];
+            b[j++]="0123456789abcdef"[c & 15];
+        }
         else b[j++]=c;
     }
     b[j++]='"'; b[j]=0;
@@ -3992,6 +4001,8 @@ static char* mfl_js_str(const char** p) {
             else if (e=='n') { out[j++]='\n'; (*p)++; }
             else if (e=='t') { out[j++]='\t'; (*p)++; }
             else if (e=='r') { out[j++]='\r'; (*p)++; }
+            else if (e=='b') { out[j++]='\b'; (*p)++; }
+            else if (e=='f') { out[j++]='\f'; (*p)++; }
             else { out[j++] = e; (*p)++; }
         } else { out[j++] = c; (*p)++; }
     }

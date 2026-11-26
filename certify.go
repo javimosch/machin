@@ -237,8 +237,19 @@ func jsonEscape(s string) string {
 			b.WriteString(`\t`)
 		case '\r':
 			b.WriteString(`\r`)
+		case '\b':
+			b.WriteString(`\b`)
+		case '\f':
+			b.WriteString(`\f`)
 		default:
-			b.WriteByte(c)
+			if c < 0x20 {
+				const hex = "0123456789abcdef"
+				b.WriteString(`\u00`)
+				b.WriteByte(hex[c>>4])
+				b.WriteByte(hex[c&15])
+			} else {
+				b.WriteByte(c)
+			}
 		}
 	}
 	b.WriteByte('"')

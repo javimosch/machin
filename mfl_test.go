@@ -207,6 +207,23 @@ func TestJSONStringEscape(t *testing.T) {
 	}
 }
 
+func TestJSONStringControlEscapes(t *testing.T) {
+	// RFC 8259 §7: every C0 control char must be escaped — \b \f short, the
+	// rest as \u00XX — or strict parsers reject the document (#715).
+	got := runProg(t, `func main() { println(json(url_decode("a%01b%08c%0Cd%1Fe%0Af%0Dt%09g"))) }`)
+	if got != "\"a\\u0001b\\bc\\fd\\u001fe\\nf\\rt\\tg\"\n" {
+		t.Fatalf("got %q", got)
+	}
+	// The escapes must decode back to the same bytes through parse(), and
+	// parse() must read the \b \f short forms json() now emits.
+	got = runProg(t,
+		`type T struct { s string }`,
+		`func main() { s := url_decode("a%01b%08c%0Cd%1Fe")  p := parse(json(T{s: s}), T{})  q := parse("{\"s\":\"x\\by\\fz\"}", T{})  if p.s == s && q.s == url_decode("x%08y%0cz") { println("ok") } else { println("bad") } }`)
+	if got != "ok\n" {
+		t.Fatalf("round-trip got %q", got)
+	}
+}
+
 func TestJSONStructAndMap(t *testing.T) {
 	got := runProg(t,
 		`type P struct { x int  y string }`,
