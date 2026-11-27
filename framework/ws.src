@@ -30,6 +30,14 @@
 // A WSConn you build yourself with ws_conn(fd) also accepts unmasked frames, so
 // it can read from a server. After any of these, or a close
 // frame, every further read on that WSConn returns ok == 0. UTF-8 is not checked.
+//
+// Sending from several goroutines is safe: each ws_send_* call is one
+// write_bytes, and the runtime lets one write at a time onto a connection, so
+// frames (including the pongs the reader sends) never interleave. A peer that is
+// slow to read makes writers to that connection wait, not writers to others; the
+// reader of that connection waits too when it has a ping to answer. If a send
+// returns less than the whole frame (the peer is gone, or a socket_timeout /
+// set_read_timeout expired), the stream is broken: stop sending on it.
 
 // A live WebSocket connection: the fd, whether the peer must mask its frames
 // (set by ws()), plus a one-int "box" that records that the connection is

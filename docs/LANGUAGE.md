@@ -512,7 +512,7 @@ first := users[0]                                // value copy
 | `udp_sendto(fd, host, port, b)` | send one datagram → bytes sent (`-1` on error) |
 | `udp_recvfrom(fd)`          | receive one datagram → `(payload, sender ip, sender port)`; port `0` means timeout/error. Multi-assign only |
 | `read(fd)` / `write(fd, s)` | read from / write to a socket — **one `read(2)` of up to 65535 bytes, not a whole message** (see note below) |
-| `read_bytes(fd)` / `write_bytes(fd, b)` | NUL-safe binary read/write on a socket `fd` — for binary protocols / HTTP bodies |
+| `read_bytes(fd)` / `write_bytes(fd, b)` | NUL-safe binary read/write on a socket `fd` — for binary protocols / HTTP bodies. Concurrent `write`/`write_bytes` calls on one fd run one at a time, so their bytes never interleave |
 | `close(fd)`                 | close a socket                               |
 | `https_get(url)`            | GET over TLS (or plain http://) → body string (`""` on error) |
 | `https_post(url, body)`     | POST with string body over TLS (or plain http://) → body string |
