@@ -1124,7 +1124,7 @@ func bspec(name) (s) {
     if name == "byte_at" { s = "yi>i"  return s }
     if name == "bytes_sub" { s = "yii>y"  return s }
     if name == "bytes_index" { s = "yyi>i"  return s }
-    if name == "bytes_concat" { s = "yy>y"  return s }
+    if name == "bytes_concat" || name == "bytes_xor" { s = "yy>y"  return s }
     if name == "rand_bytes" { s = "i>y"  return s }
     // crypto
     if name == "sha256_bytes" || name == "sha1_bytes" || name == "x25519_pub" || name == "ed25519_pub" { s = "y>y"  return s }
@@ -1178,6 +1178,7 @@ func bspec(name) (s) {
     if name == "udp_sendto" { s = "isiy>i"  return s }
     if name == "read" { s = "i>s"  return s }
     if name == "read_bytes" { s = "i>y"  return s }
+    if name == "read_bytes_exact" { s = "ii>y"  return s }
     if name == "input" || name == "read_key" || name == "read_stdin" { s = ">s"  return s }
     if name == "args" { s = ">S"  return s }
     if name == "env" { s = "s>s"  return s }

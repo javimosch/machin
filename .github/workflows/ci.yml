@@ -61,7 +61,7 @@ jobs:
       - name: Test (core suite)
         run: |
           go test -short -timeout 5m \
-            -skip='TestAndroidLibOnDesktopJVM|TestAndroidLibIgnoresHostLocale|TestTypesCoverageFloor|TestStaticBuildBundlesSqlite|TestCertifyCodegenPaths|TestGemmF32AllTransposeCombos|TestDeadlockStrictIO|TestReadBytesLoopReassemblesLargePayload|TestAttnCausalFwdBwdF32|TestParseIntStrtollContract|TestHttpStreamRoundTrip|TestParseFloatStrtodContract|TestScopedArenaReclaimsMaps|TestScopedArenaReturnsPagesToTheOS|TestSafeChecks|TestCaldavClient' \
+            -skip='TestAndroidLibOnDesktopJVM|TestAndroidLibIgnoresHostLocale|TestTypesCoverageFloor|TestStaticBuildBundlesSqlite|TestCertifyCodegenPaths|TestGemmF32AllTransposeCombos|TestDeadlockStrictIO|TestReadBytesLoopReassemblesLargePayload|TestAttnCausalFwdBwdF32|TestParseIntStrtollContract|TestHttpStreamRoundTrip|TestParseFloatStrtodContract|TestScopedArenaReclaimsMaps|TestScopedArenaReturnsPagesToTheOS|TestSafeChecks|TestCaldavClient|TestHTTPClientResponses' \
             ./...
 
       # The MFL test suites — the ones written IN machin and run through the

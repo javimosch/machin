@@ -1,7 +1,77 @@
 # Changelog
 
-## Unreleased
+## v0.146.0
 
+**HTTP client and WebSocket hardening. Upgrade if your program uses
+`http_request` with credentials, builds request URLs from untrusted input, or
+serves or consumes WebSockets. Rebuild it: the fixes are compiled into your
+binary, including `framework/ws.src`.**
+
+Security:
+
+- A redirect that changes scheme, host or port no longer forwards credential
+  headers (#733).
+- Control characters in an HTTP method or URL are refused, as are spaces and
+  control characters in WebSocket client URLs and in `httpstream.src` /
+  `wsclient.src` requests (#733).
+- WebSocket resource exhaustion: `framework/ws.src` now uses memory proportional
+  to the message and enforces a maximum size before reading it; the `ws_recv` /
+  `wss_recv` builtins and `wsclient.src` bound what a peer can send (#734).
+
+HTTP client (#735): idle timeout; truncated, empty, malformed and NUL-containing
+responses are errors; relative redirects are followed; a query without a path is
+kept; `Host` carries a non-default port; long paths are no longer cut at 2047
+bytes.
+
+`framework/ws.src` (#736): fragmented messages are reassembled; protocol
+violations close the connection; new `ws_next_message` returns bytes.
+
+New builtins: `bytes_xor`, `read_bytes_exact`. A program that defines a function
+with either name must rename it.
+
+**Behavior changes** (programs keep compiling, apart from that name clash):
+
+- `err != ""` (status 0, body `""`) is now returned where a 200 and a partial or
+  cut body used to be: `truncated`, `empty`, `response`, `read`, `nul`.
+  `https_get` / `https_post` return `""` in those cases. Binary downloads with
+  zero bytes fail with `nul` instead of returning a cut string.
+- New `err` values: also `timeout`, `url`, `method`, `scheme` (an unknown scheme
+  used to report `dns`). A URL with `user:password@` is refused (`url`).
+- Requests now time out after 300 s of silence (`MFL_HTTP_TIMEOUT_MS`, 0 for the
+  old wait-forever).
+- Cross-origin redirects (including `http` to `https`) forward only an allowlist
+  of headers (`SPEC.md` §8.1), so custom headers are dropped too. A
+  307/308 from `https` to `http` with a body is returned, not followed.
+  `MFL_HTTP_MAX_REDIRECTS=0` disables following.
+- Relative redirects that returned a 3xx are now followed. `HEAD` stays `HEAD`
+  across redirects. Interim 1xx replies are skipped. Spaces in a path or query
+  are sent as `%20`. `Host` includes a non-default port (check signature schemes
+  or virtual hosts that assumed otherwise).
+- `ws_recv` / `wss_recv`: messages over 64 MiB (`MFL_WS_MAX_MESSAGE`) now read as
+  closed.
+- `ws.src`: messages over 16 MiB (`ws_set_max_message`) are refused;
+  `ws_next_text` ends the connection on a message with a zero byte instead of
+  cutting it; unmasked frames are refused on connections made by `ws()` (a `ws_conn(fd)`
+  you build still accepts them, so client-side use keeps working);
+  `ws_frame_in` reads exactly one
+  frame (fragments are returned unassembled, as before) and now enforces the
+  limits; the `WSConn.buf` field is gone (replaced by internal state).
+- `ws.src` adds the names `ws_fail`, `ws_drop`, `ws_header`, `ws_payload`,
+  `ws_control`, `ws_next_message`, `ws_set_max_message` and `ws_max_message`, and
+  removes `ws_fill` and `ws_take`.
+- Apps that carry their own copy of `ws.src` are not fixed by upgrading machin:
+  copy the new file over it.
+- `wsclient.src`: a fragmented message over 64 MiB in total is refused;
+  `wsc_open` refuses a host or path with spaces or line breaks.
+- `framework/ws.src` now uses `escape()`. (The self-hosted compiler could not
+  build machweb programs before this release and still cannot.)
+
+Also in this release:
+
+- **Fixed:** a `string` returned by an `extern fn` was not copied, so strings
+  already held could change or dangle (#731). `NULL` now reads as `""`. A C
+  function that returns `malloc`'d memory now leaks it: free it on the C side or
+  declare the result `ptr`.
 - **Fixed:** `android-lib` code ran in the host app's locale. A validation
   pattern such as `[a-z]` could accept accented letters, and with a comma-decimal
   locale `json()` wrote invalid JSON and `parse_float("1.5")` returned 1. Library

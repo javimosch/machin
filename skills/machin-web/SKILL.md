@@ -82,7 +82,10 @@ func main() { serve(48080, func(req) { return handle(req) }) }
 - **WebSockets (`framework/ws.src`):** compose `ws.src` after `machweb.src`, then a handler
   returns `ws(req, func(c) { ... })`. machweb does the upgrade (via the generic
   `hijack(fn)` response) and `c` is a `WSConn`: `ws_next_text(c)` → `(msg, ok)` reads the
-  next message (answering pings, stopping on close); `ws_send_text(c.fd, s)` /
+  next message (answering pings, stopping on close; a message holding a zero byte is
+  refused, so binary protocols use `ws_next_message(c)` → `(opcode, data, ok)`). Wrap each
+  loop iteration in `arena { }`. Messages over 16 MiB are refused
+  (`ws_set_max_message(n)`). `ws_send_text(c.fd, s)` /
   `ws_send_bytes(c.fd, b)` send. A connection that also receives broadcasts wants **two
   goroutines** — the handler loop reads, a spawned `go writer(c.fd, ch)` drains an outbound
   channel (read + write are independent on the fd). Fan-out is the same hub-goroutine

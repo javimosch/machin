@@ -1,6 +1,6 @@
 # The MFL Language Specification
 
-Version 0.145.0
+Version 0.146.0
 
 MFL (Machine-First Language) is a statically-typed, Go-flavored backend language
 **shaped for machine authoring**: minimal syntax, no type annotations, one
@@ -348,6 +348,8 @@ startup (before `main`; at `_initialize` for a wasm reactor).
 | `byte_at` | `(bytes, int) -> int` | byte value 0–255 at an index (`-1` if out of range) |
 | `bytes_sub` | `(bytes, int, int) -> bytes` | sub-range `[start, end)` |
 | `bytes_concat` | `(bytes, bytes) -> bytes` | concatenate two `bytes` values |
+| `bytes_xor` | `(bytes, bytes) -> bytes` | XOR with a repeating key (empty key: a copy) |
+| `read_bytes_exact` | `(int, int) -> bytes` | exactly n bytes from an fd; empty if it ends, errors or times out first |
 | `zlib_compress` | `(bytes, int) -> bytes` | zlib-compress raw bytes at the given level (`0`-`9`, `-1` for default `6`); links `-lz` only when used |
 | `zlib_decompress` | `(bytes) -> bytes` | zlib-decompress a raw zlib stream back to raw bytes; empty `bytes` on an invalid stream |
 | `rand_bytes` | `(int) -> bytes` | `n` cryptographically-random bytes (CSPRNG) |
@@ -399,8 +401,8 @@ An invalid ERE pattern (a `regcomp` failure) is not an error — there's no erro
 | `chan_free` | `(chan T) -> ` | free a channel and any messages still queued in it; the channel must not be used afterwards, and no other goroutine may hold it (unchecked, like `free`) |
 | `https_get` | `(string) -> string` | HTTPS GET over TLS; response body ("" on error) |
 | `https_post` | `(string, string) -> string` | HTTPS POST (JSON body) over TLS; response body |
-| `http_get` | `(string) -> (int, string, string)` | GET (plain `http://` or `https://`) returning `(status, body, err)`; `err==""` ⇒ a response, else `"dns"`/`"connect"`/`"tls"`. Multi-assign only. |
-| `http_request` | `(string, string, []string, string) -> (int, string, string)` | authenticated HTTPS: `(method, url, header lines, body)` → `(status, body, err)`. Each header is a `"Key: Value"` line (e.g. `"Authorization: Bearer …"`); caller owns `Content-Type`. A line containing CR or LF is **refused** — nothing is sent and `err` is `"header"` — since it could forge headers or smuggle a second request; an empty line is skipped. Multi-assign only. |
+| `http_get` | `(string) -> (int, string, string)` | GET (plain `http://` or `https://`) returning `(status, body, err)`; `err==""` ⇒ a complete response, else status 0, body "" and a reason (§8.1). Multi-assign only. |
+| `http_request` | `(string, string, []string, string) -> (int, string, string)` | authenticated HTTP(S): `(method, url, header lines, body)` → `(status, body, err)`. Each header is a `"Key: Value"` line (e.g. `"Authorization: Bearer …"`); the caller owns `Content-Type`. A header line holding CR or LF is refused (`err == "header"`). See §8.1. Multi-assign only. |
 | `wss_open` | `(string[, []string]) -> int` | open a `wss://` WebSocket; a connection handle, or 0 on failure. The optional second argument is `"Key: Value"` header lines added to the HTTP/1.1 upgrade request (e.g. `"Authorization: Bearer …"` for a server that authenticates the handshake); a line containing CR or LF is refused, returning 0 without dialling |
 | `wss_send` | `(int, string) -> int` | send a text message on a WebSocket |
 | `wss_recv` | `(int) -> string` | next message (blocks); `""` on close (auto ping/pong) |
@@ -421,6 +423,35 @@ An invalid ERE pattern (a `regcomp` failure) is not an error — there's no erro
 | `tls_write` | `(int, string) -> int` | write to a tls handle |
 | `tls_write_bytes` | `(int, bytes) -> int` | write raw bytes to a tls handle, NUL-safe |
 | `tls_close` | `(int) -> int` | shut down a tls handle and close its underlying fd |
+
+### 8.1 HTTP client
+
+**HTTP client** (`http_get`, `http_request`, `https_get`, `https_post`).
+`err` is `""` only for a complete response; otherwise status is 0, the body is
+`""`, and `err` is one of `dns`, `connect`, `tls`, `timeout`, `url`, `scheme`,
+`method`, `header`, `empty` (closed without a reply), `truncated` (closed before
+the headers, `Content-Length` or last chunk were complete), `response` (not
+HTTP), `read` (the connection broke) or `nul` (the body has a zero byte, which a
+string cannot hold). A body delimited only by the connection closing cannot be
+checked for truncation. `https_get`/`https_post` return `""` for all of these.
+
+The method must be an HTTP token. A URL with a control character, `user@`
+part or invalid port is refused; spaces in the path or query are sent as `%20`.
+Redirects are followed (relative `Location` included). A redirect that changes
+scheme, host or port forwards only these caller headers: `Accept`,
+`Accept-Charset`, `Accept-Encoding`, `Accept-Language`, `Cache-Control`,
+`Content-Encoding`, `Content-Language`, `Content-Type`, `Pragma`, `Range`,
+`User-Agent` and the `If-*` conditionals. A 307/308 re-sends the body, also to
+another host, except from `https` to `http`, where the 3xx is returned instead.
+
+| environment variable | default | meaning |
+|---|---|---|
+| `MFL_HTTP_TIMEOUT_MS` | 300000 | longest wait on one socket step (connect, TLS handshake, each send or receive); not a total deadline, and DNS is not covered (nor is connect on Windows). 0 disables |
+| `MFL_HTTP_MAX_REDIRECTS` | 5 | redirects followed; 0 returns the 3xx |
+| `MFL_WS_MAX_MESSAGE` | 67108864 | largest message `ws_recv`/`wss_recv` (and `_bin`) accept; a larger one closes the connection (1009) and reads as closed |
+
+`ws_open`/`wss_open` return 0 for a URL with spaces or control characters, or
+one of 2048 bytes or more.
 
 ---
 

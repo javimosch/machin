@@ -680,7 +680,7 @@ func TestHTTPPlainAndTLS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(c, "mfl_tcp_dial_e") || !strings.Contains(c, "mfl_sock_readall") {
+	if !strings.Contains(c, "mfl_tcp_dial_e") || !strings.Contains(c, "mfl_http_readall") {
 		t.Fatal("the HTTP client must emit the plain-socket transport")
 	}
 	if !strings.Contains(c, "mfl_tls_dial_e") {

@@ -361,6 +361,11 @@ func hs_url(url) (u) {
 func hs_open(method, url, headers, body) (h, ok) {
     h = HttpStream{fd: -1, tls: 0, buf: []bytes{}, lbuf: []bytes{}, st: []int{}, status: 0, headers: ""}
     ok = 0
+    // the method and URL go into the request line: no spaces or line breaks
+    if method == "" { return }
+    for _, bad := range []string{" ", "\r", "\n", "\t"} {
+        if index(method, bad) >= 0 || index(url, bad) >= 0 { return }
+    }
     u := hs_url(url)
     if u.ok == 0 { return }
     for _, line := range headers {
