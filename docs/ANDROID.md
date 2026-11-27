@@ -61,7 +61,8 @@ The library is always built `--safe`. A panic does not exit the app:
 - `exit()` ends the app, as does running out of memory. A panic in a global
   initializer happens while the library loads and also ends the app.
 - Channels are not freed automatically (#724); `chan_free` does it by hand, and
-  using it wrongly can end or hang the app, which no `MflPanic` catches.
+  using it wrongly can end or hang the app — a `--safe` build turns that into a
+  catchable panic instead.
 - Not supported: TLS, OpenSSL crypto, XEdDSA and SQLite (the NDK ships none of
   them). The self-hosted compiler has no android-lib target.
 - `exec()` needs a writable `TMPDIR`.

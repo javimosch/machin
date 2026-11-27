@@ -660,6 +660,7 @@ typedef struct mfl_cnode { struct mfl_cnode* next; void* data; uint64_t sender; 
 typedef struct {
     pthread_mutex_t mu; pthread_cond_t cnd;
     mfl_cnode *head, *tail; int64_t es; int closed;
+    int dead;                            /* --safe: set by mfl_chan_free_chk; ops panic on it */
     int nstr; int* stroff;
     char* (*ser)(const void*);          /* json mode: element -> arena JSON */
     void (*des)(const char*, void*);    /* json mode: JSON -> *out (arena) */
@@ -669,7 +670,7 @@ static int64_t mfl_chan_id_ctr = 0;
 static mfl_chan* mfl_make_chan(int64_t es, char* (*ser)(const void*), void (*des)(const char*, void*), int nstr, ...) {
     mfl_chan* c = malloc(sizeof(mfl_chan));
     pthread_mutex_init(&c->mu, NULL); pthread_cond_init(&c->cnd, NULL);
-    c->head = c->tail = NULL; c->es = es; c->closed = 0;
+    c->head = c->tail = NULL; c->es = es; c->closed = 0; c->dead = 0;
     c->ser = ser; c->des = des;
     c->id = __atomic_fetch_add(&mfl_chan_id_ctr, 1, __ATOMIC_RELAXED);
     c->nstr = nstr; c->stroff = NULL;
@@ -744,6 +745,7 @@ static void mfl_dl_note(void); /* deadlock detector: a channel send/close is pro
 static void mfl_chan_close(mfl_chan* c) {
     mfl_rr_enter();
     pthread_mutex_lock(&c->mu);
+    if (c->dead) mfl_panic("close on a channel freed by chan_free");
     c->closed = 1;
     pthread_cond_broadcast(&c->cnd);
     mfl_rr_mark();
@@ -751,21 +753,11 @@ static void mfl_chan_close(mfl_chan* c) {
     mfl_dl_note(); /* a close lets parked receivers drain — channel progress */
     mfl_rr_exit();
 }
-/* chan_free: hand a channel's memory back (#724). Channels are malloc'd and
-   were never freed anywhere — not even close() — so a program that keeps
-   making channels grew without bound (~156 bytes each). Queued messages are
-   discarded with it: each node's payload is freed, including the frozen
-   (malloc'd) string/bytes copies a string-mode element carries at its stroff
-   offsets; a JSON-mode element's payload is one malloc'd string.
-
-   THE CHANNEL MUST NOT BE USED AFTERWARDS — this is free(), not a hint. In
-   particular no other goroutine may hold it: a receiver blocked in
-   mfl_chan_recv2, or any later send/recv/close, dereferences freed memory.
-   chan_free is for a channel whose references are all local and done — the
-   per-iteration make(chan) of a long-running loop. */
-static void mfl_chan_free(mfl_chan* c) {
-    if (!c) return;
-    pthread_mutex_lock(&c->mu);
+/* drain a channel's queued nodes, freeing each payload — the frozen
+   string/bytes copies a string-mode element carries at its stroff offsets, the
+   malloc'd JSON blob of a JSON-mode element, then the node itself. Caller
+   holds c->mu. Shared by mfl_chan_free and the --safe mfl_chan_free_chk. */
+static void mfl_chan_drain(mfl_chan* c) {
     mfl_cnode* n = c->head;
     while (n) {
         mfl_cnode* nx = n->next;
@@ -783,11 +775,49 @@ static void mfl_chan_free(mfl_chan* c) {
         free(n->data); free(n); n = nx;
     }
     c->head = c->tail = NULL;
+}
+/* chan_free: hand a channel's memory back (#724). Channels are malloc'd and
+   were never freed anywhere — not even close() — so a program that keeps
+   making channels grew without bound (~156 bytes each). Queued messages are
+   discarded with it: each node's payload is freed, including the frozen
+   (malloc'd) string/bytes copies a string-mode element carries at its stroff
+   offsets; a JSON-mode element's payload is one malloc'd string.
+
+   THE CHANNEL MUST NOT BE USED AFTERWARDS — this is free(), not a hint. In
+   particular no other goroutine may hold it: a receiver blocked in
+   mfl_chan_recv2, or any later send/recv/close, dereferences freed memory.
+   chan_free is for a channel whose references are all local and done — the
+   per-iteration make(chan) of a long-running loop. --safe builds emit
+   mfl_chan_free_chk instead, which detects that misuse as a panic. */
+static void mfl_chan_free(mfl_chan* c) {
+    if (!c) return;
+    pthread_mutex_lock(&c->mu);
+    mfl_chan_drain(c);
     pthread_mutex_unlock(&c->mu);
     pthread_mutex_destroy(&c->mu);
     pthread_cond_destroy(&c->cnd);
     free(c->stroff);
     free(c);
+}
+/* --safe chan_free (#740): the unchecked mfl_chan_free turns misuse into UB —
+   use-after-free, double-free, or freeing under a goroutine still blocked in
+   recv all crash or hang even with --safe. This variant turns each into a
+   panic: the channel is marked dead and closed, its queued payloads are
+   reclaimed, and blocked receivers are broadcast awake — every channel op
+   checks c->dead and panics, so a later send/recv/close/chan_free fails
+   loudly instead of dereferencing freed memory. The header itself (struct,
+   mutex, condvar, stroff table) is QUARANTINED rather than freed — the dead
+   flag must stay readable — so a --safe build reclaims queued payloads but
+   leaks the small header per chan_free. */
+static void mfl_chan_free_chk(mfl_chan* c) {
+    if (!c) return;
+    pthread_mutex_lock(&c->mu);
+    if (c->dead) { pthread_mutex_unlock(&c->mu); mfl_panic("chan_free: channel already freed"); }
+    c->dead = 1;
+    c->closed = 1;
+    mfl_chan_drain(c);
+    pthread_cond_broadcast(&c->cnd);
+    pthread_mutex_unlock(&c->mu);
 }
 /* ---- record/replay (Phase 0 spike) ------------------------------------------
    SOUND because the program is proved data-race-free: the only inter-goroutine
@@ -1349,6 +1379,7 @@ static uint64_t mfl_thread_serial(void) {
 
 static void mfl_chan_send(mfl_chan* c, const void* v) {
     mfl_rr_enter();
+    if (c->dead) mfl_panic("send on a channel freed by chan_free");
     mfl_cnode* n = malloc(sizeof(mfl_cnode));
     n->sender = mfl_thread_serial(); /* receivers never take their own nodes (#673) */
     if (c->ser) {
@@ -1361,6 +1392,7 @@ static void mfl_chan_send(mfl_chan* c, const void* v) {
     }
     n->next = NULL;
     pthread_mutex_lock(&c->mu);
+    if (c->dead) mfl_panic("send on a channel freed by chan_free");
     if (c->tail) c->tail->next = n; else c->head = n;
     c->tail = n;
     pthread_cond_signal(&c->cnd);
@@ -1415,6 +1447,7 @@ static int mfl_chan_recv2(mfl_chan* c, void* out) {
         }
 #endif
     }
+    if (c->dead) mfl_panic("receive on a channel freed by chan_free");
     mfl_cnode* n = c->head;
     /* draining a closed+empty channel (returns "not ok") is still an observable,
        ordered op — it must record/gate a turn like a real receive, or record and
@@ -1438,6 +1471,7 @@ static void mfl_chan_recv(mfl_chan* c, void* out) {
    (*ok = 0, out zeroed). Returns 0 if not ready (open and empty). */
 static int mfl_chan_tryrecv2(mfl_chan* c, void* out, int* ok) {
     pthread_mutex_lock(&c->mu);
+    if (c->dead) mfl_panic("receive on a channel freed by chan_free");
     mfl_cnode* n = c->head;
     /* a select recv is not ready while the head node is this goroutine's own
        send (#673) — same rule as the blocking recv, or select would deliver
@@ -11097,6 +11131,9 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		g.usesNet = true
 		return fmt.Sprintf("mfl_close(%s)", args[0]), nil
 	case "chan_free":
+		if g.safe {
+			return fmt.Sprintf("mfl_chan_free_chk(%s)", args[0]), nil
+		}
 		return fmt.Sprintf("mfl_chan_free(%s)", args[0]), nil
 	case "input":
 		return "mfl_input()", nil

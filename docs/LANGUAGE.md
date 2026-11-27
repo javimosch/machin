@@ -761,9 +761,12 @@ a program that keeps making channels grows without bound (~150 bytes each).
 `chan_free(ch)` hands the memory back, including messages still queued in it.
 It is unchecked, like `free`: the channel must not be used afterwards, and no
 other goroutine may hold a reference to it (a receiver blocked on it, or any
-shared use, becomes a use-after-free). Nothing checks this, with or without
-`--safe` or `--race-safe`: misuse can crash with no MFL message, or hang (freeing
-under a blocked receiver), which the deadlock detector does not report. Freeing
+shared use, becomes a use-after-free). A `--safe` build checks this: every
+channel op panics on a freed channel, `chan_free` panics on a double free, and
+freeing under a blocked receiver wakes it into the same panic — misuse fails
+loudly instead of crashing or hanging. (The `--safe` variant quarantines the
+channel header rather than freeing it, so it reclaims queued payloads but not
+the ~150-byte struct.) Freeing
 after you have received a goroutine's final send is fine. It fits a channel created and consumed
 inside one iteration of a long-running loop:
 
