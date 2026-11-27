@@ -757,14 +757,15 @@ v, ok := <-ch   // ok == false once ch is closed and drained
 is closed and drained — a shorthand for looping on the comma-ok receive.
 
 Channels are malloc'd and are **not** reclaimed by `close` or by any arena —
-a program that keeps making channels grows without bound (~150 bytes each).
+a program that keeps making channels grows without bound (~160 bytes each, #740).
 `chan_free(ch)` hands the memory back, including messages still queued in it.
 The channel must not be used afterwards, and no other goroutine may hold a
-reference to it. Two misuse modes are checked and panic cleanly (#740): a
-double `chan_free`, and freeing while a goroutine is blocked receiving on the
-channel (which would otherwise hang forever — the deadlock detector does not
-see it, since the freed channel's mutex is gone). Still unchecked: any
-send/recv/close/select on the channel *after* the free returns — that is a
+reference to it. Two misuse cases are partly checked (#740): a double
+`chan_free` panics, **unless** a later `make(chan)` reused the freed address, in
+which case it silently frees that new channel; and freeing while a goroutine is
+blocked in a plain receive panics, but one waiting in `select` is not detected.
+Everything else is unchecked, with or without `--safe`: any
+send/recv/close/select on the channel *after* the free returns is a
 use-after-free, exactly like `free()` on a raw pointer. Freeing after you
 have received a goroutine's final send is fine. It fits a channel created
 and consumed inside one iteration of a long-running loop:
