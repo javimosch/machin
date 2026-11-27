@@ -87,13 +87,7 @@ func wsc_frame(opcode, payload) (f) {
         }
     }
     f = bytes_concat(f, mask)
-    hx := ""
-    i := 0
-    while i < n {
-        hx = hx + wsc_hex2(byte_at(payload, i) ^ byte_at(mask, i & 3))
-        i = i + 1
-    }
-    f = bytes_concat(f, from_hex(hx))
+    f = bytes_concat(f, bytes_xor(payload, mask))
 }
 
 // wsc_frame_in reads ONE frame -> (fin, opcode, payload, ok). ok=0 on EOF/error.
@@ -134,13 +128,7 @@ func wsc_frame_in(c) (fin, opcode, payload, ok) {
     if wsc_fill(c, n) == 0 { return }
     raw := wsc_take(c, n)
     if masked != 0 {
-        hx := ""
-        i := 0
-        while i < n {
-            hx = hx + wsc_hex2(byte_at(raw, i) ^ byte_at(mask, i & 3))
-            i = i + 1
-        }
-        payload = from_hex(hx)
+        payload = bytes_xor(raw, mask)
     } else {
         payload = raw
     }
@@ -164,6 +152,7 @@ func wsc_next(c) (msg, ok) {
             continue
         }
         if opcode == 10 { continue }
+        if len(msg) + len(pl) > 67108864 { msg = bytes("")  return }
         msg = bytes_concat(msg, pl)
         if fin != 0 { ok = 1  return }
     }
@@ -177,6 +166,10 @@ func wsc_next(c) (msg, ok) {
 // can't fake a successful open. Any failure closes the fd and returns ok=0.
 func wsc_dial(host, port, path, hdrblock) (c, ok) {
     ok = 0
+    // host and path go into the request: no spaces or line breaks
+    for _, bad := range []string{" ", "\r", "\n", "\t"} {
+        if index(host, bad) >= 0 || index(path, bad) >= 0 { c = wsc_attach(-1)  return }
+    }
     fd := dial(host, port)
     if fd < 0 { c = wsc_attach(fd)  return }
     c = wsc_attach(fd)

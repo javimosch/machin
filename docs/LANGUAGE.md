@@ -539,6 +539,8 @@ first := users[0]                                // value copy
 | `byte_at(b, i)`             | byte value 0–255 at index `i` (−1 if out of range) |
 | `bytes_sub(b, start, end)`  | sub-range `[start, end)` of a `bytes` value  |
 | `bytes_concat(a, b)`        | concatenate two `bytes` values               |
+| `bytes_xor(data, key)`      | XOR with a repeating key                     |
+| `read_bytes_exact(fd, n)`   | exactly `n` bytes; empty on EOF/error/timeout |
 | `zlib_compress(b, level)`   | zlib-compress raw `bytes` (`level` 0–9, −1 for default 6) → `bytes`; links `-lz` only when used |
 | `zlib_decompress(b)`        | zlib-decompress a raw zlib stream → `bytes`; empty on an invalid stream |
 | `bytes_index(b, needle, from)` | find `needle` in `b` at/after index `from`, NUL-safe (`-1` if absent); for binary protocols / multipart boundaries |
@@ -791,6 +793,12 @@ default:
 ```
 
 ### HTTP client
+
+A non-empty `err` always comes with status 0 and an empty body, so a truncated
+or unreadable response never looks like success. Redirects to another origin do
+not carry credential headers. Timeouts and the redirect limit are set with
+`MFL_HTTP_TIMEOUT_MS` and `MFL_HTTP_MAX_REDIRECTS`; see §8.1 of
+[`SPEC.md`](../SPEC.md) for the full list of `err` values and rules.
 
 `https_get` and `https_post` return the response body as a string (empty on
 error) and are suitable for quick one-liners.  `http_get` and `http_request`

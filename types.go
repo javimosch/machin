@@ -2346,6 +2346,13 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		c.addPair(argSlots[0], c.cBytes)
 		c.addPair(argSlots[1], c.cBytes)
 		return c.cBytes, nil
+	case "bytes_xor":
+		if len(argSlots) != 2 {
+			return 0, fmt.Errorf("bytes_xor: 2 args (data bytes, key bytes)")
+		}
+		c.addPair(argSlots[0], c.cBytes)
+		c.addPair(argSlots[1], c.cBytes)
+		return c.cBytes, nil
 	case "zlib_compress":
 		if len(argSlots) != 2 {
 			return 0, fmt.Errorf("zlib_compress: 2 args (data bytes, level int)")
@@ -3091,6 +3098,13 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 			return 0, fmt.Errorf("read_bytes: 1 arg (fd)")
 		}
 		c.addPair(argSlots[0], c.cInt)
+		return c.cBytes, nil
+	case "read_bytes_exact":
+		if len(argSlots) != 2 {
+			return 0, fmt.Errorf("read_bytes_exact: 2 args (fd, n int)")
+		}
+		c.addPair(argSlots[0], c.cInt)
+		c.addPair(argSlots[1], c.cInt)
 		return c.cBytes, nil
 	case "input":
 		if len(argSlots) != 0 {

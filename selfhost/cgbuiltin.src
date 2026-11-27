@@ -62,6 +62,7 @@ func builtin_cfn(name) (s) {
     if name == "bytes_sub" { s = "mfl_bytes_sub"  return s }
     if name == "bytes_index" { s = "mfl_bytes_index"  return s }
     if name == "bytes_concat" { s = "mfl_bytes_concat"  return s }
+    if name == "bytes_xor" { s = "mfl_bytes_xor"  return s }
     if name == "rand_bytes" { s = "mfl_crypto_rand"  return s }
     if name == "sha256_bytes" { s = "mfl_crypto_sha256"  return s }
     if name == "sha1_bytes" { s = "mfl_crypto_sha1"  return s }
@@ -159,6 +160,7 @@ func builtin_cfn(name) (s) {
     if name == "udp_sendto" { s = "mfl_udp_sendto"  return s }
     if name == "read" { s = "mfl_read"  return s }
     if name == "read_bytes" { s = "mfl_read_bytes"  return s }
+    if name == "read_bytes_exact" { s = "mfl_read_bytes_exact"  return s }
     if name == "write" { s = "mfl_write"  return s }
     if name == "input" { s = "mfl_input"  return s }
     if name == "read_stdin" { s = "mfl_read_stdin"  return s }

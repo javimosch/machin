@@ -4056,6 +4056,15 @@ static mfl_bytes mfl_bytes_concat(mfl_bytes a, mfl_bytes b) {
     memcpy(r.data + a.len, b.data, (size_t)b.len);
     return r;
 }
+/* XOR data with key repeated end to end (an empty key copies data): one pass,
+   one allocation. WebSocket (un)masking is this with the 4-byte frame key. */
+static mfl_bytes mfl_bytes_xor(mfl_bytes b, mfl_bytes k) {
+    mfl_bytes r; r.len = b.len; r.data = (uint8_t*)mfl_alloc(r.len ? r.len : 1);
+    if (k.len <= 0) { if (b.len) memcpy(r.data, b.data, (size_t)b.len); return r; }
+    int64_t j = 0;
+    for (int64_t i = 0; i < b.len; i++) { r.data[i] = b.data[i] ^ k.data[j]; if (++j == k.len) j = 0; }
+    return r;
+}
 /* binary-safe base64: encode raw bytes (incl. NUL), decode to raw bytes. The
    string forms (mfl_base64_encode/decode) stop at a NUL; these carry an explicit
    length, for binary protocols / crypto (e.g. SCRAM salts and proofs). */
@@ -5193,6 +5202,37 @@ static mfl_bytes mfl_read_bytes(int64_t fd) {
     if (mfl_rr_mode == 1) mfl_rr_io_log_bytes((char*)b.data, (size_t)n);
     return b;
 }
+/* read_bytes_exact: exactly n bytes, or empty bytes if the stream ends, errors or
+   times out first. The buffer grows with what actually arrives, so a large n that
+   a peer merely declared costs nothing. */
+static mfl_bytes mfl_read_bytes_exact(int64_t fd, int64_t n) {
+    if (mfl_rr_mode == 2) {
+        size_t L; char* s = mfl_hexdec(mfl_io_pop(), &L);
+        mfl_bytes b; b.data = (uint8_t*)mfl_alloc(L ? L : 1); b.len = (int64_t)L;
+        if (L) memcpy(b.data, s, L); free(s); return b;
+    }
+    size_t want = n > 0 ? (size_t)n : 0, got = 0, cap = want < 65536 ? want : 65536;
+    uint8_t* tmp = (uint8_t*)malloc(cap ? cap : 1);
+    mfl_dl_io_park(1);
+    while (tmp && got < want) {
+        if (got == cap) {
+            cap = cap > want / 2 ? want : cap * 2;
+            uint8_t* nt = (uint8_t*)realloc(tmp, cap);
+            if (!nt) { free(tmp); tmp = NULL; break; }
+            tmp = nt;
+        }
+        ssize_t r = MFL_SOCK_READ(fd, tmp + got, cap - got);
+        if (r <= 0) break;
+        got += (size_t)r;
+    }
+    mfl_dl_io_park(0);
+    mfl_bytes b; b.len = (tmp && got == want) ? (int64_t)got : 0;
+    b.data = (uint8_t*)mfl_alloc(b.len ? (size_t)b.len : 1);
+    if (b.len) { memcpy(b.data, tmp, (size_t)b.len); mfl_dl_note(); }
+    free(tmp);
+    if (mfl_rr_mode == 1) mfl_rr_io_log_bytes((char*)b.data, (size_t)b.len);
+    return b;
+}
 /* a write is an output side-effect: replay records/returns the byte count but performs
    no real send (the fd is a recorded sentinel, so writing would EPIPE). */
 static int64_t mfl_write(int64_t fd, const char* s) {
@@ -5682,46 +5722,6 @@ static int64_t mfl_tls_close_h(int64_t h) { if (mfl_rr_mode == 2) return 0; mfl_
 // when a program calls https_get/https_post. Handles cert verification,
 // Content-Length, chunked transfer-encoding, and redirects; returns the body.
 const tlsRuntime = `
-/* read the whole TLS stream into a malloc'd buffer (caller frees); NUL-terminated */
-static char* mfl_tls_readall(SSL* ssl, size_t* outlen) {
-    size_t cap = 16384, len = 0;
-    char* buf = (char*)malloc(cap);
-    for (;;) {
-        if (len + 8192 > cap) { cap *= 2; buf = (char*)realloc(buf, cap); }
-        int n = SSL_read(ssl, buf + len, 8192);
-        if (n <= 0) break;
-        len += (size_t)n;
-    }
-    buf[len] = 0;
-    *outlen = len;
-    return buf;
-}
-
-/* decode HTTP/1.1 chunked transfer-encoding (caller frees) */
-static char* mfl_chunk_decode(const char* body, size_t blen, size_t* outlen) {
-    char* out = (char*)malloc(blen + 1);
-    size_t o = 0;
-    const char* p = body;
-    const char* end = body + blen;
-    while (p < end) {
-        char* nl;
-        long sz = strtol(p, &nl, 16);
-        if (nl == p) break;
-        while (nl < end && *nl != '\n') nl++;
-        if (nl < end) nl++;
-        p = nl;
-        if (sz <= 0) break;
-        if (p + sz > end) sz = end - p;
-        memcpy(out + o, p, (size_t)sz);
-        o += (size_t)sz;
-        p += sz;
-        while (p < end && (*p == '\r' || *p == '\n')) p++;
-    }
-    out[o] = 0;
-    *outlen = o;
-    return out;
-}
-
 /* (status, body, err) — err is "" on an HTTP response (status is the code), or a
    transport-failure reason ("dns"/"connect"/"tls"/"scheme") with status 0. */
 typedef struct { int64_t status; char* body; char* err; } mfl_http_result;
@@ -5743,171 +5743,461 @@ static mfl_http_result mfl_rr_pop_http(void) {
     return R;
 }
 
-static mfl_http_result mfl_http_do(const char* method, const char* url, const char* reqbody, const char* ctype, const char* extra, int redirects);
+/* HTTP client limits, read per call. MFL_HTTP_TIMEOUT_MS caps each blocking socket
+   step (connect, TLS handshake, each send/recv) -- an idle timeout, not a total
+   deadline: default 300000, 0 disables. MFL_HTTP_MAX_REDIRECTS: default 5, 0
+   disables redirect following. An unset or malformed value keeps the default. */
+static long long mfl_http_env(const char* name, long long def) {
+    const char* e = getenv(name);
+    if (!e || !*e) return def;
+    char* end;
+    long long v = strtoll(e, &end, 10);
+    return (*end || v < 0 || v > 2000000000LL) ? def : v;
+}
+#ifdef _WIN32
+#define MFL_HTTP_TIMED_OUT() (WSAGetLastError() == WSAETIMEDOUT || WSAGetLastError() == WSAEWOULDBLOCK)
+#define MFL_HTTP_INTR() (0)
+#else
+#define MFL_HTTP_TIMED_OUT() (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINPROGRESS || errno == ETIMEDOUT)
+#define MFL_HTTP_INTR() (errno == EINTR)
+#endif
+static void mfl_http_set_timeout(int fd, long long ms) {
+    if (ms <= 0) return;
+#ifdef _WIN32
+    DWORD tv = (DWORD)ms;
+    setsockopt((SOCKET)fd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv));
+    setsockopt((SOCKET)fd, SOL_SOCKET, SO_SNDTIMEO, (const char*)&tv, sizeof(tv));
+#else
+    struct timeval tv; tv.tv_sec = ms / 1000; tv.tv_usec = (ms % 1000) * 1000;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+#endif
+}
 
-/* plain (non-TLS) transport for http:// URLs, mirroring the TLS path's staged
-   error vocabulary ("dns"/"connect"). */
-static int mfl_tcp_dial_e(const char* host, int port, const char** stage) {
+/* TCP transport, mirroring the TLS path's staged error vocabulary
+   ("dns"/"connect"/"timeout"). The timeout is set before connect(), which Linux
+   honours through SO_SNDTIMEO; name resolution is not covered. */
+static int mfl_tcp_dial_e(const char* host, int port, const char** stage, long long ms) {
     mfl_net_init();   /* winsock startup on Windows; no-op on POSIX (#517 Phase TLS) */
     struct addrinfo hints, *res, *rp;
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_UNSPEC; hints.ai_socktype = SOCK_STREAM;
     char ps[16]; snprintf(ps, sizeof(ps), "%d", port);
     if (getaddrinfo(host, ps, &hints, &res) != 0) { if (stage) *stage = "dns"; return -1; }
-    int fd = -1;
+    int fd = -1, timedout = 0;
     for (rp = res; rp; rp = rp->ai_next) {
         fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
         if (fd < 0) continue;
+        mfl_http_set_timeout(fd, ms);
         if (connect(fd, rp->ai_addr, (int)rp->ai_addrlen) == 0) break;
+        timedout = ms > 0 && MFL_HTTP_TIMED_OUT();
         MFL_CLOSESOCK(fd); fd = -1;
     }
     freeaddrinfo(res);
-    if (fd < 0 && stage) *stage = "connect";
+    if (fd < 0 && stage) *stage = timedout ? "timeout" : "connect";
     return fd;
 }
 static void mfl_sock_writeall(int fd, const char* buf, size_t n) {
     size_t off = 0;
-    while (off < n) { ssize_t w = send(fd, buf + off, n - off, 0); if (w <= 0) break; off += (size_t)w; }
+    while (off < n) {
+        ssize_t w = send(fd, buf + off, n - off, 0);
+        if (w < 0 && MFL_HTTP_INTR()) continue;
+        if (w <= 0) break;
+        off += (size_t)w;
+    }
 }
-static char* mfl_sock_readall(int fd, size_t* outlen) {
+/* how a response stream ended */
+#define MFL_HTTP_EOF 0
+#define MFL_HTTP_IDLE 1
+#define MFL_HTTP_BROKEN 2
+/* read a whole stream (TLS when ssl != NULL) into a malloc'd, NUL-terminated
+   buffer (caller frees); *end says whether it closed, timed out or broke. */
+static char* mfl_http_readall(SSL* ssl, int fd, size_t* outlen, int* end) {
     size_t cap = 16384, len = 0;
     char* buf = (char*)malloc(cap);
+    *end = MFL_HTTP_EOF;
     for (;;) {
-        if (len + 8192 > cap) { cap *= 2; buf = (char*)realloc(buf, cap); }
-        ssize_t n = recv(fd, buf + len, 8192, 0);
-        if (n <= 0) break;
-        len += (size_t)n;
+        if (len + 8193 > cap) { cap *= 2; buf = (char*)realloc(buf, cap); }
+        int n;
+        errno = 0;
+        if (ssl) { ERR_clear_error(); n = SSL_read(ssl, buf + len, 8192); }
+        else n = (int)recv(fd, buf + len, 8192, 0);
+        if (n > 0) { len += (size_t)n; continue; }
+        if (ssl) {
+            int e = SSL_get_error(ssl, n);
+            if (e == SSL_ERROR_ZERO_RETURN) break;
+            if (e == SSL_ERROR_WANT_READ || e == SSL_ERROR_WANT_WRITE) { *end = MFL_HTTP_IDLE; break; }
+            if (e == SSL_ERROR_SYSCALL) {
+                if (n == 0 || errno == 0) break; /* closed without close_notify */
+                *end = MFL_HTTP_TIMED_OUT() ? MFL_HTTP_IDLE : MFL_HTTP_BROKEN;
+                break;
+            }
+#ifdef SSL_R_UNEXPECTED_EOF_WHILE_READING
+            if (ERR_GET_REASON(ERR_peek_error()) == SSL_R_UNEXPECTED_EOF_WHILE_READING) break;
+#endif
+            *end = MFL_HTTP_BROKEN;
+            break;
+        }
+        if (n == 0) break;
+        if (MFL_HTTP_INTR()) continue;
+        *end = MFL_HTTP_TIMED_OUT() ? MFL_HTTP_IDLE : MFL_HTTP_BROKEN;
+        break;
     }
     buf[len] = 0;
     *outlen = len;
     return buf;
 }
 
-static mfl_http_result mfl_http_do(const char* method, const char* url, const char* reqbody, const char* ctype, const char* extra, int redirects) {
+/* a parsed request URL. target is malloc'd (path + query, always starting '/'). */
+typedef struct { int tls; int port; int v6; char host[256]; char* target; } mfl_http_url;
+
+/* Returns NULL on success, else the err string. Control characters are refused
+   anywhere in the URL: it is written into the request line and the Host header,
+   so a CR or LF would forge headers. A space in the path or query is sent as %20.
+   Nothing is silently truncated. */
+static const char* mfl_http_parse_url(const char* url, mfl_http_url* u) {
+    memset(u, 0, sizeof(*u));
+    for (const unsigned char* c = (const unsigned char*)url; *c; c++) if (*c < 0x20 || *c == 0x7f) return "url";
+    const char* p = url;
+    u->tls = 1;
+    if (strncasecmp(p, "https://", 8) == 0) p += 8;
+    else if (strncasecmp(p, "http://", 7) == 0) { p += 7; u->tls = 0; }
+    else {
+        const char* s = strstr(p, "://");
+        if (s && (size_t)(s - p) < strcspn(p, "/?#")) return "scheme";
+        /* else: no scheme -- assume https */
+    }
+    size_t alen = strcspn(p, "/?#");
+    const char* aend = p + alen;
+    if (memchr(p, '@', alen) || memchr(p, ' ', alen)) return "url";
+    const char* hs = p; const char* he; const char* ps = NULL;
+    if (alen && *p == '[') {   /* bracketed IPv6 literal */
+        const char* rb = (const char*)memchr(p, ']', alen);
+        if (!rb) return "url";
+        hs = p + 1; he = rb; u->v6 = 1;
+        if (rb + 1 < aend) { if (rb[1] != ':') return "url"; ps = rb + 2; }
+    } else {
+        const char* colon = (const char*)memchr(p, ':', alen);
+        he = colon ? colon : aend;
+        if (colon) ps = colon + 1;
+    }
+    if (he == hs || (size_t)(he - hs) >= sizeof(u->host)) return "url";
+    memcpy(u->host, hs, (size_t)(he - hs));
+    u->port = u->tls ? 443 : 80;
+    if (ps && ps < aend) {
+        long v = 0;
+        for (const char* d = ps; d < aend; d++) {
+            if (*d < '0' || *d > '9') return "url";
+            v = v * 10 + (*d - '0');
+            if (v > 65535) return "url";
+        }
+        if (v == 0) return "url";
+        u->port = (int)v;
+    }
+    size_t tlen = strcspn(aend, "#");
+    u->target = (char*)malloc(tlen * 3 + 2);
+    size_t o = 0;
+    if (tlen == 0 || *aend != '/') u->target[o++] = '/';
+    for (size_t i = 0; i < tlen; i++) {
+        if (aend[i] == ' ') { memcpy(u->target + o, "%20", 3); o += 3; }
+        else u->target[o++] = aend[i];
+    }
+    u->target[o] = 0;
+    return NULL;
+}
+
+/* the method is the first word of the request line: an RFC 9110 token only */
+static int mfl_http_method_ok(const char* m) {
+    if (!m || !*m) return 0;
+    for (; *m; m++) {
+        if (!(isalnum((unsigned char)*m) || strchr("!#$%&'*+-.^_\x60|~", *m))) return 0;
+    }
+    return 1;
+}
+
+/* value of the first header line named name (hdrs is the NUL-terminated header
+   block, status line included); NULL if absent. Matches whole names only. */
+static const char* mfl_http_header(const char* hdrs, const char* name) {
+    size_t n = strlen(name);
+    const char* l = strchr(hdrs, '\n');
+    while (l) {
+        l++;
+        if (strncasecmp(l, name, n) == 0 && l[n] == ':') {
+            l += n + 1;
+            while (*l == ' ' || *l == '\t') l++;
+            return l;
+        }
+        l = strchr(l, '\n');
+    }
+    return NULL;
+}
+
+/* On a redirect to another origin only these caller headers are forwarded. It is
+   an allowlist because a credential can travel under any header name. */
+static char* mfl_http_safe_headers(const char* extra) {
+    static const char* keep[] = { "accept", "accept-charset", "accept-encoding", "accept-language",
+        "cache-control", "content-encoding", "content-language", "content-type", "if-match",
+        "if-modified-since", "if-none-match", "if-range", "if-unmodified-since", "pragma",
+        "range", "user-agent", NULL };
+    char* out = (char*)malloc(strlen(extra) + 1);
+    size_t o = 0;
+    const char* l = extra;
+    while (*l) {
+        const char* nl = strchr(l, '\n');
+        size_t ll = nl ? (size_t)(nl - l) + 1 : strlen(l);
+        size_t nn = strcspn(l, ":\r\n");
+        if (l[nn] == ':') {
+            for (int i = 0; keep[i]; i++) {
+                if (strlen(keep[i]) == nn && strncasecmp(l, keep[i], nn) == 0) { memcpy(out + o, l, ll); o += ll; break; }
+            }
+        }
+        l += ll;
+    }
+    out[o] = 0;
+    return out;
+}
+
+/* resolve a Location header against the URL that produced it (malloc'd); NULL
+   when it names a scheme other than http/https, which is not followed. */
+static char* mfl_http_resolve(const mfl_http_url* base, const char* loc, size_t ll) {
+    size_t cap = ll + strlen(base->target) + sizeof(base->host) + 64;
+    char* out = (char*)malloc(cap);
+    const char* scheme = base->tls ? "https" : "http";
+    size_t seg = 0;
+    while (seg < ll && loc[seg] != '/' && loc[seg] != '?' && loc[seg] != '#' && loc[seg] != ':') seg++;
+    if (seg < ll && loc[seg] == ':') {   /* absolute */
+        if (!((seg == 4 && strncasecmp(loc, "http", 4) == 0) || (seg == 5 && strncasecmp(loc, "https", 5) == 0)) ||
+            ll < seg + 3 || strncmp(loc + seg, "://", 3) != 0) { free(out); return NULL; }
+        memcpy(out, loc, ll); out[ll] = 0;
+        return out;
+    }
+    if (ll >= 2 && loc[0] == '/' && loc[1] == '/') {   /* network-path reference */
+        snprintf(out, cap, "%s:%.*s", scheme, (int)ll, loc);
+        return out;
+    }
+    int o = snprintf(out, cap, "%s://%s%s%s:%d", scheme, base->v6 ? "[" : "", base->host, base->v6 ? "]" : "", base->port);
+    size_t blen = strcspn(base->target, "?");   /* base path without its query */
+    if (ll > 0 && loc[0] == '/') {
+        snprintf(out + o, cap - o, "%.*s", (int)ll, loc);
+    } else if (ll == 0 || loc[0] == '#') {
+        snprintf(out + o, cap - o, "%s", base->target);
+    } else if (loc[0] == '?') {
+        snprintf(out + o, cap - o, "%.*s%.*s", (int)blen, base->target, (int)ll, loc);
+    } else {
+        while (blen > 0 && base->target[blen - 1] != '/') blen--;
+        /* leading ./ and ../ walk the base directory */
+        for (;;) {
+            if (ll >= 2 && strncmp(loc, "./", 2) == 0) { loc += 2; ll -= 2; }
+            else if (ll >= 3 && strncmp(loc, "../", 3) == 0) {
+                loc += 3; ll -= 3;
+                if (blen > 1) { blen--; while (blen > 0 && base->target[blen - 1] != '/') blen--; }
+            } else break;
+        }
+        snprintf(out + o, cap - o, "%.*s%.*s", (int)blen, base->target, (int)ll, loc);
+    }
+    return out;
+}
+
+/* decode a chunked body in place of a copy (caller frees). *complete is set only
+   when every chunk arrived whole and the zero-size last chunk was seen. */
+static char* mfl_http_dechunk(const char* body, size_t blen, size_t* outlen, int* complete) {
+    char* out = (char*)malloc(blen + 1);
+    size_t o = 0;
+    const char* p = body;
+    const char* end = body + blen;
+    *complete = 0;
+    while (p < end && isxdigit((unsigned char)*p)) {
+        unsigned long long sz = 0;
+        while (p < end && isxdigit((unsigned char)*p) && sz <= blen) {
+            int c = tolower((unsigned char)*p++);
+            sz = sz * 16 + (unsigned)(c <= '9' ? c - '0' : c - 'a' + 10);
+        }
+        const char* nl = (const char*)memchr(p, '\n', (size_t)(end - p));
+        if (!nl) break;
+        p = nl + 1;
+        if (sz == 0) { *complete = 1; break; }
+        if (sz > (unsigned long long)(end - p)) break;
+        memcpy(out + o, p, (size_t)sz);
+        o += (size_t)sz;
+        p += sz;
+        if (p < end && *p == '\r') p++;
+        if (p >= end || *p != '\n') break;
+        p++;
+    }
+    out[o] = 0;
+    *outlen = o;
+    return out;
+}
+
+/* a failed call: status 0, empty body, err naming why */
+static mfl_http_result mfl_http_fail(const char* why) {
     mfl_http_result R;
     R.status = 0;
     R.body = mfl_dup_arena("", 0);
-    R.err = mfl_dup_arena("", 0);
+    R.err = mfl_dup_arena(why, strlen(why));
+    return R;
+}
 
-    char host[256] = {0}, path[2048] = {0};
-    int is_https = 1;
-    const char* p = url;
-    if (strncmp(p, "https://", 8) == 0) p += 8;
-    else if (strncmp(p, "http://", 7) == 0) { p += 7; is_https = 0; }
-    /* else: no scheme — assume https */
-    int port = is_https ? 443 : 80;
-    int i = 0;
-    while (*p && *p != '/' && *p != ':' && i < 255) host[i++] = *p++;
-    host[i] = 0;
-    if (*p == ':') { p++; port = atoi(p); while (*p && *p != '/') p++; }
-    if (*p == '/') strncpy(path, p, sizeof(path) - 1);
-    else { path[0] = '/'; path[1] = 0; }
+static mfl_http_result mfl_http_do(const char* method, const char* url, const char* reqbody, const char* ctype, const char* extra, int redirects) {
+    if (!mfl_http_method_ok(method)) return mfl_http_fail("method");
+    mfl_http_url u;
+    const char* uerr = mfl_http_parse_url(url, &u);
+    if (uerr) return mfl_http_fail(uerr);
+    long long tmo = mfl_http_env("MFL_HTTP_TIMEOUT_MS", 300000);
+
+    char hosthdr[300];
+    if (u.port == (u.tls ? 443 : 80)) snprintf(hosthdr, sizeof(hosthdr), "%s%s%s", u.v6 ? "[" : "", u.host, u.v6 ? "]" : "");
+    else snprintf(hosthdr, sizeof(hosthdr), "%s%s%s:%d", u.v6 ? "[" : "", u.host, u.v6 ? "]" : "", u.port);
 
     size_t blen = reqbody ? strlen(reqbody) : 0;
     const char* ex = extra ? extra : "";   /* caller-supplied header lines (each ending \r\n) */
-    size_t reqcap = blen + strlen(path) + strlen(host) + 256 + (ctype ? strlen(ctype) : 0) + strlen(ex);
+    size_t reqcap = blen + strlen(method) + strlen(u.target) + strlen(hosthdr) + 256 + (ctype ? strlen(ctype) : 0) + strlen(ex);
     char* req = (char*)malloc(reqcap);
     int rl;
     if (blen > 0) {
         if (ctype) {
             rl = snprintf(req, reqcap,
                 "%s %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: machin/0.8\r\nAccept: */*\r\n%sContent-Type: %s\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n",
-                method, path, host, ex, ctype, blen);
+                method, u.target, hosthdr, ex, ctype, blen);
         } else {
             /* http_request: caller owns Content-Type (via extra) */
             rl = snprintf(req, reqcap,
                 "%s %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: machin/0.8\r\nAccept: */*\r\n%sContent-Length: %zu\r\nConnection: close\r\n\r\n",
-                method, path, host, ex, blen);
+                method, u.target, hosthdr, ex, blen);
         }
         memcpy(req + rl, reqbody, blen);
         rl += (int)blen;
     } else {
         rl = snprintf(req, reqcap,
             "%s %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: machin/0.8\r\nAccept: */*\r\n%sConnection: close\r\n\r\n",
-            method, path, host, ex);
+            method, u.target, hosthdr, ex);
     }
     size_t rlen;
     char* raw;
+    int ended;
     const char* stage = "connect";
-    if (is_https) {
-        SSL* ssl = mfl_tls_dial_e(host, port, &stage);
-        if (!ssl) { R.err = mfl_dup_arena(stage, strlen(stage)); free(req); return R; }
+    int fd = mfl_tcp_dial_e(u.host, u.port, &stage, tmo);
+    if (fd < 0) { free(req); free(u.target); return mfl_http_fail(stage); }
+    SSL* ssl = NULL;
+    if (u.tls) {
+        errno = 0;
+        ssl = mfl_tls_handshake_client(fd, u.host, &stage);
+        if (!ssl) {
+            if (tmo > 0 && MFL_HTTP_TIMED_OUT()) stage = "timeout";
+            MFL_CLOSESOCK(fd); free(req); free(u.target); return mfl_http_fail(stage);
+        }
         SSL_write(ssl, req, rl);
-        raw = mfl_tls_readall(ssl, &rlen);
+        raw = mfl_http_readall(ssl, fd, &rlen, &ended);
         mfl_tls_hangup(ssl);
     } else {
-        int fd = mfl_tcp_dial_e(host, port, &stage);
-        if (fd < 0) { R.err = mfl_dup_arena(stage, strlen(stage)); free(req); return R; }
         mfl_sock_writeall(fd, req, rl);
-        raw = mfl_sock_readall(fd, &rlen);
+        raw = mfl_http_readall(NULL, fd, &rlen, &ended);
         MFL_CLOSESOCK(fd);
     }
     free(req);
 
+    const char* cut = ended == MFL_HTTP_IDLE ? "timeout" : "truncated";
+    const char* why = NULL;
+    char* msg = raw;
+    size_t mlen = rlen;
+    char* hdrs = NULL;
+    char* body = NULL;
+    size_t bodylen = 0;
     int status = 0;
-    { const char* sp = strchr(raw, ' '); if (sp) status = atoi(sp + 1); }
-    R.status = status;
-    char* hb = strstr(raw, "\r\n\r\n");
-    if (!hb) { R.body = mfl_dup_arena(raw, rlen); free(raw); return R; }
-    size_t hdrlen = (size_t)(hb - raw);
-    char* body = hb + 4;
-    size_t bodylen = rlen - (size_t)(body - raw);
+    for (;;) {
+        if (mlen == 0) { why = ended == MFL_HTTP_IDLE ? "timeout" : "empty"; break; }
+        if (strncmp(msg, "HTTP/", mlen < 5 ? mlen : 5) != 0) { why = "response"; break; }
+        char* hb = strstr(msg, "\r\n\r\n");
+        if (!hb) { why = cut; break; }
+        const char* sp = strchr(msg, ' ');
+        status = (sp && sp < hb) ? atoi(sp + 1) : 0;
+        if (status < 100 || status > 999) { why = "response"; break; }
+        body = hb + 4;
+        bodylen = mlen - (size_t)(body - msg);
+        if (status < 200 && status != 101) { msg = body; mlen = bodylen; continue; } /* interim reply */
+        hdrs = mfl_dup_arena(msg, (size_t)(hb - msg));
+        break;
+    }
+    if (why) { free(raw); free(u.target); return mfl_http_fail(why); }
 
     if (redirects > 0 && (status == 301 || status == 302 || status == 303 || status == 307 || status == 308)) {
-        char* hdrs = mfl_dup_arena(raw, hdrlen);
-        char* loc = strcasestr(hdrs, "\nlocation:");
+        const char* loc = mfl_http_header(hdrs, "location");
         if (loc) {
-            loc += strlen("\nlocation:");
-            while (*loc == ' ' || *loc == '\t') loc++;
-            char* e = loc;
-            while (*e && *e != '\r' && *e != '\n') e++;
-            char locurl[2048];
-            size_t ll = (size_t)(e - loc);
-            if (ll > sizeof(locurl) - 1) ll = sizeof(locurl) - 1;
-            memcpy(locurl, loc, ll);
-            locurl[ll] = 0;
-            if (strncmp(locurl, "http", 4) == 0) {
-                free(raw);
-                const char* m = (status == 307 || status == 308) ? method : "GET";
-                const char* rb = (status == 307 || status == 308) ? reqbody : NULL;
-                return mfl_http_do(m, locurl, rb, ctype, extra, redirects - 1);
+            size_t ll = strcspn(loc, "\r\n");
+            while (ll > 0 && (loc[ll - 1] == ' ' || loc[ll - 1] == '\t')) ll--;
+            char* next = ll > 0 ? mfl_http_resolve(&u, loc, ll) : NULL;
+            if (next) {
+                mfl_http_url n;
+                const char* nerr = mfl_http_parse_url(next, &n);
+                if (nerr) { free(next); free(raw); free(u.target); return mfl_http_fail(nerr); }
+                int preserve = (status == 307 || status == 308);
+                const char* m = (preserve || strcmp(method, "HEAD") == 0) ? method : "GET";
+                const char* rb = preserve ? reqbody : NULL;
+                int same = n.tls == u.tls && n.port == u.port && strcasecmp(n.host, u.host) == 0;
+                /* a request body is never re-sent from https to cleartext: the 3xx is returned */
+                if (!(u.tls && !n.tls && rb && *rb)) {
+                    char* safe = same ? NULL : mfl_http_safe_headers(ex);
+                    free(n.target); free(raw); free(u.target);
+                    mfl_http_result R = mfl_http_do(m, next, rb, ctype, safe ? safe : ex, redirects - 1);
+                    free(safe); free(next);
+                    return R;
+                }
+                free(n.target); free(next);
             }
         }
     }
+    free(u.target);
 
-    char* hdrs = mfl_dup_arena(raw, hdrlen);
-    if (strcasestr(hdrs, "transfer-encoding: chunked") || strcasestr(hdrs, "transfer-encoding:chunked")) {
-        size_t dl;
-        char* dec = mfl_chunk_decode(body, bodylen, &dl);
-        R.body = mfl_dup_arena(dec, dl);
-        free(dec);
+    const char* te = mfl_http_header(hdrs, "transfer-encoding");
+    char* dec = NULL;
+    if (strcmp(method, "HEAD") == 0 || status == 101 || status == 204 || status == 304) {
+        bodylen = 0;
+    } else if (te && strcspn(te, "\r\n") >= 7 && strncasecmp(te + strcspn(te, "\r\n") - 7, "chunked", 7) == 0) {
+        size_t dl; int complete;
+        dec = mfl_http_dechunk(body, bodylen, &dl, &complete);
+        if (!complete) why = cut;
+        body = dec; bodylen = dl;
     } else {
-        char* cl = strcasestr(hdrs, "content-length:");
+        const char* cl = mfl_http_header(hdrs, "content-length");
         if (cl) {
-            size_t want = (size_t)strtoul(cl + strlen("content-length:"), NULL, 10);
-            if (want < bodylen) bodylen = want;
+            char* e;
+            unsigned long long want = strtoull(cl, &e, 10);
+            if (!isdigit((unsigned char)*cl) || (*e && !strchr(" \t\r\n", *e))) why = "response";
+            else if (want > (unsigned long long)bodylen) why = cut;
+            else bodylen = (size_t)want;
+        } else if (ended != MFL_HTTP_EOF) {
+            why = ended == MFL_HTTP_IDLE ? "timeout" : "read";
         }
-        R.body = mfl_dup_arena(body, bodylen);
     }
+    /* MFL strings end at a NUL, so such a body cannot be returned whole */
+    if (!why && memchr(body, 0, bodylen)) why = "nul";
+    mfl_http_result R;
+    if (why) R = mfl_http_fail(why);
+    else {
+        R.status = status;
+        R.body = mfl_dup_arena(body, bodylen);
+        R.err = mfl_dup_arena("", 0);
+    }
+    free(dec);
     free(raw);
     return R;
 }
 
 static char* mfl_https_get(const char* url) {
     if (mfl_rr_mode == 2) { size_t L; char* s = mfl_hexdec(mfl_io_pop(), &L); char* a = mfl_dup_arena(s, L); free(s); return a; }
-    char* b = mfl_http_do("GET", url, NULL, NULL, "", 5).body;
+    char* b = mfl_http_do("GET", url, NULL, NULL, "", (int)mfl_http_env("MFL_HTTP_MAX_REDIRECTS", 5)).body;
     if (mfl_rr_mode == 1) mfl_rr_io_log_bytes(b ? b : "", b ? strlen(b) : 0);
     return b;
 }
 static char* mfl_https_post(const char* url, const char* body) {
     if (mfl_rr_mode == 2) { size_t L; char* s = mfl_hexdec(mfl_io_pop(), &L); char* a = mfl_dup_arena(s, L); free(s); return a; }
-    char* b = mfl_http_do("POST", url, body, "application/json", "", 5).body;
+    char* b = mfl_http_do("POST", url, body, "application/json", "", (int)mfl_http_env("MFL_HTTP_MAX_REDIRECTS", 5)).body;
     if (mfl_rr_mode == 1) mfl_rr_io_log_bytes(b ? b : "", b ? strlen(b) : 0);
     return b;
 }
 static mfl_http_result mfl_http_get(const char* url) {
     if (mfl_rr_mode == 2) return mfl_rr_pop_http();
-    mfl_http_result R = mfl_http_do("GET", url, NULL, NULL, "", 5);
+    mfl_http_result R = mfl_http_do("GET", url, NULL, NULL, "", (int)mfl_http_env("MFL_HTTP_MAX_REDIRECTS", 5));
     if (mfl_rr_mode == 1) mfl_rr_log_http(R);
     return R;
 }
@@ -5944,7 +6234,7 @@ static mfl_http_result mfl_http_request(const char* method, const char* url, mfl
         if (mfl_rr_mode == 1) mfl_rr_log_http(E);
         return E;
     }
-    mfl_http_result R = mfl_http_do(method, url, body, NULL, hb, 5);
+    mfl_http_result R = mfl_http_do(method, url, body, NULL, hb, (int)mfl_http_env("MFL_HTTP_MAX_REDIRECTS", 5));
     if (mfl_rr_mode == 1) mfl_rr_log_http(R);
     free(hb);
     return R;
@@ -6018,6 +6308,10 @@ static int64_t mfl_wss_open_real(const char* url, const char* extra) {
     char host[256] = {0}, path[2048] = {0};
     int port = 443;
     const char* p = url;
+    /* the URL goes into the request line and Host header: no control characters
+       or spaces, and nothing silently truncated */
+    for (const unsigned char* c = (const unsigned char*)url; *c; c++) if (*c <= 0x20 || *c == 0x7f) return 0;
+    if (strlen(url) >= sizeof(path)) return 0;
     if (strncmp(p, "wss://", 6) == 0) p += 6;
     else if (strncmp(p, "ws://", 5) == 0) return 0; /* TLS only */
     else return 0;
@@ -6107,9 +6401,19 @@ static int64_t mfl_wss_send(int64_t h, const char* msg) {
     return r;
 }
 
+/* the largest message accepted from a peer, in bytes: MFL_WS_MAX_MESSAGE,
+   default 64 MiB. */
+static uint64_t mfl_ws_max_message(void) {
+    const char* e = getenv("MFL_WS_MAX_MESSAGE");
+    long long v = (e && *e) ? atoll(e) : 0;
+    return v > 0 ? (uint64_t)v : (uint64_t)64 * 1024 * 1024;
+}
+
 /* core: block until a full message; returns a malloc'd buffer (caller frees) and
    its length via *outlen, or NULL on close/error. Replies to pings, ignores
-   pongs, reassembles fragments. An empty message returns a non-NULL 1-byte buf. */
+   pongs, reassembles fragments. An empty message returns a non-NULL 1-byte buf.
+   A frame that would take the message past the limit is refused before anything
+   is allocated for it (close 1009). */
 static unsigned char* mfl_ws_recv_raw(mfl_ws* w, size_t* outlen) {
     *outlen = 0;
     if (!w) return NULL;
@@ -6134,7 +6438,13 @@ static unsigned char* mfl_ws_recv_raw(mfl_ws* w, size_t* outlen) {
         }
         unsigned char mk[4] = {0,0,0,0};
         if (masked && mfl_ssl_read_n(w->ssl, mk, 4) < 0) { free(msg); return NULL; }
+        if (len > mfl_ws_max_message() - (uint64_t)mlen) {
+            static const unsigned char too_big[2] = {0x03, 0xF1}; /* 1009 */
+            mfl_ws_frame(w, 0x8, too_big, 2);
+            free(msg); return NULL;
+        }
         unsigned char* pl = (unsigned char*)malloc(len ? len : 1);
+        if (!pl) { free(msg); return NULL; }
         if (len && mfl_ssl_read_n(w->ssl, pl, len) < 0) { free(pl); free(msg); return NULL; }
         if (masked) for (uint64_t k = 0; k < len; k++) pl[k] ^= mk[k & 3];
 
@@ -6142,7 +6452,8 @@ static unsigned char* mfl_ws_recv_raw(mfl_ws* w, size_t* outlen) {
         if (opcode == 0xA) { free(pl); continue; }                                /* pong */
         if (opcode == 0x8) { mfl_ws_frame(w, 0x8, pl, len); free(pl); free(msg); return NULL; } /* close */
 
-        unsigned char* nm = (unsigned char*)realloc(msg, mlen + len);
+        unsigned char* nm = (unsigned char*)realloc(msg, mlen + len ? mlen + len : 1);
+        if (!nm) { free(pl); free(msg); return NULL; }
         msg = nm;
         if (len) memcpy(msg + mlen, pl, len);
         mlen += len;
@@ -6287,6 +6598,8 @@ static int64_t mfl_ws_open_real(const char* url, const char* extra) {
     char host[256] = {0}, path[2048] = {0}, hosthdr[300] = {0};
     int port = 80;
     const char* p = url;
+    for (const unsigned char* c = (const unsigned char*)url; *c; c++) if (*c <= 0x20 || *c == 0x7f) return 0;
+    if (strlen(url) >= sizeof(path)) return 0;
     if (strncmp(p, "ws://", 5) == 0) p += 5;
     else return 0; /* cleartext only — wss:// is the TLS sibling */
     int i = 0;
@@ -6378,9 +6691,19 @@ static int64_t mfl_ws_send(int64_t h, const char* msg) {
     return r;
 }
 
+/* the largest message accepted from a peer, in bytes: MFL_WS_MAX_MESSAGE,
+   default 64 MiB. */
+static uint64_t mfl_wst_max_message(void) {
+    const char* e = getenv("MFL_WS_MAX_MESSAGE");
+    long long v = (e && *e) ? atoll(e) : 0;
+    return v > 0 ? (uint64_t)v : (uint64_t)64 * 1024 * 1024;
+}
+
 /* core: block until a full message; returns a malloc'd buffer (caller frees) and
    its length via *outlen, or NULL on close/error. Replies to pings, ignores
-   pongs, reassembles fragments. An empty message returns a non-NULL 1-byte buf. */
+   pongs, reassembles fragments. An empty message returns a non-NULL 1-byte buf.
+   A frame that would take the message past the limit is refused before anything
+   is allocated for it (close 1009). */
 static unsigned char* mfl_wst_recv_raw(mfl_wst* w, size_t* outlen) {
     *outlen = 0;
     if (!w) return NULL;
@@ -6405,7 +6728,13 @@ static unsigned char* mfl_wst_recv_raw(mfl_wst* w, size_t* outlen) {
         }
         unsigned char mk[4] = {0,0,0,0};
         if (masked && mfl_wst_read_n(w->fd, mk, 4) < 0) { free(msg); return NULL; }
+        if (len > mfl_wst_max_message() - (uint64_t)mlen) {
+            static const unsigned char too_big[2] = {0x03, 0xF1}; /* 1009 */
+            mfl_wst_frame(w, 0x8, too_big, 2);
+            free(msg); return NULL;
+        }
         unsigned char* pl = (unsigned char*)malloc(len ? len : 1);
+        if (!pl) { free(msg); return NULL; }
         if (len && mfl_wst_read_n(w->fd, pl, len) < 0) { free(pl); free(msg); return NULL; }
         if (masked) for (uint64_t k = 0; k < len; k++) pl[k] ^= mk[k & 3];
 
@@ -6413,7 +6742,8 @@ static unsigned char* mfl_wst_recv_raw(mfl_wst* w, size_t* outlen) {
         if (opcode == 0xA) { free(pl); continue; }                                /* pong */
         if (opcode == 0x8) { mfl_wst_frame(w, 0x8, pl, len); free(pl); free(msg); return NULL; } /* close */
 
-        unsigned char* nm = (unsigned char*)realloc(msg, mlen + len);
+        unsigned char* nm = (unsigned char*)realloc(msg, mlen + len ? mlen + len : 1);
+        if (!nm) { free(pl); free(msg); return NULL; }
         msg = nm;
         if (len) memcpy(msg + mlen, pl, len);
         mlen += len;
@@ -10330,6 +10660,8 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("mfl_bytes_index(%s, %s, %s)", args[0], args[1], args[2]), nil
 	case "bytes_concat":
 		return fmt.Sprintf("mfl_bytes_concat(%s, %s)", args[0], args[1]), nil
+	case "bytes_xor":
+		return fmt.Sprintf("mfl_bytes_xor(%s, %s)", args[0], args[1]), nil
 	case "zlib_compress":
 		g.usesZlib = true
 		return fmt.Sprintf("mfl_zlib_compress(%s, %s)", args[0], args[1]), nil
@@ -10745,6 +11077,9 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 	case "read_bytes":
 		g.usesNet = true
 		return fmt.Sprintf("mfl_read_bytes(%s)", args[0]), nil
+	case "read_bytes_exact":
+		g.usesNet = true
+		return fmt.Sprintf("mfl_read_bytes_exact(%s, %s)", args[0], args[1]), nil
 	case "write":
 		g.usesNet = true
 		return fmt.Sprintf("mfl_write(%s, %s)", args[0], args[1]), nil

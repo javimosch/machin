@@ -10,28 +10,42 @@
 //   func chat(req) (res) {
 //       res = ws(req, func(c) {                 // c is a WSConn
 //           ws_send_text(c.fd, "welcome")
-//           for {
-//               msg, ok := ws_next_text(c)      // answers pings, stops on close/EOF
-//               if ok == 0 { return }
-//               n := ws_send_text(c.fd, "echo: " + msg)
+//           ok := 1
+//           while ok == 1 {
+//               arena {                             // frees each message's memory
+//                   msg, got := ws_next_text(c)     // answers pings, stops on close/EOF
+//                   ok = got
+//                   if got == 1 { n := ws_send_text(c.fd, "echo: " + msg) }
+//               }
 //           }
 //       })
 //   }
+//
+// Limits and protocol checks. A message over ws_max_message bytes (default
+// 16 MiB; change it with ws_set_max_message, 0 = no limit) is refused from its
+// declared length, before it is read (close 1009). A message split into more
+// than 4096 fragments is refused the same way. Reserved bits, unknown opcodes,
+// bad fragment sequences and oversized or fragmented control frames close the
+// connection (1002), and so does an unmasked frame on a connection made by ws().
+// A WSConn you build yourself with ws_conn(fd) also accepts unmasked frames, so
+// it can read from a server. After any of these, or a close
+// frame, every further read on that WSConn returns ok == 0. UTF-8 is not checked.
 
-// A live WebSocket connection: the fd plus a one-slot "box" holding bytes read off the
-// socket but not yet consumed (a frame can split across reads; reads can over-deliver).
-// The box persists across calls even though the struct is passed by value (the slice
-// shares its backing array).
+// A live WebSocket connection: the fd, whether the peer must mask its frames
+// (set by ws()), plus a one-int "box" that records that the connection is
+// finished. It persists across calls even though the struct is
+// passed by value (the slice shares its backing array). Frames are read with
+// exact lengths, so no bytes are buffered between calls.
 type WSConn struct {
-    fd  int
-    buf []bytes
+    fd     int
+    server int
+    dead   []int
 }
 
-func ws_conn(fd) (c) {
-    bx := []bytes{}
-    bx = append(bx, bytes(""))
-    c = WSConn{fd: fd, buf: bx}
-}
+func ws_conn(fd) (c) { c = WSConn{fd: fd, server: 0, dead: []int{0}} }
+
+var ws_max_message = 16777216     // largest message accepted, in bytes (0 = no limit)
+func ws_set_max_message(n) { ws_max_message = n }
 
 // ws_accept computes Sec-WebSocket-Accept for a client's Sec-WebSocket-Key.
 func ws_accept(key) (a) {
@@ -49,7 +63,7 @@ func ws(req, fn) (r) {
     key := header(req, "sec-websocket-key")
     r = hijack(func(conn) {
         write(conn, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + ws_accept(key) + "\r\n\r\n")
-        fn(ws_conn(conn))
+        fn(WSConn{fd: conn, server: 1, dead: []int{0}})
     })
 }
 
@@ -85,83 +99,167 @@ func ws_send_pong(fd, p) (n)   { n = write_bytes(fd, ws_frame(10, p)) }
 func ws_send_ping(fd) (n)      { n = write_bytes(fd, ws_frame(9, bytes(""))) }
 func ws_send_close(fd) (n)     { n = write_bytes(fd, ws_frame(8, bytes(""))) }
 
-// ws_fill ensures >= n bytes are buffered (reads more); 0 on EOF / read timeout.
-func ws_fill(c, n) (ok) {
-    ok = 1
-    while len(c.buf[0]) < n {
-        chunk := read_bytes(c.fd)
-        if len(chunk) == 0 { ok = 0  return }
-        c.buf[0] = bytes_concat(c.buf[0], chunk)
-    }
+// ws_fail ends the connection with a close status code; later reads return ok 0.
+func ws_fail(c, code) {
+    d := c.dead
+    d[0] = 1
+    n := write_bytes(c.fd, ws_frame(8, bytes_concat(ws_byte((code >> 8) & 255), ws_byte(code & 255))))
 }
 
-// ws_take consumes and returns the first n buffered bytes.
-func ws_take(c, n) (b) {
-    b = bytes_sub(c.buf[0], 0, n)
-    c.buf[0] = bytes_sub(c.buf[0], n, len(c.buf[0]))
+// ws_drop marks the connection finished: the stream ended inside a frame, so
+// nothing after it can be parsed.
+func ws_drop(c) { d := c.dead  d[0] = 1 }
+
+// ws_header reads and validates one frame header. `have` is the size of the
+// message assembled so far, so the limit is applied to a declared length before
+// any of the payload is read.
+func ws_header(c, have) (fin, opcode, masked, n, ok) {
+    fin = 0
+    opcode = 0
+    masked = 0
+    n = 0
+    ok = 0
+    if c.dead[0] == 1 { return }
+    h := read_bytes_exact(c.fd, 2)
+    if len(h) != 2 { return }
+    b0 := byte_at(h, 0)
+    b1 := byte_at(h, 1)
+    if (b0 & 128) != 0 { fin = 1 }
+    opcode = b0 & 15
+    if (b0 & 112) != 0 { ws_fail(c, 1002)  return }              // reserved bits
+    masked = b1 & 128
+    if masked == 0 && c.server == 1 { ws_fail(c, 1002)  return }  // client frames must be masked
+    if opcode > 10 || (opcode > 2 && opcode < 8) { ws_fail(c, 1002)  return }
+    n = b1 & 127
+    if opcode >= 8 && (fin == 0 || n > 125) { ws_fail(c, 1002)  return }
+    ext := 0
+    if n == 126 { ext = 2 }
+    if n == 127 { ext = 8 }
+    if ext > 0 {
+        e := read_bytes_exact(c.fd, ext)
+        if len(e) != ext { ws_drop(c)  return }
+        if ext == 8 && byte_at(e, 0) > 127 { ws_fail(c, 1002)  return }
+        n = 0
+        i := 0
+        while i < ext { n = (n << 8) | byte_at(e, i)  i = i + 1 }
+    }
+    if n < 0 { ws_fail(c, 1002)  return }
+    if opcode < 8 && ws_max_message > 0 && n > ws_max_message - have { ws_fail(c, 1009)  return }
+    ok = 1
+}
+
+// ws_payload reads the masking key (if any) and n payload bytes, and unmasks
+// them. Only the result survives; the wire copy is freed here.
+func ws_payload(c, masked, n) (p, ok) {
+    p = bytes("")
+    ok = 0
+    arena {
+        need := 0
+        if masked != 0 { need = 4 }
+        mask := read_bytes_exact(c.fd, need)
+        if len(mask) == need {
+            raw := read_bytes_exact(c.fd, n)
+            if len(raw) == n {
+                p = escape(bytes_xor(raw, mask))
+                ok = 1
+            }
+        }
+    }
+    if ok == 0 { ws_drop(c) }
 }
 
 // ws_frame_in reads one frame -> (opcode, payload, ok). Client frames are unmasked here.
-// ok == 0 on close/EOF. Control frames (ping 9, pong 10, close 8) are returned as-is.
+// ok == 0 on EOF or a refused frame. Control frames (ping 9, pong 10, close 8) are
+// returned as-is, and so are the fragments of a split message: use ws_next_message
+// or ws_next_text for whole messages.
 // (Named _in, not ws_recv: ws_recv is now a builtin — the ws:// client family.)
 func ws_frame_in(c) (opcode, payload, ok) {
-    opcode = 0
     payload = bytes("")
     ok = 0
-    if ws_fill(c, 2) == 0 { return }
-    h := ws_take(c, 2)
-    b0 := byte_at(h, 0)
-    b1 := byte_at(h, 1)
-    opcode = b0 & 15
-    masked := b1 & 128
-    n := b1 & 127
-    if n == 126 {
-        if ws_fill(c, 2) == 0 { return }
-        e := ws_take(c, 2)
-        n = (byte_at(e, 0) << 8) | byte_at(e, 1)
-    }
-    if n == 127 {
-        if ws_fill(c, 8) == 0 { return }
-        e := ws_take(c, 8)
-        n = 0
-        i := 0
-        while i < 8 { n = (n << 8) | byte_at(e, i)  i = i + 1 }
-    }
-    mask := bytes("")
-    if masked != 0 {
-        if ws_fill(c, 4) == 0 { return }
-        mask = ws_take(c, 4)
-    }
-    if ws_fill(c, n) == 0 { return }
-    raw := ws_take(c, n)
-    if masked != 0 {
-        hx := ""
-        i := 0
-        while i < n {
-            u := byte_at(raw, i) ^ byte_at(mask, i & 3)      // unmask: XOR with the 4-byte key
-            hx = hx + ws_hex2(u)
-            i = i + 1
-        }
-        payload = from_hex(hx)
-    } else {
-        payload = raw
-    }
-    ok = 1
+    fin, op, masked, n, good := ws_header(c, 0)
+    opcode = op
+    if good == 0 { return }
+    p, got := ws_payload(c, masked, n)
+    payload = p
+    ok = got
 }
 
-// ws_next_text reads the next TEXT/binary message, transparently answering pings and
-// stopping on a close or EOF -> (text, ok). The everyday read for a chat-style server.
+// ws_control handles one control frame, freeing it before returning; ok == 0 ends
+// the connection.
+func ws_control(c, opcode, masked, n) (ok) {
+    ok = 0
+    arena {
+        p, got := ws_payload(c, masked, n)
+        if got == 1 {
+            if opcode == 9 { w := ws_send_pong(c.fd, p)  ok = 1 }   // ping -> pong
+            if opcode == 10 { ok = 1 }                              // pong
+        }
+    }
+    if opcode == 8 { ws_drop(c) }                                    // close
+}
+
+// ws_next_message reads the next whole message -> (opcode, data, ok): opcode is 1
+// (text) or 2 (binary) and data is its bytes, NUL-safe. Fragments are reassembled
+// and pings answered; ok == 0 on close, EOF or a refused frame.
+func ws_next_message(c) (opcode, data, ok) {
+    opcode = 0
+    data = bytes("")
+    ok = 0
+    // fragments are merged like a binary counter, so reassembly stays O(n log n)
+    parts := []bytes{}
+    counts := []int{}
+    top := 0
+    have := 0
+    frames := 0
+    while 1 == 1 {
+        fin, op, masked, n, good := ws_header(c, have)
+        if good == 0 { return }
+        if op >= 8 {
+            if ws_control(c, op, masked, n) == 0 { return }
+            continue
+        }
+        if opcode == 0 {
+            if op == 0 { ws_fail(c, 1002)  return }                  // continuation of nothing
+            opcode = op
+        } else {
+            if op != 0 { ws_fail(c, 1002)  return }                  // new message inside another
+        }
+        frames = frames + 1
+        if frames > 4096 { ws_fail(c, 1009)  return }
+        p, got := ws_payload(c, masked, n)
+        if got == 0 { return }
+        have = have + n
+        if fin == 1 && top == 0 { data = p  ok = 1  return }         // unfragmented: no copy
+        if top < len(parts) { parts[top] = p  counts[top] = 1 } else { parts = append(parts, p)  counts = append(counts, 1) }
+        top = top + 1
+        while top > 1 && counts[top - 2] <= counts[top - 1] {
+            parts[top - 2] = bytes_concat(parts[top - 2], parts[top - 1])
+            counts[top - 2] = counts[top - 2] + counts[top - 1]
+            top = top - 1
+        }
+        if fin == 1 {
+            while top > 1 {
+                parts[top - 2] = bytes_concat(parts[top - 2], parts[top - 1])
+                top = top - 1
+            }
+            data = parts[0]
+            ok = 1
+            return
+        }
+    }
+}
+
+// ws_next_text reads the next TEXT/binary message as a string -> (text, ok),
+// transparently answering pings and stopping on a close or EOF. The everyday read
+// for a chat-style server. A string cannot hold a zero byte, so a message that
+// contains one is refused (close 1003, ok == 0) rather than cut short: read binary
+// protocols with ws_next_message.
 func ws_next_text(c) (text, ok) {
     text = ""
     ok = 0
-    while 1 == 1 {
-        op, payload, good := ws_frame_in(c)
-        if good == 0 { return }
-        if op == 8 { return }                                   // close
-        if op == 9 { p := ws_send_pong(c.fd, payload)  continue }   // ping -> pong
-        if op == 10 { continue }                                // pong
-        text = bytes_str(payload)
-        ok = 1
-        return                                                  // text or binary payload
-    }
+    op, data, good := ws_next_message(c)
+    if good == 0 { return }
+    if bytes_index(data, from_hex("00"), 0) >= 0 { ws_fail(c, 1003)  return }
+    text = bytes_str(data)
+    ok = 1
 }
