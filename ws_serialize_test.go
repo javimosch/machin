@@ -12,6 +12,9 @@ import (
 	"time"
 )
 
+// wsChunk is the size of each large message: "a" doubled until it passes 200000.
+const wsChunk = 1 << 18
+
 // Two goroutines write large messages while the reading goroutine answers pings,
 // to a peer that is behind on reading. Every frame must arrive whole.
 const wsBusyApp = `
@@ -29,6 +32,11 @@ func blast(fd, ch, done) {
 func handle(req) (res) {
     res = ws(req, func(c) {
         done := make(chan int)
+        if req.path == "/abandon" {
+            go blast(c.fd, "a", done)
+            sleep(200)
+            return
+        }
         if req.path == "/stuck" || req.path == "/busy" {
             go blast(c.fd, "a", done)
             go blast(c.fd, "b", done)
@@ -64,6 +72,18 @@ func TestWebSocketWritesToOneConnectionDoNotInterleave(t *testing.T) {
 	other.send(0x81, "hello")
 	other.expect("1:hello")
 
+	// closing a connection under a blocked writer neither waits for it nor
+	// disturbs the connections accepted afterwards
+	dial("/abandon")
+	time.Sleep(500 * time.Millisecond)
+	for i := 0; i < 5; i++ {
+		next := dialWSPath(t, addr, "/")
+		next.c.SetDeadline(time.Now().Add(10 * time.Second))
+		next.send(0x81, "hello")
+		next.expect("1:hello")
+		next.c.Close()
+	}
+
 	for trial := 0; trial < 3; trial++ {
 		p := dial("/busy")
 		stop := make(chan struct{})
@@ -87,15 +107,18 @@ func TestWebSocketWritesToOneConnectionDoNotInterleave(t *testing.T) {
 			got := p.read()
 			switch {
 			case got == "10:marker":
-			case strings.HasPrefix(got, "1:a") && strings.Count(got, "a") == len(got)-2:
+			case got == "1:"+strings.Repeat("a", wsChunk):
 				a++
 				time.Sleep(time.Millisecond)
-			case strings.HasPrefix(got, "1:b") && strings.Count(got, "b") == len(got)-2:
+			case got == "1:"+strings.Repeat("b", wsChunk):
 				b++
 				time.Sleep(time.Millisecond)
 			default:
 				t.Fatalf("trial %d: corrupt stream after %d messages: %.80q", trial, a+b, got)
 			}
+		}
+		if a != 40 || b != 40 {
+			t.Fatalf("trial %d: got %d and %d messages, want 40 of each", trial, a, b)
 		}
 		close(stop)
 		<-sent
@@ -146,7 +169,7 @@ func TestWebSocketClientBuiltinWritesDoNotInterleave(t *testing.T) {
 				}
 				switch {
 				case op == 10 && string(pl) == "marker":
-				case op == 1 && len(pl) >= 200000 && strings.Count(string(pl), "a") == len(pl):
+				case op == 1 && string(pl) == strings.Repeat("a", wsChunk):
 					n++
 					time.Sleep(time.Millisecond)
 				default:
@@ -177,10 +200,14 @@ func main() {
 }
 `, ln.Addr().String())
 	out, err := RunCaptured(progFromSrc(t, src))
+	if err != nil {
+		ln.Close() // unblocks the peer if the client never connected
+		t.Fatalf("client: %v (peer: %v)", err, <-result)
+	}
 	if serr := <-result; serr != nil {
 		t.Fatal(serr)
 	}
-	if err != nil || strings.TrimSpace(out) != "done" {
+	if strings.TrimSpace(out) != "done" {
 		t.Fatalf("client: %v %q", err, out)
 	}
 }
