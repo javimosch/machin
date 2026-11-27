@@ -1,5 +1,46 @@
 # Changelog
 
+## v0.146.3
+
+**Web security fix and two WebSocket fixes. Upgrade if your program uses
+`framework/machweb.src` or WebSockets, and rebuild it: the fixes are compiled
+into your binary, including the framework files. Re-copy vendored copies of
+`machweb.src`, `ws.src` and `wsclient.src`.**
+
+Security (#746):
+
+- `framework/machweb.src` now checks every value that goes into a response head,
+  on both `serve` and `serve_tls`, including `Response` fields set directly. It
+  also checks the arguments of the cookie and header helpers, and keeps
+  server-sent event framing.
+
+Behavior changes from that fix:
+
+- A response is refused if `status`, `ctype`, `location`, a `cookies` entry or an
+  `extra` entry holds CR or LF, or an `extra` entry is empty. `set_cookie` refuses
+  CR, LF and `;` in the name or value and `=` in the name; `clear_cookie` the same
+  for the name; `with_header` refuses CR and LF, and `:` in the name. Encode
+  arbitrary cookie values (`url_encode`).
+- A refused response is replaced by `500 Internal Server Error` (`text/plain`,
+  body `internal server error`), a stream function is not called, and stderr gets
+  `machweb: response refused: <field>`.
+- `sse_data` and `sse_comment` treat CRLF, CR and LF as line breaks and prefix
+  every line. `sse_event` with CR or LF in the event name writes nothing and
+  returns -1.
+- `Response` has a new field, `refused`.
+
+WebSockets:
+
+- **Fixed:** a pong could be written inside a partly sent message when the peer
+  was behind on reading, corrupting the stream (#747). Concurrent `write` /
+  `write_bytes` calls on one fd, and the `ws_*` client builtins, now write one at
+  a time. A slow peer delays only writers to its own connection.
+- **Changed:** `close()` on an fd that another goroutine is writing still returns
+  at once, but the descriptor is closed when that write returns.
+- **Not covered:** `wss_*` and TLS handles.
+- **Fixed:** `framework/wsclient.src` dropped the connection on a frame whose
+  16-bit length was 127 (#748).
+
 ## v0.146.2
 
 **`chan_free` in the self-hosted compiler, and checks for some of its misuse
