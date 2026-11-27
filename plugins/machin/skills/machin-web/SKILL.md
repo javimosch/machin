@@ -54,6 +54,13 @@ Response builders: `ok_text` · `ok_html` · `ok_json` · `ok_bytes(ctype, b)` �
 **`ok_wasm(b)`** · `created` · `bad_request` · `not_found`. Add any header with
 `with_header(res, name, value)` (e.g. `Content-Disposition` for a download filename).
 
+**Response head checks.** machweb refuses rather than rewrites: CR or LF in the status,
+content type, location, a cookie or a header line answers a plain 500 and logs
+`machweb: response refused: <field>`. `set_cookie` also refuses `;` (and `=` in the
+name), so `url_encode` arbitrary values; `with_header` refuses `:` in the name.
+`sse_event` refuses an event name with CR/LF (returns -1). The exact rules are in the
+"response head checks" comment in `framework/machweb.src`.
+
 ```go
 func handle(req) (res) {
     if req.path == "/app.wasm" { return ok_wasm(read_file_bytes("app.wasm")) }  // serve your own SPA
@@ -88,7 +95,8 @@ func main() { serve(48080, func(req) { return handle(req) }) }
   (`ws_set_max_message(n)`). `ws_send_text(c.fd, s)` /
   `ws_send_bytes(c.fd, b)` send. A connection that also receives broadcasts wants **two
   goroutines** — the handler loop reads, a spawned `go writer(c.fd, ch)` drains an outbound
-  channel (read + write are independent on the fd). Fan-out is the same hub-goroutine
+  channel (read + write are independent on the fd; concurrent writes to one connection
+  are serialized by the runtime, so frames and pongs never interleave). Fan-out is the same hub-goroutine
   pattern as SSE. See [machin-rooms](https://github.com/javimosch/machin-rooms) and
   [machin-tinystats](https://github.com/javimosch/machin-tinystats) (a 71 KB metrics
   dashboard: HTTP + WS + hub broadcast + a `getState chan chan string` for REST endpoints

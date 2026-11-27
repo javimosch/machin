@@ -5308,11 +5308,73 @@ static mfl_bytes mfl_read_bytes_exact(int64_t fd, int64_t n) {
     if (mfl_rr_mode == 1) mfl_rr_io_log_bytes((char*)b.data, (size_t)b.len);
     return b;
 }
+/* one writer at a time per fd (#747). A send that only partly completes is
+   resumed, so without this another goroutine's bytes could land inside it (a
+   WebSocket pong inside a message). A lock exists only while its fd is being
+   written, and each fd has its own: a slow peer stalls writers to itself only.
+   close() never waits for a writer. While any is inside, it only marks the lock
+   closed, and the last writer to leave closes the fd: the number cannot be
+   reused under a send that was already admitted. Writers that have not sent yet
+   see the mark and stop. */
+typedef struct mfl_wlock {
+    struct mfl_wlock* next;
+    int64_t fd;
+    pthread_mutex_t mu;
+    int refs;    /* guarded by mfl_wlocks_mu */
+    int closed;  /* atomic; set once close() was called */
+} mfl_wlock;
+#define MFL_WLOCK_BUCKETS 256
+static pthread_mutex_t mfl_wlocks_mu = PTHREAD_MUTEX_INITIALIZER;
+static mfl_wlock* mfl_wlocks[MFL_WLOCK_BUCKETS];
+static mfl_wlock** mfl_wlock_slot(int64_t fd) {   /* caller holds mfl_wlocks_mu */
+    mfl_wlock** p = &mfl_wlocks[(uint64_t)fd % MFL_WLOCK_BUCKETS];
+    while (*p && (*p)->fd != fd) p = &(*p)->next;
+    return p;
+}
+static mfl_wlock* mfl_wlock_acquire(int64_t fd) {
+    pthread_mutex_lock(&mfl_wlocks_mu);
+    mfl_wlock** p = mfl_wlock_slot(fd);
+    mfl_wlock* l = *p;
+    if (!l) {
+        l = (mfl_wlock*)calloc(1, sizeof(mfl_wlock));
+        if (!l) mfl_panic("write: out of memory");
+        l->fd = fd;
+        pthread_mutex_init(&l->mu, NULL);
+        *p = l;
+    }
+    l->refs++;
+    pthread_mutex_unlock(&mfl_wlocks_mu);
+    pthread_mutex_lock(&l->mu);
+    return l;
+}
+static int mfl_wlock_closed(mfl_wlock* l) { return __atomic_load_n(&l->closed, __ATOMIC_SEQ_CST); }
+static void mfl_wlock_release(mfl_wlock* l) {
+    pthread_mutex_unlock(&l->mu);
+    pthread_mutex_lock(&mfl_wlocks_mu);
+    if (--l->refs == 0) {
+        *mfl_wlock_slot(l->fd) = l->next;
+        if (mfl_wlock_closed(l)) MFL_CLOSESOCK(l->fd);   /* the deferred close() */
+        pthread_mutex_destroy(&l->mu);
+        free(l);
+    }
+    pthread_mutex_unlock(&mfl_wlocks_mu);
+}
+/* close the fd now, or leave it to the last writer inside. Held under the table
+   lock so no writer can be admitted between the lookup and the close. */
+static void mfl_wlock_close(int64_t fd) {
+    pthread_mutex_lock(&mfl_wlocks_mu);
+    mfl_wlock* l = *mfl_wlock_slot(fd);
+    if (l) __atomic_store_n(&l->closed, 1, __ATOMIC_SEQ_CST);
+    else MFL_CLOSESOCK(fd);
+    pthread_mutex_unlock(&mfl_wlocks_mu);
+}
 /* a write is an output side-effect: replay records/returns the byte count but performs
    no real send (the fd is a recorded sentinel, so writing would EPIPE). */
 static int64_t mfl_write(int64_t fd, const char* s) {
     if (mfl_rr_mode == 2) return mfl_rr_io_pop_i64();
-    int64_t r = (int64_t)MFL_SOCK_WRITE(fd, s, strlen(s));
+    mfl_wlock* l = mfl_wlock_acquire(fd);
+    int64_t r = mfl_wlock_closed(l) ? -1 : (int64_t)MFL_SOCK_WRITE(fd, s, strlen(s));
+    mfl_wlock_release(l);
     if (mfl_rr_mode == 1) mfl_rr_io_log_i64(r);
     return r;
 }
@@ -5320,15 +5382,17 @@ static int64_t mfl_write(int64_t fd, const char* s) {
 static int64_t mfl_write_bytes(int64_t fd, mfl_bytes b) {
     if (mfl_rr_mode == 2) return mfl_rr_io_pop_i64();
     size_t off = 0;
-    while (off < (size_t)b.len) {
+    mfl_wlock* l = mfl_wlock_acquire(fd);
+    while (off < (size_t)b.len && !mfl_wlock_closed(l)) {
         ssize_t w = MFL_SOCK_WRITE(fd, b.data + off, (size_t)b.len - off);
         if (w <= 0) break;
         off += (size_t)w;
     }
+    mfl_wlock_release(l);
     if (mfl_rr_mode == 1) mfl_rr_io_log_i64((int64_t)off);
     return (int64_t)off;
 }
-static void mfl_close(int64_t fd) { MFL_CLOSESOCK(fd); }
+static void mfl_close(int64_t fd) { mfl_wlock_close(fd); }
 /* UDP. Connectionless datagrams: the peer's address travels with every packet
    instead of being fixed by a connect(), which is what trackers (BEP 15) and the
    DHT (BEP 5) need -- one socket talking to hundreds of hosts. A UDP fd shares
@@ -6632,15 +6696,18 @@ static int mfl_wst_read_n(int64_t fd, unsigned char* buf, size_t n) {
     return 0;
 }
 
-/* write every byte; 0 ok, -1 on error/short write */
+/* write every byte as one uninterrupted run (so a pong sent by the receiving
+   goroutine cannot land inside a message); 0 ok, -1 on error/short write */
 static int mfl_wst_write_all(int64_t fd, const unsigned char* buf, size_t n) {
     size_t off = 0;
-    while (off < n) {
+    mfl_wlock* l = mfl_wlock_acquire(fd);
+    while (off < n && !mfl_wlock_closed(l)) {
         ssize_t w = MFL_SOCK_WRITE(fd, buf + off, n - off);
-        if (w <= 0) return -1;
+        if (w <= 0) break;
         off += (size_t)w;
     }
-    return 0;
+    mfl_wlock_release(l);
+    return off == n ? 0 : -1;
 }
 
 /* write one masked client frame (opcode, payload). Client frames must be masked. */
@@ -6876,7 +6943,7 @@ static int64_t mfl_ws_close(int64_t h) {
     mfl_wst* w = (mfl_wst*)(intptr_t)h;
     if (!w) return -1;
     mfl_wst_frame(w, 0x8, NULL, 0);
-    MFL_CLOSESOCK(w->fd);
+    mfl_close(w->fd);
     free(w);
     return 0;
 }

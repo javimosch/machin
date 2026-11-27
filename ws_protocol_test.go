@@ -52,13 +52,18 @@ type wsPeer struct {
 
 func dialWS(t *testing.T, addr string) *wsPeer {
 	t.Helper()
+	return dialWSPath(t, addr, "/")
+}
+
+func dialWSPath(t *testing.T, addr, path string) *wsPeer {
+	t.Helper()
 	c, err := net.Dial("tcp", addr)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
 	t.Cleanup(func() { c.Close() })
 	c.SetDeadline(time.Now().Add(30 * time.Second))
-	io.WriteString(c, "GET / HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n")
+	io.WriteString(c, "GET "+path+" HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n")
 	r := bufio.NewReader(c)
 	resp, err := http.ReadResponse(r, nil)
 	if err != nil || resp.StatusCode != 101 {
