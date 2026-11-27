@@ -120,10 +120,7 @@ func equivOverDomains(fName, gName string, fFn, gFn *FuncDecl, domains [][]fval,
 // both, so one enumeration drives the comparison.
 func checkEquiv(prog *Program, c *Checker, fName, gName string) equivResult {
 	res := equivResult{F: fName, G: gName, Verdict: "inconclusive"}
-	funcs := map[string]*FuncDecl{}
-	for _, f := range prog.Funcs {
-		funcs[f.Name] = f
-	}
+	funcs := interpFuncs(prog)
 
 	var fInst string
 	var fFn *FuncDecl
@@ -134,7 +131,7 @@ func checkEquiv(prog *Program, c *Checker, fName, gName string) equivResult {
 		}
 	}
 	gFn := funcs[gName]
-	if fFn == nil || gFn == nil || len(fFn.Params) != len(gFn.Params) {
+	if fFn == nil || gFn == nil || gFn == externMarker || len(fFn.Params) != len(gFn.Params) {
 		return res // arity mismatch or not instantiated → inconclusive
 	}
 

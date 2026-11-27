@@ -162,6 +162,7 @@ func f_eval(ni) (v) {
         g_fstatus = 2  return v
     }
     if n.kind == K_CALL {
+        if ext_lookup(n.s) >= 0 { g_fstatus = 2  return v }   // extern shadows a builtin: unmodeled
         if n.s == "len" && len(n.kids) == 1 {
             a := f_eval(n.kids[0])
             if g_fstatus != 0 { return v }

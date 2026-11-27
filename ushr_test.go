@@ -60,3 +60,36 @@ func TestUshrRejectsFloat(t *testing.T) {
 		t.Fatal("ushr(float, int) typechecked")
 	}
 }
+
+// An extern shadows a builtin of the same name, and its behaviour is unknown:
+// the interpreter behind falsify/certify must not evaluate the builtin instead.
+func TestExternShadowingBuiltinIsUnmodeled(t *testing.T) {
+	for _, name := range []string{"ushr", "len", "abs"} {
+		arity := map[string]string{"ushr": "x, 62", "len": "x", "abs": "x"}[name]
+		params := map[string]string{"ushr": "i64, i64", "len": "i64", "abs": "i64"}[name]
+		prog := progFromSrc(t, fmt.Sprintf(`
+extern "k" { header "k.h" fn %s(%s) i64 }
+func pick(x) {
+    s := []int{1, 2, 3}
+    return s[%s(%s)]
+}
+func main() { println(str(pick(1))) }`, name, params, name, arity))
+		c, err := Check(prog)
+		if err != nil {
+			t.Fatalf("%s: check: %v", name, err)
+		}
+		if found := detectFalsifiable(prog, c); len(found) != 0 {
+			t.Errorf("%s: reported a counterexample through an extern: %+v", name, found)
+		}
+		var pick *FuncDecl
+		for _, f := range prog.Funcs {
+			if f.Name == "pick" {
+				pick = f
+			}
+		}
+		// 0 would index fine under the builtin's semantics, so only the extern rule makes this inconclusive
+		if v, ok := certEval(pick, []fval{vint(0)}, interpFuncs(prog), c.structs); ok {
+			t.Errorf("%s: certEval was conclusive through an extern: %v", name, v)
+		}
+	}
+}
