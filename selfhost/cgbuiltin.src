@@ -233,6 +233,7 @@ func cg_builtin(iid, call_idx, callee, names) (out) {
         out = "mfl_close(" + names[0] + ")"
         return out
     }
+    if callee == "chan_free" { out = "mfl_chan_free(" + names[0] + ")"  return out }
     if callee == "has" { ik, sk := map_key_args(iid, argn[0], names[1])  out = "mfl_map_has(" + names[0] + ", " + ik + ", " + sk + ")"  return out }
     if callee == "delete" { ik, sk := map_key_args(iid, argn[0], names[1])  out = "mfl_map_del(" + names[0] + ", " + ik + ", " + sk + ")"  return out }
     if callee == "append" {
