@@ -232,6 +232,27 @@ func main() {
 EOF
 run "$T/h10.src"
 
+# chan_free (#724, #740): the element type comes only from chan_free itself in
+# drop(), plus int, string and struct channels freed with messages still queued.
+cat > "$T/hcf.src" <<'EOF'
+type Msg struct { id int  text string }
+func drop(c) { chan_free(c) }
+func main() {
+    a := make(chan int)
+    a <- 1
+    chan_free(a)
+    s := make(chan string)
+    s <- "queued"
+    close(s)
+    chan_free(s)
+    m := make(chan Msg)
+    m <- Msg{id: 1, text: "x"}
+    drop(m)
+    println("ok")
+}
+EOF
+run "$T/hcf.src"
+
 # #293: slice/map (JSON) channels — the element can't be deep-copied by the flat
 # string-offset path, so it round-trips through a generated per-type JSON
 # serializer/parser instead.

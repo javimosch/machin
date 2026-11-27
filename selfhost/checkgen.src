@@ -969,6 +969,12 @@ func gen_builtin(callee, argslots) (handled, slot) {
     if callee == "json" { slot = c_string  return handled, slot }
     if callee == "close" { slot = c_void  return handled, slot }
     // element / key inference
+    // chan_free(ch) (#724): one arg, pinned to chan T so nothing else can be freed.
+    if callee == "chan_free" {
+        if len(argslots) != 1 { g_check_err = 1  return handled, slot }
+        chan_elem(argslots[0])
+        return handled, slot
+    }
     if callee == "append" {
         if len(argslots) != 2 { g_check_err = 1  return handled, slot }
         elem := slice_elem(argslots[0])

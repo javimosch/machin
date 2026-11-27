@@ -170,6 +170,14 @@ detached server and returns: `system(args()[0] + " serve " + port + " >log 2>&1 
 
 ## Gotchas (hard-won)
 
+- **Channels are never freed automatically** — not by `close`, an arena, or a
+  goroutine returning (~160 bytes each; #740). In a long-running service that makes
+  a reply channel per request or iteration, call `chan_free(ch)` once it is done
+  with. It is unchecked, like `free`: no later send/recv/close, and no other
+  goroutine may still use it (freeing after you received its final send is fine).
+  Misuse can crash or hang, even with `--safe`. Leave long-lived channels (pools,
+  hubs) alone.
+
 - **Pool, don't share.** A single global connection in a concurrent server corrupts reads.
   Use the pool + acquire/release per request, releasing on **every** return path.
 - **Wire reads are NUL-binary** — the drivers use `read_bytes` (not `read`, which is a

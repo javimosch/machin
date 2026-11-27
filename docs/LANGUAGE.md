@@ -757,7 +757,7 @@ v, ok := <-ch   // ok == false once ch is closed and drained
 is closed and drained — a shorthand for looping on the comma-ok receive.
 
 Channels are malloc'd and are **not** reclaimed by `close` or by any arena —
-a program that keeps making channels grows without bound (~150 bytes each).
+a program that keeps making channels grows without bound (~160 bytes each, #740).
 `chan_free(ch)` hands the memory back, including messages still queued in it.
 It is unchecked, like `free`: the channel must not be used afterwards, and no
 other goroutine may hold a reference to it (a receiver blocked on it, or any
