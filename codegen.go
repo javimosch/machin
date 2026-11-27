@@ -664,12 +664,59 @@ typedef struct {
     char* (*ser)(const void*);          /* json mode: element -> arena JSON */
     void (*des)(const char*, void*);    /* json mode: JSON -> *out (arena) */
     int64_t id;                         /* sequential channel id, for the deadlock wait-cycle report */
+    int waiters;                        /* goroutines parked in recv2 on this channel (#740) */
 } mfl_chan;
 static int64_t mfl_chan_id_ctr = 0;
+/* Live-channel registry (#740): chan_free verifies its argument is a channel
+   this program actually made and has not already freed — BEFORE it touches the
+   pointer, since a double free or a stale alias points at memory that may
+   already be gone. Keyed by pointer VALUE (an open-addressing set), so the
+   lookup never dereferences c. make_chan inserts, chan_free removes; only
+   those two (rare) operations pay a lock — send/recv/close are untouched. */
+static mfl_chan** mfl_chreg = NULL;
+static int64_t mfl_chreg_cap = 0;    /* power of two */
+static int64_t mfl_chreg_n = 0;      /* live entries */
+static int64_t mfl_chreg_used = 0;   /* live + tombstones (drives rehash) */
+static pthread_mutex_t mfl_chreg_mu = PTHREAD_MUTEX_INITIALIZER;
+#define MFL_CHREG_TOMB ((mfl_chan*)(uintptr_t)1)
+static uint64_t mfl_chreg_hash(mfl_chan* c) {
+    uint64_t x = (uint64_t)(uintptr_t)c;
+    x ^= x >> 33; x *= 0xff51afd7ed558ccdULL; x ^= x >> 33;
+    return x;
+}
+static void mfl_chreg_rehash(int64_t ncap) {   /* caller holds mfl_chreg_mu */
+    mfl_chan** nt = (mfl_chan**)calloc((size_t)ncap, sizeof(mfl_chan*));
+    for (int64_t i = 0; i < mfl_chreg_cap; i++) {
+        mfl_chan* c = mfl_chreg[i];
+        if (!c || c == MFL_CHREG_TOMB) continue;
+        uint64_t h = mfl_chreg_hash(c) & (uint64_t)(ncap - 1);
+        while (nt[h]) h = (h + 1) & (uint64_t)(ncap - 1);
+        nt[h] = c;
+    }
+    free(mfl_chreg); mfl_chreg = nt; mfl_chreg_cap = ncap; mfl_chreg_used = mfl_chreg_n;
+}
+static void mfl_chreg_add(mfl_chan* c) {        /* caller holds mfl_chreg_mu */
+    if (mfl_chreg_cap == 0 || (mfl_chreg_used + 1) * 4 > mfl_chreg_cap * 3)
+        mfl_chreg_rehash(mfl_chreg_cap ? mfl_chreg_cap * 2 : 1024);
+    uint64_t h = mfl_chreg_hash(c) & (uint64_t)(mfl_chreg_cap - 1);
+    while (mfl_chreg[h] && mfl_chreg[h] != MFL_CHREG_TOMB) h = (h + 1) & (uint64_t)(mfl_chreg_cap - 1);
+    if (!mfl_chreg[h]) mfl_chreg_used++;
+    mfl_chreg[h] = c; mfl_chreg_n++;
+}
+/* remove c; returns 1 iff c was a live channel. Caller holds mfl_chreg_mu. */
+static int mfl_chreg_del(mfl_chan* c) {
+    if (!mfl_chreg_cap) return 0;
+    uint64_t h = mfl_chreg_hash(c) & (uint64_t)(mfl_chreg_cap - 1);
+    while (mfl_chreg[h]) {
+        if (mfl_chreg[h] == c) { mfl_chreg[h] = MFL_CHREG_TOMB; mfl_chreg_n--; return 1; }
+        h = (h + 1) & (uint64_t)(mfl_chreg_cap - 1);
+    }
+    return 0;
+}
 static mfl_chan* mfl_make_chan(int64_t es, char* (*ser)(const void*), void (*des)(const char*, void*), int nstr, ...) {
     mfl_chan* c = malloc(sizeof(mfl_chan));
     pthread_mutex_init(&c->mu, NULL); pthread_cond_init(&c->cnd, NULL);
-    c->head = c->tail = NULL; c->es = es; c->closed = 0;
+    c->head = c->tail = NULL; c->es = es; c->closed = 0; c->waiters = 0;
     c->ser = ser; c->des = des;
     c->id = __atomic_fetch_add(&mfl_chan_id_ctr, 1, __ATOMIC_RELAXED);
     c->nstr = nstr; c->stroff = NULL;
@@ -679,6 +726,9 @@ static mfl_chan* mfl_make_chan(int64_t es, char* (*ser)(const void*), void (*des
         for (int i = 0; i < nstr; i++) c->stroff[i] = va_arg(ap, int);
         va_end(ap);
     }
+    pthread_mutex_lock(&mfl_chreg_mu);
+    mfl_chreg_add(c);
+    pthread_mutex_unlock(&mfl_chreg_mu);
     return c;
 }
 /* freeze: replace each string field (found at the given byte offsets within
@@ -762,10 +812,32 @@ static void mfl_chan_close(mfl_chan* c) {
    particular no other goroutine may hold it: a receiver blocked in
    mfl_chan_recv2, or any later send/recv/close, dereferences freed memory.
    chan_free is for a channel whose references are all local and done — the
-   per-iteration make(chan) of a long-running loop. */
+   per-iteration make(chan) of a long-running loop.
+
+   #740 checks the two misuse modes that CAN be caught without ownership
+   tracking, turning them into a clean panic instead of a crash or hang:
+   - double free / freeing a pointer that was never a live channel: the
+     live-channel registry is consulted BEFORE c is dereferenced, so the
+     stale pointer is never touched.
+   - freeing while a goroutine is parked receiving on it (c->waiters > 0):
+     that receiver could never be woken, so this is a hang — reported instead.
+   Still unchecked: a send/recv/close/select on the channel AFTER the free
+   returns (the pointer is gone — only a GC or escape proof could catch that),
+   and freeing while another goroutine merely HOLDS the channel without being
+   blocked at that instant. */
 static void mfl_chan_free(mfl_chan* c) {
     if (!c) return;
+    pthread_mutex_lock(&mfl_chreg_mu);
+    if (!mfl_chreg_del(c)) {
+        pthread_mutex_unlock(&mfl_chreg_mu);
+        mfl_panic("chan_free: not a live channel (double free, or already freed)");
+    }
+    pthread_mutex_unlock(&mfl_chreg_mu);
     pthread_mutex_lock(&c->mu);
+    if (c->waiters > 0) {
+        pthread_mutex_unlock(&c->mu);
+        mfl_panic("chan_free: goroutine(s) still blocked receiving on the channel");
+    }
     mfl_cnode* n = c->head;
     while (n) {
         mfl_cnode* nx = n->next;
@@ -1406,8 +1478,10 @@ static int mfl_chan_recv2(mfl_chan* c, void* out) {
            there is nothing THIS goroutine may receive; park. A dequeue by
            another receiver broadcasts below so we re-check the new head. */
         mfl_dl_block(c->id); /* about to park on an empty open channel */
+        c->waiters++;        /* #740: chan_free refuses while a receiver is parked */
         while (!c->closed && (!c->head || mfl_chan_head_mine(c)) && !MFL_BROKEN())
             pthread_cond_wait(&c->cnd, &c->mu);
+        c->waiters--;
         mfl_dl_unblock();
 #ifdef MFL_LIBRARY
         if (!c->closed && (!c->head || mfl_chan_head_mine(c))) { /* only a failed scope gets here */

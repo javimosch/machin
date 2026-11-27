@@ -759,13 +759,15 @@ is closed and drained — a shorthand for looping on the comma-ok receive.
 Channels are malloc'd and are **not** reclaimed by `close` or by any arena —
 a program that keeps making channels grows without bound (~150 bytes each).
 `chan_free(ch)` hands the memory back, including messages still queued in it.
-It is unchecked, like `free`: the channel must not be used afterwards, and no
-other goroutine may hold a reference to it (a receiver blocked on it, or any
-shared use, becomes a use-after-free). Nothing checks this, with or without
-`--safe` or `--race-safe`: misuse can crash with no MFL message, or hang (freeing
-under a blocked receiver), which the deadlock detector does not report. Freeing
-after you have received a goroutine's final send is fine. It fits a channel created and consumed
-inside one iteration of a long-running loop:
+The channel must not be used afterwards, and no other goroutine may hold a
+reference to it. Two misuse modes are checked and panic cleanly (#740): a
+double `chan_free`, and freeing while a goroutine is blocked receiving on the
+channel (which would otherwise hang forever — the deadlock detector does not
+see it, since the freed channel's mutex is gone). Still unchecked: any
+send/recv/close/select on the channel *after* the free returns — that is a
+use-after-free, exactly like `free()` on a raw pointer. Freeing after you
+have received a goroutine's final send is fine. It fits a channel created
+and consumed inside one iteration of a long-running loop:
 
 ```go
 while i < n {

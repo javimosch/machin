@@ -76,6 +76,56 @@ func TestChanFreeDiscardsQueuedMessages(t *testing.T) {
 	}
 }
 
+// #740: the two misuse modes that can be caught without ownership tracking are
+// caught — a double chan_free and a free under a blocked receiver are clean
+// panics, not UB/crashes/hangs. (A send/recv AFTER the free is still an
+// unchecked use-after-free, like free() on a raw pointer.)
+func TestChanFreePanicsOnMisuse(t *testing.T) {
+	for _, tc := range []struct{ name, src, want string }{
+		{"double free", `func main() {
+	c := make(chan int)
+	chan_free(c)
+	chan_free(c)
+}`, "double free"},
+		{"blocked receiver", `func worker(c, started) {
+	started <- 1
+	x := <-c
+	println(x)
+}
+func main() {
+	c := make(chan int)
+	started := make(chan int)
+	go worker(c, started)
+	<-started
+	sleep(50)
+	chan_free(c)
+}`, "blocked receiving"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prog, err := wallsCompose(t, tc.src)
+			if err != nil {
+				t.Fatalf("compose: %v", err)
+			}
+			bin, _ := os.CreateTemp("", "mfl-chanfree-misuse-*")
+			bin.Close()
+			defer os.Remove(bin.Name())
+			if err := BuildBinary(prog, bin.Name(), false); err != nil {
+				t.Fatalf("build: %v", err)
+			}
+			cmd := exec.Command(bin.Name())
+			var so, se strings.Builder
+			cmd.Stdout, cmd.Stderr = &so, &se
+			err = cmd.Run()
+			if err == nil {
+				t.Fatalf("expected a panic, program exited 0: %q", so.String())
+			}
+			if !strings.Contains(se.String(), "panic: chan_free") || !strings.Contains(se.String(), tc.want) {
+				t.Errorf("stderr %q does not report %q", se.String(), tc.want)
+			}
+		})
+	}
+}
+
 // The signature is enforced at compile time: a non-channel argument and a
 // wrong arity both have to be refused, or chan_free becomes a way to free
 // something that was never a channel.
