@@ -128,6 +128,7 @@ usage:
   machin run   <file.mfl>            compile to native + execute
   machin build <file.mfl> [-o out]   compile to a native binary
   machin build <file.mfl> --target wasm  compile to a WebAssembly module (needs zig; mark exports with export func)
+  machin build <file.mfl> --target wasm-freestanding  runtime-less wasm object to link into C (experimental; needs zig)
   machin build <file.mfl> --target windows  cross-compile to a Windows .exe (needs zig; stdio/compute core, no net/TLS yet — #517)
   machin build <file.mfl> --target android-lib --java-package <pkg> [--abi arm64-v8a,x86_64] [-o dir]
                                      libmfl.so + Mfl.java for an Android app (needs the NDK; always --safe)
@@ -515,18 +516,22 @@ func cmdBuild(args []string) error {
 		if static {
 			return fmt.Errorf("build: --static applies to the native target, not windows")
 		}
+	case targetWasmFreestanding:
+		if static || safe || len(link.LDFlags) > 0 || len(link.StaticLinks) > 0 {
+			return fmt.Errorf("build: --static, --safe, --ldflags and --static-link do not apply to wasm-freestanding")
+		}
 	case targetAndroidLib:
 		if static || len(link.StaticLinks) > 0 {
 			return fmt.Errorf("build: --static and --static-link apply to the native target, not android-lib")
 		}
 		safe = true // an unchecked bad index would segfault the host app
 	default:
-		return fmt.Errorf("build: unknown --target %q (want native, wasm, windows, or android-lib)", target)
+		return fmt.Errorf("build: unknown --target %q (want native, wasm, wasm-freestanding, windows, or android-lib)", target)
 	}
 	if target != targetAndroidLib && (javaPkg != "" || len(abis) > 0) {
 		return fmt.Errorf("build: --java-package and --abi apply only to --target android-lib")
 	}
-	if !link.empty() && ((target != "native" && target != targetAndroidLib) || emitC) {
+	if !link.empty() && ((target != "native" && target != targetAndroidLib && target != targetWasmFreestanding) || emitC) {
 		return fmt.Errorf("build: --cflags/--ldflags/--static-link apply only to a native binary build")
 	}
 	prog, err := loadMFL(src)
@@ -562,6 +567,16 @@ func cmdBuild(args []string) error {
 			return err
 		}
 		fmt.Print(c)
+		return nil
+	}
+	if target == targetWasmFreestanding {
+		if out == "" {
+			out = strings.TrimSuffix(filepath.Base(src), filepath.Ext(src)) + ".o"
+		}
+		if err := BuildWasmFreestanding(prog, out, link.CFlags); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "built %s (wasm-freestanding object)\n", out)
 		return nil
 	}
 	if target == "wasm" {

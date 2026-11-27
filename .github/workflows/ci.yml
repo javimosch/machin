@@ -157,6 +157,18 @@ jobs:
           fi
           echo "$out" | grep -q "^ok" || { echo "::error::ASan alias suite failed"; exit 1; }
 
+      # Same reasoning for the wasm-freestanding link test: it SKIPS without zig
+      # or node, and it is the only proof the object links and runs with no WASI.
+      - name: Freestanding link test must run
+        run: |
+          out=$(go test -count=1 -v -run TestFreestandingLinksIntoC . 2>&1)
+          echo "$out" | tail -25
+          if echo "$out" | grep -q -- "--- SKIP"; then
+            echo "::error::the wasm-freestanding link test SKIPPED (zig or node missing), so nothing linked or ran"
+            exit 1
+          fi
+          echo "$out" | grep -q -- "--- PASS: TestFreestandingLinksIntoC" || { echo "::error::wasm-freestanding link test did not pass"; exit 1; }
+
       # main only: a release PR legitimately carries an untagged version bump, so
       # this would fail every such PR. On main it catches the version bump that
       # merged and never got tagged — the v0.123.0 failure, which was invisible.
