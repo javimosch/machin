@@ -431,8 +431,37 @@ func (ip *interp) eval(e Expr) fval {
 	return fval{} // unreachable
 }
 
+// externMarker stands in an interpreter's function table for an extern: C code
+// whose behaviour is unknown.
+var externMarker = &FuncDecl{Name: "<extern>"}
+
+// interpFuncs is the function table every interpreter user starts from. An extern
+// shadows a builtin of the same name, so it has to be listed too.
+func interpFuncs(prog *Program) map[string]*FuncDecl {
+	funcs := map[string]*FuncDecl{}
+	for _, f := range prog.Funcs {
+		funcs[f.Name] = f
+	}
+	for _, ed := range prog.Externs {
+		for _, ef := range ed.Funcs {
+			funcs[ef.Name] = externMarker
+		}
+	}
+	return funcs
+}
+
 func (ip *interp) evalCall(x *Call) fval {
+	if ip.funcs[x.Callee] == externMarker { // before the builtins: the extern wins
+		ip.unknown("extern call " + x.Callee)
+	}
 	switch x.Callee {
+	case "ushr":
+		if len(x.Args) == 2 {
+			v, n := ip.eval(x.Args[0]), ip.eval(x.Args[1])
+			if v.k == KInt && n.k == KInt {
+				return vint(int64(uint64(v.i) >> uint64(n.i))) // Go gives 0 for counts >= 64, as mfl_ushr does
+			}
+		}
 	case "len":
 		if len(x.Args) == 1 {
 			v := ip.eval(x.Args[0])
@@ -945,10 +974,7 @@ func detectFalsifiable(prog *Program, c *Checker) []falsifyFinding {
 }
 
 func detectFalsifiableStats(prog *Program, c *Checker) ([]falsifyFinding, falsifyStats, []funcVerdict) {
-	funcs := map[string]*FuncDecl{}
-	for _, f := range prog.Funcs {
-		funcs[f.Name] = f
-	}
+	funcs := interpFuncs(prog)
 	var out []falsifyFinding
 	var st falsifyStats
 	seen := map[string]bool{} // dedup (Decl|Code|Expr) across monomorphized instances

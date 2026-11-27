@@ -256,10 +256,7 @@ func jsonEscape(s string) string {
 // certifyProgram runs translation validation over every representative function.
 // decls are the (normalized) source function strings, used to build the harness.
 func certifyProgram(prog *Program, c *Checker, decls []string) (certReport, error) {
-	funcs := map[string]*FuncDecl{}
-	for _, f := range prog.Funcs {
-		funcs[f.Name] = f
-	}
+	funcs := interpFuncs(prog)
 	structs := c.structs
 
 	var probes []certProbe

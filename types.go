@@ -2696,6 +2696,14 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		}
 		c.addPair(argSlots[0], newSlot(c, KNum))
 		return c.cInt, nil
+	case "ushr":
+		// logical (zero-filling) right shift; >> is arithmetic
+		if len(argSlots) != 2 {
+			return 0, fmt.Errorf("ushr: 2 args (int, int)")
+		}
+		c.addPair(argSlots[0], c.cInt)
+		c.addPair(argSlots[1], c.cInt)
+		return c.cInt, nil
 	case "f64_from_bits":
 		// the inverse: int64 bit pattern -> double
 		if len(argSlots) != 1 {

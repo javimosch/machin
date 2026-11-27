@@ -43,6 +43,8 @@ printf 'func h(a,b){if b!=0{if a>0{return a/b}}return 0}\nfunc main(){println(st
 printf 'func n(a){return 5/(-a+a)}\nfunc main(){println(str(n(2)))}\n' > "$T/s7"; run "$T/s7" "unary -a+a=0"
 printf 'func p(a,b){c:=a-b return 9/c}\nfunc main(){println(str(p(1,2)))}\n' > "$T/s8"; run "$T/s8" "assign then div"
 printf 'func q(a,b){if b<1{if b>-1{return 0}}return a/b}\nfunc main(){println(str(q(1,2)))}\n' > "$T/s9"; run "$T/s9" "chained guard (clean)"
+# an extern shadowing a builtin is unmodeled: neither side may report through it
+printf 'extern "k"{header "k.h" fn ushr(i64,i64) i64}\nfunc e(x){s:=[]int{1,2,3}return s[ushr(x,62)]}\nfunc main(){println(str(e(1)))}\n' > "$T/s10"; run "$T/s10" "extern shadows ushr"
 
 # []int fixtures (the real Phase 1 patterns): index-OOB, len, while, for-range.
 printf 'func sumbad(xs){total:=0 i:=0 for i<=len(xs){total=total+xs[i] i=i+1}return total}\nfunc main(){println(str(sumbad([]int{1,2})))}\n' > "$T/v1"; run "$T/v1" "sumbad off-by-one (FALS001)"
