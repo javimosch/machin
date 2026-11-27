@@ -261,6 +261,8 @@ func cg_extern_call(iid, ef_idx, names) (out) {
         return out
     }
     if ef.ret == "ptr" { out = "(int64_t)(intptr_t)(" + call + ")"  return out }
+    // a C string result is borrowed — copy it into the arena (#731); NULL -> ""
+    if ef.ret == "string" { out = "mfl_dup(mfl_s(" + call + "))"  return out }
     if ef.ret != "" && is_ffi_scalar(ef.ret) == 0 { out = "mfl_from_" + ef.ret + "(" + call + ")"  return out }
     out = call
 }

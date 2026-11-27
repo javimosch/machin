@@ -110,6 +110,53 @@ func TestFFIPointerHandle(t *testing.T) {
 	}
 }
 
+// TestFFIStringResultCopied: an extern fn returning `string` hands back a
+// borrowed C pointer; machin must copy it, or a callee that reuses a static
+// buffer silently rewrites strings the program already holds (#731). A NULL
+// return maps to "" like every other string op.
+func TestFFIStringResultCopied(t *testing.T) {
+	dir := t.TempDir()
+	hdr := `#include <stdio.h>
+static const char* label(long long n) {
+    static char buf[32];
+    snprintf(buf, sizeof buf, "item %lld", n);
+    return buf;
+}
+static const char* nothing(void) { return 0; }
+`
+	if err := os.WriteFile(filepath.Join(dir, "repro.h"), []byte(hdr), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prog, err := ParseProgram([]string{
+		`extern "repro" { cflags "-I` + dir + `" header "repro.h" fn label(int) string fn nothing() string }`,
+		`func main(){
+			a := label(1)
+			c := label(2) + ""
+			println("a = " + a)
+			b := label(3)
+			println("a = " + a)
+			println("b = " + b)
+			println("c = " + c)
+			xs := []string{}
+			xs = append(xs, label(4))
+			xs = append(xs, label(5))
+			println(xs[0] + ", " + xs[1])
+			println("null -> '" + nothing() + "'")
+		}`,
+	})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	out, err := RunCaptured(prog)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	want := "a = item 1\na = item 1\nb = item 3\nc = item 2\nitem 4, item 5\nnull -> ''\n"
+	if out != want {
+		t.Fatalf("extern string copy: got %q, want %q", out, want)
+	}
+}
+
 // TestFFIMultipleLink parses several `link` directives, in order — needed for a
 // real library like raylib (-lraylib -lGL -lm -lpthread -ldl -lrt -lX11).
 func TestFFIMultipleLink(t *testing.T) {
