@@ -40,7 +40,7 @@ func pair(a) { return a, a + 1 }
 export func bump(p, d) {
 	x, y := pair(peek_u32(p, 0))
 	for count < d { count = count + 1 }
-	if on && ratio < 1.0 { poke_i64(p, 8, x + y) }
+	if on && ratio < 1.0 { poke_i64(p, 8, ushr(x + y, 1)) }
 	return count
 }
 `)
@@ -62,7 +62,7 @@ export func bump(p, d) {
 	for _, want := range []string{
 		"static int64_t mfl_g_count = ", "static double mfl_g_ratio = ",
 		`__attribute__((export_name("bump"))) int64_t bump(int64_t a0, int64_t a1)`,
-		"static inline int64_t mfl_peek_u32(", "static inline void mfl_poke_i64(",
+		"static inline int64_t mfl_peek_u32(", "static inline int64_t mfl_ushr(", "static inline void mfl_poke_i64(",
 	} {
 		if !strings.Contains(c, want) {
 			t.Errorf("missing %q in:\n%s", want, c)
@@ -124,8 +124,8 @@ func TestFreestandingAllowListMatchesPrelude(t *testing.T) {
 			n++
 		}
 	}
-	if got := strings.Count(prelude, "static inline "); got != n+2 { // + the two f64 bit casts
-		t.Errorf("prelude has %d helpers, want %d", got, n+2)
+	if got := strings.Count(prelude, "static inline "); got != n+3 { // + the two f64 bit casts and ushr
+		t.Errorf("prelude has %d helpers, want %d", got, n+3)
 	}
 	if freestandingBuiltin("peek_bogus") {
 		t.Error("peek_bogus accepted")

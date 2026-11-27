@@ -56,6 +56,8 @@ export func run(cpu, mem, budget) {
 
 export func retired_count() { return retired }
 
+export func top_bits(x) { return ushr(x, 60) }
+
 // float and bool cross the C boundary too
 export func scale(x, up) {
 	if up { return x * 2.5 }

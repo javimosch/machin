@@ -4,6 +4,7 @@
 
 int64_t run(int64_t cpu, int64_t mem, int64_t budget);
 int64_t retired_count(void);
+int64_t top_bits(int64_t x);
 double scale(double x, int up);
 
 static uint8_t mem[4096];
@@ -49,5 +50,5 @@ __attribute__((export_name("stat"))) int64_t stat_(int which) {
 	return which == 0 ? slices : which == 1 ? faults : retired_count();
 }
 __attribute__((export_name("float_check"))) int float_check(void) {
-	return scale(4.0, 1) == 10.0 && scale(10.0, 0) == 4.0;
+	return scale(4.0, 1) == 10.0 && scale(10.0, 0) == 4.0 && top_bits(-1) == 15;
 }
