@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -96,12 +97,20 @@ func (p *wsPeer) send(first byte, payload string) {
 	p.c.Write(wsClientFrame(first, []byte(payload), true))
 }
 
+func wsEnded(err error) string {
+	var ne net.Error
+	if errors.As(err, &ne) && ne.Timeout() {
+		return "timeout"
+	}
+	return "eof"
+}
+
 // read returns the next server frame as "opcode:payload"; a close frame is
 // "close:<status code>", and a connection that ended is "eof".
 func (p *wsPeer) read() string {
 	h := make([]byte, 2)
 	if _, err := io.ReadFull(p.r, h); err != nil {
-		return "eof"
+		return wsEnded(err)
 	}
 	n := int(h[1] & 127)
 	if n >= 126 {
@@ -117,7 +126,7 @@ func (p *wsPeer) read() string {
 	}
 	body := make([]byte, n)
 	if _, err := io.ReadFull(p.r, body); err != nil {
-		return "eof"
+		return wsEnded(err)
 	}
 	if h[0]&15 == 8 {
 		if len(body) < 2 {

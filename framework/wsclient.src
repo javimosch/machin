@@ -160,16 +160,26 @@ func wsc_next(c) (msg, ok) {
 
 // ---- the handshake ----
 
+// wsc_unsafe is 1 if s holds a space, a control byte or DEL.
+func wsc_unsafe(s) (bad) {
+    bad = 0
+    b := bytes(s)
+    i := 0
+    while i < len(b) {
+        v := byte_at(b, i)
+        if v <= 32 || v == 127 { bad = 1  return }
+        i = i + 1
+    }
+}
+
 // wsc_dial does the TCP connect + HTTP Upgrade handshake. hdrblock is pre-joined
 // "Name: Value\r\n" lines ("" for none). The 101 status AND the Sec-WebSocket-Accept
 // proof are both verified, so an endpoint that isn't really a WebSocket server
 // can't fake a successful open. Any failure closes the fd and returns ok=0.
 func wsc_dial(host, port, path, hdrblock) (c, ok) {
     ok = 0
-    // host and path go into the request: no spaces or line breaks
-    for _, bad := range []string{" ", "\r", "\n", "\t"} {
-        if index(host, bad) >= 0 || index(path, bad) >= 0 { c = wsc_attach(-1)  return }
-    }
+    // host and path go into the request: no spaces or control bytes
+    if wsc_unsafe(host) == 1 || wsc_unsafe(path) == 1 { c = wsc_attach(-1)  return }
     fd := dial(host, port)
     if fd < 0 { c = wsc_attach(fd)  return }
     c = wsc_attach(fd)

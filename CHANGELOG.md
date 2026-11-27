@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.146.1
+
+**Completes the v0.146.0 WebSocket fix (#734). Rebuild any program that composes
+`framework/ws.src`.**
+
+- **Fixed:** `framework/ws.src` still kept a little memory for every control
+  frame (ping, pong) until the next data message, so a peer sending only control
+  frames could grow the server without limit.
+- **Fixed:** `ws_recv` / `wss_recv` counted a ping against
+  `MFL_WS_MAX_MESSAGE`, closing a valid fragmented message near the limit.
+- **Fixed:** `httpstream.src` and `wsclient.src` now refuse every control byte
+  and DEL in a request line, not only spaces, tabs and line breaks.
+- **Fixed:** in `ws.src`, a stream cut after the first header byte now ends the
+  connection instead of letting a later read start mid-frame.
+- **Fixed:** `read_bytes_exact` reports progress as data arrives, so
+  `MFL_DL_STRICT` does not mistake a slow transfer for a deadlock.
+
 ## v0.146.0
 
 **HTTP client and WebSocket hardening. Upgrade if your program uses

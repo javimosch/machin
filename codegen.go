@@ -5224,11 +5224,12 @@ static mfl_bytes mfl_read_bytes_exact(int64_t fd, int64_t n) {
         ssize_t r = MFL_SOCK_READ(fd, tmp + got, cap - got);
         if (r <= 0) break;
         got += (size_t)r;
+        mfl_dl_note(); /* got data = progress */
     }
     mfl_dl_io_park(0);
     mfl_bytes b; b.len = (tmp && got == want) ? (int64_t)got : 0;
     b.data = (uint8_t*)mfl_alloc(b.len ? (size_t)b.len : 1);
-    if (b.len) { memcpy(b.data, tmp, (size_t)b.len); mfl_dl_note(); }
+    if (b.len) memcpy(b.data, tmp, (size_t)b.len);
     free(tmp);
     if (mfl_rr_mode == 1) mfl_rr_io_log_bytes((char*)b.data, (size_t)b.len);
     return b;
@@ -6438,7 +6439,7 @@ static unsigned char* mfl_ws_recv_raw(mfl_ws* w, size_t* outlen) {
         }
         unsigned char mk[4] = {0,0,0,0};
         if (masked && mfl_ssl_read_n(w->ssl, mk, 4) < 0) { free(msg); return NULL; }
-        if (len > mfl_ws_max_message() - (uint64_t)mlen) {
+        if (opcode >= 0x8 ? len > 125 : len > mfl_ws_max_message() - (uint64_t)mlen) {
             static const unsigned char too_big[2] = {0x03, 0xF1}; /* 1009 */
             mfl_ws_frame(w, 0x8, too_big, 2);
             free(msg); return NULL;
@@ -6728,7 +6729,7 @@ static unsigned char* mfl_wst_recv_raw(mfl_wst* w, size_t* outlen) {
         }
         unsigned char mk[4] = {0,0,0,0};
         if (masked && mfl_wst_read_n(w->fd, mk, 4) < 0) { free(msg); return NULL; }
-        if (len > mfl_wst_max_message() - (uint64_t)mlen) {
+        if (opcode >= 0x8 ? len > 125 : len > mfl_wst_max_message() - (uint64_t)mlen) {
             static const unsigned char too_big[2] = {0x03, 0xF1}; /* 1009 */
             mfl_wst_frame(w, 0x8, too_big, 2);
             free(msg); return NULL;

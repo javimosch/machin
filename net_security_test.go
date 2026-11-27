@@ -4,6 +4,7 @@ package main
 // (WebSocket resource exhaustion).
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/pem"
 	"fmt"
@@ -176,6 +177,12 @@ func main() {
     println(ok2)
     c, ok3 := wsc_open("127.0.0.1", ` + port + `, bad)
     println(ok3)
+    for _, hex := range []string{"0b", "0c", "7f", "01"} {
+        ctl := "/a" + bytes_str(from_hex(hex))
+        h3, ok4 := hs_open("GET", base + ctl, []string{}, "")
+        c2, ok5 := wsc_open("127.0.0.1", ` + port + `, ctl)
+        println(str(ok4) + str(ok5))
+    }
 }
 `
 	prog, perr := progFromSrcErr(app)
@@ -189,7 +196,7 @@ func main() {
 		}
 		t.Fatalf("run: %v", err)
 	}
-	want := "0|url\n0|url\n0|url\n0|method\n0|method\n0|method\n0|url\n[]\n0\n0\n0\n0\n0\n0\n"
+	want := "0|url\n0|url\n0|url\n0|method\n0|method\n0|method\n0|url\n[]\n0\n0\n0\n0\n0\n0\n00\n00\n00\n00\n"
 	if out != want {
 		t.Errorf("got %q, want %q", out, want)
 	}
@@ -313,6 +320,42 @@ func handle(req) (res) {
 	t.Logf("peak RSS %d KB", peak)
 	if peak > 200*1024 {
 		t.Errorf("peak RSS %d KB for 4 MiB messages", peak)
+	}
+}
+
+// Control frames with no data message between them all land in one
+// ws_next_message call; none of what reading them allocates may stay.
+func TestWebSocketControlFloodIsFlat(t *testing.T) {
+	addr, pid := startWSServer(t, wsMessageApp)
+	p := dialWS(t, addr)
+	batch := bytes.Repeat(wsClientFrame(0x8A, nil, true), 10000)
+	for i := 0; i < 300; i++ {
+		p.c.Write(batch)
+	}
+	p.send(0x81, "x")
+	p.expect("1:1 78")
+	peak := peakRSSKB(t, pid)
+	t.Logf("peak RSS %d KB", peak)
+	if peak > 40*1024 {
+		t.Errorf("peak RSS %d KB after 3,000,000 control frames", peak)
+	}
+}
+
+// A ping between two fragments does not count against the message limit.
+func TestWebSocketClientLimitIgnoresControlFrames(t *testing.T) {
+	addr := rawHTTPServer(t, func(string) (string, bool) {
+		return "HTTP/1.1 101 Switching Protocols\r\n\r\n\x02\x04abcd\x89\x01p\x80\x00", true
+	})
+	t.Setenv("MFL_WS_MAX_MESSAGE", "4")
+	out, err := RunCaptured(progFromSrc(t, `func main() {
+    h := ws_open("ws://`+addr+`/")
+    println(bytes_str(ws_recv_bin(h)))
+}`))
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if out != "abcd\n" {
+		t.Errorf("got %q", out)
 	}
 }
 
