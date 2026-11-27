@@ -1,0 +1,4 @@
+func mix(x){x=x^ushr(x,33)x=x^(x<<7)return x^ushr(x,29)}
+
+func main(){println(str(-16>>2))println(str(ushr(-16,2)))println(str(ushr(-1,63)))println(str(ushr(-1,64)))h:=0 i:=0 for i<8{h=mix(h^i)i=i+1}println(str(h))}
+

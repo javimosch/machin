@@ -433,6 +433,13 @@ func (ip *interp) eval(e Expr) fval {
 
 func (ip *interp) evalCall(x *Call) fval {
 	switch x.Callee {
+	case "ushr":
+		if len(x.Args) == 2 {
+			v, n := ip.eval(x.Args[0]), ip.eval(x.Args[1])
+			if v.k == KInt && n.k == KInt {
+				return vint(int64(uint64(v.i) >> uint64(n.i))) // Go gives 0 for counts >= 64, as mfl_ushr does
+			}
+		}
 	case "len":
 		if len(x.Args) == 1 {
 			v := ip.eval(x.Args[0])

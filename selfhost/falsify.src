@@ -169,6 +169,19 @@ func f_eval(ni) (v) {
             if a.k == 3 { v = fv_int(len(a.s))  return v }
             g_fstatus = 2  return v
         }
+        if n.s == "ushr" && len(n.kids) == 2 {
+            a := f_eval(n.kids[0])
+            if g_fstatus != 0 { return v }
+            c := f_eval(n.kids[1])
+            if g_fstatus != 0 { return v }
+            if a.k == 0 && c.k == 0 {
+                r := 0
+                if c.i == 0 { r = a.i }
+                if c.i > 0 && c.i < 64 { r = (a.i >> c.i) & (9223372036854775807 >> (c.i - 1)) }
+                v = fv_int(r)  return v
+            }
+            g_fstatus = 2  return v
+        }
         if n.s == "abs" && len(n.kids) == 1 {
             a := f_eval(n.kids[0])            // MFL abs is (number) -> float
             if g_fstatus != 0 { return v }

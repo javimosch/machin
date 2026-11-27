@@ -1158,6 +1158,7 @@ func bspec(name) (s) {
     if name == "float" { s = "n>f"  return s }
     if name == "f64_bits" { s = "n>i"  return s }
     if name == "f64_from_bits" { s = "n>f"  return s }
+    if name == "ushr" { s = "ii>i"  return s }
     if name == "sin" || name == "cos" || name == "tan" || name == "asin" || name == "acos" || name == "atan" || name == "exp" || name == "log" || name == "log2" || name == "log10" || name == "sqrt" || name == "cbrt" || name == "floor" || name == "ceil" || name == "round" || name == "trunc" || name == "abs" { s = "n>f"  return s }
     if name == "pow" || name == "atan2" || name == "fmod" || name == "hypot" || name == "noise2" { s = "nn>f"  return s }
     if name == "pi" { s = ">f"  return s }
