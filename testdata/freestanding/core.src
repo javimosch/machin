@@ -1,0 +1,63 @@
+// A toy RV64I core (addi, add, bne, ecall: enough for host.c's guest) shaped
+// like an emulator linked into a kernel. CPU state lives in memory the C side
+// owns: registers at cpu+0..248, pc at cpu+256.
+extern "kernel" {
+	header "kernel.h"
+	fn k_fault(i64, i64)
+}
+
+extern "env" {
+	fn js_trace(i64)
+}
+
+var retired = 0
+
+func reg(cpu, i) { return peek_i64(cpu, i * 8) }
+
+func set_reg(cpu, i, v) {
+	if i != 0 { poke_i64(cpu, i * 8, v) }
+}
+
+// run executes until an ecall (returns 1), a fault (0) or the budget ends (2).
+export func run(cpu, mem, budget) {
+	pc := peek_i64(cpu, 256)
+	for budget > 0 {
+		budget = budget - 1
+		ins := peek_u32(mem, pc)
+		op := ins & 127
+		rd := (ins >> 7) & 31
+		f3 := (ins >> 12) & 7
+		a := reg(cpu, (ins >> 15) & 31)
+		b := reg(cpu, (ins >> 20) & 31)
+		next := pc + 4
+		retired = retired + 1
+		if op == 19 && f3 == 0 {
+			set_reg(cpu, rd, a + ((ins << 32) >> 52))
+		} else if op == 51 && f3 == 0 && (ins >> 25) == 0 {
+			set_reg(cpu, rd, a + b)
+		} else if op == 99 && f3 == 1 {
+			if a != b {
+				imm := ((ins >> 31) << 12) | (((ins >> 7) & 1) << 11) | (((ins >> 25) & 63) << 5) | (((ins >> 8) & 15) << 1)
+				next = pc + ((imm << 51) >> 51)
+			}
+		} else if op == 115 && ins == 115 {
+			poke_i64(cpu, 256, next)
+			js_trace(retired)
+			return 1
+		} else {
+			k_fault(pc, ins)
+			return 0
+		}
+		pc = next
+	}
+	poke_i64(cpu, 256, pc)
+	return 2
+}
+
+export func retired_count() { return retired }
+
+// float and bool cross the C boundary too
+export func scale(x, up) {
+	if up { return x * 2.5 }
+	return x / 2.5
+}

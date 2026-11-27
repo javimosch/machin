@@ -28,6 +28,14 @@ func CompileToCTarget(p *Program, safe bool, target string) (string, []string, e
 	if err != nil {
 		return "", nil, err
 	}
+	if target == targetWasmFreestanding {
+		if safe {
+			return "", nil, fmt.Errorf("wasm-freestanding: --safe %s (it reports through libc)", freestandingWhy)
+		}
+		if err := checkFreestanding(p, c); err != nil {
+			return "", nil, err
+		}
+	}
 	g := &cgen{c: c, safe: safe, target: target, probeVars: debugProbeVars, cover: coverFuncs, covIdx: map[string]int{}, covStmt: map[Stmt]int{}, jsonMemo: map[string]string{}, parseMemo: map[string]string{}, sortMemo: map[string]string{}, copyMemo: map[string]string{}, chanJSONMemo: map[string][2]string{}}
 	src, err := g.program(p)
 	if err != nil {
@@ -237,12 +245,16 @@ const (
 	targetWindows = "windows"
 	// targetAndroidLib is a shared library inside a host app (androidlib.go).
 	targetAndroidLib = "android-lib"
+	// targetWasmFreestanding is a runtime-less wasm object (freestanding.go).
+	targetWasmFreestanding = "wasm-freestanding"
 )
 
 // library: the program is a guest in a host process (see MFL_LIBRARY).
 func (g *cgen) library() bool { return g.target == targetAndroidLib }
 
-func (g *cgen) wasm() bool    { return g.target == targetWasm }
+// wasm covers both wasm targets: headerless externs are imports in either.
+func (g *cgen) wasm() bool         { return g.target == targetWasm || g.freestanding() }
+func (g *cgen) freestanding() bool { return g.target == targetWasmFreestanding }
 func (g *cgen) windows() bool { return g.target == targetWindows }
 
 const cRuntime = `#define _GNU_SOURCE
@@ -8287,7 +8299,9 @@ func (g *cgen) program(p *Program) (string, error) {
 	// only the program-specific C (externs, structs, functions, main). Both the Go and
 	// MFL codegens produce this identically, so diffing it verifies the emission logic
 	// without embedding the ~2000-line runtime prelude in MFL.
-	if !g.bodyOnly {
+	if g.freestanding() {
+		out.WriteString(freestandingPrelude())
+	} else if !g.bodyOnly {
 		if g.library() {
 			out.WriteString("#define MFL_LIBRARY 1\n")
 		}
@@ -8539,7 +8553,19 @@ func (g *cgen) program(p *Program) (string, error) {
 	// constructor (emitted after the function bodies). Declared here so function
 	// bodies that reference mfl_g_<name> compile.
 	for _, name := range g.c.GlobalOrder() {
-		fmt.Fprintf(&out, "static %s mfl_g_%s;\n", g.c.GlobalCType(name), name)
+		init := ""
+		if g.freestanding() { // a literal, checked by checkFreestanding
+			for _, gv := range p.Globals {
+				if gv.Name == name {
+					e, err := g.expr(gv.Init)
+					if err != nil {
+						return "", err
+					}
+					init = " = " + e
+				}
+			}
+		}
+		fmt.Fprintf(&out, "static %s mfl_g_%s%s;\n", g.c.GlobalCType(name), name, init)
 	}
 	if len(g.c.GlobalOrder()) > 0 {
 		out.WriteByte('\n')
@@ -8548,7 +8574,7 @@ func (g *cgen) program(p *Program) (string, error) {
 		// Under wasm, an `export func` is exported to the host under its clean source
 		// name (so JS calls instance.exports.render, not the mangled C symbol). The
 		// attribute on the prototype also forces the export — no linker flag needed.
-		if g.wasm() {
+		if g.wasm() && !g.freestanding() {
 			if src := g.c.SrcFunc(inst); g.c.exportSrc[src.Name] {
 				fmt.Fprintf(&out, "__attribute__((export_name(%q))) ", src.Name)
 			}
@@ -8558,6 +8584,10 @@ func (g *cgen) program(p *Program) (string, error) {
 	out.WriteByte('\n')
 	out.WriteString(g.tramp.String())
 	out.WriteString(g.buf.String())
+	if g.freestanding() { // no constructors, stdio or entry point
+		out.WriteString(g.freestandingExports())
+		return out.String(), nil
+	}
 	// package-global initializers run in a C constructor — before main (native) and
 	// at _initialize (wasm reactor). Compile each init into a scratch buffer so any
 	// helper statements land inside the constructor, in declaration order.
