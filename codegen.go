@@ -6439,6 +6439,9 @@ static unsigned char* mfl_ws_recv_raw(mfl_ws* w, size_t* outlen) {
         }
         unsigned char mk[4] = {0,0,0,0};
         if (masked && mfl_ssl_read_n(w->ssl, mk, 4) < 0) { free(msg); return NULL; }
+        /* only continuation, text, binary, close, ping and pong exist: anything
+           else must not reach the reassembly below */
+        if (opcode > 0xA || (opcode > 0x2 && opcode < 0x8)) { free(msg); return NULL; }
         if (opcode >= 0x8 ? len > 125 : len > mfl_ws_max_message() - (uint64_t)mlen) {
             static const unsigned char too_big[2] = {0x03, 0xF1}; /* 1009 */
             mfl_ws_frame(w, 0x8, too_big, 2);
@@ -6729,6 +6732,9 @@ static unsigned char* mfl_wst_recv_raw(mfl_wst* w, size_t* outlen) {
         }
         unsigned char mk[4] = {0,0,0,0};
         if (masked && mfl_wst_read_n(w->fd, mk, 4) < 0) { free(msg); return NULL; }
+        /* only continuation, text, binary, close, ping and pong exist: anything
+           else must not reach the reassembly below */
+        if (opcode > 0xA || (opcode > 0x2 && opcode < 0x8)) { free(msg); return NULL; }
         if (opcode >= 0x8 ? len > 125 : len > mfl_wst_max_message() - (uint64_t)mlen) {
             static const unsigned char too_big[2] = {0x03, 0xF1}; /* 1009 */
             mfl_wst_frame(w, 0x8, too_big, 2);

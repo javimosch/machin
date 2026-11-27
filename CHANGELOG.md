@@ -10,6 +10,8 @@
   frames could grow the server without limit.
 - **Fixed:** `ws_recv` / `wss_recv` counted a ping against
   `MFL_WS_MAX_MESSAGE`, closing a valid fragmented message near the limit.
+- **Changed:** `ws_recv` / `wss_recv` treat a frame with a reserved opcode as a
+  failed connection instead of appending it to the message.
 - **Fixed:** `httpstream.src` and `wsclient.src` now refuse every control byte
   and DEL in a request line, not only spaces, tabs and line breaks.
 - **Fixed:** in `ws.src`, a stream cut after the first header byte now ends the

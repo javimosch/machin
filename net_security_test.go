@@ -359,6 +359,28 @@ func TestWebSocketClientLimitIgnoresControlFrames(t *testing.T) {
 	}
 }
 
+// A reserved opcode must not be taken for a control frame (exempt from the
+// message limit) and then appended to the message.
+func TestWebSocketClientRefusesReservedOpcodes(t *testing.T) {
+	for _, op := range []byte{0x03, 0x07, 0x0B, 0x0F} {
+		frames := string([]byte{op, 4}) + "aaaa" + string([]byte{op, 4}) + "bbbb" + "\x80\x00"
+		addr := rawHTTPServer(t, func(string) (string, bool) {
+			return "HTTP/1.1 101 Switching Protocols\r\n\r\n" + frames, true
+		})
+		t.Setenv("MFL_WS_MAX_MESSAGE", "4")
+		out, err := RunCaptured(progFromSrc(t, `func main() {
+    h := ws_open("ws://`+addr+`/")
+    println(len(ws_recv_bin(h)))
+}`))
+		if err != nil {
+			t.Fatalf("run: %v", err)
+		}
+		if out != "0\n" {
+			t.Errorf("opcode %#x: got %q bytes", op, out)
+		}
+	}
+}
+
 func TestWebSocketClientMessageLimit(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
