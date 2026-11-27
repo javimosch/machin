@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.146.2
+
+**`chan_free` in the self-hosted compiler, and checks for some of its misuse
+(#740).**
+
+- **New:** the self-hosted compiler supports `chan_free`.
+- **Changed:** a double `chan_free`, and freeing a channel while a goroutine is
+  blocked in a plain receive on it, now panic. The checks are partial: a double
+  free is missed if a new channel reused the address (the new channel is then
+  freed), and a goroutine waiting in `select` is not detected. Any later use of a
+  freed channel is still unchecked.
+- Channels are still not freed automatically (#740).
+- **Docs:** the limits above, and a channel-lifetime gotcha in the
+  `machin-backend` skill.
+
 ## v0.146.1
 
 **Completes the v0.146.0 WebSocket fix (#734). Rebuild any program that composes
