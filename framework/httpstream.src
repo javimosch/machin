@@ -355,17 +355,26 @@ func hs_url(url) (u) {
     u.ok = 1
 }
 
+// hs_unsafe is 1 if s holds a space, a control byte or DEL.
+func hs_unsafe(s) (bad) {
+    bad = 0
+    b := bytes(s)
+    i := 0
+    while i < len(b) {
+        v := byte_at(b, i)
+        if v <= 32 || v == 127 { bad = 1  return }
+        i = i + 1
+    }
+}
+
 // hs_open sends one HTTP request and reads the response head. Returns the stream
 // (status + headers parsed, body not yet read) and ok=1; ok=0 on any setup
 // failure (bad URL/scheme, refused header line, dial/TLS failure, no response).
 func hs_open(method, url, headers, body) (h, ok) {
     h = HttpStream{fd: -1, tls: 0, buf: []bytes{}, lbuf: []bytes{}, st: []int{}, status: 0, headers: ""}
     ok = 0
-    // the method and URL go into the request line: no spaces or line breaks
-    if method == "" { return }
-    for _, bad := range []string{" ", "\r", "\n", "\t"} {
-        if index(method, bad) >= 0 || index(url, bad) >= 0 { return }
-    }
+    // the method and URL go into the request line: no spaces or control bytes
+    if method == "" || hs_unsafe(method) == 1 || hs_unsafe(url) == 1 { return }
     u := hs_url(url)
     if u.ok == 0 { return }
     for _, line := range headers {

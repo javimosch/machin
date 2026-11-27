@@ -110,20 +110,41 @@ func ws_fail(c, code) {
 // nothing after it can be parsed.
 func ws_drop(c) { d := c.dead  d[0] = 1 }
 
-// ws_header reads and validates one frame header. `have` is the size of the
-// message assembled so far, so the limit is applied to a declared length before
-// any of the payload is read.
+// ws_header reads one frame header and frees what reading it allocated, so a
+// long run of control frames inside one ws_next_message call stays flat.
 func ws_header(c, have) (fin, opcode, masked, n, ok) {
     fin = 0
     opcode = 0
     masked = 0
     n = 0
     ok = 0
+    arena {
+        f, op, m, size, good := ws_header_parse(c, have)
+        fin = f
+        opcode = op
+        masked = m
+        n = size
+        ok = good
+    }
+}
+
+// ws_header_parse reads and validates one frame header. `have` is the size of the
+// message assembled so far, so the limit is applied to a declared length before
+// any of the payload is read.
+func ws_header_parse(c, have) (fin, opcode, masked, n, ok) {
+    fin = 0
+    opcode = 0
+    masked = 0
+    n = 0
+    ok = 0
     if c.dead[0] == 1 { return }
-    h := read_bytes_exact(c.fd, 2)
-    if len(h) != 2 { return }
-    b0 := byte_at(h, 0)
-    b1 := byte_at(h, 1)
+    // two reads, so a stream cut between them is known to be inside a frame
+    h0 := read_bytes_exact(c.fd, 1)
+    if len(h0) != 1 { return }
+    h1 := read_bytes_exact(c.fd, 1)
+    if len(h1) != 1 { ws_drop(c)  return }
+    b0 := byte_at(h0, 0)
+    b1 := byte_at(h1, 0)
     if (b0 & 128) != 0 { fin = 1 }
     opcode = b0 & 15
     if (b0 & 112) != 0 { ws_fail(c, 1002)  return }              // reserved bits
