@@ -768,9 +768,14 @@ reference to it. Two misuse cases are partly checked (#740): a double
 `chan_free` panics, **unless** a later `make(chan)` reused the freed address, in
 which case it silently frees that new channel; and freeing while a goroutine is
 blocked in a plain receive panics, but one waiting in `select` is not detected.
-Everything else is unchecked, with or without `--safe`: any
+Everything else is unchecked in a normal build: any
 send/recv/close/select on the channel *after* the free returns is a
-use-after-free, exactly like `free()` on a raw pointer. Freeing after you
+use-after-free, exactly like `free()` on a raw pointer. A `--safe` build closes
+these gaps: it keeps the freed channel's header (so `chan_free` there leaks about
+150 bytes per call, queued messages are still reclaimed) and panics on any later
+send/recv/close/select or second `chan_free`, including in a goroutine that was
+waiting in `select` when the free happened (if the program is still running when
+it next polls). Freeing after you
 have received a goroutine's final send is fine. It fits a channel created
 and consumed inside one iteration of a long-running loop:
 

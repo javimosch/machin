@@ -278,6 +278,23 @@ func main() {
 EOF
 run "$T/h13.src"
 
+# chan_free builtin (#740): void call -> mfl_chan_free emit parity, incl. a
+# channel freed with a message still queued (the drain path).
+cat > "$T/h13b.src" <<'EOF'
+func feed(ch) { ch <- 7  close(ch) }
+func main() {
+    c := make(chan int)
+    go feed(c)
+    x := <-c
+    chan_free(c)
+    s := make(chan string)
+    s <- "queued"
+    chan_free(s)
+    println(x)
+}
+EOF
+run "$T/h13b.src"
+
 # h14 — sqlite_errmsg builtin: signature + mfl_sqlite_errmsg emit parity (#672).
 cat > "$T/h14.src" <<'EOF'
 func main() {

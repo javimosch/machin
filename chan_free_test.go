@@ -8,6 +8,7 @@ package main
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -147,6 +148,55 @@ func TestChanFreeRejectsBadArguments(t *testing.T) {
 			}
 			if tc.want != "" && !strings.Contains(err.Error(), tc.want) {
 				t.Errorf("error %q does not mention %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// --safe keeps the freed header, which closes the two gaps a normal build has
+// (#740): a stale double free after the address is reused, and a free under a
+// select.
+func TestChanFreeSafeClosesTheGaps(t *testing.T) {
+	for _, tc := range []struct{ name, src, want string }{
+		{"stale double free", `func main() {
+	a := make(chan int)
+	chan_free(a)
+	b := make(chan int)
+	chan_free(a)
+	b <- 7
+}`, "double free"},
+		{"free under select", `func w(c, done) {
+	select {
+	case v := <-c:
+		println(v)
+	}
+	done <- 1
+}
+func main() {
+	c := make(chan int)
+	done := make(chan int)
+	go w(c, done)
+	sleep(50)
+	chan_free(c)
+	x := <-done
+	println(x)
+}`, "freed by chan_free"},
+		{"send after free", "func main() {\n\tc := make(chan int)\n\tchan_free(c)\n\tc <- 1\n}", "send on a channel freed"},
+		{"receive after free", "func main() {\n\tc := make(chan int)\n\tchan_free(c)\n\tx := <-c\n\tprintln(x)\n}", "receive on a channel freed"},
+		{"close after free", "func main() {\n\tc := make(chan int)\n\tchan_free(c)\n\tclose(c)\n}", "close on a channel freed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prog, err := wallsCompose(t, tc.src)
+			if err != nil {
+				t.Fatalf("compose: %v", err)
+			}
+			bin := filepath.Join(t.TempDir(), "p")
+			if err := BuildBinary(prog, bin, true); err != nil {
+				t.Fatalf("build: %v", err)
+			}
+			out, err := exec.Command("timeout", "10", bin).CombinedOutput()
+			if err == nil || !strings.Contains(string(out), tc.want) {
+				t.Errorf("%v: output %q does not report %q", err, out, tc.want)
 			}
 		})
 	}

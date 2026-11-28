@@ -674,6 +674,7 @@ typedef struct mfl_cnode { struct mfl_cnode* next; void* data; uint64_t sender; 
 typedef struct {
     pthread_mutex_t mu; pthread_cond_t cnd;
     mfl_cnode *head, *tail; int64_t es; int closed;
+    int dead;                            /* --safe: freed by chan_free; every op panics */
     int nstr; int* stroff;
     char* (*ser)(const void*);          /* json mode: element -> arena JSON */
     void (*des)(const char*, void*);    /* json mode: JSON -> *out (arena) */
@@ -730,7 +731,7 @@ static int mfl_chreg_del(mfl_chan* c) {
 static mfl_chan* mfl_make_chan(int64_t es, char* (*ser)(const void*), void (*des)(const char*, void*), int nstr, ...) {
     mfl_chan* c = malloc(sizeof(mfl_chan));
     pthread_mutex_init(&c->mu, NULL); pthread_cond_init(&c->cnd, NULL);
-    c->head = c->tail = NULL; c->es = es; c->closed = 0; c->waiters = 0;
+    c->head = c->tail = NULL; c->es = es; c->closed = 0; c->dead = 0; c->waiters = 0;
     c->ser = ser; c->des = des;
     c->id = __atomic_fetch_add(&mfl_chan_id_ctr, 1, __ATOMIC_RELAXED);
     c->nstr = nstr; c->stroff = NULL;
@@ -805,9 +806,15 @@ static void mfl_rr_enter(void); static void mfl_rr_mark(void); static void mfl_r
    observable, ordered channel op -- it takes a turn so replay reproduces its
    position relative to receivers (a recv after close gets "not ok"). */
 static void mfl_dl_note(void); /* deadlock detector: a channel send/close is progress (defined below) */
+/* under --safe a freed channel's header stays allocated and marked dead, so a
+   later op panics here. Called with c->mu held; unlocks before panicking. */
+static void mfl_chan_check_live(mfl_chan* c, const char* msg) {
+    if (c->dead) { pthread_mutex_unlock(&c->mu); mfl_panic(msg); }
+}
 static void mfl_chan_close(mfl_chan* c) {
     mfl_rr_enter();
     pthread_mutex_lock(&c->mu);
+    mfl_chan_check_live(c, "close on a channel freed by chan_free");
     c->closed = 1;
     pthread_cond_broadcast(&c->cnd);
     mfl_rr_mark();
@@ -839,7 +846,7 @@ static void mfl_chan_close(mfl_chan* c) {
    returns (the pointer is gone — only a GC or escape proof could catch that),
    and freeing while another goroutine merely HOLDS the channel without being
    blocked at that instant. */
-static void mfl_chan_free(mfl_chan* c) {
+static void mfl_chan_release(mfl_chan* c, int quarantine) {
     if (!c) return;
     pthread_mutex_lock(&mfl_chreg_mu);
     if (!mfl_chreg_del(c)) {
@@ -869,12 +876,21 @@ static void mfl_chan_free(mfl_chan* c) {
         free(n->data); free(n); n = nx;
     }
     c->head = c->tail = NULL;
+    if (quarantine) {
+        /* --safe: keep the header (never destroyed or reused), so a stale
+           double free, a later op, or a select still polling it panics */
+        c->dead = 1;
+        pthread_mutex_unlock(&c->mu);
+        return;
+    }
     pthread_mutex_unlock(&c->mu);
     pthread_mutex_destroy(&c->mu);
     pthread_cond_destroy(&c->cnd);
     free(c->stroff);
     free(c);
 }
+static void mfl_chan_free(mfl_chan* c) { mfl_chan_release(c, 0); }
+static void mfl_chan_free_chk(mfl_chan* c) { mfl_chan_release(c, 1); }
 /* ---- record/replay (Phase 0 spike) ------------------------------------------
    SOUND because the program is proved data-race-free: the only inter-goroutine
    nondeterminism is the ORDER channel operations complete. We record that order
@@ -1447,6 +1463,7 @@ static void mfl_chan_send(mfl_chan* c, const void* v) {
     }
     n->next = NULL;
     pthread_mutex_lock(&c->mu);
+    mfl_chan_check_live(c, "send on a channel freed by chan_free");
     if (c->tail) c->tail->next = n; else c->head = n;
     c->tail = n;
     pthread_cond_signal(&c->cnd);
@@ -1487,6 +1504,7 @@ static int mfl_chan_recv2(mfl_chan* c, void* out) {
 #define MFL_BROKEN() 0
 #endif
     pthread_mutex_lock(&c->mu);
+    mfl_chan_check_live(c, "receive on a channel freed by chan_free");
     if (!c->closed && (!c->head || mfl_chan_head_mine(c))) {
         /* empty, or the head node is this goroutine's own send — either way
            there is nothing THIS goroutine may receive; park. A dequeue by
@@ -1526,6 +1544,7 @@ static void mfl_chan_recv(mfl_chan* c, void* out) {
    (*ok = 0, out zeroed). Returns 0 if not ready (open and empty). */
 static int mfl_chan_tryrecv2(mfl_chan* c, void* out, int* ok) {
     pthread_mutex_lock(&c->mu);
+    mfl_chan_check_live(c, "receive on a channel freed by chan_free");
     mfl_cnode* n = c->head;
     /* a select recv is not ready while the head node is this goroutine's own
        send (#673) — same rule as the blocking recv, or select would deliver
@@ -11930,6 +11949,9 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		g.usesNet = true
 		return fmt.Sprintf("mfl_close(%s)", args[0]), nil
 	case "chan_free":
+		if g.safe {
+			return fmt.Sprintf("mfl_chan_free_chk(%s)", args[0]), nil
+		}
 		return fmt.Sprintf("mfl_chan_free(%s)", args[0]), nil
 	case "input":
 		return "mfl_input()", nil
