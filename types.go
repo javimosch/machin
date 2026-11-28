@@ -3044,6 +3044,13 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 			return 0, fmt.Errorf("ocl_init: 0 args")
 		}
 		return c.cInt, nil
+	case "ptr_bytes":
+		if len(argSlots) != 2 {
+			return 0, fmt.Errorf("ptr_bytes: 2 args (pointer, byte count)")
+		}
+		c.addPair(argSlots[0], c.cInt)
+		c.addPair(argSlots[1], c.cInt)
+		return c.cBytes, nil
 	case "ptr_str":
 		if len(argSlots) != 1 {
 			return 0, fmt.Errorf("ptr_str: 1 arg (pointer to NUL-terminated bytes)")
