@@ -550,6 +550,7 @@ first := users[0]                                // value copy
 | `poke_i8`/`poke_i16`/`poke_i32`/`poke_i64`/`poke_u8`/`poke_u16`/`poke_u32`/`poke_u64` and `peek_i8`/`peek_i16`/`peek_i32`/`peek_i64`/`peek_u8`/`peek_u16`/`peek_u32`/`peek_u64` `(p, off[, v])` | write/read a signed or unsigned int of the named width at byte offset `off` (`i` sign-extends on read, `u` zero-extends) |
 | `poke_ptr(p, off, v)` / `peek_ptr(p, off)` | write/read a pointer-sized value at byte offset `off` from pointer `p` |
 | `ptr_str(p)`                | read a NUL-terminated C string at pointer `p` → `string` |
+| `ptr_bytes(p, n)`           | copy `n` bytes of raw memory at `p` → `bytes`, NULs included (`flush()` before `write_bytes` if earlier `print` output must come first) |
 | `raw_mode(on)`              | toggle terminal raw mode (`1` enable, `2` also signal keys off, `0` restore) for uncooked keyboard input; restored on exit and on SIGINT/SIGTERM/SIGHUP/SIGQUIT |
 | `read_key()`                | read one keypress from stdin (requires `raw_mode(1)`) |
 | `noise2(x, y)` / `noise3(x, y, z)` | 2D/3D Perlin noise, returns `float` in `[-1, 1]` |

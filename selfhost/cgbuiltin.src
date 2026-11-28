@@ -150,6 +150,7 @@ func builtin_cfn(name) (s) {
     if name == "dot_f32" { s = "mfl_dot_f32"  return s }
     if name == "axpy_f32" { s = "mfl_axpy_f32"  return s }
     if name == "ptr_str" { s = "mfl_ptr_str"  return s }
+    if name == "ptr_bytes" { s = "mfl_ptr_bytes"  return s }
     if name == "dial" { s = "mfl_dial"  return s }
     if name == "listen" { s = "mfl_listen"  return s }
     if name == "listen_on" { s = "mfl_listen_on"  return s }

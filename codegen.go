@@ -4124,6 +4124,13 @@ static mfl_bytes mfl_bytes_unhex(const char* s) {   /* skips non-hex chars (spac
     return b;
 }
 static int64_t mfl_byte_at(mfl_bytes b, int64_t i) { return (i < 0 || i >= b.len) ? -1 : (int64_t)b.data[i]; }
+/* copy n bytes of raw memory, NULs included (#759). A null pointer or n <= 0 is empty. */
+static mfl_bytes mfl_ptr_bytes(int64_t p, int64_t n) {
+    if (!p || n < 0) n = 0;
+    mfl_bytes r; r.len = n; r.data = (uint8_t*)mfl_alloc(n ? n : 1);
+    if (n) memcpy(r.data, (const void*)(intptr_t)p, (size_t)n);
+    return r;
+}
 static mfl_bytes mfl_bytes_sub(mfl_bytes b, int64_t start, int64_t end) {
     if (start < 0) start = 0;
     if (end > b.len) end = b.len;
@@ -11272,6 +11279,8 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("mfl_silu_f32(%s, %s)", args[0], args[1]), nil
 	case "ocl_init":
 		return "mfl_ocl_init_wrapper()", nil
+	case "ptr_bytes":
+		return fmt.Sprintf("mfl_ptr_bytes(%s, %s)", args[0], args[1]), nil
 	case "ptr_str":
 		return fmt.Sprintf("mfl_ptr_str(%s)", args[0]), nil
 	case "dial":

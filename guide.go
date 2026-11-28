@@ -342,6 +342,7 @@ func machinGuide() guideCatalog {
 		{"silu_f32", "(int, int) -> void", "SiLU in-place: x[k] = x[k]/(1+exp(-x[k])) for k<n. Auto-vectorized C — replaces scalar MFL silu_buf", "memory"},
 		{"ocl_init", "() -> int", "Initialize OpenCL GPU backend (loads OpenCL.dll, creates context+queue, compiles kernels). Returns 1 on success, 0 on failure. After init, conv2d_f32/matmul_f32/group_norm_f32 dispatch to GPU automatically. Windows only — no-op on other platforms", "memory"},
 		{"prof_print", "() -> void", "Print OpenCL per-kernel GPU time summary to stderr (sorted by total time desc). Enable by setting MFL_PROF=1 in env before ocl_init — creates the queue with CL_QUEUE_PROFILING_ENABLE and each kernel dispatch records CL_PROFILING_COMMAND_START/END. No-op if profiling not enabled. Call after inference completes", "memory"},
+			{"ptr_bytes", "(ptr, n int) -> bytes", "copy n bytes of raw memory (alloc, FFI) into bytes, NULs included (bytes(s) and ptr_str stop at the first NUL). A null pointer or n <= 0 gives empty; the caller must ensure n bytes are readable. To write them: flush() first if print output must come before, since write_bytes(fd, b) bypasses print's buffer", "ffi"},
 			{"ptr_str", "(int) -> string", "read a NUL-terminated string from a raw pointer into an MFL string — the host->wasm string direction (host writes UTF-8+NUL into wasm memory at an alloc'd ptr, passes it to an export). Pairs with alloc/free.", "memory"},
 			// collections
 			{"len", "(string|slice|map) -> int", "length", "collection"},
