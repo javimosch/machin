@@ -312,6 +312,18 @@ func staticLinkArgs(libs, flags, names []string) ([]string, error) {
 	return libs, nil
 }
 
+// staticGlibcTarget reports whether `cc -static` would link against glibc —
+// the only libc whose static getaddrinfo dlopens host NSS modules at run time
+// (#764). It probes the preprocessor for __GLIBC__ (musl and other libcs don't
+// define it and keep their own NSS-free resolver). An inconclusive probe keeps
+// the previous behaviour rather than guessing.
+func staticGlibcTarget() bool {
+	cmd := exec.Command(ccPath(), "-dM", "-E", "-x", "c", "-")
+	cmd.Stdin = strings.NewReader("#include <stdio.h>\n")
+	out, err := cmd.Output()
+	return err == nil && bytes.Contains(out, []byte("__GLIBC__"))
+}
+
 // BuildBinaryLinked is BuildBinaryStatic plus per-machine compile and link inputs.
 func BuildBinaryLinked(prog *Program, outPath string, safe, static bool, link LinkOptions) error {
 	csrc, err := CompileToC(prog, safe)
@@ -345,6 +357,13 @@ func BuildBinaryLinked(prog *Program, outPath string, safe, static bool, link Li
 	var srcs []string // extra C source files compiled alongside the generated one
 	if static {
 		args = append(args, "-static")
+		if staticGlibcTarget() {
+			// glibc's static getaddrinfo dlopens the host's NSS modules at run
+			// time, pulling in a second libc that dies on a different glibc
+			// (#764). The generated resolver reads /etc/hosts + does plain DNS
+			// instead — no NSS, no dlopen.
+			args = append(args, "-DMFL_STATIC_RESOLVER")
+		}
 	}
 	if bundleSqlite {
 		dir, cpath, err := unpackSqliteAmalgamation()

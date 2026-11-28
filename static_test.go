@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -98,5 +99,58 @@ func TestStaticBuildBundlesCACerts(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "ERR:tls") {
 		t.Fatalf("expected the self-signed local server to be rejected (ERR:tls), got: %s", out)
+	}
+}
+
+// A `--static` build of a program that resolves a hostname must not go through
+// glibc's getaddrinfo: in a static link it dlopens the host's NSS modules
+// (libnss_mdns4_minimal.so.2 & co), which link the HOST's libc.so.6 — a second
+// libc in one process that dies with SIGFPE when the build and run glibc
+// versions differ (#764). On glibc BuildBinaryLinked passes
+// -DMFL_STATIC_RESOLVER and the generated resolver reads /etc/hosts (then does
+// plain DNS) instead. "localhost" exercises exactly that path — dial() ->
+// mfl_getaddrinfo -> /etc/hosts — against a real listener. (The DNS branch was
+// verified against a fake nameserver in a chroot; it can't be a portable test
+// since it needs port 53.)
+func TestStaticBuildResolvesHostname(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		c.Write([]byte("pong\n"))
+	}()
+
+	bin, err := os.CreateTemp("", "mfl-static-dns-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin.Close()
+	defer os.Remove(bin.Name())
+
+	port := ln.Addr().(*net.TCPAddr).Port
+	src := fmt.Sprintf(`func main() {
+	fd := dial("localhost", %d)
+	if fd < 0 { println("dial failed")  return }
+	println(read(fd))
+	close(fd)
+}`, port)
+	prog := &Program{Funcs: parseFuncs(t, src)}
+	if err := BuildBinaryStatic(prog, bin.Name(), false, true); err != nil {
+		t.Fatalf("static build of a dialing program failed: %v", err)
+	}
+
+	out, err := exec.Command(bin.Name()).CombinedOutput()
+	if err != nil {
+		t.Fatalf("running the static binary failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "pong") {
+		t.Fatalf("static binary did not resolve+connect to localhost; got: %s", out)
 	}
 }

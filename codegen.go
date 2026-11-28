@@ -5133,6 +5133,496 @@ static void mfl_net_init(void) {}
 #endif
 `
 
+// resolverRuntime provides mfl_getaddrinfo/mfl_freeaddrinfo for every socket
+// path (dial, listen_on, udp_sendto, TLS and HTTP dials). Dynamic builds take
+// the #else wrapper and keep getaddrinfo. But a glibc -static getaddrinfo
+// dlopens the host's NSS modules (libnss_mdns4_minimal.so.2 & co) which link
+// the HOST's libc.so.6 — a second libc in one process that dies with SIGFPE
+// when the build and run glibc versions differ (#764). BuildBinaryLinked
+// passes -DMFL_STATIC_RESOLVER for a glibc --static link; the first branch is
+// then a self-contained resolver — /etc/hosts plus plain DNS over UDP against
+// /etc/resolv.conf — with no NSS and no dlopen, so the binary resolves names
+// identically on every host. It covers what the call sites need (numeric
+// literals, /etc/hosts names, A/AAAA answers, search domains); it does not do
+// mDNS, LDAP, ndots tuning, or a TCP fallback for truncated answers.
+const resolverRuntime = `/* hostname resolution (#764) — see the comment above this block */
+#if defined(MFL_STATIC_RESOLVER) && !defined(_WIN32) && !defined(__wasm__)
+#include <arpa/inet.h>
+
+/* append one sockaddr to the result list; ai_addr is malloc'd like
+   getaddrinfo's, so mfl_freeaddrinfo below frees it the same way */
+static struct addrinfo* mfl_ai_push(struct addrinfo** head, struct addrinfo** tail,
+                                    int family, int socktype, int protocol,
+                                    const struct sockaddr* sa, socklen_t salen)
+{
+    struct addrinfo* ai = (struct addrinfo*)calloc(1, sizeof(struct addrinfo));
+    struct sockaddr* cp = (struct sockaddr*)malloc((size_t)salen);
+    if (!ai || !cp) { free(ai); free(cp); return NULL; }
+    memcpy(cp, sa, (size_t)salen);
+    ai->ai_family = family;
+    ai->ai_socktype = socktype;
+    ai->ai_protocol = protocol;
+    ai->ai_addrlen = salen;
+    ai->ai_addr = cp;
+    if (*tail) (*tail)->ai_next = ai; else *head = ai;
+    *tail = ai;
+    return ai;
+}
+
+static int mfl_ieq(const char* a, const char* b)
+{
+    for (;;) {
+        char x = *a++, y = *b++;
+        if (x >= 'A' && x <= 'Z') x = (char)(x + 32);
+        if (y >= 'A' && y <= 'Z') y = (char)(y + 32);
+        if (x != y) return 0;
+        if (!x) return 1;
+    }
+}
+
+/* every address "name" maps to in /etc/hosts, appended to the result list.
+   Each non-comment line is "<ip> <name>..."; the first whitespace token must
+   be an IP literal and the rest are names (case-insensitive, like DNS). */
+static void mfl_hosts_lookup(const char* name, int family, int socktype,
+                             int protocol, uint16_t port,
+                             struct addrinfo** head, struct addrinfo** tail)
+{
+    FILE* f = fopen("/etc/hosts", "r");
+    if (!f) return;
+    char line[1024];
+    while (fgets(line, sizeof(line), f)) {
+        char* hash = strchr(line, '#');
+        if (hash) *hash = 0;
+        char* p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        char* atok = p;
+        while (*p && *p != ' ' && *p != '\t' && *p != '\r' && *p != '\n') p++;
+        if (!*p) continue;
+        *p++ = 0;
+        struct sockaddr_storage ss;
+        struct sockaddr_in*  sin  = (struct sockaddr_in*)&ss;
+        struct sockaddr_in6* sin6 = (struct sockaddr_in6*)&ss;
+        socklen_t sl = 0;
+        int af = AF_UNSPEC;
+        memset(&ss, 0, sizeof(ss));
+        if (family != AF_INET6 && inet_pton(AF_INET, atok, &sin->sin_addr) == 1) {
+            sin->sin_family = AF_INET;
+            sin->sin_port = htons(port);
+            sl = (socklen_t)sizeof(struct sockaddr_in);
+            af = AF_INET;
+        } else if (family != AF_INET && inet_pton(AF_INET6, atok, &sin6->sin6_addr) == 1) {
+            sin6->sin6_family = AF_INET6;
+            sin6->sin6_port = htons(port);
+            sl = (socklen_t)sizeof(struct sockaddr_in6);
+            af = AF_INET6;
+        } else {
+            continue;
+        }
+        for (;;) {
+            while (*p == ' ' || *p == '\t') p++;
+            if (!*p || *p == '\r' || *p == '\n') break;
+            char* ntok = p;
+            while (*p && *p != ' ' && *p != '\t' && *p != '\r' && *p != '\n') p++;
+            char save = *p; *p = 0;
+            int hit = mfl_ieq(ntok, name);
+            *p = save;
+            if (hit) {
+                mfl_ai_push(head, tail, af, socktype, protocol,
+                            (const struct sockaddr*)&ss, sl);
+                break;
+            }
+            if (!save) break;
+        }
+    }
+    fclose(f);
+}
+
+/* /etc/resolv.conf: up to 3 nameservers and 6 search domains */
+typedef struct {
+    struct sockaddr_storage addr;
+    socklen_t len;
+} mfl_dnssrv;
+typedef struct {
+    mfl_dnssrv srv[3];
+    int nsrv;
+    char search[6][256];
+    int nsearch;
+} mfl_resolvconf;
+
+static void mfl_resolv_load(mfl_resolvconf* rc)
+{
+    memset(rc, 0, sizeof(*rc));
+    FILE* f = fopen("/etc/resolv.conf", "r");
+    if (!f) return;
+    char line[512];
+    while (fgets(line, sizeof(line), f)) {
+        char* hash = strchr(line, '#');
+        if (hash) *hash = 0;
+        char* tok[8];
+        int nt = 0;
+        char* p = line;
+        while (*p && nt < 8) {
+            while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+            if (!*p) break;
+            tok[nt++] = p;
+            while (*p && *p != ' ' && *p != '\t' && *p != '\r' && *p != '\n') p++;
+            if (*p) *p++ = 0;
+        }
+        if (nt < 2) continue;
+        if (strcmp(tok[0], "nameserver") == 0 && rc->nsrv < 3) {
+            struct sockaddr_in*  sin  = (struct sockaddr_in*)&rc->srv[rc->nsrv].addr;
+            struct sockaddr_in6* sin6 = (struct sockaddr_in6*)&rc->srv[rc->nsrv].addr;
+            memset(&rc->srv[rc->nsrv].addr, 0, sizeof(rc->srv[rc->nsrv].addr));
+            if (inet_pton(AF_INET, tok[1], &sin->sin_addr) == 1) {
+                sin->sin_family = AF_INET;
+                sin->sin_port = htons(53);
+                rc->srv[rc->nsrv].len = (socklen_t)sizeof(struct sockaddr_in);
+                rc->nsrv++;
+            } else if (inet_pton(AF_INET6, tok[1], &sin6->sin6_addr) == 1) {
+                sin6->sin6_family = AF_INET6;
+                sin6->sin6_port = htons(53);
+                rc->srv[rc->nsrv].len = (socklen_t)sizeof(struct sockaddr_in6);
+                rc->nsrv++;
+            }
+        } else if ((strcmp(tok[0], "search") == 0 || strcmp(tok[0], "domain") == 0)) {
+            for (int i = 1; i < nt && rc->nsearch < 6; i++) {
+                size_t dl = strlen(tok[i]);
+                /* a bare "." is a placeholder some stub resolv.confs emit —
+                   it would only produce malformed "name.." candidates */
+                if (dl > 0 && dl < sizeof(rc->search[0]) &&
+                    !(dl == 1 && tok[i][0] == '.')) {
+                    memcpy(rc->search[rc->nsearch], tok[i], dl + 1);
+                    rc->nsearch++;
+                }
+            }
+        }
+    }
+    fclose(f);
+}
+
+/* dotted name -> DNS wire labels; -1 when malformed or over 255 octets */
+static int mfl_dns_enc(const char* name, uint8_t* out)
+{
+    int o = 0;
+    const char* p = name;
+    while (*p) {
+        const char* dot = strchr(p, '.');
+        int l = dot ? (int)(dot - p) : (int)strlen(p);
+        if (l <= 0 || l > 63 || o + l + 2 > 255) return -1;
+        out[o++] = (uint8_t)l;
+        memcpy(out + o, p, (size_t)l);
+        o += l;
+        p += l;
+        if (dot) p++;
+    }
+    out[o++] = 0;
+    return o;
+}
+
+/* offset just past the (possibly compressed) name at off, -1 on error. A
+   compression pointer is only two bytes in the packet, so once one is seen the
+   name's wire extent ends there — the pointer is followed only to validate
+   the rest of the name, never to advance the returned offset. */
+static int mfl_dns_skip(const uint8_t* b, int len, int off)
+{
+    int hops = 0, ret = -1;
+    for (;;) {
+        if (off < 0 || off >= len) return -1;
+        uint8_t c = b[off];
+        if (c == 0) return ret >= 0 ? ret : off + 1;
+        if ((c & 0xC0) == 0xC0) {
+            if (off + 1 >= len || ++hops > 32) return -1;
+            if (ret < 0) ret = off + 2;
+            off = ((int)(c & 0x3F) << 8) | b[off + 1];
+            continue;
+        }
+        if (c & 0xC0) return -1;
+        off += 1 + (int)c;
+    }
+}
+
+/* does the wire-format name at off equal dotted "name" (case-insensitive)? */
+static int mfl_dns_nameeq(const uint8_t* b, int len, int off, const char* name)
+{
+    int hops = 0;
+    const char* p = name;
+    for (;;) {
+        if (off < 0 || off >= len || ++hops > 64) return 0;
+        uint8_t c = b[off];
+        if (c == 0) return *p == 0;
+        if ((c & 0xC0) == 0xC0) {
+            if (off + 1 >= len) return 0;
+            off = ((int)(c & 0x3F) << 8) | b[off + 1];
+            continue;
+        }
+        if (c & 0xC0) return 0;
+        const char* dot = strchr(p, '.');
+        int pl = dot ? (int)(dot - p) : (int)strlen(p);
+        if (pl != (int)c || off + 1 + (int)c > len) return 0;
+        for (int i = 0; i < (int)c; i++) {
+            char x = (char)b[off + 1 + i], y = p[i];
+            if (x >= 'A' && x <= 'Z') x = (char)(x + 32);
+            if (y >= 'A' && y <= 'Z') y = (char)(y + 32);
+            if (x != y) return 0;
+        }
+        off += 1 + (int)c;
+        p += (int)c;
+        if (*p == '.') p++;
+        else if (*p) return 0;
+    }
+}
+
+/* one DNS query/response on fd. Returns 1 when a response with RCODE 0 arrived
+   (matching A/AAAA answers already pushed onto the result list), 2 when a
+   response arrived with a non-zero RCODE (NXDOMAIN/SERVFAIL — no answers),
+   0 on timeout, transport error, or an unparseable/mismatched packet. */
+static int mfl_dns_xchg(int fd, const struct sockaddr* ns, socklen_t nslen,
+                        const char* qname, uint16_t qtype, uint16_t port,
+                        int family, int socktype, int protocol,
+                        struct addrinfo** head, struct addrinfo** tail)
+{
+    uint8_t q[512];
+    memset(q, 0, 12);                        /* header: counts all zero */
+    int nl = mfl_dns_enc(qname, q + 12);
+    if (nl < 0 || 12 + nl + 4 > (int)sizeof(q)) return 0;
+    static unsigned mfl_dns_id = 0;
+    uint16_t id = (uint16_t)(__atomic_add_fetch(&mfl_dns_id, 1, __ATOMIC_RELAXED) * 2654435761u);
+    q[0] = (uint8_t)(id >> 8); q[1] = (uint8_t)id;
+    q[2] = 0x01; q[3] = 0x00;                 /* RD */
+    q[5] = 1;                                 /* QDCOUNT */
+    int ql = 12 + nl;
+    q[ql++] = (uint8_t)(qtype >> 8); q[ql++] = (uint8_t)qtype;
+    q[ql++] = 0; q[ql++] = 1;                 /* QCLASS IN */
+    if (sendto(fd, (const char*)q, (size_t)ql, 0, ns, (int)nslen) != ql) return 0;
+    uint8_t* r = (uint8_t*)malloc(4096);
+    if (!r) return 0;
+    /* a stray or late packet can win the race to recvfrom; skip up to 3
+       responses whose transaction id isn't ours before giving up */
+    ssize_t n = -1;
+    int len = 0, ours = 0;
+    for (int t = 0; t < 4 && !ours; t++) {
+        n = recvfrom(fd, (char*)r, 4096, 0, NULL, NULL);
+        if (n < 12) break;
+        len = (int)n;
+        ours = (r[0] == q[0] && r[1] == q[1]);
+    }
+    if (!ours) { free(r); return 0; }
+    if (!(r[2] & 0x80)) { free(r); return 0; }          /* not a response */
+    int rcode = r[3] & 0x0F;
+    int qd = (r[4] << 8) | r[5];
+    int an = (r[6] << 8) | r[7];
+    int off = 12;
+    /* the question section must echo our qname/qtype — the spoof check a stub
+       resolver actually relies on (transaction id + question match) */
+    for (int i = 0; i < qd; i++) {
+        if (i == 0 && !mfl_dns_nameeq(r, len, off, qname)) { free(r); return 0; }
+        int noff = mfl_dns_skip(r, len, off);
+        if (noff < 0 || noff + 4 > len) { free(r); return 0; }
+        if (i == 0) {
+            int qt = (r[noff] << 8) | r[noff + 1];
+            int qc = (r[noff + 2] << 8) | r[noff + 3];
+            if (qt != (int)qtype || qc != 1) { free(r); return 0; }
+        }
+        off = noff + 4;
+    }
+    for (int i = 0; i < an; i++) {
+        off = mfl_dns_skip(r, len, off);
+        if (off < 0 || off + 10 > len) break;
+        int type  = (r[off] << 8) | r[off + 1];
+        int cls   = (r[off + 2] << 8) | r[off + 3];
+        int rdlen = (r[off + 8] << 8) | r[off + 9];
+        off += 10;
+        if (cls != 1 || off + rdlen > len) break;
+        if (qtype == 1 && type == 1 && rdlen == 4 && family != AF_INET6) {
+            struct sockaddr_in sin;
+            memset(&sin, 0, sizeof(sin));
+            sin.sin_family = AF_INET;
+            sin.sin_port = htons(port);
+            memcpy(&sin.sin_addr, r + off, 4);
+            mfl_ai_push(head, tail, AF_INET, socktype, protocol,
+                        (const struct sockaddr*)&sin, (socklen_t)sizeof(sin));
+        } else if (qtype == 28 && type == 28 && rdlen == 16 && family != AF_INET) {
+            struct sockaddr_in6 sin6;
+            memset(&sin6, 0, sizeof(sin6));
+            sin6.sin6_family = AF_INET6;
+            sin6.sin6_port = htons(port);
+            memcpy(&sin6.sin6_addr, r + off, 16);
+            mfl_ai_push(head, tail, AF_INET6, socktype, protocol,
+                        (const struct sockaddr*)&sin6, (socklen_t)sizeof(sin6));
+        }
+        off += rdlen;
+    }
+    free(r);
+    return rcode == 0 ? 1 : 2;
+}
+
+/* DNS for "name": try each candidate (the name itself, then search-domain
+   variants — dotless names try the search list FIRST, matching ndots:1) against
+   each nameserver until one returns records. Returns 1 when at least one
+   address was added, 0 on a definitive no-data answer, 2 when every query
+   timed out or failed, -1 with no usable nameserver. */
+static int mfl_dns_resolve(const char* name, uint16_t port, int family,
+                           int socktype, int protocol,
+                           struct addrinfo** head, struct addrinfo** tail)
+{
+    mfl_resolvconf rc;
+    mfl_resolv_load(&rc);
+    if (rc.nsrv == 0) return -1;
+    char cands[6][256];
+    int nc = 0;
+    size_t nl = strlen(name);
+    int absolute = nl > 0 && name[nl - 1] == '.';
+    int dotless = !absolute && strchr(name, '.') == NULL;
+#define MFL_CAND(...) do { \
+        if (nc < 6) { \
+            int w = snprintf(cands[nc], sizeof(cands[nc]), __VA_ARGS__); \
+            if (w > 0 && w < (int)sizeof(cands[nc])) nc++; \
+        } \
+    } while (0)
+    if (dotless) {
+        for (int i = 0; i < rc.nsearch; i++) MFL_CAND("%s.%s", name, rc.search[i]);
+        MFL_CAND("%s", name);
+    } else {
+        MFL_CAND("%s", name);
+        if (!absolute)
+            for (int i = 0; i < rc.nsearch; i++) MFL_CAND("%s.%s", name, rc.search[i]);
+    }
+#undef MFL_CAND
+    if (nc == 0) return 0;
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) return -1;
+    struct timeval tv;
+    tv.tv_sec = 2; tv.tv_usec = 0;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    int got = 0, saw_resp = 0;
+    for (int ci = 0; ci < nc && !got; ci++) {
+        for (int qi = 0; qi < 2 && !got; qi++) {
+            uint16_t qt = qi == 0 ? 1 : 28;    /* A, then AAAA — v4 first */
+            if ((qt == 1 && family == AF_INET6) || (qt == 28 && family == AF_INET)) continue;
+            for (int si = 0; si < rc.nsrv; si++) {
+                if (mfl_dns_xchg(fd, (const struct sockaddr*)&rc.srv[si].addr, rc.srv[si].len,
+                                 cands[ci], qt, port, family, socktype, protocol,
+                                 head, tail)) {
+                    saw_resp = 1;
+                    break;
+                }
+            }
+            if (*head) got = 1;
+        }
+    }
+    close(fd);
+    if (got) return 1;
+    return saw_resp ? 0 : 2;
+}
+
+static void mfl_freeaddrinfo(struct addrinfo* res)
+{
+    while (res) {
+        struct addrinfo* nx = res->ai_next;
+        free(res->ai_addr);
+        free(res);
+        res = nx;
+    }
+}
+
+static int mfl_getaddrinfo(const char* node, const char* service,
+                           const struct addrinfo* hints, struct addrinfo** res)
+{
+    *res = NULL;
+    int family = AF_UNSPEC, socktype = SOCK_STREAM, protocol = 0, passive = 0;
+    if (hints) {
+        if (hints->ai_family) family = hints->ai_family;
+        if (hints->ai_socktype) socktype = hints->ai_socktype;
+        protocol = hints->ai_protocol;
+        passive = (hints->ai_flags & AI_PASSIVE) != 0;
+    }
+    if (family != AF_UNSPEC && family != AF_INET && family != AF_INET6)
+        return EAI_FAMILY;
+    if (!protocol)
+        protocol = socktype == SOCK_STREAM ? IPPROTO_TCP :
+                   socktype == SOCK_DGRAM  ? IPPROTO_UDP : 0;
+    uint16_t port = 0;
+    if (service && *service) {
+        char* e = NULL;
+        unsigned long v = strtoul(service, &e, 10);
+        if (e == service || !e || *e || v > 65535) return EAI_SERVICE;
+        port = (uint16_t)v;
+    }
+    struct addrinfo *head = NULL, *tail = NULL;
+    const char* name = node;
+    if (!name || !*name) {
+        if (passive) {
+            /* bind-everything: IPv6 wildcard first (a dual-stack bind like
+               getaddrinfo's), then IPv4 — each only when the family allows */
+            if (family != AF_INET) {
+                struct sockaddr_in6 any6;
+                memset(&any6, 0, sizeof(any6));
+                any6.sin6_family = AF_INET6;
+                any6.sin6_port = htons(port);
+                any6.sin6_addr = in6addr_any;
+                mfl_ai_push(&head, &tail, AF_INET6, socktype, protocol,
+                            (const struct sockaddr*)&any6, (socklen_t)sizeof(any6));
+            }
+            if (family != AF_INET6) {
+                struct sockaddr_in any4;
+                memset(&any4, 0, sizeof(any4));
+                any4.sin_family = AF_INET;
+                any4.sin_port = htons(port);
+                any4.sin_addr.s_addr = htonl(INADDR_ANY);
+                mfl_ai_push(&head, &tail, AF_INET, socktype, protocol,
+                            (const struct sockaddr*)&any4, (socklen_t)sizeof(any4));
+            }
+            *res = head;
+            return head ? 0 : EAI_NONAME;
+        }
+        name = "localhost";
+    }
+    /* numeric literal? inet_pton never touches a resolver */
+    {
+        struct in_addr a4;
+        struct in6_addr a6;
+        if (family != AF_INET6 && inet_pton(AF_INET, name, &a4) == 1) {
+            struct sockaddr_in sin;
+            memset(&sin, 0, sizeof(sin));
+            sin.sin_family = AF_INET;
+            sin.sin_port = htons(port);
+            sin.sin_addr = a4;
+            mfl_ai_push(&head, &tail, AF_INET, socktype, protocol,
+                        (const struct sockaddr*)&sin, (socklen_t)sizeof(sin));
+            *res = head;
+            return 0;
+        }
+        if (family != AF_INET && inet_pton(AF_INET6, name, &a6) == 1) {
+            struct sockaddr_in6 sin6;
+            memset(&sin6, 0, sizeof(sin6));
+            sin6.sin6_family = AF_INET6;
+            sin6.sin6_port = htons(port);
+            sin6.sin6_addr = a6;
+            mfl_ai_push(&head, &tail, AF_INET6, socktype, protocol,
+                        (const struct sockaddr*)&sin6, (socklen_t)sizeof(sin6));
+            *res = head;
+            return 0;
+        }
+    }
+    /* AI_NUMERICHOST: literals only — no files/dns lookup */
+    if (hints && (hints->ai_flags & AI_NUMERICHOST)) return EAI_NONAME;
+    /* files before dns, like nsswitch's default "files dns" */
+    mfl_hosts_lookup(name, family, socktype, protocol, port, &head, &tail);
+    if (head) { *res = head; return 0; }
+    int dr = mfl_dns_resolve(name, port, family, socktype, protocol, &head, &tail);
+    if (head) { *res = head; return 0; }
+    return dr == 2 ? EAI_AGAIN : EAI_NONAME;
+}
+#else
+static int mfl_getaddrinfo(const char* node, const char* service,
+                           const struct addrinfo* hints, struct addrinfo** res)
+{
+    return getaddrinfo(node, service, hints, res);
+}
+static void mfl_freeaddrinfo(struct addrinfo* res) { freeaddrinfo(res); }
+#endif
+`
+
 const netRuntime = `/* networking: the low-level shape of Go's net package */
 /* listen_on: bind a listening socket to a SPECIFIC address, which listen(port)
    cannot do -- it hardcodes INADDR_ANY. A server told to serve 127.0.0.1 was
@@ -5153,7 +5643,7 @@ static int64_t mfl_listen_on(const char* host, int64_t port) {
     hints.ai_flags = AI_PASSIVE;
     const char* h = (host && *host && strcmp(host, "0.0.0.0") != 0) ? host : NULL;
     char ps[16]; snprintf(ps, sizeof(ps), "%lld", (long long)port);
-    if (getaddrinfo(h, ps, &hints, &res) != 0) {
+    if (mfl_getaddrinfo(h, ps, &hints, &res) != 0) {
         if (mfl_rr_mode == 1) mfl_rr_io_log_i64(-1);
         return -1;
     }
@@ -5165,7 +5655,7 @@ static int64_t mfl_listen_on(const char* host, int64_t port) {
         if (bind(fd, rp->ai_addr, (int)rp->ai_addrlen) == 0 && listen(fd, 64) == 0) break;
         MFL_CLOSESOCK(fd); fd = -1;
     }
-    freeaddrinfo(res);
+    mfl_freeaddrinfo(res);
     if (fd < 0) perror("listen_on");
     if (mfl_rr_mode == 1) mfl_rr_io_log_i64(fd);
     return fd;
@@ -5250,7 +5740,7 @@ static int64_t mfl_dial(const char* host, int64_t port) {
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_UNSPEC; hints.ai_socktype = SOCK_STREAM;
     char ps[16]; snprintf(ps, sizeof(ps), "%lld", (long long)port);
-    if (getaddrinfo(host, ps, &hints, &res) != 0) { if (mfl_rr_mode == 1) mfl_rr_io_log_i64(-1); return -1; }
+    if (mfl_getaddrinfo(host, ps, &hints, &res) != 0) { if (mfl_rr_mode == 1) mfl_rr_io_log_i64(-1); return -1; }
     int fd = -1;
     for (rp = res; rp; rp = rp->ai_next) {
         fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
@@ -5258,7 +5748,7 @@ static int64_t mfl_dial(const char* host, int64_t port) {
         if (connect(fd, rp->ai_addr, (int)rp->ai_addrlen) == 0) break;
         MFL_CLOSESOCK(fd); fd = -1;
     }
-    freeaddrinfo(res);
+    mfl_freeaddrinfo(res);
     if (mfl_rr_mode == 1) mfl_rr_io_log_i64(fd);
     return fd;
 }
@@ -5446,9 +5936,9 @@ static int64_t mfl_udp_sendto(int64_t fd, const char* host, int64_t port, mfl_by
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_INET; hints.ai_socktype = SOCK_DGRAM;
     char ps[16]; snprintf(ps, sizeof(ps), "%lld", (long long)port);
-    if (getaddrinfo(host, ps, &hints, &res) != 0) { if (mfl_rr_mode == 1) mfl_rr_io_log_i64(-1); return -1; }
+    if (mfl_getaddrinfo(host, ps, &hints, &res) != 0) { if (mfl_rr_mode == 1) mfl_rr_io_log_i64(-1); return -1; }
     ssize_t n = sendto((int)fd, (const char*)b.data, (size_t)b.len, 0, res->ai_addr, (int)res->ai_addrlen);
-    freeaddrinfo(res);
+    mfl_freeaddrinfo(res);
     int64_t r = (int64_t)n;
     if (mfl_rr_mode == 1) mfl_rr_io_log_i64(r);
     return r;
@@ -5795,7 +6285,7 @@ static SSL* mfl_tls_dial_e(const char* host, int port, const char** stage) {
     hints.ai_socktype = SOCK_STREAM;
     char ports[16];
     snprintf(ports, sizeof(ports), "%d", port);
-    if (getaddrinfo(host, ports, &hints, &res) != 0) { if (stage) *stage = "dns"; return NULL; }
+    if (mfl_getaddrinfo(host, ports, &hints, &res) != 0) { if (stage) *stage = "dns"; return NULL; }
     int fd = -1;
     for (struct addrinfo* a = res; a; a = a->ai_next) {
         fd = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
@@ -5804,7 +6294,7 @@ static SSL* mfl_tls_dial_e(const char* host, int port, const char** stage) {
         MFL_CLOSESOCK(fd);
         fd = -1;
     }
-    freeaddrinfo(res);
+    mfl_freeaddrinfo(res);
     if (fd < 0) { if (stage) *stage = "connect"; return NULL; }
     SSL* ssl = mfl_tls_handshake_client(fd, host, stage);
     if (!ssl) { MFL_CLOSESOCK(fd); return NULL; } /* dial owns fd: close it on handshake failure */
@@ -5975,7 +6465,7 @@ static int mfl_tcp_dial_e(const char* host, int port, const char** stage, long l
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_UNSPEC; hints.ai_socktype = SOCK_STREAM;
     char ps[16]; snprintf(ps, sizeof(ps), "%d", port);
-    if (getaddrinfo(host, ps, &hints, &res) != 0) { if (stage) *stage = "dns"; return -1; }
+    if (mfl_getaddrinfo(host, ps, &hints, &res) != 0) { if (stage) *stage = "dns"; return -1; }
     int fd = -1, timedout = 0;
     for (rp = res; rp; rp = rp->ai_next) {
         fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
@@ -5985,7 +6475,7 @@ static int mfl_tcp_dial_e(const char* host, int port, const char** stage, long l
         timedout = ms > 0 && MFL_HTTP_TIMED_OUT();
         MFL_CLOSESOCK(fd); fd = -1;
     }
-    freeaddrinfo(res);
+    mfl_freeaddrinfo(res);
     if (fd < 0 && stage) *stage = timedout ? "timeout" : "connect";
     return fd;
 }
@@ -8355,6 +8845,8 @@ func (g *cgen) program(p *Program) (string, error) {
 		// socket portability shims: needed by any socket runtime (net, TLS, WSS, WS)
 		if portableBase || g.usesNet || g.usesTLS || g.usesWSS || g.usesWS {
 			out.WriteString(sockCompatRuntime)
+			out.WriteByte('\n')
+			out.WriteString(resolverRuntime)
 			out.WriteByte('\n')
 		}
 		if portableBase || g.usesNet || g.usesWS {
