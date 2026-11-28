@@ -746,9 +746,11 @@ extern "m" { header "math.h" link "m" fn sqrt(float) float fn pow(float, float) 
   Machine-specific paths belong on the command line instead, so the source stays
   portable: `machin build --cflags "-I<dir>" --ldflags "-L<dir>"` (repeatable;
   values split on spaces; `CFLAGS`/`LDFLAGS` environment variables are not read).
-  A glibc `--static` binary that resolves hostnames still loads the host's NSS
-  libraries at run time and can crash on a different glibc version (the build
-  warns); use a musl compiler for a portable binary.
+  A glibc `--static` binary resolves hostnames itself, without NSS (`/etc/hosts`,
+  then A/AAAA over UDP to the `resolv.conf` servers, honouring `search` and
+  `ndots`), since glibc's static `getaddrinfo` loads the host's libraries and can
+  crash on another glibc version. It has no mDNS, `nsswitch.conf` or TCP fallback
+  for truncated answers. Extern code that calls NSS functions is still affected.
   `--static-link <name>` links `lib<name>.a` in place of `-l<name>` for a library
   the program links, searching the `-L` directories and then the compiler's own
   path, and fails if no archive is found. These apply to native builds only.
