@@ -240,7 +240,7 @@ func machinGuide() guideCatalog {
 			{"input", "() -> string", "read one stdin line (newline stripped; \"\" at EOF)", "io"},
 			{"read_stdin", "() -> string", "read all of stdin verbatim until EOF (exact bytes; no line splitting)", "io"},
 			{"flush", "() ->", "flush buffered stdout (prompt output through a pipe)", "io"},
-			{"raw_mode", "(int) -> int", "put the terminal in cbreak/no-echo mode (1) or restore it (0); pair them and restore before exit (for TUIs/games)", "io"},
+			{"raw_mode", "(int) -> int", "put the terminal in cbreak/no-echo mode (1), the same with signal keys off so Ctrl-C arrives as a byte (2), or restore it (0). Also restored on exit and on SIGINT/SIGTERM/SIGHUP/SIGQUIT, not on SIGKILL (for TUIs/games)", "io"},
 			{"read_key", "() -> string", "non-blocking single-key read: a 1-char string, or \"\" if no key is waiting (needs raw_mode for live input)", "io"},
 			{"read_file", "(string) -> string", "read a whole file (\"\" on error)", "io"},
 			{"read_file_bytes", "(string) -> bytes", "read a whole file's raw bytes, NUL-safe (empty on error) — for binary assets", "io"},

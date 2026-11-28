@@ -5510,7 +5510,9 @@ static mfl_udp_result mfl_udp_recvfrom(int64_t fd) {
 // only when raw_mode/read_key is used (a browser app references neither).
 const ttyRuntime = `/* terminal raw mode + non-blocking single-key read (for TUIs and games).
    raw_mode(1) puts the tty in cbreak + no-echo with VMIN=0/VTIME=0 so reads
-   never block; raw_mode(0) restores the saved settings.
+   never block; raw_mode(2) also turns signal keys off, so Ctrl-C arrives as a
+   byte; raw_mode(0) restores the saved settings, and so does the program
+   exiting or dying on SIGINT/SIGTERM/SIGHUP/SIGQUIT (#756).
 
    Windows has no termios (#517). The console equivalent clears the two flags
    that make it cook input, and a non-console handle — a pipe, a file, NUL —
@@ -5521,16 +5523,21 @@ const ttyRuntime = `/* terminal raw mode + non-blocking single-key read (for TUI
 #include <conio.h>
 static DWORD mfl_tty_saved_mode = 0;
 static int mfl_tty_raw = 0;
+static void mfl_tty_restore(void) {
+    if (mfl_tty_raw) SetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), mfl_tty_saved_mode);
+}
 static int64_t mfl_raw_mode(int64_t on) {
     HANDLE h = GetStdHandle(STD_INPUT_HANDLE);
     if (h == INVALID_HANDLE_VALUE || h == NULL) return -1;
     if (on) {
-        if (mfl_tty_raw) return 0;
-        DWORD m;
-        if (!GetConsoleMode(h, &m)) return -1;   /* not a console: same as tcgetattr on a pipe */
+        DWORD m = mfl_tty_saved_mode;
+        if (!mfl_tty_raw && !GetConsoleMode(h, &m)) return -1;   /* not a console: same as tcgetattr on a pipe */
         mfl_tty_saved_mode = m;
         m &= ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT);
+        if (on == 2) m &= ~ENABLE_PROCESSED_INPUT;
         if (!SetConsoleMode(h, m)) return -1;
+        static int hooked = 0;
+        if (!hooked) { hooked = 1; atexit(mfl_tty_restore); }
         mfl_tty_raw = 1;
     } else {
         if (!mfl_tty_raw) return 0;
@@ -5564,17 +5571,44 @@ static char* mfl_read_key(void) {
 #else
 static struct termios mfl_tty_saved;
 static int mfl_tty_raw = 0;
+static void mfl_tty_restore(void) {
+    if (mfl_tty_raw) tcsetattr(STDIN_FILENO, TCSANOW, &mfl_tty_saved);
+}
+#ifndef __wasm__
+/* only async-signal-safe calls here. SA_RESETHAND has already restored the
+   default action, so the re-raise ends the process with the same signal. */
+static void mfl_tty_on_signal(int sig) { mfl_tty_restore(); raise(sig); }
+#endif
+static void mfl_tty_hook(void) {
+    static int hooked = 0;
+    if (hooked) return;
+    hooked = 1;
+    atexit(mfl_tty_restore);
+#ifndef __wasm__
+    int sigs[] = { SIGINT, SIGTERM, SIGHUP, SIGQUIT };
+    for (int i = 0; i < 4; i++) {
+        struct sigaction old, sa;
+        /* leave an ignored (nohup) or already handled signal alone */
+        if (sigaction(sigs[i], NULL, &old) != 0 || old.sa_handler != SIG_DFL) continue;
+        memset(&sa, 0, sizeof sa);
+        sa.sa_handler = mfl_tty_on_signal;
+        sa.sa_flags = SA_RESETHAND;
+        sigaction(sigs[i], &sa, NULL);
+    }
+#endif
+}
 static int64_t mfl_raw_mode(int64_t on) {
     if (on) {
-        if (mfl_tty_raw) return 0;
-        struct termios t;
-        if (tcgetattr(STDIN_FILENO, &t) != 0) return -1;
+        struct termios t = mfl_tty_saved;
+        if (!mfl_tty_raw && tcgetattr(STDIN_FILENO, &t) != 0) return -1;
         mfl_tty_saved = t;
         t.c_lflag &= ~(ICANON | ECHO);
+        if (on == 2) t.c_lflag &= ~ISIG;
         t.c_cc[VMIN] = 0;
         t.c_cc[VTIME] = 0;
         if (tcsetattr(STDIN_FILENO, TCSANOW, &t) != 0) return -1;
         mfl_tty_raw = 1;
+        mfl_tty_hook();
     } else {
         if (!mfl_tty_raw) return 0;
         tcsetattr(STDIN_FILENO, TCSANOW, &mfl_tty_saved);
