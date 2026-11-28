@@ -313,7 +313,7 @@ startup (before `main`; at `_initialize` for a wasm reactor).
 | `exit` | `(int) -> ` | terminate the process with a status code |
 | `flush` | `() -> ` | flush buffered stdout (for prompt output through a pipe) |
 | `arena_reset` | `() -> int` | free the current goroutine's value-arena in place (keeps a long-running single-actor server's RSS flat); unchecked — caller asserts no arena value is still reachable (§13) |
-| `raw_mode` | `(int) -> int` | put the terminal in cbreak/no-echo mode (`1`) or restore it (`0`); pair them and restore before exit (TUIs/games) |
+| `raw_mode` | `(int) -> int` | put the terminal in cbreak/no-echo mode (`1`), the same with signal keys off so Ctrl-C arrives as a byte (`2`), or restore it (`0`); also restored on exit and on SIGINT/SIGTERM/SIGHUP/SIGQUIT, not on SIGKILL (TUIs/games) |
 | `read_key` | `() -> string` | non-blocking single-key read: a 1-char string, or `""` if no key is waiting (needs `raw_mode` for live input) |
 | `read_file` | `(string) -> string` | read a whole file ("" on error) |
 | `write_file` | `(string, string) -> int` | write a file (bytes written; -1 on error) |
