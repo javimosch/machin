@@ -279,7 +279,7 @@ func machinGuide() guideCatalog {
 			{"float", "(number) -> float", "int -> float (identity on float). MFL has no implicit int->float, so a concrete int (fn return, byte_at, len, ...) needs this to enter float math", "convert"},
 			{"parse_int", "(string) -> int", "parse an integer (0 if non-numeric)", "convert"},
 			{"parse_float", "(string) -> float", "parse a floating-point number (strtod; 0.0 if non-numeric)", "convert"},
-			{"ushr", "(int, int) -> int", "logical (zero-filling) right shift; >> is arithmetic and copies the sign bit. A count outside 0..63 (negative included) gives 0. For hashes, binary formats, emulators", "convert"},
+			{"ushr", "(int, int) -> int", "logical (zero-filling) right shift; >> is arithmetic and copies the sign bit. A count outside 0..63 (negative included) gives 0 (for << also 0; for >> the sign fill, 0 or -1). For hashes, binary formats, emulators", "convert"},
 			{"f64_bits", "(float) -> int", "reinterpret a double's IEEE-754 bits as an int64 (for byte-level (de)serialization, e.g. BSON doubles); inverse f64_from_bits", "convert"},
 			{"f64_from_bits", "(int) -> float", "reinterpret an int64 bit pattern as a double (inverse of f64_bits)", "convert"},
 			// math (libm, linked -lm only when used; numeric in, float out)
