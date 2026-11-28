@@ -1703,6 +1703,13 @@ static void mfl_sb_puts(mfl_sb* sb, const char* s) {
 static char* mfl_sb_done(mfl_sb* sb) { char* r = mfl_alloc(sb->len + 1); memcpy(r, sb->buf, sb->len + 1); free(sb->buf); return r; }
 static char* mfl_str_i(int64_t v) { char* b = mfl_alloc(24); snprintf(b, 24, "%lld", (long long)v); return b; }
 static char* mfl_str_d(double v)  { char* b = mfl_alloc(32); snprintf(b, 32, "%g", v); return b; }
+/* a float in JSON is data and must read back exactly (#774): the fewest
+   significant digits, up to 17, that parse to the same double. str() keeps %g. */
+static char* mfl_json_d(double v) {
+    char* b = mfl_alloc(32);
+    for (int p = 15; p <= 17; p++) { snprintf(b, 32, "%.*g", p, v); if (strtod(b, NULL) == v) break; }
+    return b;
+}
 /* reinterpret a double's IEEE-754 bits as an int64 and back — the byte-level access
    needed to (de)serialize 64-bit floats (e.g. BSON doubles). */
 static int64_t mfl_f64_bits(double d) { int64_t i; memcpy(&i, &d, 8); return i; }
@@ -11172,7 +11179,7 @@ func (g *cgen) jsonSerializer(typeStr string) (string, error) {
 	case typeStr == "int":
 		body = "return mfl_str_i(v);"
 	case typeStr == "float":
-		body = "return mfl_str_d(v);"
+		body = "return mfl_json_d(v);"
 	case typeStr == "bool":
 		body = `return mfl_dup(v ? "true" : "false");`
 	case typeStr == "string":
