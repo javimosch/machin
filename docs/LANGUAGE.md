@@ -489,6 +489,8 @@ first := users[0]                                // value copy
 | `int(n)`                    | convert a numeric value to `int` (truncates) |
 | `parse_int(s)` / `parse_float(s)` | parse a `string` to `int` / `float`      |
 | `f64_bits(f)` / `f64_from_bits(i)` | reinterpret a `float`'s IEEE-754 bits as an `int` and back (for byte serialization) |
+| `ult(a, b)`, `udiv(a, b)`, `urem(a, b)` | unsigned `<`, `/`, `%`; a zero divisor behaves as for `/` (`--safe` panics) |
+| `umulh(a, b)`               | high 64 bits of the unsigned 128-bit product |
 | `ushr(x, n)`                | logical (zero-filling) right shift; `>>` is arithmetic. A count outside 0..63 gives 0. For `<<` and `>>` such a count (negative included) gives 0 and the sign fill |
 | `url_encode(s)`             | percent-encode a string for URLs (RFC 3986: keeps `A-Za-z0-9-._~`, encodes everything else, space → `%20`) |
 | `url_decode(s)`             | percent-decode a URL component (lenient: `+` → space, malformed `%XX` passes through unchanged) |

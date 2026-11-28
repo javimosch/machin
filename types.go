@@ -2715,6 +2715,16 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		}
 		c.addPair(argSlots[0], newSlot(c, KNum))
 		return c.cInt, nil
+	case "ult", "udiv", "urem", "umulh":
+		if len(argSlots) != 2 {
+			return 0, fmt.Errorf("%s: 2 args (int, int)", ex.Callee)
+		}
+		c.addPair(argSlots[0], c.cInt)
+		c.addPair(argSlots[1], c.cInt)
+		if ex.Callee == "ult" {
+			return c.cBool, nil
+		}
+		return c.cInt, nil
 	case "ushr":
 		// logical (zero-filling) right shift; >> is arithmetic
 		if len(argSlots) != 2 {
