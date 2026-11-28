@@ -173,7 +173,7 @@ func json_serializer(t) (name) {
     jsonproto_emit("static char* " + name + "(" + ct + " v);\n")
     body := ""
     if t == "int" { body = "return mfl_str_i(v);" }
-    if t == "float" { body = "return mfl_str_d(v);" }
+    if t == "float" { body = "return mfl_json_d(v);" }
     if t == "bool" { body = "return mfl_dup(v ? \"true\" : \"false\");" }
     if t == "string" { body = "return mfl_json_str(v);" }
     if t == "bytes" { body = "return mfl_json_str(mfl_base64_encode_bytes(v));" }
