@@ -345,6 +345,11 @@ func BuildBinaryLinked(prog *Program, outPath string, safe, static bool, link Li
 	var srcs []string // extra C source files compiled alongside the generated one
 	if static {
 		args = append(args, "-static")
+		// -DMFL_STATIC tells the emitted resolver to skip glibc's NSS (which
+		// dlopen()s host libc modules and crashes on a glibc mismatch, #764);
+		// the C side also requires __GLIBC__, so musl static builds keep musl's
+		// own resolver.
+		args = append(args, "-DMFL_STATIC")
 	}
 	if bundleSqlite {
 		dir, cpath, err := unpackSqliteAmalgamation()

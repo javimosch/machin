@@ -1,11 +1,14 @@
 package main
 
 import (
+	"encoding/binary"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -98,5 +101,170 @@ func TestStaticBuildBundlesCACerts(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "ERR:tls") {
 		t.Fatalf("expected the self-signed local server to be rejected (ERR:tls), got: %s", out)
+	}
+}
+
+// fakeDNSReply answers one DNS query datagram for the test names below:
+// dns.test A->127.0.0.1 / AAAA->::1, nx.test->NXDOMAIN, anything else NODATA.
+func fakeDNSReply(q []byte) []byte {
+	if len(q) < 12 {
+		return nil
+	}
+	off := 12
+	var labels []string
+	for {
+		if off >= len(q) {
+			return nil
+		}
+		l := int(q[off])
+		off++
+		if l == 0 {
+			break
+		}
+		if l > 63 || off+l > len(q) {
+			return nil
+		}
+		labels = append(labels, string(q[off:off+l]))
+		off += l
+	}
+	if off+4 > len(q) {
+		return nil
+	}
+	qtype := binary.BigEndian.Uint16(q[off:])
+	qend := off + 4
+	name := strings.Join(labels, ".")
+
+	var rcode uint16
+	var rdata []byte
+	var rtype uint16
+	if name == "nx.test" {
+		rcode = 3 // NXDOMAIN
+	} else if name == "dns.test" && (qtype == 1 || qtype == 28) {
+		rtype = qtype
+		if qtype == 1 {
+			rdata = []byte{127, 0, 0, 1}
+		} else {
+			rdata = make([]byte, 16)
+			rdata[15] = 1
+		}
+	}
+	an := uint16(0)
+	if rdata != nil {
+		an = 1
+	}
+
+	resp := make([]byte, 0, qend+16+len(rdata))
+	resp = append(resp, q[:2]...)                      // id
+	resp = append(resp, 0x81, byte(0x80|rcode))       // QR|RD|RA + rcode
+	resp = append(resp, 0, 1, 0, byte(an), 0, 0, 0, 0) // QD=1 AN NS=0 AR=0
+	resp = append(resp, q[12:qend]...)                // question verbatim
+	if an == 1 {
+		resp = append(resp, 0xc0, 0x0c) // name -> offset 12
+		resp = append(resp, byte(rtype>>8), byte(rtype))
+		resp = append(resp, 0, 1)                   // class IN
+		resp = append(resp, 0, 0, 0, 60)            // ttl
+		resp = append(resp, byte(len(rdata)>>8), byte(len(rdata)))
+		resp = append(resp, rdata...)
+	}
+	return resp
+}
+
+// A `--static` build must resolve names WITHOUT glibc's NSS: on a host whose
+// glibc differs from the build's, getaddrinfo's dlopen()ed NSS modules die in
+// the second libc's init (SIGFPE, #764). The emitted resolver does it with
+// /etc/hosts + raw DNS instead — verified here end-to-end against a fake
+// nameserver, with the config files relocated via MFL_HOSTS_FILE /
+// MFL_RESOLV_CONF. The DNS leg needs to bind 127.0.0.1:53, so it is skipped
+// where that needs privileges the test doesn't have.
+func TestStaticBuildResolvesNamesWithoutNSS(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+	_, port, err := net.SplitHostPort(strings.TrimPrefix(srv.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	hosts := filepath.Join(dir, "hosts")
+	if err := os.WriteFile(hosts, []byte("127.0.0.1 testhost.local\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	resolv := filepath.Join(dir, "resolv.conf")
+	if err := os.WriteFile(resolv, []byte("nameserver 127.0.0.1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Fake nameserver on 127.0.0.1:53 — only when the test may bind it.
+	dnsAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:53")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dns, err := net.ListenUDP("udp", dnsAddr)
+	dnsOK := err == nil
+	if dnsOK {
+		defer dns.Close()
+		go func() {
+			buf := make([]byte, 4096)
+			for {
+				n, peer, err := dns.ReadFromUDP(buf)
+				if err != nil {
+					return
+				}
+				if resp := fakeDNSReply(buf[:n]); resp != nil {
+					dns.WriteToUDP(resp, peer)
+				}
+			}
+		}()
+	}
+
+	// Without a nameserver the DNS names would each burn the resolver's whole
+	// timeout, so the program only exercises what can answer quickly.
+	src := fmt.Sprintf(`func main() {
+	st, body, err := http_request("GET", "http://testhost.local:%s/", []string{}, "")
+	println("hosts: " + str(st) + " " + body + " " + err)
+}`, port)
+	if dnsOK {
+		src = fmt.Sprintf(`func main() {
+	st, body, err := http_request("GET", "http://testhost.local:%s/", []string{}, "")
+	println("hosts: " + str(st) + " " + body + " " + err)
+	st2, body2, err2 := http_request("GET", "http://dns.test:%s/", []string{}, "")
+	println("dns: " + str(st2) + " " + body2 + " " + err2)
+	st3, body3, err3 := http_request("GET", "http://nx.test:1/", []string{}, "")
+	println("nxdomain: " + str(st3) + " " + err3)
+}`, port, port)
+	}
+	prog := &Program{Funcs: parseFuncs(t, src)}
+
+	bin, err := os.CreateTemp("", "mfl-static-resolv-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin.Close()
+	defer os.Remove(bin.Name())
+	if err := BuildBinaryStatic(prog, bin.Name(), false, true); err != nil {
+		t.Fatalf("static build failed: %v", err)
+	}
+
+	cmd := exec.Command(bin.Name())
+	cmd.Env = append(os.Environ(), "MFL_HOSTS_FILE="+hosts, "MFL_RESOLV_CONF="+resolv)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("running the static binary failed: %v\n%s", err, out)
+	}
+	s := string(out)
+	if !strings.Contains(s, "hosts: 200 ok ") {
+		t.Fatalf("hosts-file resolution failed; got: %s", s)
+	}
+	if dnsOK {
+		if !strings.Contains(s, "dns: 200 ok ") {
+			t.Fatalf("DNS resolution failed; got: %s", s)
+		}
+		if !strings.Contains(s, "nxdomain: 0 dns") {
+			t.Fatalf("NXDOMAIN not reported as dns; got: %s", s)
+		}
+	} else {
+		t.Logf("127.0.0.1:53 not bindable; DNS leg skipped. Output:\n%s", s)
 	}
 }
