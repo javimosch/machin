@@ -128,7 +128,7 @@ make examples                  # run every example (also: examples/run.sh)
 ```
 
 CI runs the suite in **two tiers** (#708): a `gate` job (required on every PR,
-~4min — `go test -short -skip=<slow-tail list>` + MFL suites + coverage floor +
+~5-6min — `go test -short -skip=<slow-tail list>` + MFL suites + coverage floor +
 prelude-diff + examples) and a `test-full` job (the whole suite + ASan +
 selfhost gates + cross-target smokes — required on `main`, non-blocking on
 PRs). When you add a test that is inherently slow — coverage ratchets, static

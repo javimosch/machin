@@ -2,7 +2,7 @@ name: ci
 
 # Two tiers (issue #708):
 #
-#   gate       — REQUIRED on every PR and on main. ~4min. `go test -short`
+#   gate       — REQUIRED on every PR and on main. ~5-6min. `go test -short`
 #                (the slow tail is tagged `testing.Short()`), the MFL suites,
 #                the coverage floor, the prelude-diff check, and the examples
 #                smoke run. This is the merge gate.
@@ -58,9 +58,11 @@ jobs:
       # here only; they still run in test-full AND in the floor's own reentry.
       # Slow means >2s (measured 2026-11-24): static OpenSSL links, coverage
       # ratchets, multi-second network/RSS/integration probes.
+      # -timeout is a hang detector, not a speed budget: at 5m the suite sat on
+      # the limit and the gate panicked with no test failing (#760).
       - name: Test (core suite)
         run: |
-          go test -short -timeout 5m \
+          go test -short -timeout 15m \
             -skip='TestAndroidLibOnDesktopJVM|TestAndroidLibIgnoresHostLocale|TestTypesCoverageFloor|TestStaticBuildBundlesSqlite|TestCertifyCodegenPaths|TestGemmF32AllTransposeCombos|TestDeadlockStrictIO|TestReadBytesLoopReassemblesLargePayload|TestAttnCausalFwdBwdF32|TestParseIntStrtollContract|TestHttpStreamRoundTrip|TestParseFloatStrtodContract|TestScopedArenaReclaimsMaps|TestScopedArenaReturnsPagesToTheOS|TestSafeChecks|TestCaldavClient|TestHTTPClientResponses|TestWebSocketControlFloodIsFlat|TestMachwebRefusesResponseHeadBreaks' \
             ./...
 
