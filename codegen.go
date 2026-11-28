@@ -674,12 +674,13 @@ typedef struct mfl_cnode { struct mfl_cnode* next; void* data; uint64_t sender; 
 typedef struct {
     pthread_mutex_t mu; pthread_cond_t cnd;
     mfl_cnode *head, *tail; int64_t es; int closed;
-    int dead;                            /* --safe: freed by chan_free; every op panics */
+    int dead;                            /* freed by chan_free; every op panics while the header lives */
     int nstr; int* stroff;
     char* (*ser)(const void*);          /* json mode: element -> arena JSON */
     void (*des)(const char*, void*);    /* json mode: JSON -> *out (arena) */
     int64_t id;                         /* sequential channel id, for the deadlock wait-cycle report */
     int waiters;                        /* goroutines parked in recv2 on this channel (#740) */
+    int pollers;                        /* goroutines spinning in a select that names this channel (#740) */
 } mfl_chan;
 static int64_t mfl_chan_id_ctr = 0;
 /* Live-channel registry (#740): chan_free verifies its argument is a channel
@@ -731,7 +732,7 @@ static int mfl_chreg_del(mfl_chan* c) {
 static mfl_chan* mfl_make_chan(int64_t es, char* (*ser)(const void*), void (*des)(const char*, void*), int nstr, ...) {
     mfl_chan* c = malloc(sizeof(mfl_chan));
     pthread_mutex_init(&c->mu, NULL); pthread_cond_init(&c->cnd, NULL);
-    c->head = c->tail = NULL; c->es = es; c->closed = 0; c->dead = 0; c->waiters = 0;
+    c->head = c->tail = NULL; c->es = es; c->closed = 0; c->dead = 0; c->waiters = 0; c->pollers = 0;
     c->ser = ser; c->des = des;
     c->id = __atomic_fetch_add(&mfl_chan_id_ctr, 1, __ATOMIC_RELAXED);
     c->nstr = nstr; c->stroff = NULL;
@@ -822,6 +823,46 @@ static void mfl_chan_close(mfl_chan* c) {
     mfl_dl_note(); /* a close lets parked receivers drain — channel progress */
     mfl_rr_exit();
 }
+/* a select names each of its channels for its whole poll loop — while it spins,
+   every case is tryrecv'd/send'd in turn, so freeing any of them under it is the
+   same hang/crash as freeing under a parked receiver. The emitter brackets the
+   loop with mfl_chan_polln(+1)/(-1); chan_free refuses while pollers > 0. The
+   count is taken per channel, one mutex at a time, so opposing select orders
+   cannot deadlock. */
+static void mfl_chan_polln(mfl_chan** cs, int n, int on) {
+    for (int i = 0; i < n; i++) {
+        mfl_chan* c = cs[i];
+        if (!c) continue;
+        pthread_mutex_lock(&c->mu);
+        c->pollers += on;
+        pthread_mutex_unlock(&c->mu);
+    }
+}
+/* bounded quarantine for freed channel headers (#740): a stale chan_free or a
+   stale op can only be told apart from a live channel by ADDRESS, and malloc is
+   free to hand a just-freed header to the next make(chan) — after which the old
+   reference silently aliases the new channel (the #740 stale-free gap). Keeping
+   the last MFL_CHQUAR freed headers allocated (marked dead) means an address
+   cannot be recycled while a stale reference could still plausibly name it: the
+   stale chan_free then misses the live-channel registry and panics, and a stale
+   send/recv/close/select panics on dead. Only the ~176-byte header lingers —
+   queued payloads are freed immediately — so a churn loop still reclaims
+   (~200 kB at the cap). Past the cap the oldest header is really freed and its
+   address can be recycled again; a stale reference that survived more than
+   MFL_CHQUAR intervening chan_free calls is beyond what a pointer-keyed check
+   can see (closing that needs a generation in the channel value itself). */
+#define MFL_CHQUAR 1024
+static mfl_chan* mfl_chquar[MFL_CHQUAR];
+static int64_t mfl_chquar_n = 0;      /* live entries */
+static int64_t mfl_chquar_head = 0;   /* oldest entry */
+/* really free a quarantined header: sync objects, string offsets, struct. The
+   queue was drained at chan_free time. Caller holds mfl_chreg_mu. */
+static void mfl_chan_destroy(mfl_chan* c) {
+    pthread_mutex_destroy(&c->mu);
+    pthread_cond_destroy(&c->cnd);
+    free(c->stroff);
+    free(c);
+}
 /* chan_free: hand a channel's memory back (#724). Channels are malloc'd and
    were never freed anywhere — not even close() — so a program that keeps
    making channels grew without bound (~156 bytes each). Queued messages are
@@ -831,21 +872,28 @@ static void mfl_chan_close(mfl_chan* c) {
 
    THE CHANNEL MUST NOT BE USED AFTERWARDS — this is free(), not a hint. In
    particular no other goroutine may hold it: a receiver blocked in
-   mfl_chan_recv2, or any later send/recv/close, dereferences freed memory.
+   mfl_chan_recv2, a select spinning over it, or any later send/recv/close,
+   dereferences freed memory.
    chan_free is for a channel whose references are all local and done — the
    per-iteration make(chan) of a long-running loop.
 
-   #740 checks the two misuse modes that CAN be caught without ownership
+   #740 checks the misuse modes that CAN be caught without ownership
    tracking, turning them into a clean panic instead of a crash or hang:
    - double free / freeing a pointer that was never a live channel: the
      live-channel registry is consulted BEFORE c is dereferenced, so the
-     stale pointer is never touched.
-   - freeing while a goroutine is parked receiving on it (c->waiters > 0):
-     that receiver could never be woken, so this is a hang — reported instead.
-   Still unchecked: a send/recv/close/select on the channel AFTER the free
-   returns (the pointer is gone — only a GC or escape proof could catch that),
-   and freeing while another goroutine merely HOLDS the channel without being
-   blocked at that instant. */
+     stale pointer is never touched. The bounded quarantine above keeps the
+     freed address from being recycled for ~MFL_CHQUAR later frees, so a
+     stale reference cannot alias a new channel within that window.
+   - freeing while a goroutine is parked receiving on it (c->waiters > 0) or
+     spinning in a select that names it (c->pollers > 0): it could never be
+     served again, so this is a hang — reported instead.
+   - a send/recv/close/select on the channel AFTER the free, while its header
+     is still quarantined: c->dead panics cleanly (the --safe build keeps the
+     header forever, so there it is caught unconditionally).
+   Still unchecked: use after the header leaves the quarantine (>MFL_CHQUAR
+   later frees, or any non-chan_free path that frees it), and freeing while
+   another goroutine merely HOLDS the channel without touching it at that
+   instant. */
 static void mfl_chan_release(mfl_chan* c, int quarantine) {
     if (!c) return;
     pthread_mutex_lock(&mfl_chreg_mu);
@@ -858,6 +906,10 @@ static void mfl_chan_release(mfl_chan* c, int quarantine) {
     if (c->waiters > 0) {
         pthread_mutex_unlock(&c->mu);
         mfl_panic("chan_free: goroutine(s) still blocked receiving on the channel");
+    }
+    if (c->pollers > 0) {
+        pthread_mutex_unlock(&c->mu);
+        mfl_panic("chan_free: goroutine(s) still selecting on the channel");
     }
     mfl_cnode* n = c->head;
     while (n) {
@@ -876,18 +928,23 @@ static void mfl_chan_release(mfl_chan* c, int quarantine) {
         free(n->data); free(n); n = nx;
     }
     c->head = c->tail = NULL;
-    if (quarantine) {
-        /* --safe: keep the header (never destroyed or reused), so a stale
-           double free, a later op, or a select still polling it panics */
-        c->dead = 1;
-        pthread_mutex_unlock(&c->mu);
-        return;
-    }
+    /* mark dead in every build: while the header lives (quarantine, or forever
+       under --safe) a stale op panics instead of touching freed memory */
+    c->dead = 1;
     pthread_mutex_unlock(&c->mu);
-    pthread_mutex_destroy(&c->mu);
-    pthread_cond_destroy(&c->cnd);
-    free(c->stroff);
-    free(c);
+    if (quarantine) return;   /* --safe: the header is never destroyed or reused */
+    /* normal build: park the header in the bounded quarantine ring; the oldest
+       entry is really freed once the ring is full */
+    pthread_mutex_lock(&mfl_chreg_mu);
+    if (mfl_chquar_n == MFL_CHQUAR) {
+        mfl_chan* old = mfl_chquar[mfl_chquar_head];
+        mfl_chquar_head = (mfl_chquar_head + 1) % MFL_CHQUAR;
+        mfl_chquar_n--;
+        mfl_chan_destroy(old);
+    }
+    mfl_chquar[(mfl_chquar_head + mfl_chquar_n) % MFL_CHQUAR] = c;
+    mfl_chquar_n++;
+    pthread_mutex_unlock(&mfl_chreg_mu);
 }
 static void mfl_chan_free(mfl_chan* c) { mfl_chan_release(c, 0); }
 static void mfl_chan_free_chk(mfl_chan* c) { mfl_chan_release(c, 1); }
@@ -9795,6 +9852,25 @@ func (g *cgen) selectStmt(st *SelectStmt, depth int) error {
 		indentC(&g.buf, depth+2)
 		fmt.Fprintf(&g.buf, "int _selpk%d = 0;\n", id)
 	}
+	// #740: while the poll loop runs, every case channel is being repeatedly
+	// tryrecv'd/send'd — a chan_free on any of them under it would be a hang or a
+	// crash. Bracket the loop with polln(+1)/(-1) so chan_free refuses; the abort
+	// path (a failed library scope) must exit the count before it longjmps out.
+	pollN := 0
+	if len(st.Cases) > 0 {
+		var pcs strings.Builder
+		for i := range st.Cases {
+			if i > 0 {
+				pcs.WriteString(", ")
+			}
+			fmt.Fprintf(&pcs, "_sc%d_%d", id, i)
+		}
+		pollN = len(st.Cases)
+		indentC(&g.buf, depth+2)
+		fmt.Fprintf(&g.buf, "mfl_chan* _pcs%d[] = {%s};\n", id, pcs.String())
+		indentC(&g.buf, depth+2)
+		fmt.Fprintf(&g.buf, "mfl_chan_polln(_pcs%d, %d, 1);\n", id, pollN)
+	}
 	indentC(&g.buf, depth+2)
 	g.buf.WriteString("for (;;) {\n")
 	for i := range st.Cases {
@@ -9812,12 +9888,20 @@ func (g *cgen) selectStmt(st *SelectStmt, depth int) error {
 	} else {
 		giveUp := ""
 		if g.library() { // a select polls, so it looks at its scope on each idle turn
-			giveUp = "if (mfl_scope_broken()) { mfl_dl_unblock(); mfl_scope_abort(); } "
+			giveUp = "if (mfl_scope_broken()) { "
+			if pollN > 0 {
+				giveUp += fmt.Sprintf("mfl_chan_polln(_pcs%d, %d, -1); ", id, pollN)
+			}
+			giveUp += "mfl_dl_unblock(); mfl_scope_abort(); } "
 		}
 		fmt.Fprintf(&g.buf, "if (!_selpk%d) { _selpk%d = 1; mfl_dl_block(-1); } %smfl_sleep(1);\n", id, id, giveUp)
 	}
 	indentC(&g.buf, depth+2)
 	g.buf.WriteString("}\n")
+	if pollN > 0 {
+		indentC(&g.buf, depth+2)
+		fmt.Fprintf(&g.buf, "mfl_chan_polln(_pcs%d, %d, -1);\n", id, pollN)
+	}
 	if !st.HasDefault {
 		indentC(&g.buf, depth+2)
 		fmt.Fprintf(&g.buf, "if (_selpk%d) mfl_dl_unblock();\n", id)

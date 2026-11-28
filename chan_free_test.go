@@ -77,10 +77,11 @@ func TestChanFreeDiscardsQueuedMessages(t *testing.T) {
 	}
 }
 
-// #740: the two misuse modes that can be caught without ownership tracking are
-// caught — a double chan_free and a free under a blocked receiver are clean
-// panics, not UB/crashes/hangs. (A send/recv AFTER the free is still an
-// unchecked use-after-free, like free() on a raw pointer.)
+// #740: the misuse modes that can be caught without ownership tracking are
+// caught — a double chan_free, a stale chan_free after the address would have
+// been reused, a free under a blocked receiver or a spinning select, and a use
+// while the freed header is still quarantined are all clean panics, not
+// UB/crashes/hangs.
 func TestChanFreePanicsOnMisuse(t *testing.T) {
 	for _, tc := range []struct{ name, src, want string }{
 		{"double free", `func main() {
@@ -88,6 +89,29 @@ func TestChanFreePanicsOnMisuse(t *testing.T) {
 	chan_free(c)
 	chan_free(c)
 }`, "double free"},
+		{"stale free after reuse", `func main() {
+	a := make(chan int)
+	chan_free(a)
+	b := make(chan int)
+	chan_free(a)
+	b <- 7
+}`, "not a live channel"},
+		{"free under select", `func w(c, done) {
+	select {
+	case v := <-c:
+		println(v)
+	}
+	done <- 1
+}
+func main() {
+	c := make(chan int)
+	done := make(chan int)
+	go w(c, done)
+	sleep(50)
+	chan_free(c)
+	x := <-done
+	println(x)
+}`, "still selecting"},
 		{"blocked receiver", `func worker(c, started) {
 	started <- 1
 	x := <-c
@@ -127,6 +151,32 @@ func main() {
 	}
 }
 
+// While a freed header sits in the bounded quarantine its address cannot be
+// recycled, so it stays marked dead and a stale op panics cleanly instead of
+// hitting freed memory — the normal-build half of what --safe does forever.
+func TestChanFreeQuarantineCatchesStaleUse(t *testing.T) {
+	for _, tc := range []struct{ name, src, want string }{
+		{"send after free", "func main() {\n\tc := make(chan int)\n\tchan_free(c)\n\tc <- 1\n}", "send on a channel freed"},
+		{"receive after free", "func main() {\n\tc := make(chan int)\n\tchan_free(c)\n\tx := <-c\n\tprintln(x)\n}", "receive on a channel freed"},
+		{"close after free", "func main() {\n\tc := make(chan int)\n\tchan_free(c)\n\tclose(c)\n}", "close on a channel freed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prog, err := wallsCompose(t, tc.src)
+			if err != nil {
+				t.Fatalf("compose: %v", err)
+			}
+			bin := filepath.Join(t.TempDir(), "p")
+			if err := BuildBinary(prog, bin, false); err != nil {
+				t.Fatalf("build: %v", err)
+			}
+			out, err := exec.Command("timeout", "10", bin).CombinedOutput()
+			if err == nil || !strings.Contains(string(out), tc.want) {
+				t.Errorf("%v: output %q does not report %q", err, out, tc.want)
+			}
+		})
+	}
+}
+
 // The signature is enforced at compile time: a non-channel argument and a
 // wrong arity both have to be refused, or chan_free becomes a way to free
 // something that was never a channel.
@@ -153,9 +203,9 @@ func TestChanFreeRejectsBadArguments(t *testing.T) {
 	}
 }
 
-// --safe keeps the freed header, which closes the two gaps a normal build has
-// (#740): a stale double free after the address is reused, and a free under a
-// select.
+// --safe keeps the freed header forever, which closes the gaps a normal build
+// only bounds (#740): the stale-use window never ends, where the quarantine
+// caps it at MFL_CHQUAR later frees.
 func TestChanFreeSafeClosesTheGaps(t *testing.T) {
 	for _, tc := range []struct{ name, src, want string }{
 		{"stale double free", `func main() {
@@ -180,7 +230,7 @@ func main() {
 	chan_free(c)
 	x := <-done
 	println(x)
-}`, "freed by chan_free"},
+}`, "still selecting"},
 		{"send after free", "func main() {\n\tc := make(chan int)\n\tchan_free(c)\n\tc <- 1\n}", "send on a channel freed"},
 		{"receive after free", "func main() {\n\tc := make(chan int)\n\tchan_free(c)\n\tx := <-c\n\tprintln(x)\n}", "receive on a channel freed"},
 		{"close after free", "func main() {\n\tc := make(chan int)\n\tchan_free(c)\n\tclose(c)\n}", "close on a channel freed"},
