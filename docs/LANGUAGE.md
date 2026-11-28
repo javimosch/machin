@@ -764,18 +764,16 @@ Channels are malloc'd and are **not** reclaimed by `close` or by any arena —
 a program that keeps making channels grows without bound (~160 bytes each, #740).
 `chan_free(ch)` hands the memory back, including messages still queued in it.
 The channel must not be used afterwards, and no other goroutine may hold a
-reference to it. Two misuse cases are partly checked (#740): a double
-`chan_free` panics, **unless** a later `make(chan)` reused the freed address, in
-which case it silently frees that new channel; and freeing while a goroutine is
-blocked in a plain receive panics, but one waiting in `select` is not detected.
-Everything else is unchecked in a normal build: any
-send/recv/close/select on the channel *after* the free returns is a
-use-after-free, exactly like `free()` on a raw pointer. A `--safe` build closes
-these gaps: it keeps the freed channel's header (so `chan_free` there leaks about
-150 bytes per call, queued messages are still reclaimed) and panics on any later
-send/recv/close/select or second `chan_free`, including in a goroutine that was
-waiting in `select` when the free happened (if the program is still running when
-it next polls). Freeing after you
+reference to it. Misuse is checked where a pointer-keyed runtime can see it
+(#740): a double `chan_free` panics; freeing while a goroutine is blocked in a
+plain receive **or** spinning in a `select` that names the channel panics; and
+while the freed header is still quarantined — the last ~1024 `chan_free` calls
+keep it allocated but marked dead, so its address cannot be recycled — a stale
+second `chan_free` or any later send/recv/close/select on it panics too. Past
+that window the address can be reused and the checks are blind again, exactly
+like `free()` on a raw pointer; a `--safe` build keeps every freed header
+(about 150 bytes per call, queued messages still reclaimed) so the checks never
+expire. Freeing after you
 have received a goroutine's final send is fine. It fits a channel created
 and consumed inside one iteration of a long-running loop:
 
