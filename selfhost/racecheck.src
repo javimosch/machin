@@ -614,7 +614,7 @@ func detect_races() {
                     g_rf_decl = append(g_rf_decl, ins.src)
                     g_rf_kind = append(g_rf_kind, kind)
                     g_rf_root = append(g_rf_root, root)
-                    g_rf_writers = append(g_rf_writers, join(descs, "\x01"))
+                    g_rf_writers = append(g_rf_writers, join(descs, "\t"))
                 }
             }
             ai = ai + 1
@@ -631,12 +631,12 @@ func dump_races() (out) {
     lines := []string{}
     k := 0
     for k < len(g_rf_decl) {
-        ws := split(g_rf_writers[k], "\x01")
+        ws := split(g_rf_writers[k], "\t")
         hws := []string{}
         wi := 0
         for wi < len(ws) { hws = append(hws, to_hex(bytes(ws[wi])))  wi = wi + 1 }
         line := to_hex(bytes(g_rf_decl[k])) + "|" + to_hex(bytes(g_rf_kind[k])) + "|" + to_hex(bytes(g_rf_root[k])) + "|" + join(hws, ",") + "\n"
-        keys = append(keys, g_rf_decl[k] + "\x00" + g_rf_root[k])
+        keys = append(keys, g_rf_decl[k] + "\t" + g_rf_root[k])
         lines = append(lines, line)
         k = k + 1
     }
@@ -994,7 +994,7 @@ func global_races() {
             g_rf_decl = append(g_rf_decl, "")
             g_rf_kind = append(g_rf_kind, kind)
             g_rf_root = append(g_rf_root, g)
-            g_rf_writers = append(g_rf_writers, join(descs, "\x01"))
+            g_rf_writers = append(g_rf_writers, join(descs, "\t"))
         }
         ni = ni + 1
     }
@@ -1212,10 +1212,10 @@ func mpg_stmt(locals, s) {
     before := len(g_gd_fn)
     one := []int{}
     one = append(one, s)
-    gd_walk("\x02mpg", locals, one)
+    gd_walk("$mpg", locals, one)
     i := before
     for i < len(g_gd_fn) {
-        if g_gd_fn[i] == "\x02mpg" { mc_merge(g_gd_g[i], g_gd_r[i], g_gd_w[i]) }
+        if g_gd_fn[i] == "$mpg" { mc_merge(g_gd_g[i], g_gd_r[i], g_gd_w[i]) }
         i = i + 1
     }
 }
@@ -1239,7 +1239,7 @@ func moved_del(name) {
 }
 func uam_flag(name) {
     if moved_has(name) == 0 { return }
-    key := g_insts[g_uam_iid].src + "\x00" + name
+    key := g_insts[g_uam_iid].src + "\t" + name
     if name_in(key, g_uam_done) == 1 { return }
     g_uam_done = append(g_uam_done, key)
     g_rf_decl = append(g_rf_decl, g_insts[g_uam_iid].src)

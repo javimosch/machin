@@ -358,10 +358,7 @@ func cmdSuperopt(args []string) error {
 		return fmt.Errorf("superopt: %w (superopt needs a program that typechecks)", cerr)
 	}
 
-	funcs := map[string]*FuncDecl{}
-	for _, f := range prog.Funcs {
-		funcs[f.Name] = f
-	}
+	funcs := interpFuncs(prog)
 	// find the instantiated target
 	var target *FuncDecl
 	for _, inst := range c.reps {

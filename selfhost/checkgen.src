@@ -968,13 +968,12 @@ func gen_builtin(callee, argslots) (handled, slot) {
     if callee == "str" { slot = c_string  return handled, slot }
     if callee == "json" { slot = c_string  return handled, slot }
     if callee == "close" { slot = c_void  return handled, slot }
-    // chan_free(c): hand a channel's memory back (#724/#740). One arg, pinned to
-    // chan T like the Go checker's chanElem; returns void. Codegen emits
-    // mfl_chan_free (cgbuiltin.src).
+    // chan_free(ch): 1 arg pinned to chan T, returns void (#740). The runtime
+    // checks double-free and free-under-blocked-receiver; use-after-free is
+    // still the caller's contract.
     if callee == "chan_free" {
         if len(argslots) != 1 { g_check_err = 1  return handled, slot }
         chan_elem(argslots[0])
-        slot = c_void
         return handled, slot
     }
     // element / key inference
@@ -1159,6 +1158,9 @@ func bspec(name) (s) {
     if name == "float" { s = "n>f"  return s }
     if name == "f64_bits" { s = "n>i"  return s }
     if name == "f64_from_bits" { s = "n>f"  return s }
+    if name == "ushr" { s = "ii>i"  return s }
+    if name == "ult" { s = "ii>b"  return s }
+    if name == "udiv" || name == "urem" || name == "umulh" { s = "ii>i"  return s }
     if name == "sin" || name == "cos" || name == "tan" || name == "asin" || name == "acos" || name == "atan" || name == "exp" || name == "log" || name == "log2" || name == "log10" || name == "sqrt" || name == "cbrt" || name == "floor" || name == "ceil" || name == "round" || name == "trunc" || name == "abs" { s = "n>f"  return s }
     if name == "pow" || name == "atan2" || name == "fmod" || name == "hypot" || name == "noise2" { s = "nn>f"  return s }
     if name == "pi" { s = ">f"  return s }
@@ -1178,6 +1180,7 @@ func bspec(name) (s) {
     if name == "dot_f32" { s = "iii>f"  return s }
     if name == "axpy_f32" { s = "inii>v"  return s }
     if name == "ptr_str" { s = "i>s"  return s }
+    if name == "ptr_bytes" { s = "ii>y"  return s }
     // net / io
     if name == "listen" || name == "accept" || name == "raw_mode" { s = "i>i"  return s }
     if name == "dial" || name == "listen_on" { s = "si>i"  return s }

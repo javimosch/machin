@@ -8,6 +8,7 @@ package main
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -76,40 +77,51 @@ func TestChanFreeDiscardsQueuedMessages(t *testing.T) {
 	}
 }
 
-// #740: under --safe, chan_free misuse is a panic, not UB — use-after-free,
-// double-free, close-after-free, and freeing under a blocked receiver all fail
-// loudly instead of crashing or hanging. (Unsafe builds keep the unchecked
-// free(); the self-hosted compiler never emits --safe code, so it always gets
-// the unchecked mfl_chan_free.)
-func TestChanFreeSafePanicsOnMisuse(t *testing.T) {
+// #740: the two misuse modes that can be caught without ownership tracking are
+// caught — a double chan_free and a free under a blocked receiver are clean
+// panics, not UB/crashes/hangs. (A send/recv AFTER the free is still an
+// unchecked use-after-free, like free() on a raw pointer.)
+func TestChanFreePanicsOnMisuse(t *testing.T) {
 	for _, tc := range []struct{ name, src, want string }{
-		{"double free", `func main() { c := make(chan int)  chan_free(c)  chan_free(c) }`, "already freed"},
-		{"send after free", `func main() { c := make(chan int)  chan_free(c)  c <- 1 }`, "freed by chan_free"},
-		{"recv after free", `func main() { c := make(chan int)  chan_free(c)  x := <-c  println(x) }`, "freed by chan_free"},
-		{"close after free", `func main() { c := make(chan int)  chan_free(c)  close(c) }`, "freed by chan_free"},
-		{"free under blocked receiver", "func waiter(c, done) { x := <-c  println(x)  done <- 1 }\nfunc main() { c := make(chan int)  done := make(chan int)  go waiter(c, done)  sleep(50)  chan_free(c)  d := <-done  println(d) }", "freed by chan_free"},
+		{"double free", `func main() {
+	c := make(chan int)
+	chan_free(c)
+	chan_free(c)
+}`, "double free"},
+		{"blocked receiver", `func worker(c, started) {
+	started <- 1
+	x := <-c
+	println(x)
+}
+func main() {
+	c := make(chan int)
+	started := make(chan int)
+	go worker(c, started)
+	<-started
+	sleep(50)
+	chan_free(c)
+}`, "blocked receiving"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var lines []string
-			for _, ln := range strings.Split(tc.src, "\n") {
-				lines = append(lines, normalize(ln))
-			}
-			prog, err := ParseProgram(lines)
+			prog, err := wallsCompose(t, tc.src)
 			if err != nil {
-				t.Fatalf("parse: %v", err)
+				t.Fatalf("compose: %v", err)
 			}
-			bin, _ := os.CreateTemp("", "mfl-chanfree-safe-*")
+			bin, _ := os.CreateTemp("", "mfl-chanfree-misuse-*")
 			bin.Close()
 			defer os.Remove(bin.Name())
-			if err := BuildBinary(prog, bin.Name(), true); err != nil {
+			if err := BuildBinary(prog, bin.Name(), false); err != nil {
 				t.Fatalf("build: %v", err)
 			}
-			out, err := exec.Command(bin.Name()).CombinedOutput()
+			cmd := exec.Command(bin.Name())
+			var so, se strings.Builder
+			cmd.Stdout, cmd.Stderr = &so, &se
+			err = cmd.Run()
 			if err == nil {
-				t.Fatalf("expected a panic, program exited 0: %s", out)
+				t.Fatalf("expected a panic, program exited 0: %q", so.String())
 			}
-			if !strings.Contains(string(out), tc.want) {
-				t.Errorf("output %q does not contain %q", out, tc.want)
+			if !strings.Contains(se.String(), "panic: chan_free") || !strings.Contains(se.String(), tc.want) {
+				t.Errorf("stderr %q does not report %q", se.String(), tc.want)
 			}
 		})
 	}
@@ -136,6 +148,55 @@ func TestChanFreeRejectsBadArguments(t *testing.T) {
 			}
 			if tc.want != "" && !strings.Contains(err.Error(), tc.want) {
 				t.Errorf("error %q does not mention %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// --safe keeps the freed header, which closes the two gaps a normal build has
+// (#740): a stale double free after the address is reused, and a free under a
+// select.
+func TestChanFreeSafeClosesTheGaps(t *testing.T) {
+	for _, tc := range []struct{ name, src, want string }{
+		{"stale double free", `func main() {
+	a := make(chan int)
+	chan_free(a)
+	b := make(chan int)
+	chan_free(a)
+	b <- 7
+}`, "double free"},
+		{"free under select", `func w(c, done) {
+	select {
+	case v := <-c:
+		println(v)
+	}
+	done <- 1
+}
+func main() {
+	c := make(chan int)
+	done := make(chan int)
+	go w(c, done)
+	sleep(50)
+	chan_free(c)
+	x := <-done
+	println(x)
+}`, "freed by chan_free"},
+		{"send after free", "func main() {\n\tc := make(chan int)\n\tchan_free(c)\n\tc <- 1\n}", "send on a channel freed"},
+		{"receive after free", "func main() {\n\tc := make(chan int)\n\tchan_free(c)\n\tx := <-c\n\tprintln(x)\n}", "receive on a channel freed"},
+		{"close after free", "func main() {\n\tc := make(chan int)\n\tchan_free(c)\n\tclose(c)\n}", "close on a channel freed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prog, err := wallsCompose(t, tc.src)
+			if err != nil {
+				t.Fatalf("compose: %v", err)
+			}
+			bin := filepath.Join(t.TempDir(), "p")
+			if err := BuildBinary(prog, bin, true); err != nil {
+				t.Fatalf("build: %v", err)
+			}
+			out, err := exec.Command("timeout", "10", bin).CombinedOutput()
+			if err == nil || !strings.Contains(string(out), tc.want) {
+				t.Errorf("%v: output %q does not report %q", err, out, tc.want)
 			}
 		})
 	}

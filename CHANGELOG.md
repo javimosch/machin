@@ -1,5 +1,96 @@
 # Changelog
 
+## v0.147.0
+
+**Unsigned and raw-memory builtins, defined shifts, and terminal, lexer and
+diagnostic fixes.**
+
+Check before upgrading:
+
+- An unknown string escape (`\x41`, `\q`, `\0`) is now a lex error (#757).
+  Before, the backslash was silently dropped, so `"a\.b"` in a regex meant
+  `a.b`. Write `\\.` for a literal backslash.
+- `ult`, `udiv`, `urem`, `umulh` and `ptr_bytes` are now builtin names; rename
+  any function of your own that uses one.
+
+Added:
+
+- `ult`, `udiv`, `urem`, `umulh`: unsigned compare, divide, remainder and
+  multiply-high, also in `wasm-freestanding` (#758).
+- `ptr_bytes(p, n)`: copy raw memory into `bytes`, NULs included (#759).
+- `raw_mode(2)`: raw mode with signal keys off, so Ctrl-C arrives as a byte.
+
+Fixed:
+
+- `<<` and `>>` are defined for every count: outside 0..63, `<<` gives 0 and
+  `>>` the sign fill. Before, the result was undefined in the emitted C (#754).
+- A raw-mode program that exits or dies on SIGINT, SIGTERM, SIGHUP or SIGQUIT
+  restores the terminal (#756).
+- A type mismatch is no longer blamed on an unrelated variable, function and
+  line (#755).
+
+Build and CI:
+
+- `--static` now warns when a glibc binary still needs the host's glibc at run
+  time. The crash itself (#764) is still open.
+- The CI gate's `go test` timeout is 15m (#760).
+
+## v0.146.3
+
+**Web security fix and two WebSocket fixes. Upgrade if your program uses
+`framework/machweb.src` or WebSockets, and rebuild it: the fixes are compiled
+into your binary, including the framework files. Re-copy vendored copies of
+`machweb.src`, `ws.src` and `wsclient.src`.**
+
+Security (#746):
+
+- `framework/machweb.src` now checks every value that goes into a response head,
+  on both `serve` and `serve_tls`, including `Response` fields set directly. It
+  also checks the arguments of the cookie and header helpers, and keeps
+  server-sent event framing.
+
+Behavior changes from that fix:
+
+- A response is refused if `status`, `ctype`, `location`, a `cookies` entry or an
+  `extra` entry holds CR or LF, or an `extra` entry is empty. `set_cookie` refuses
+  CR, LF and `;` in the name or value and `=` in the name; `clear_cookie` the same
+  for the name; `with_header` refuses CR and LF, and `:` in the name. Encode
+  arbitrary cookie values (`url_encode`).
+- A refused response is replaced by `500 Internal Server Error` (`text/plain`,
+  body `internal server error`), a stream function is not called, and stderr gets
+  `machweb: response refused: <field>`.
+- `sse_data` and `sse_comment` treat CRLF, CR and LF as line breaks and prefix
+  every line. `sse_event` with CR or LF in the event name writes nothing and
+  returns -1.
+- `Response` has a new field, `refused`.
+
+WebSockets:
+
+- **Fixed:** a pong could be written inside a partly sent message when the peer
+  was behind on reading, corrupting the stream (#747). Concurrent `write` /
+  `write_bytes` calls on one fd, and the `ws_*` client builtins, now write one at
+  a time. A slow peer delays only writers to its own connection.
+- **Changed:** `close()` on an fd that another goroutine is writing still returns
+  at once, but the descriptor is closed when that write returns.
+- **Not covered:** `wss_*` and TLS handles.
+- **Fixed:** `framework/wsclient.src` dropped the connection on a frame whose
+  16-bit length was 127 (#748).
+
+## v0.146.2
+
+**`chan_free` in the self-hosted compiler, and checks for some of its misuse
+(#740).**
+
+- **New:** the self-hosted compiler supports `chan_free`.
+- **Changed:** a double `chan_free`, and freeing a channel while a goroutine is
+  blocked in a plain receive on it, now panic. The checks are partial: a double
+  free is missed if a new channel reused the address (the new channel is then
+  freed), and a goroutine waiting in `select` is not detected. Any later use of a
+  freed channel is still unchecked.
+- Channels are still not freed automatically (#740).
+- **Docs:** the limits above, and a channel-lifetime gotcha in the
+  `machin-backend` skill.
+
 ## v0.146.1
 
 **Completes the v0.146.0 WebSocket fix (#734). Rebuild any program that composes

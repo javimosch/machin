@@ -150,6 +150,7 @@ func builtin_cfn(name) (s) {
     if name == "dot_f32" { s = "mfl_dot_f32"  return s }
     if name == "axpy_f32" { s = "mfl_axpy_f32"  return s }
     if name == "ptr_str" { s = "mfl_ptr_str"  return s }
+    if name == "ptr_bytes" { s = "mfl_ptr_bytes"  return s }
     if name == "dial" { s = "mfl_dial"  return s }
     if name == "listen" { s = "mfl_listen"  return s }
     if name == "listen_on" { s = "mfl_listen_on"  return s }
@@ -228,14 +229,13 @@ func cg_builtin(iid, call_idx, callee, names) (out) {
     if callee == "float" { out = "((double)(" + names[0] + "))"  return out }
     if callee == "f64_bits" { out = "mfl_f64_bits((double)(" + names[0] + "))"  return out }
     if callee == "f64_from_bits" { out = "mfl_f64_from_bits((int64_t)(" + names[0] + "))"  return out }
+    if callee == "ult" || callee == "udiv" || callee == "urem" || callee == "umulh" { out = "mfl_" + callee + "(" + names[0] + ", " + names[1] + ")"  return out }
+    if callee == "ushr" { out = "mfl_ushr(" + names[0] + ", " + names[1] + ")"  return out }
     if callee == "close" {
         if node_kind(iid, argn[0]) == 9 { out = "mfl_chan_close(" + names[0] + ")"  return out }
         out = "mfl_close(" + names[0] + ")"
         return out
     }
-    // chan_free (#740): the self-hosted compiler never emits --safe code, so this
-    // is always the unchecked mfl_chan_free — matching the Go compiler's unsafe
-    // emission (its --safe variant mfl_chan_free_chk has no counterpart here).
     if callee == "chan_free" { out = "mfl_chan_free(" + names[0] + ")"  return out }
     if callee == "has" { ik, sk := map_key_args(iid, argn[0], names[1])  out = "mfl_map_has(" + names[0] + ", " + ik + ", " + sk + ")"  return out }
     if callee == "delete" { ik, sk := map_key_args(iid, argn[0], names[1])  out = "mfl_map_del(" + names[0] + ", " + ik + ", " + sk + ")"  return out }

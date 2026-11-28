@@ -2,7 +2,7 @@ name: ci
 
 # Two tiers (issue #708):
 #
-#   gate       — REQUIRED on every PR and on main. ~4min. `go test -short`
+#   gate       — REQUIRED on every PR and on main. ~5-6min. `go test -short`
 #                (the slow tail is tagged `testing.Short()`), the MFL suites,
 #                the coverage floor, the prelude-diff check, and the examples
 #                smoke run. This is the merge gate.
@@ -58,10 +58,12 @@ jobs:
       # here only; they still run in test-full AND in the floor's own reentry.
       # Slow means >2s (measured 2026-11-24): static OpenSSL links, coverage
       # ratchets, multi-second network/RSS/integration probes.
+      # -timeout is a hang detector, not a speed budget: at 5m the suite sat on
+      # the limit and the gate panicked with no test failing (#760).
       - name: Test (core suite)
         run: |
-          go test -short -timeout 5m \
-            -skip='TestAndroidLibOnDesktopJVM|TestAndroidLibIgnoresHostLocale|TestTypesCoverageFloor|TestStaticBuildBundlesSqlite|TestCertifyCodegenPaths|TestGemmF32AllTransposeCombos|TestDeadlockStrictIO|TestReadBytesLoopReassemblesLargePayload|TestAttnCausalFwdBwdF32|TestParseIntStrtollContract|TestHttpStreamRoundTrip|TestParseFloatStrtodContract|TestScopedArenaReclaimsMaps|TestScopedArenaReturnsPagesToTheOS|TestSafeChecks|TestCaldavClient|TestHTTPClientResponses|TestWebSocketControlFloodIsFlat' \
+          go test -short -timeout 15m \
+            -skip='TestAndroidLibOnDesktopJVM|TestAndroidLibIgnoresHostLocale|TestTypesCoverageFloor|TestStaticBuildBundlesSqlite|TestCertifyCodegenPaths|TestGemmF32AllTransposeCombos|TestDeadlockStrictIO|TestReadBytesLoopReassemblesLargePayload|TestAttnCausalFwdBwdF32|TestParseIntStrtollContract|TestHttpStreamRoundTrip|TestParseFloatStrtodContract|TestScopedArenaReclaimsMaps|TestScopedArenaReturnsPagesToTheOS|TestSafeChecks|TestCaldavClient|TestHTTPClientResponses|TestWebSocketControlFloodIsFlat|TestMachwebRefusesResponseHeadBreaks' \
             ./...
 
       # The MFL test suites — the ones written IN machin and run through the
@@ -156,6 +158,18 @@ jobs:
             exit 1
           fi
           echo "$out" | grep -q "^ok" || { echo "::error::ASan alias suite failed"; exit 1; }
+
+      # Same reasoning for the wasm-freestanding link test: it SKIPS without zig
+      # or node, and it is the only proof the object links and runs with no WASI.
+      - name: Freestanding link test must run
+        run: |
+          out=$(go test -count=1 -v -run TestFreestandingLinksIntoC . 2>&1)
+          echo "$out" | tail -25
+          if echo "$out" | grep -q -- "--- SKIP"; then
+            echo "::error::the wasm-freestanding link test SKIPPED (zig or node missing), so nothing linked or ran"
+            exit 1
+          fi
+          echo "$out" | grep -q -- "--- PASS: TestFreestandingLinksIntoC" || { echo "::error::wasm-freestanding link test did not pass"; exit 1; }
 
       # main only: a release PR legitimately carries an untagged version bump, so
       # this would fail every such PR. On main it catches the version bump that

@@ -518,6 +518,24 @@ func feed(c) { c <- 9 }
 EOF
 run "$T/h25.src"
 
+# h26 — chan_free (#740): the builtin must emit mfl_chan_free identically in
+# both compilers (it was a selfhost g_cg_unsup gap before this issue).
+cat > "$T/h26.src" <<'EOF'
+func worker(ch, n) { ch <- n }
+func main() {
+    c := make(chan int)
+    go worker(c, 1)
+    x := <-c
+    close(c)
+    chan_free(c)
+    s := make(chan string)
+    s <- "a"
+    chan_free(s)
+    println(x)
+}
+EOF
+run "$T/h26.src"
+
 # SELF-APPLICATION: the MFL codegen emits byte-identical C for the compiler's OWN
 # source (checker + full codegen) — the fixpoint-adjacent milestone.
 $N "$MACHIN" encode selfhost/lex.src selfhost/parse.src selfhost/check.src \

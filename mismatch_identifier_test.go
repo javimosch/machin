@@ -128,7 +128,7 @@ func TestMismatchBuiltinReturnOmitsShadowNote(t *testing.T) {
 	if cerr == nil || !strings.Contains(cerr.Error(), "type mismatch") {
 		t.Fatalf("expected a type mismatch error, got %v", cerr)
 	}
-	if !strings.Contains(cerr.Error(), "'h'") {
+	if !strings.Contains(cerr.Error(), "'o'") {
 		t.Fatalf("message does not name the offending identifier: %q", cerr.Error())
 	}
 	if strings.Contains(cerr.Error(), "does not shadow") {

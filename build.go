@@ -472,10 +472,29 @@ func BuildBinaryLinked(prog *Program, outPath string, safe, static bool, link Li
 	args = append(args, link.LDFlags...)
 
 	cmd := exec.Command(ccPath(), args...)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	out, err := cmd.CombinedOutput()
+	if err != nil {
 		return fmt.Errorf("%s failed: %v\n%s", ccPath(), err, out)
 	}
+	if note := staticGlibcNote(static, string(out)); note != "" {
+		fmt.Fprintln(os.Stderr, note)
+	}
 	return nil
+}
+
+// staticGlibcNote turns the glibc linker's own warning about a static link into
+// one the user sees (#764): cc's output is otherwise dropped on success. Such a
+// binary loads the HOST's NSS libraries to resolve names, and with them a second
+// libc, which can kill it on another glibc version. musl prints no such warning.
+func staticGlibcNote(static bool, ccOutput string) string {
+	if !static || !strings.Contains(ccOutput, "in statically linked applications requires at runtime") {
+		return ""
+	}
+	return "machin: warning: this --static binary is not fully portable. It links glibc " +
+		"functions (such as getaddrinfo) that load shared libraries from the host at run " +
+		"time; on a different glibc version it can crash, e.g. when resolving a hostname " +
+		"(#764). For a portable binary build with a musl compiler (CC=musl-gcc), or build " +
+		"on the same glibc version as the target."
 }
 
 // zigPath is the C->wasm cross compiler. zig ships clang + a wasi-libc, so it is

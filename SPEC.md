@@ -1,6 +1,6 @@
 # The MFL Language Specification
 
-Version 0.146.1
+Version 0.147.0
 
 MFL (Machine-First Language) is a statically-typed, Go-flavored backend language
 **shaped for machine authoring**: minimal syntax, no type annotations, one
@@ -98,7 +98,8 @@ The decoded text of a declaration is tokenized as follows.
   literal carrying an exponent is a float even without a `.` (`1e3`). Underscores
   are likewise allowed as separators between digits in either the mantissa or the
   exponent (`3_000.5`, `1_000e1_0`).
-- **String literals.** `"..."` with escapes `\n \t \r \" \\`. No `\uXXXX`
+- **String literals.** `"..."` with escapes `\n \t \r \" \\`. Any other escape
+  (`\x41`, `\0`, ...) is a lex error. No `\uXXXX`
   escape form — embed non-ASCII as raw UTF-8 bytes in the source file instead
   (a tool generating `.src`/`.mfl` text should emit real UTF-8, not escape it —
   e.g. Python's `json.dumps(..., ensure_ascii=False)`).
@@ -239,6 +240,8 @@ startup (before `main`; at `_initialize` for a wasm reactor).
   `||` · `&&` · `== != < <= > >=` · `+ - | ^` · `* / % << >> &` · unary `- ! ^ <-`.
 - **Bitwise** `& | ^ << >>` (and unary `^`, complement) are **`int`-only** —
   Go semantics and precedence (`<< >> &` bind like `* / %`; `| ^` like `+ -`).
+  A shift count outside 0..63 is defined: `<<` gives 0 and `>>` gives the sign
+  fill (0 or -1). A negative count counts as out of range (Go panics instead).
 - **Arithmetic** `+ - * / %`: numeric operands. `/` of two `int` is integer
   division; `%` is `int`-only. A flexible numeric **literal** promotes to `float`
   on contact (`3.0 + 2`), but a **concrete** `int` — a function return, `byte_at`,
@@ -307,10 +310,14 @@ startup (before `main`; at `_initialize` for a wasm reactor).
 | `parse_float` | `(string) -> float` | parse a float (0 if not numeric) |
 | `f64_bits` | `(float) -> int` | reinterpret a `float`'s IEEE-754 bits as an `int` (for byte serialization) |
 | `f64_from_bits` | `(int) -> float` | the inverse: an `int` bit pattern → `float` |
+| `ult` | `(int, int) -> bool` | unsigned `a < b` |
+| `udiv`, `urem` | `(int, int) -> int` | unsigned `/` and `%`; a zero divisor behaves as for `/` and `%` (`--safe` panics) |
+| `umulh` | `(int, int) -> int` | high 64 bits of the unsigned 128-bit product |
+| `ushr` | `(int, int) -> int` | logical (zero-filling) right shift (`>>` is arithmetic); a count outside 0..63 gives 0 |
 | `exit` | `(int) -> ` | terminate the process with a status code |
 | `flush` | `() -> ` | flush buffered stdout (for prompt output through a pipe) |
 | `arena_reset` | `() -> int` | free the current goroutine's value-arena in place (keeps a long-running single-actor server's RSS flat); unchecked — caller asserts no arena value is still reachable (§13) |
-| `raw_mode` | `(int) -> int` | put the terminal in cbreak/no-echo mode (`1`) or restore it (`0`); pair them and restore before exit (TUIs/games) |
+| `raw_mode` | `(int) -> int` | put the terminal in cbreak/no-echo mode (`1`), the same with signal keys off so Ctrl-C arrives as a byte (`2`), or restore it (`0`); also restored on exit and on SIGINT/SIGTERM/SIGHUP/SIGQUIT, not on SIGKILL (TUIs/games) |
 | `read_key` | `() -> string` | non-blocking single-key read: a 1-char string, or `""` if no key is waiting (needs `raw_mode` for live input) |
 | `read_file` | `(string) -> string` | read a whole file ("" on error) |
 | `write_file` | `(string, string) -> int` | write a file (bytes written; -1 on error) |
@@ -396,9 +403,9 @@ An invalid ERE pattern (a `regcomp` failure) is not an error — there's no erro
 | `udp_sendto` | `(int, string, int, bytes) -> int` | send one datagram to host:port; bytes sent, or -1. All-or-nothing — no partial-send loop, unlike `write_bytes` |
 | `udp_recvfrom` | `(int) -> (bytes, string, int)` | receive one datagram as `(payload, sender ip, sender port)`. A timeout or error gives an empty payload with port `0`, so `port != 0` distinguishes it from a datagram that genuinely carried no payload. Multi-assign only. |
 | `listen`, `accept` | `(int) -> int` | open / accept on a TCP socket; `listen` returns `-1` if the port cannot be bound |
-| `read`, `write` | `(int[, string]) -> string\|int` | socket/fd I/O — `read` is one `read(2)` of up to 65535 bytes, not a whole message; loop `read_bytes` (NUL-safe) to reassemble a complete request (see `framework/machweb.src`'s `read_request_bytes`, and issue #91) |
+| `read`, `write` | `(int[, string]) -> string\|int` | socket/fd I/O — concurrent `write`/`write_bytes` calls on one fd run one at a time, so their bytes never interleave; `read` is one `read(2)` of up to 65535 bytes, not a whole message; loop `read_bytes` (NUL-safe) to reassemble a complete request (see `framework/machweb.src`'s `read_request_bytes`, and issue #91) |
 | `close` | `(int\|chan) -> ` | close a socket/fd, or a channel (dispatched by argument) |
-| `chan_free` | `(chan T) -> ` | free a channel and any messages still queued in it; the channel must not be used afterwards, and no other goroutine may hold it (unchecked, like `free`; `--safe` panics on misuse instead) |
+| `chan_free` | `(chan T) -> ` | free a channel and any messages still queued in it; the channel must not be used afterwards, and no other goroutine may hold it. Double free panics unless a new channel reused the address (then the new one is freed); freeing under a blocked plain receive panics, under a `select` it is not detected; any later use is unchecked (like `free`). A `--safe` build keeps the freed header (leaking it) and panics on any later use or second free, `select` included |
 | `https_get` | `(string) -> string` | HTTPS GET over TLS; response body ("" on error) |
 | `https_post` | `(string, string) -> string` | HTTPS POST (JSON body) over TLS; response body |
 | `http_get` | `(string) -> (int, string, string)` | GET (plain `http://` or `https://`) returning `(status, body, err)`; `err==""` ⇒ a complete response, else status 0, body "" and a reason (§8.1). Multi-assign only. |
@@ -739,6 +746,9 @@ extern "m" { header "math.h" link "m" fn sqrt(float) float fn pow(float, float) 
   Machine-specific paths belong on the command line instead, so the source stays
   portable: `machin build --cflags "-I<dir>" --ldflags "-L<dir>"` (repeatable;
   values split on spaces; `CFLAGS`/`LDFLAGS` environment variables are not read).
+  A glibc `--static` binary that resolves hostnames still loads the host's NSS
+  libraries at run time and can crash on a different glibc version (the build
+  warns); use a musl compiler for a portable binary.
   `--static-link <name>` links `lib<name>.a` in place of `-l<name>` for a library
   the program links, searching the `-L` directories and then the compiler's own
   path, and fails if no archive is found. These apply to native builds only.
@@ -781,7 +791,7 @@ structs to hand to a foreign function: `alloc(n) -> int` (n **zeroed** bytes),
 `free(p)`, `poke_f32`/`poke_f64`/`poke_i8`/`poke_i16`/`poke_i32`/`poke_i64`/
 `poke_u8`/`poke_u16`/`poke_u32`/`poke_u64`/`poke_ptr(p, byteOffset, v)`,
 `peek_f32`/`peek_f64`/`peek_i8`/`peek_i16`/`peek_i32`/`peek_i64`/
-`peek_u8`/`peek_u16`/`peek_u32`/`peek_u64`/`peek_ptr(p, byteOffset)`, and `ptr_str(p) -> string` (read a
+`peek_u8`/`peek_u16`/`peek_u32`/`peek_u64`/`peek_ptr(p, byteOffset)`, and `ptr_bytes(p, n) -> bytes` (copy `n` bytes, NULs included), `ptr_str(p) -> string` (read a
 NUL-terminated C string at `p`). The pattern for a GPU mesh: `poke` the
 vertex/colour arrays and a `Mesh` struct into `alloc`'d memory, `UploadMesh(p, ...)`
 (a `ptr` param — `void*` converts to `Mesh*`, and the call writes the VAO/VBO ids

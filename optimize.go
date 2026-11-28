@@ -363,10 +363,7 @@ func optimizeFunc(orig *FuncDecl, verify func(cand *FuncDecl) equivResult) optFu
 
 // optimizeProgram runs the optimizer over every instantiated, bounded-domain function.
 func optimizeProgram(prog *Program, c *Checker) optReport {
-	funcs := map[string]*FuncDecl{}
-	for _, f := range prog.Funcs {
-		funcs[f.Name] = f
-	}
+	funcs := interpFuncs(prog)
 	var rep optReport
 	seen := map[string]bool{}
 	for _, inst := range c.reps {

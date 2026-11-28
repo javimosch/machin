@@ -111,8 +111,7 @@ func wsc_frame_in(c) (fin, opcode, payload, ok) {
         if wsc_fill(c, 2) == 0 { return }
         e := wsc_take(c, 2)
         n = (byte_at(e, 0) << 8) | byte_at(e, 1)
-    }
-    if n == 127 {
+    } else if n == 127 {
         if wsc_fill(c, 8) == 0 { return }
         e := wsc_take(c, 8)
         n = 0

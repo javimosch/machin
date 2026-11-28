@@ -28,6 +28,14 @@ func CompileToCTarget(p *Program, safe bool, target string) (string, []string, e
 	if err != nil {
 		return "", nil, err
 	}
+	if target == targetWasmFreestanding {
+		if safe {
+			return "", nil, fmt.Errorf("wasm-freestanding: --safe %s (it reports through libc)", freestandingWhy)
+		}
+		if err := checkFreestanding(p, c); err != nil {
+			return "", nil, err
+		}
+	}
 	g := &cgen{c: c, safe: safe, target: target, probeVars: debugProbeVars, cover: coverFuncs, covIdx: map[string]int{}, covStmt: map[Stmt]int{}, jsonMemo: map[string]string{}, parseMemo: map[string]string{}, sortMemo: map[string]string{}, copyMemo: map[string]string{}, chanJSONMemo: map[string][2]string{}}
 	src, err := g.program(p)
 	if err != nil {
@@ -237,12 +245,16 @@ const (
 	targetWindows = "windows"
 	// targetAndroidLib is a shared library inside a host app (androidlib.go).
 	targetAndroidLib = "android-lib"
+	// targetWasmFreestanding is a runtime-less wasm object (freestanding.go).
+	targetWasmFreestanding = "wasm-freestanding"
 )
 
 // library: the program is a guest in a host process (see MFL_LIBRARY).
 func (g *cgen) library() bool { return g.target == targetAndroidLib }
 
-func (g *cgen) wasm() bool    { return g.target == targetWasm }
+// wasm covers both wasm targets: headerless externs are imports in either.
+func (g *cgen) wasm() bool         { return g.target == targetWasm || g.freestanding() }
+func (g *cgen) freestanding() bool { return g.target == targetWasmFreestanding }
 func (g *cgen) windows() bool { return g.target == targetWindows }
 
 const cRuntime = `#define _GNU_SOURCE
@@ -485,6 +497,8 @@ static mfl_slice mfl_subslice(mfl_slice s, int64_t lo, int64_t hi, int64_t es) {
 }
 static int64_t mfl_idiv(int64_t a, int64_t b) { if (b == 0) mfl_panic("integer divide by zero"); return a / b; }
 static int64_t mfl_imod(int64_t a, int64_t b) { if (b == 0) mfl_panic("integer modulo by zero"); return a % b; }
+static int64_t mfl_udiv_chk(int64_t a, int64_t b) { if (b == 0) mfl_panic("integer divide by zero"); return (int64_t)((uint64_t)a / (uint64_t)b); }
+static int64_t mfl_urem_chk(int64_t a, int64_t b) { if (b == 0) mfl_panic("integer modulo by zero"); return (int64_t)((uint64_t)a % (uint64_t)b); }
 static int64_t mfl_iadd(int64_t a, int64_t b) { int64_t r; if (__builtin_add_overflow(a, b, &r)) mfl_panic("integer overflow (+)"); return r; }
 static int64_t mfl_isub(int64_t a, int64_t b) { int64_t r; if (__builtin_sub_overflow(a, b, &r)) mfl_panic("integer overflow (-)"); return r; }
 static int64_t mfl_imul(int64_t a, int64_t b) { int64_t r; if (__builtin_mul_overflow(a, b, &r)) mfl_panic("integer overflow (*)"); return r; }
@@ -660,17 +674,64 @@ typedef struct mfl_cnode { struct mfl_cnode* next; void* data; uint64_t sender; 
 typedef struct {
     pthread_mutex_t mu; pthread_cond_t cnd;
     mfl_cnode *head, *tail; int64_t es; int closed;
-    int dead;                            /* --safe: set by mfl_chan_free_chk; ops panic on it */
+    int dead;                            /* --safe: freed by chan_free; every op panics */
     int nstr; int* stroff;
     char* (*ser)(const void*);          /* json mode: element -> arena JSON */
     void (*des)(const char*, void*);    /* json mode: JSON -> *out (arena) */
     int64_t id;                         /* sequential channel id, for the deadlock wait-cycle report */
+    int waiters;                        /* goroutines parked in recv2 on this channel (#740) */
 } mfl_chan;
 static int64_t mfl_chan_id_ctr = 0;
+/* Live-channel registry (#740): chan_free verifies its argument is a channel
+   this program actually made and has not already freed — BEFORE it touches the
+   pointer, since a double free or a stale alias points at memory that may
+   already be gone. Keyed by pointer VALUE (an open-addressing set), so the
+   lookup never dereferences c. make_chan inserts, chan_free removes; only
+   those two (rare) operations pay a lock — send/recv/close are untouched. */
+static mfl_chan** mfl_chreg = NULL;
+static int64_t mfl_chreg_cap = 0;    /* power of two */
+static int64_t mfl_chreg_n = 0;      /* live entries */
+static int64_t mfl_chreg_used = 0;   /* live + tombstones (drives rehash) */
+static pthread_mutex_t mfl_chreg_mu = PTHREAD_MUTEX_INITIALIZER;
+#define MFL_CHREG_TOMB ((mfl_chan*)(uintptr_t)1)
+static uint64_t mfl_chreg_hash(mfl_chan* c) {
+    uint64_t x = (uint64_t)(uintptr_t)c;
+    x ^= x >> 33; x *= 0xff51afd7ed558ccdULL; x ^= x >> 33;
+    return x;
+}
+static void mfl_chreg_rehash(int64_t ncap) {   /* caller holds mfl_chreg_mu */
+    mfl_chan** nt = (mfl_chan**)calloc((size_t)ncap, sizeof(mfl_chan*));
+    for (int64_t i = 0; i < mfl_chreg_cap; i++) {
+        mfl_chan* c = mfl_chreg[i];
+        if (!c || c == MFL_CHREG_TOMB) continue;
+        uint64_t h = mfl_chreg_hash(c) & (uint64_t)(ncap - 1);
+        while (nt[h]) h = (h + 1) & (uint64_t)(ncap - 1);
+        nt[h] = c;
+    }
+    free(mfl_chreg); mfl_chreg = nt; mfl_chreg_cap = ncap; mfl_chreg_used = mfl_chreg_n;
+}
+static void mfl_chreg_add(mfl_chan* c) {        /* caller holds mfl_chreg_mu */
+    if (mfl_chreg_cap == 0 || (mfl_chreg_used + 1) * 4 > mfl_chreg_cap * 3)
+        mfl_chreg_rehash(mfl_chreg_cap ? mfl_chreg_cap * 2 : 1024);
+    uint64_t h = mfl_chreg_hash(c) & (uint64_t)(mfl_chreg_cap - 1);
+    while (mfl_chreg[h] && mfl_chreg[h] != MFL_CHREG_TOMB) h = (h + 1) & (uint64_t)(mfl_chreg_cap - 1);
+    if (!mfl_chreg[h]) mfl_chreg_used++;
+    mfl_chreg[h] = c; mfl_chreg_n++;
+}
+/* remove c; returns 1 iff c was a live channel. Caller holds mfl_chreg_mu. */
+static int mfl_chreg_del(mfl_chan* c) {
+    if (!mfl_chreg_cap) return 0;
+    uint64_t h = mfl_chreg_hash(c) & (uint64_t)(mfl_chreg_cap - 1);
+    while (mfl_chreg[h]) {
+        if (mfl_chreg[h] == c) { mfl_chreg[h] = MFL_CHREG_TOMB; mfl_chreg_n--; return 1; }
+        h = (h + 1) & (uint64_t)(mfl_chreg_cap - 1);
+    }
+    return 0;
+}
 static mfl_chan* mfl_make_chan(int64_t es, char* (*ser)(const void*), void (*des)(const char*, void*), int nstr, ...) {
     mfl_chan* c = malloc(sizeof(mfl_chan));
     pthread_mutex_init(&c->mu, NULL); pthread_cond_init(&c->cnd, NULL);
-    c->head = c->tail = NULL; c->es = es; c->closed = 0; c->dead = 0;
+    c->head = c->tail = NULL; c->es = es; c->closed = 0; c->dead = 0; c->waiters = 0;
     c->ser = ser; c->des = des;
     c->id = __atomic_fetch_add(&mfl_chan_id_ctr, 1, __ATOMIC_RELAXED);
     c->nstr = nstr; c->stroff = NULL;
@@ -680,6 +741,9 @@ static mfl_chan* mfl_make_chan(int64_t es, char* (*ser)(const void*), void (*des
         for (int i = 0; i < nstr; i++) c->stroff[i] = va_arg(ap, int);
         va_end(ap);
     }
+    pthread_mutex_lock(&mfl_chreg_mu);
+    mfl_chreg_add(c);
+    pthread_mutex_unlock(&mfl_chreg_mu);
     return c;
 }
 /* freeze: replace each string field (found at the given byte offsets within
@@ -742,10 +806,15 @@ static void mfl_rr_enter(void); static void mfl_rr_mark(void); static void mfl_r
    observable, ordered channel op -- it takes a turn so replay reproduces its
    position relative to receivers (a recv after close gets "not ok"). */
 static void mfl_dl_note(void); /* deadlock detector: a channel send/close is progress (defined below) */
+/* under --safe a freed channel's header stays allocated and marked dead, so a
+   later op panics here. Called with c->mu held; unlocks before panicking. */
+static void mfl_chan_check_live(mfl_chan* c, const char* msg) {
+    if (c->dead) { pthread_mutex_unlock(&c->mu); mfl_panic(msg); }
+}
 static void mfl_chan_close(mfl_chan* c) {
     mfl_rr_enter();
     pthread_mutex_lock(&c->mu);
-    if (c->dead) mfl_panic("close on a channel freed by chan_free");
+    mfl_chan_check_live(c, "close on a channel freed by chan_free");
     c->closed = 1;
     pthread_cond_broadcast(&c->cnd);
     mfl_rr_mark();
@@ -753,11 +822,43 @@ static void mfl_chan_close(mfl_chan* c) {
     mfl_dl_note(); /* a close lets parked receivers drain — channel progress */
     mfl_rr_exit();
 }
-/* drain a channel's queued nodes, freeing each payload — the frozen
-   string/bytes copies a string-mode element carries at its stroff offsets, the
-   malloc'd JSON blob of a JSON-mode element, then the node itself. Caller
-   holds c->mu. Shared by mfl_chan_free and the --safe mfl_chan_free_chk. */
-static void mfl_chan_drain(mfl_chan* c) {
+/* chan_free: hand a channel's memory back (#724). Channels are malloc'd and
+   were never freed anywhere — not even close() — so a program that keeps
+   making channels grew without bound (~156 bytes each). Queued messages are
+   discarded with it: each node's payload is freed, including the frozen
+   (malloc'd) string/bytes copies a string-mode element carries at its stroff
+   offsets; a JSON-mode element's payload is one malloc'd string.
+
+   THE CHANNEL MUST NOT BE USED AFTERWARDS — this is free(), not a hint. In
+   particular no other goroutine may hold it: a receiver blocked in
+   mfl_chan_recv2, or any later send/recv/close, dereferences freed memory.
+   chan_free is for a channel whose references are all local and done — the
+   per-iteration make(chan) of a long-running loop.
+
+   #740 checks the two misuse modes that CAN be caught without ownership
+   tracking, turning them into a clean panic instead of a crash or hang:
+   - double free / freeing a pointer that was never a live channel: the
+     live-channel registry is consulted BEFORE c is dereferenced, so the
+     stale pointer is never touched.
+   - freeing while a goroutine is parked receiving on it (c->waiters > 0):
+     that receiver could never be woken, so this is a hang — reported instead.
+   Still unchecked: a send/recv/close/select on the channel AFTER the free
+   returns (the pointer is gone — only a GC or escape proof could catch that),
+   and freeing while another goroutine merely HOLDS the channel without being
+   blocked at that instant. */
+static void mfl_chan_release(mfl_chan* c, int quarantine) {
+    if (!c) return;
+    pthread_mutex_lock(&mfl_chreg_mu);
+    if (!mfl_chreg_del(c)) {
+        pthread_mutex_unlock(&mfl_chreg_mu);
+        mfl_panic("chan_free: not a live channel (double free, or already freed)");
+    }
+    pthread_mutex_unlock(&mfl_chreg_mu);
+    pthread_mutex_lock(&c->mu);
+    if (c->waiters > 0) {
+        pthread_mutex_unlock(&c->mu);
+        mfl_panic("chan_free: goroutine(s) still blocked receiving on the channel");
+    }
     mfl_cnode* n = c->head;
     while (n) {
         mfl_cnode* nx = n->next;
@@ -775,50 +876,21 @@ static void mfl_chan_drain(mfl_chan* c) {
         free(n->data); free(n); n = nx;
     }
     c->head = c->tail = NULL;
-}
-/* chan_free: hand a channel's memory back (#724). Channels are malloc'd and
-   were never freed anywhere — not even close() — so a program that keeps
-   making channels grew without bound (~156 bytes each). Queued messages are
-   discarded with it: each node's payload is freed, including the frozen
-   (malloc'd) string/bytes copies a string-mode element carries at its stroff
-   offsets; a JSON-mode element's payload is one malloc'd string.
-
-   THE CHANNEL MUST NOT BE USED AFTERWARDS — this is free(), not a hint. In
-   particular no other goroutine may hold it: a receiver blocked in
-   mfl_chan_recv2, or any later send/recv/close, dereferences freed memory.
-   chan_free is for a channel whose references are all local and done — the
-   per-iteration make(chan) of a long-running loop. --safe builds emit
-   mfl_chan_free_chk instead, which detects that misuse as a panic. */
-static void mfl_chan_free(mfl_chan* c) {
-    if (!c) return;
-    pthread_mutex_lock(&c->mu);
-    mfl_chan_drain(c);
+    if (quarantine) {
+        /* --safe: keep the header (never destroyed or reused), so a stale
+           double free, a later op, or a select still polling it panics */
+        c->dead = 1;
+        pthread_mutex_unlock(&c->mu);
+        return;
+    }
     pthread_mutex_unlock(&c->mu);
     pthread_mutex_destroy(&c->mu);
     pthread_cond_destroy(&c->cnd);
     free(c->stroff);
     free(c);
 }
-/* --safe chan_free (#740): the unchecked mfl_chan_free turns misuse into UB —
-   use-after-free, double-free, or freeing under a goroutine still blocked in
-   recv all crash or hang even with --safe. This variant turns each into a
-   panic: the channel is marked dead and closed, its queued payloads are
-   reclaimed, and blocked receivers are broadcast awake — every channel op
-   checks c->dead and panics, so a later send/recv/close/chan_free fails
-   loudly instead of dereferencing freed memory. The header itself (struct,
-   mutex, condvar, stroff table) is QUARANTINED rather than freed — the dead
-   flag must stay readable — so a --safe build reclaims queued payloads but
-   leaks the small header per chan_free. */
-static void mfl_chan_free_chk(mfl_chan* c) {
-    if (!c) return;
-    pthread_mutex_lock(&c->mu);
-    if (c->dead) { pthread_mutex_unlock(&c->mu); mfl_panic("chan_free: channel already freed"); }
-    c->dead = 1;
-    c->closed = 1;
-    mfl_chan_drain(c);
-    pthread_cond_broadcast(&c->cnd);
-    pthread_mutex_unlock(&c->mu);
-}
+static void mfl_chan_free(mfl_chan* c) { mfl_chan_release(c, 0); }
+static void mfl_chan_free_chk(mfl_chan* c) { mfl_chan_release(c, 1); }
 /* ---- record/replay (Phase 0 spike) ------------------------------------------
    SOUND because the program is proved data-race-free: the only inter-goroutine
    nondeterminism is the ORDER channel operations complete. We record that order
@@ -1379,7 +1451,6 @@ static uint64_t mfl_thread_serial(void) {
 
 static void mfl_chan_send(mfl_chan* c, const void* v) {
     mfl_rr_enter();
-    if (c->dead) mfl_panic("send on a channel freed by chan_free");
     mfl_cnode* n = malloc(sizeof(mfl_cnode));
     n->sender = mfl_thread_serial(); /* receivers never take their own nodes (#673) */
     if (c->ser) {
@@ -1392,7 +1463,7 @@ static void mfl_chan_send(mfl_chan* c, const void* v) {
     }
     n->next = NULL;
     pthread_mutex_lock(&c->mu);
-    if (c->dead) mfl_panic("send on a channel freed by chan_free");
+    mfl_chan_check_live(c, "send on a channel freed by chan_free");
     if (c->tail) c->tail->next = n; else c->head = n;
     c->tail = n;
     pthread_cond_signal(&c->cnd);
@@ -1433,13 +1504,16 @@ static int mfl_chan_recv2(mfl_chan* c, void* out) {
 #define MFL_BROKEN() 0
 #endif
     pthread_mutex_lock(&c->mu);
+    mfl_chan_check_live(c, "receive on a channel freed by chan_free");
     if (!c->closed && (!c->head || mfl_chan_head_mine(c))) {
         /* empty, or the head node is this goroutine's own send — either way
            there is nothing THIS goroutine may receive; park. A dequeue by
            another receiver broadcasts below so we re-check the new head. */
         mfl_dl_block(c->id); /* about to park on an empty open channel */
+        c->waiters++;        /* #740: chan_free refuses while a receiver is parked */
         while (!c->closed && (!c->head || mfl_chan_head_mine(c)) && !MFL_BROKEN())
             pthread_cond_wait(&c->cnd, &c->mu);
+        c->waiters--;
         mfl_dl_unblock();
 #ifdef MFL_LIBRARY
         if (!c->closed && (!c->head || mfl_chan_head_mine(c))) { /* only a failed scope gets here */
@@ -1447,7 +1521,6 @@ static int mfl_chan_recv2(mfl_chan* c, void* out) {
         }
 #endif
     }
-    if (c->dead) mfl_panic("receive on a channel freed by chan_free");
     mfl_cnode* n = c->head;
     /* draining a closed+empty channel (returns "not ok") is still an observable,
        ordered op — it must record/gate a turn like a real receive, or record and
@@ -1471,7 +1544,7 @@ static void mfl_chan_recv(mfl_chan* c, void* out) {
    (*ok = 0, out zeroed). Returns 0 if not ready (open and empty). */
 static int mfl_chan_tryrecv2(mfl_chan* c, void* out, int* ok) {
     pthread_mutex_lock(&c->mu);
-    if (c->dead) mfl_panic("receive on a channel freed by chan_free");
+    mfl_chan_check_live(c, "receive on a channel freed by chan_free");
     mfl_cnode* n = c->head;
     /* a select recv is not ready while the head node is this goroutine's own
        send (#673) — same rule as the blocking recv, or select would deliver
@@ -1634,6 +1707,20 @@ static char* mfl_str_d(double v)  { char* b = mfl_alloc(32); snprintf(b, 32, "%g
    needed to (de)serialize 64-bit floats (e.g. BSON doubles). */
 static int64_t mfl_f64_bits(double d) { int64_t i; memcpy(&i, &d, 8); return i; }
 static double mfl_f64_from_bits(int64_t i) { double d; memcpy(&d, &i, 8); return d; }
+/* logical right shift. Defined for every count: outside 0..63 (negative included,
+   by the unsigned compare) all bits are shifted out. */
+static inline int64_t mfl_ushr(int64_t x, int64_t n) { return (uint64_t)n < 64 ? (int64_t)((uint64_t)x >> n) : 0; }
+/* the << and >> operators, defined for every count like ushr (#754): the bare C
+   operators are undefined for counts outside 0..63. << yields 0, >> sign-fills. */
+static inline int64_t mfl_shl(int64_t x, int64_t n) { return (uint64_t)n < 64 ? (int64_t)((uint64_t)x << n) : 0; }
+static inline int64_t mfl_shr(int64_t x, int64_t n) { return x >> ((uint64_t)n < 64 ? n : 63); }
+/* unsigned views of int (#758). udiv/urem by zero behave as / and % do; --safe
+   uses the checked forms. umulh is built from 32-bit halves: no __int128, which
+   32-bit targets lack. */
+static inline int64_t mfl_ult(int64_t a, int64_t b) { return (uint64_t)a < (uint64_t)b; }
+static inline int64_t mfl_udiv(int64_t a, int64_t b) { return (int64_t)((uint64_t)a / (uint64_t)b); }
+static inline int64_t mfl_urem(int64_t a, int64_t b) { return (int64_t)((uint64_t)a % (uint64_t)b); }
+static inline int64_t mfl_umulh(int64_t a, int64_t b) { uint64_t al = (uint32_t)a, ah = (uint64_t)a >> 32, bl = (uint32_t)b, bh = (uint64_t)b >> 32, mid = ah * bl + ((al * bl) >> 32), low = al * bh + (uint32_t)mid; return (int64_t)(ah * bh + (mid >> 32) + (low >> 32)); }
 static char* mfl_str_b(int64_t v) { return v ? "true" : "false"; }
 static char* mfl_dup(const char* s) { size_t n = strlen(s); char* r = mfl_alloc(n+1); memcpy(r, s, n+1); return r; }
 /* raw heap memory: a pointer is an int (intptr_t round-trip), as with the ptr
@@ -4065,6 +4152,13 @@ static mfl_bytes mfl_bytes_unhex(const char* s) {   /* skips non-hex chars (spac
     return b;
 }
 static int64_t mfl_byte_at(mfl_bytes b, int64_t i) { return (i < 0 || i >= b.len) ? -1 : (int64_t)b.data[i]; }
+/* copy n bytes of raw memory, NULs included (#759). A null pointer or n <= 0 is empty. */
+static mfl_bytes mfl_ptr_bytes(int64_t p, int64_t n) {
+    if (!p || n < 0) n = 0;
+    mfl_bytes r; r.len = n; r.data = (uint8_t*)mfl_alloc(n ? n : 1);
+    if (n) memcpy(r.data, (const void*)(intptr_t)p, (size_t)n);
+    return r;
+}
 static mfl_bytes mfl_bytes_sub(mfl_bytes b, int64_t start, int64_t end) {
     if (start < 0) start = 0;
     if (end > b.len) end = b.len;
@@ -5268,11 +5362,73 @@ static mfl_bytes mfl_read_bytes_exact(int64_t fd, int64_t n) {
     if (mfl_rr_mode == 1) mfl_rr_io_log_bytes((char*)b.data, (size_t)b.len);
     return b;
 }
+/* one writer at a time per fd (#747). A send that only partly completes is
+   resumed, so without this another goroutine's bytes could land inside it (a
+   WebSocket pong inside a message). A lock exists only while its fd is being
+   written, and each fd has its own: a slow peer stalls writers to itself only.
+   close() never waits for a writer. While any is inside, it only marks the lock
+   closed, and the last writer to leave closes the fd: the number cannot be
+   reused under a send that was already admitted. Writers that have not sent yet
+   see the mark and stop. */
+typedef struct mfl_wlock {
+    struct mfl_wlock* next;
+    int64_t fd;
+    pthread_mutex_t mu;
+    int refs;    /* guarded by mfl_wlocks_mu */
+    int closed;  /* atomic; set once close() was called */
+} mfl_wlock;
+#define MFL_WLOCK_BUCKETS 256
+static pthread_mutex_t mfl_wlocks_mu = PTHREAD_MUTEX_INITIALIZER;
+static mfl_wlock* mfl_wlocks[MFL_WLOCK_BUCKETS];
+static mfl_wlock** mfl_wlock_slot(int64_t fd) {   /* caller holds mfl_wlocks_mu */
+    mfl_wlock** p = &mfl_wlocks[(uint64_t)fd % MFL_WLOCK_BUCKETS];
+    while (*p && (*p)->fd != fd) p = &(*p)->next;
+    return p;
+}
+static mfl_wlock* mfl_wlock_acquire(int64_t fd) {
+    pthread_mutex_lock(&mfl_wlocks_mu);
+    mfl_wlock** p = mfl_wlock_slot(fd);
+    mfl_wlock* l = *p;
+    if (!l) {
+        l = (mfl_wlock*)calloc(1, sizeof(mfl_wlock));
+        if (!l) mfl_panic("write: out of memory");
+        l->fd = fd;
+        pthread_mutex_init(&l->mu, NULL);
+        *p = l;
+    }
+    l->refs++;
+    pthread_mutex_unlock(&mfl_wlocks_mu);
+    pthread_mutex_lock(&l->mu);
+    return l;
+}
+static int mfl_wlock_closed(mfl_wlock* l) { return __atomic_load_n(&l->closed, __ATOMIC_SEQ_CST); }
+static void mfl_wlock_release(mfl_wlock* l) {
+    pthread_mutex_unlock(&l->mu);
+    pthread_mutex_lock(&mfl_wlocks_mu);
+    if (--l->refs == 0) {
+        *mfl_wlock_slot(l->fd) = l->next;
+        if (mfl_wlock_closed(l)) MFL_CLOSESOCK(l->fd);   /* the deferred close() */
+        pthread_mutex_destroy(&l->mu);
+        free(l);
+    }
+    pthread_mutex_unlock(&mfl_wlocks_mu);
+}
+/* close the fd now, or leave it to the last writer inside. Held under the table
+   lock so no writer can be admitted between the lookup and the close. */
+static void mfl_wlock_close(int64_t fd) {
+    pthread_mutex_lock(&mfl_wlocks_mu);
+    mfl_wlock* l = *mfl_wlock_slot(fd);
+    if (l) __atomic_store_n(&l->closed, 1, __ATOMIC_SEQ_CST);
+    else MFL_CLOSESOCK(fd);
+    pthread_mutex_unlock(&mfl_wlocks_mu);
+}
 /* a write is an output side-effect: replay records/returns the byte count but performs
    no real send (the fd is a recorded sentinel, so writing would EPIPE). */
 static int64_t mfl_write(int64_t fd, const char* s) {
     if (mfl_rr_mode == 2) return mfl_rr_io_pop_i64();
-    int64_t r = (int64_t)MFL_SOCK_WRITE(fd, s, strlen(s));
+    mfl_wlock* l = mfl_wlock_acquire(fd);
+    int64_t r = mfl_wlock_closed(l) ? -1 : (int64_t)MFL_SOCK_WRITE(fd, s, strlen(s));
+    mfl_wlock_release(l);
     if (mfl_rr_mode == 1) mfl_rr_io_log_i64(r);
     return r;
 }
@@ -5280,15 +5436,17 @@ static int64_t mfl_write(int64_t fd, const char* s) {
 static int64_t mfl_write_bytes(int64_t fd, mfl_bytes b) {
     if (mfl_rr_mode == 2) return mfl_rr_io_pop_i64();
     size_t off = 0;
-    while (off < (size_t)b.len) {
+    mfl_wlock* l = mfl_wlock_acquire(fd);
+    while (off < (size_t)b.len && !mfl_wlock_closed(l)) {
         ssize_t w = MFL_SOCK_WRITE(fd, b.data + off, (size_t)b.len - off);
         if (w <= 0) break;
         off += (size_t)w;
     }
+    mfl_wlock_release(l);
     if (mfl_rr_mode == 1) mfl_rr_io_log_i64((int64_t)off);
     return (int64_t)off;
 }
-static void mfl_close(int64_t fd) { MFL_CLOSESOCK(fd); }
+static void mfl_close(int64_t fd) { mfl_wlock_close(fd); }
 /* UDP. Connectionless datagrams: the peer's address travels with every packet
    instead of being fixed by a connect(), which is what trackers (BEP 15) and the
    DHT (BEP 5) need -- one socket talking to hundreds of hosts. A UDP fd shares
@@ -5387,7 +5545,9 @@ static mfl_udp_result mfl_udp_recvfrom(int64_t fd) {
 // only when raw_mode/read_key is used (a browser app references neither).
 const ttyRuntime = `/* terminal raw mode + non-blocking single-key read (for TUIs and games).
    raw_mode(1) puts the tty in cbreak + no-echo with VMIN=0/VTIME=0 so reads
-   never block; raw_mode(0) restores the saved settings.
+   never block; raw_mode(2) also turns signal keys off, so Ctrl-C arrives as a
+   byte; raw_mode(0) restores the saved settings, and so does the program
+   exiting or dying on SIGINT/SIGTERM/SIGHUP/SIGQUIT (#756).
 
    Windows has no termios (#517). The console equivalent clears the two flags
    that make it cook input, and a non-console handle — a pipe, a file, NUL —
@@ -5398,16 +5558,21 @@ const ttyRuntime = `/* terminal raw mode + non-blocking single-key read (for TUI
 #include <conio.h>
 static DWORD mfl_tty_saved_mode = 0;
 static int mfl_tty_raw = 0;
+static void mfl_tty_restore(void) {
+    if (mfl_tty_raw) SetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), mfl_tty_saved_mode);
+}
 static int64_t mfl_raw_mode(int64_t on) {
     HANDLE h = GetStdHandle(STD_INPUT_HANDLE);
     if (h == INVALID_HANDLE_VALUE || h == NULL) return -1;
     if (on) {
-        if (mfl_tty_raw) return 0;
-        DWORD m;
-        if (!GetConsoleMode(h, &m)) return -1;   /* not a console: same as tcgetattr on a pipe */
+        DWORD m = mfl_tty_saved_mode;
+        if (!mfl_tty_raw && !GetConsoleMode(h, &m)) return -1;   /* not a console: same as tcgetattr on a pipe */
         mfl_tty_saved_mode = m;
         m &= ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT);
+        if (on == 2) m &= ~ENABLE_PROCESSED_INPUT;
         if (!SetConsoleMode(h, m)) return -1;
+        static int hooked = 0;
+        if (!hooked) { hooked = 1; atexit(mfl_tty_restore); }
         mfl_tty_raw = 1;
     } else {
         if (!mfl_tty_raw) return 0;
@@ -5441,17 +5606,44 @@ static char* mfl_read_key(void) {
 #else
 static struct termios mfl_tty_saved;
 static int mfl_tty_raw = 0;
+static void mfl_tty_restore(void) {
+    if (mfl_tty_raw) tcsetattr(STDIN_FILENO, TCSANOW, &mfl_tty_saved);
+}
+#ifndef __wasm__
+/* only async-signal-safe calls here. SA_RESETHAND has already restored the
+   default action, so the re-raise ends the process with the same signal. */
+static void mfl_tty_on_signal(int sig) { mfl_tty_restore(); raise(sig); }
+#endif
+static void mfl_tty_hook(void) {
+    static int hooked = 0;
+    if (hooked) return;
+    hooked = 1;
+    atexit(mfl_tty_restore);
+#ifndef __wasm__
+    int sigs[] = { SIGINT, SIGTERM, SIGHUP, SIGQUIT };
+    for (int i = 0; i < 4; i++) {
+        struct sigaction old, sa;
+        /* leave an ignored (nohup) or already handled signal alone */
+        if (sigaction(sigs[i], NULL, &old) != 0 || old.sa_handler != SIG_DFL) continue;
+        memset(&sa, 0, sizeof sa);
+        sa.sa_handler = mfl_tty_on_signal;
+        sa.sa_flags = SA_RESETHAND;
+        sigaction(sigs[i], &sa, NULL);
+    }
+#endif
+}
 static int64_t mfl_raw_mode(int64_t on) {
     if (on) {
-        if (mfl_tty_raw) return 0;
-        struct termios t;
-        if (tcgetattr(STDIN_FILENO, &t) != 0) return -1;
+        struct termios t = mfl_tty_saved;
+        if (!mfl_tty_raw && tcgetattr(STDIN_FILENO, &t) != 0) return -1;
         mfl_tty_saved = t;
         t.c_lflag &= ~(ICANON | ECHO);
+        if (on == 2) t.c_lflag &= ~ISIG;
         t.c_cc[VMIN] = 0;
         t.c_cc[VTIME] = 0;
         if (tcsetattr(STDIN_FILENO, TCSANOW, &t) != 0) return -1;
         mfl_tty_raw = 1;
+        mfl_tty_hook();
     } else {
         if (!mfl_tty_raw) return 0;
         tcsetattr(STDIN_FILENO, TCSANOW, &mfl_tty_saved);
@@ -6592,15 +6784,18 @@ static int mfl_wst_read_n(int64_t fd, unsigned char* buf, size_t n) {
     return 0;
 }
 
-/* write every byte; 0 ok, -1 on error/short write */
+/* write every byte as one uninterrupted run (so a pong sent by the receiving
+   goroutine cannot land inside a message); 0 ok, -1 on error/short write */
 static int mfl_wst_write_all(int64_t fd, const unsigned char* buf, size_t n) {
     size_t off = 0;
-    while (off < n) {
+    mfl_wlock* l = mfl_wlock_acquire(fd);
+    while (off < n && !mfl_wlock_closed(l)) {
         ssize_t w = MFL_SOCK_WRITE(fd, buf + off, n - off);
-        if (w <= 0) return -1;
+        if (w <= 0) break;
         off += (size_t)w;
     }
-    return 0;
+    mfl_wlock_release(l);
+    return off == n ? 0 : -1;
 }
 
 /* write one masked client frame (opcode, payload). Client frames must be masked. */
@@ -6836,7 +7031,7 @@ static int64_t mfl_ws_close(int64_t h) {
     mfl_wst* w = (mfl_wst*)(intptr_t)h;
     if (!w) return -1;
     mfl_wst_frame(w, 0x8, NULL, 0);
-    MFL_CLOSESOCK(w->fd);
+    mfl_close(w->fd);
     free(w);
     return 0;
 }
@@ -8177,7 +8372,9 @@ func (g *cgen) program(p *Program) (string, error) {
 	// only the program-specific C (externs, structs, functions, main). Both the Go and
 	// MFL codegens produce this identically, so diffing it verifies the emission logic
 	// without embedding the ~2000-line runtime prelude in MFL.
-	if !g.bodyOnly {
+	if g.freestanding() {
+		out.WriteString(freestandingPrelude())
+	} else if !g.bodyOnly {
 		if g.library() {
 			out.WriteString("#define MFL_LIBRARY 1\n")
 		}
@@ -8429,7 +8626,19 @@ func (g *cgen) program(p *Program) (string, error) {
 	// constructor (emitted after the function bodies). Declared here so function
 	// bodies that reference mfl_g_<name> compile.
 	for _, name := range g.c.GlobalOrder() {
-		fmt.Fprintf(&out, "static %s mfl_g_%s;\n", g.c.GlobalCType(name), name)
+		init := ""
+		if g.freestanding() { // a literal, checked by checkFreestanding
+			for _, gv := range p.Globals {
+				if gv.Name == name {
+					e, err := g.expr(gv.Init)
+					if err != nil {
+						return "", err
+					}
+					init = " = " + e
+				}
+			}
+		}
+		fmt.Fprintf(&out, "static %s mfl_g_%s%s;\n", g.c.GlobalCType(name), name, init)
 	}
 	if len(g.c.GlobalOrder()) > 0 {
 		out.WriteByte('\n')
@@ -8438,7 +8647,7 @@ func (g *cgen) program(p *Program) (string, error) {
 		// Under wasm, an `export func` is exported to the host under its clean source
 		// name (so JS calls instance.exports.render, not the mangled C symbol). The
 		// attribute on the prototype also forces the export — no linker flag needed.
-		if g.wasm() {
+		if g.wasm() && !g.freestanding() {
 			if src := g.c.SrcFunc(inst); g.c.exportSrc[src.Name] {
 				fmt.Fprintf(&out, "__attribute__((export_name(%q))) ", src.Name)
 			}
@@ -8448,6 +8657,10 @@ func (g *cgen) program(p *Program) (string, error) {
 	out.WriteByte('\n')
 	out.WriteString(g.tramp.String())
 	out.WriteString(g.buf.String())
+	if g.freestanding() { // no constructors, stdio or entry point
+		out.WriteString(g.freestandingExports())
+		return out.String(), nil
+	}
 	// package-global initializers run in a C constructor — before main (native) and
 	// at _initialize (wasm reactor). Compile each init into a scratch buffer so any
 	// helper statements land inside the constructor, in declaration order.
@@ -9865,6 +10078,12 @@ func (g *cgen) binaryCombine(ex *Binary, l, r string) string {
 			return fmt.Sprintf("(mfl_strcmp(%s, %s) %s 0)", l, r, ex.Op)
 		}
 	}
+	switch ex.Op {
+	case "<<":
+		return fmt.Sprintf("mfl_shl(%s, %s)", l, r)
+	case ">>":
+		return fmt.Sprintf("mfl_shr(%s, %s)", l, r)
+	}
 	// --safe: checked integer arithmetic (overflow) and division (by zero)
 	if g.safe && g.c.NodeKind(g.curFn, ex) == KInt {
 		switch ex.Op {
@@ -10983,6 +11202,16 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("((double)(%s))", args[0]), nil
 	case "f64_bits":
 		return fmt.Sprintf("mfl_f64_bits((double)(%s))", args[0]), nil
+	case "ult", "umulh":
+		return fmt.Sprintf("mfl_%s(%s, %s)", ex.Callee, args[0], args[1]), nil
+	case "udiv", "urem":
+		suffix := ""
+		if g.safe {
+			suffix = "_chk"
+		}
+		return fmt.Sprintf("mfl_%s%s(%s, %s)", ex.Callee, suffix, args[0], args[1]), nil
+	case "ushr":
+		return fmt.Sprintf("mfl_ushr(%s, %s)", args[0], args[1]), nil
 	case "f64_from_bits":
 		return fmt.Sprintf("mfl_f64_from_bits((int64_t)(%s))", args[0]), nil
 	case "sin", "cos", "tan", "asin", "acos", "atan", "exp", "log", "log2", "log10", "sqrt", "cbrt", "floor", "ceil", "round", "trunc", "abs":
@@ -11086,6 +11315,8 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("mfl_silu_f32(%s, %s)", args[0], args[1]), nil
 	case "ocl_init":
 		return "mfl_ocl_init_wrapper()", nil
+	case "ptr_bytes":
+		return fmt.Sprintf("mfl_ptr_bytes(%s, %s)", args[0], args[1]), nil
 	case "ptr_str":
 		return fmt.Sprintf("mfl_ptr_str(%s)", args[0]), nil
 	case "dial":

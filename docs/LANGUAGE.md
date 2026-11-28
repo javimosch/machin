@@ -489,6 +489,9 @@ first := users[0]                                // value copy
 | `int(n)`                    | convert a numeric value to `int` (truncates) |
 | `parse_int(s)` / `parse_float(s)` | parse a `string` to `int` / `float`      |
 | `f64_bits(f)` / `f64_from_bits(i)` | reinterpret a `float`'s IEEE-754 bits as an `int` and back (for byte serialization) |
+| `ult(a, b)`, `udiv(a, b)`, `urem(a, b)` | unsigned `<`, `/`, `%`; a zero divisor behaves as for `/` (`--safe` panics) |
+| `umulh(a, b)`               | high 64 bits of the unsigned 128-bit product |
+| `ushr(x, n)`                | logical (zero-filling) right shift; `>>` is arithmetic. A count outside 0..63 gives 0. For `<<` and `>>` such a count (negative included) gives 0 and the sign fill |
 | `url_encode(s)`             | percent-encode a string for URLs (RFC 3986: keeps `A-Za-z0-9-._~`, encodes everything else, space → `%20`) |
 | `url_decode(s)`             | percent-decode a URL component (lenient: `+` → space, malformed `%XX` passes through unchanged) |
 | `base64_encode(s)`          | base64-encode a string → standard padded output (`A-Za-z0-9+/=`) |
@@ -512,7 +515,7 @@ first := users[0]                                // value copy
 | `udp_sendto(fd, host, port, b)` | send one datagram → bytes sent (`-1` on error) |
 | `udp_recvfrom(fd)`          | receive one datagram → `(payload, sender ip, sender port)`; port `0` means timeout/error. Multi-assign only |
 | `read(fd)` / `write(fd, s)` | read from / write to a socket — **one `read(2)` of up to 65535 bytes, not a whole message** (see note below) |
-| `read_bytes(fd)` / `write_bytes(fd, b)` | NUL-safe binary read/write on a socket `fd` — for binary protocols / HTTP bodies |
+| `read_bytes(fd)` / `write_bytes(fd, b)` | NUL-safe binary read/write on a socket `fd` — for binary protocols / HTTP bodies. Concurrent `write`/`write_bytes` calls on one fd run one at a time, so their bytes never interleave |
 | `close(fd)`                 | close a socket                               |
 | `https_get(url)`            | GET over TLS (or plain http://) → body string (`""` on error) |
 | `https_post(url, body)`     | POST with string body over TLS (or plain http://) → body string |
@@ -549,7 +552,8 @@ first := users[0]                                // value copy
 | `poke_i8`/`poke_i16`/`poke_i32`/`poke_i64`/`poke_u8`/`poke_u16`/`poke_u32`/`poke_u64` and `peek_i8`/`peek_i16`/`peek_i32`/`peek_i64`/`peek_u8`/`peek_u16`/`peek_u32`/`peek_u64` `(p, off[, v])` | write/read a signed or unsigned int of the named width at byte offset `off` (`i` sign-extends on read, `u` zero-extends) |
 | `poke_ptr(p, off, v)` / `peek_ptr(p, off)` | write/read a pointer-sized value at byte offset `off` from pointer `p` |
 | `ptr_str(p)`                | read a NUL-terminated C string at pointer `p` → `string` |
-| `raw_mode(on)`              | toggle terminal raw mode (`1` enable, `0` restore) for uncooked keyboard input |
+| `ptr_bytes(p, n)`           | copy `n` bytes of raw memory at `p` → `bytes`, NULs included (`flush()` before `write_bytes` if earlier `print` output must come first) |
+| `raw_mode(on)`              | toggle terminal raw mode (`1` enable, `2` also signal keys off, `0` restore) for uncooked keyboard input; restored on exit and on SIGINT/SIGTERM/SIGHUP/SIGQUIT |
 | `read_key()`                | read one keypress from stdin (requires `raw_mode(1)`) |
 | `noise2(x, y)` / `noise3(x, y, z)` | 2D/3D Perlin noise, returns `float` in `[-1, 1]` |
 | `sin(x)` / `cos(x)` / `tan(x)` / `asin(x)` / `acos(x)` / `atan(x)` / `exp(x)` / `log(x)` / `log2(x)` / `log10(x)` / `sqrt(x)` / `cbrt(x)` / `floor(x)` / `ceil(x)` / `round(x)` / `trunc(x)` / `abs(x)` | native single-argument math builtins — numeric in, `float` out (backed by libm; `-lm` linked only when one is used) |
@@ -757,18 +761,23 @@ v, ok := <-ch   // ok == false once ch is closed and drained
 is closed and drained — a shorthand for looping on the comma-ok receive.
 
 Channels are malloc'd and are **not** reclaimed by `close` or by any arena —
-a program that keeps making channels grows without bound (~150 bytes each).
+a program that keeps making channels grows without bound (~160 bytes each, #740).
 `chan_free(ch)` hands the memory back, including messages still queued in it.
-It is unchecked, like `free`: the channel must not be used afterwards, and no
-other goroutine may hold a reference to it (a receiver blocked on it, or any
-shared use, becomes a use-after-free). A `--safe` build checks this: every
-channel op panics on a freed channel, `chan_free` panics on a double free, and
-freeing under a blocked receiver wakes it into the same panic — misuse fails
-loudly instead of crashing or hanging. (The `--safe` variant quarantines the
-channel header rather than freeing it, so it reclaims queued payloads but not
-the ~150-byte struct.) Freeing
-after you have received a goroutine's final send is fine. It fits a channel created and consumed
-inside one iteration of a long-running loop:
+The channel must not be used afterwards, and no other goroutine may hold a
+reference to it. Two misuse cases are partly checked (#740): a double
+`chan_free` panics, **unless** a later `make(chan)` reused the freed address, in
+which case it silently frees that new channel; and freeing while a goroutine is
+blocked in a plain receive panics, but one waiting in `select` is not detected.
+Everything else is unchecked in a normal build: any
+send/recv/close/select on the channel *after* the free returns is a
+use-after-free, exactly like `free()` on a raw pointer. A `--safe` build closes
+these gaps: it keeps the freed channel's header (so `chan_free` there leaks about
+150 bytes per call, queued messages are still reclaimed) and panics on any later
+send/recv/close/select or second `chan_free`, including in a goroutine that was
+waiting in `select` when the free happened (if the program is still running when
+it next polls). Freeing after you
+have received a goroutine's final send is fine. It fits a channel created
+and consumed inside one iteration of a long-running loop:
 
 ```go
 while i < n {

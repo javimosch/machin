@@ -29,6 +29,7 @@ type Response struct {
     is_stream int      // 1 = a streaming response: ignore body/bin, call stream(conn) instead
     is_hijack int      // 1 = hand the raw socket to stream(conn) with NO response written (protocol upgrade, e.g. WebSocket)
     stream  func       // func(conn): writes the body incrementally over a long-lived socket (SSE / chunked / hijack)
+    refused string     // set by a helper that rejected an argument; machweb then answers 500 (see "response head checks")
 }
 
 // hijack returns a response that hands the raw connection to fn(conn) — machweb writes
@@ -38,10 +39,72 @@ func hijack(fn) (r) {
     r = Response{status: "101 Switching Protocols", ctype: "", is_hijack: 1, stream: fn}
 }
 
+// ---- response head checks ----
+//
+// A value that reaches the response head must not be able to add a line to it, so
+// machweb refuses rather than rewrites. For every response except a hijack, both
+// serve and serve_tls check, just before writing the head:
+//   status, ctype, location, each cookies entry, each extra entry
+//       no CR (0x0D) and no LF (0x0A)
+//   an extra entry must also not be empty (it would end the header block)
+// The helpers check their arguments too, because their separators are gone once
+// the line is built:
+//   set_cookie name     no CR, LF, ";" or "="
+//   set_cookie value    no CR, LF or ";"
+//   clear_cookie name   no CR, LF, ";" or "="
+//   with_header name    no CR, LF or ":"
+//   with_header value   no CR or LF
+// A refusing helper adds nothing and sets Response.refused, which stays set (a
+// later refusal replaces the name).
+// A refused response is replaced as a whole: none of its headers or body are
+// sent and its stream function is not called. The client gets exactly
+//   "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n"
+//   "Content-Length: 21\r\nConnection: close\r\n\r\ninternal server error"
+// and stderr gets "machweb: response refused: <field>", never the value.
+// NUL needs no rule: an MFL string ends at its first NUL.
+// A hijack response writes its own bytes, so nothing here applies to it.
+
+// head_breaks is 1 if s would end a line of the response head.
+func head_breaks(s) (bad) {
+    bad = 0
+    if contains(s, "\r") || contains(s, "\n") { bad = 1 }
+}
+
+func cookie_name_bad(name) (bad) {
+    bad = head_breaks(name)
+    if contains(name, ";") || contains(name, "=") { bad = 1 }
+}
+
+// response_refusal names the first thing wrong with res's head, or "" if it may
+// be written.
+func response_refusal(res) (why) {
+    why = res.refused
+    if why != "" { return }
+    if head_breaks(res.status) == 1 { why = "status"  return }
+    if head_breaks(res.ctype) == 1 { why = "content type"  return }
+    if head_breaks(res.location) == 1 { why = "location"  return }
+    for _, c := range res.cookies {
+        if head_breaks(c) == 1 { why = "cookie"  return }
+    }
+    for _, e := range res.extra {
+        if e == "" || head_breaks(e) == 1 { why = "header"  return }
+    }
+}
+
+// refusal_response is what is sent in place of a refused response.
+func refusal_response() (out) {
+    out = "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\nContent-Length: 21\r\nConnection: close\r\n\r\ninternal server error"
+}
+
+func log_refusal(why) { w := write(2, "machweb: response refused: " + why + "\n") }
+
 // with_header returns res with an extra response header added (e.g. Content-Disposition
 // for a download filename, or Cache-Control). Structs are values, so use the copy.
+// A CR or LF in either argument, or ":" in the name, refuses the response.
 func with_header(res, name, value) (r) {
     r = res
+    if head_breaks(name) == 1 || contains(name, ":") { r.refused = "with_header name"  return }
+    if head_breaks(value) == 1 { r.refused = "with_header value"  return }
     r.extra = append(r.extra, name + ": " + value)
 }
 
@@ -91,25 +154,34 @@ func stream_response(status, ctype, fn) (r) {
 // sse builds a text/event-stream response — the browser consumes it with EventSource.
 func sse(fn) (r) { r = stream_response("200 OK", "text/event-stream; charset=utf-8", fn) }
 
+// sse_lines splits text where an event stream ends a line: CRLF, CR or LF.
+func sse_lines(s) (lines) { lines = split(replace(replace(s, "\r\n", "\n"), "\r", "\n"), "\n") }
+
 // sse_data sends one SSE message (a "data:" event). Multi-line text is split so each
 // line is its own data field (per the spec). Returns the write result — < 0 once the
 // client has disconnected, which a producer loop should treat as "stop".
 func sse_data(conn, data) (n) {
     msg := ""
-    for _, line := range split(data, "\n") { msg = msg + "data: " + line + "\n" }
+    for _, line := range sse_lines(data) { msg = msg + "data: " + line + "\n" }
     n = write(conn, msg + "\n")
 }
 
-// sse_event sends a named SSE event (dispatched by name on the client).
+// sse_event sends a named SSE event (dispatched by name on the client). An event
+// name holding CR or LF is refused: nothing is written, the result is -1 and
+// stderr gets "machweb: response refused: sse_event name".
 func sse_event(conn, event, data) (n) {
+    if head_breaks(event) == 1 { log_refusal("sse_event name")  n = -1  return }
     msg := "event: " + event + "\n"
-    for _, line := range split(data, "\n") { msg = msg + "data: " + line + "\n" }
+    for _, line := range sse_lines(data) { msg = msg + "data: " + line + "\n" }
     n = write(conn, msg + "\n")
 }
 
 // sse_comment sends a comment line — a keepalive ping browsers ignore (returns < 0 if
-// the client has gone, so it doubles as a liveness probe).
-func sse_comment(conn, c) (n) { n = write(conn, ": " + c + "\n\n") }
+// the client has gone, so it doubles as a liveness probe). Each line of c is sent
+// as its own comment line.
+func sse_comment(conn, c) (n) {
+    n = write(conn, ": " + join(sse_lines(c), "\n: ") + "\n\n")
+}
 
 // ---- request helpers ----
 
@@ -296,8 +368,12 @@ func cookie(req, name) (v) {
 // set_cookie returns res with a Set-Cookie added (Path=/, HttpOnly, SameSite=Lax —
 // safe defaults for a session). Structs are values, so use the returned copy:
 //   return set_cookie(ok_html(page()), "sid", token)
+// A CR, LF or ";" in either argument, or "=" in the name, refuses the response
+// (a ";" would add cookie attributes). Encode such a value first (url_encode).
 func set_cookie(res, name, value) (r) {
     r = res
+    if cookie_name_bad(name) == 1 { r.refused = "set_cookie name"  return }
+    if head_breaks(value) == 1 || contains(value, ";") { r.refused = "set_cookie value"  return }
     sec := ""
     if machweb_secure_cookies == 1 { sec = "; Secure" }    // HTTPS-only when set_secure_cookies(1)
     r.cookies = append(r.cookies, name + "=" + value + "; Path=/; HttpOnly; SameSite=Lax" + sec)
@@ -306,12 +382,15 @@ func set_cookie(res, name, value) (r) {
 // clear_cookie returns res with a cookie expired (for logout).
 func clear_cookie(res, name) (r) {
     r = res
+    if cookie_name_bad(name) == 1 { r.refused = "clear_cookie name"  return }
     r.cookies = append(r.cookies, name + "=; Path=/; Max-Age=0")
 }
 
-// cookie_lines renders the Set-Cookie (and Location) header block for a response.
+// cookie_lines renders the Set-Cookie (and Location) header block for a response;
+// "" for a response that fails the head checks.
 func cookie_lines(res) (h) {
     h = ""
+    if response_refusal(res) != "" { return }
     for _, c := range res.cookies { h = h + "Set-Cookie: " + c + "\r\n" }
     if res.location != "" { h = h + "Location: " + res.location + "\r\n" }
     for _, e := range res.extra { h = h + e + "\r\n" }
@@ -549,6 +628,14 @@ func machweb_handle(conn, handler) {
         close(conn)
         return
     }
+    why := response_refusal(res)
+    if why != "" {
+        log_refusal(why)
+        write(conn, refusal_response())
+        close(conn)
+        if machweb_access_log == 1 { access_log(req, "500 Internal Server Error", 21, now_ms() - started) }
+        return
+    }
     if res.is_stream == 1 {
         // streaming body: write the headers (no Content-Length), then let the handler
         // write events over the open socket. X-Accel-Buffering disables nginx buffering.
@@ -684,6 +771,14 @@ func machweb_handle_tls(fd, tls, handler) {
         tls_write(tls, out)
         tls_close(tls)
         if machweb_access_log == 1 { access_log(req, "501 Not Implemented (hijack/stream)", len(body), now_ms() - started) }
+        return
+    }
+    why := response_refusal(res)
+    if why != "" {
+        log_refusal(why)
+        tls_write(tls, refusal_response())
+        tls_close(tls)
+        if machweb_access_log == 1 { access_log(req, "500 Internal Server Error", 21, now_ms() - started) }
         return
     }
     nbytes := 0
