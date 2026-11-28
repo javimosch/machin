@@ -497,6 +497,8 @@ static mfl_slice mfl_subslice(mfl_slice s, int64_t lo, int64_t hi, int64_t es) {
 }
 static int64_t mfl_idiv(int64_t a, int64_t b) { if (b == 0) mfl_panic("integer divide by zero"); return a / b; }
 static int64_t mfl_imod(int64_t a, int64_t b) { if (b == 0) mfl_panic("integer modulo by zero"); return a % b; }
+static int64_t mfl_udiv_chk(int64_t a, int64_t b) { if (b == 0) mfl_panic("integer divide by zero"); return (int64_t)((uint64_t)a / (uint64_t)b); }
+static int64_t mfl_urem_chk(int64_t a, int64_t b) { if (b == 0) mfl_panic("integer modulo by zero"); return (int64_t)((uint64_t)a % (uint64_t)b); }
 static int64_t mfl_iadd(int64_t a, int64_t b) { int64_t r; if (__builtin_add_overflow(a, b, &r)) mfl_panic("integer overflow (+)"); return r; }
 static int64_t mfl_isub(int64_t a, int64_t b) { int64_t r; if (__builtin_sub_overflow(a, b, &r)) mfl_panic("integer overflow (-)"); return r; }
 static int64_t mfl_imul(int64_t a, int64_t b) { int64_t r; if (__builtin_mul_overflow(a, b, &r)) mfl_panic("integer overflow (*)"); return r; }
@@ -1693,6 +1695,13 @@ static inline int64_t mfl_ushr(int64_t x, int64_t n) { return (uint64_t)n < 64 ?
    operators are undefined for counts outside 0..63. << yields 0, >> sign-fills. */
 static inline int64_t mfl_shl(int64_t x, int64_t n) { return (uint64_t)n < 64 ? (int64_t)((uint64_t)x << n) : 0; }
 static inline int64_t mfl_shr(int64_t x, int64_t n) { return x >> ((uint64_t)n < 64 ? n : 63); }
+/* unsigned views of int (#758). udiv/urem by zero behave as / and % do; --safe
+   uses the checked forms. umulh is built from 32-bit halves: no __int128, which
+   32-bit targets lack. */
+static inline int64_t mfl_ult(int64_t a, int64_t b) { return (uint64_t)a < (uint64_t)b; }
+static inline int64_t mfl_udiv(int64_t a, int64_t b) { return (int64_t)((uint64_t)a / (uint64_t)b); }
+static inline int64_t mfl_urem(int64_t a, int64_t b) { return (int64_t)((uint64_t)a % (uint64_t)b); }
+static inline int64_t mfl_umulh(int64_t a, int64_t b) { uint64_t al = (uint32_t)a, ah = (uint64_t)a >> 32, bl = (uint32_t)b, bh = (uint64_t)b >> 32, mid = ah * bl + ((al * bl) >> 32), low = al * bh + (uint32_t)mid; return (int64_t)(ah * bh + (mid >> 32) + (low >> 32)); }
 static char* mfl_str_b(int64_t v) { return v ? "true" : "false"; }
 static char* mfl_dup(const char* s) { size_t n = strlen(s); char* r = mfl_alloc(n+1); memcpy(r, s, n+1); return r; }
 /* raw heap memory: a pointer is an int (intptr_t round-trip), as with the ptr
@@ -11174,6 +11183,14 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("((double)(%s))", args[0]), nil
 	case "f64_bits":
 		return fmt.Sprintf("mfl_f64_bits((double)(%s))", args[0]), nil
+	case "ult", "umulh":
+		return fmt.Sprintf("mfl_%s(%s, %s)", ex.Callee, args[0], args[1]), nil
+	case "udiv", "urem":
+		suffix := ""
+		if g.safe {
+			suffix = "_chk"
+		}
+		return fmt.Sprintf("mfl_%s%s(%s, %s)", ex.Callee, suffix, args[0], args[1]), nil
 	case "ushr":
 		return fmt.Sprintf("mfl_ushr(%s, %s)", args[0], args[1]), nil
 	case "f64_from_bits":

@@ -229,6 +229,7 @@ func cg_builtin(iid, call_idx, callee, names) (out) {
     if callee == "float" { out = "((double)(" + names[0] + "))"  return out }
     if callee == "f64_bits" { out = "mfl_f64_bits((double)(" + names[0] + "))"  return out }
     if callee == "f64_from_bits" { out = "mfl_f64_from_bits((int64_t)(" + names[0] + "))"  return out }
+    if callee == "ult" || callee == "udiv" || callee == "urem" || callee == "umulh" { out = "mfl_" + callee + "(" + names[0] + ", " + names[1] + ")"  return out }
     if callee == "ushr" { out = "mfl_ushr(" + names[0] + ", " + names[1] + ")"  return out }
     if callee == "close" {
         if node_kind(iid, argn[0]) == 9 { out = "mfl_chan_close(" + names[0] + ")"  return out }

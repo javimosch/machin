@@ -309,6 +309,9 @@ startup (before `main`; at `_initialize` for a wasm reactor).
 | `parse_float` | `(string) -> float` | parse a float (0 if not numeric) |
 | `f64_bits` | `(float) -> int` | reinterpret a `float`'s IEEE-754 bits as an `int` (for byte serialization) |
 | `f64_from_bits` | `(int) -> float` | the inverse: an `int` bit pattern → `float` |
+| `ult` | `(int, int) -> bool` | unsigned `a < b` |
+| `udiv`, `urem` | `(int, int) -> int` | unsigned `/` and `%`; a zero divisor behaves as for `/` and `%` (`--safe` panics) |
+| `umulh` | `(int, int) -> int` | high 64 bits of the unsigned 128-bit product |
 | `ushr` | `(int, int) -> int` | logical (zero-filling) right shift (`>>` is arithmetic); a count outside 0..63 gives 0 |
 | `exit` | `(int) -> ` | terminate the process with a status code |
 | `flush` | `() -> ` | flush buffered stdout (for prompt output through a pipe) |
