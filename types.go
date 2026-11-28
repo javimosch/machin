@@ -1326,35 +1326,54 @@ func (c *Checker) tryIndex(iu indexUse) (bool, error) {
 	return false, nil
 }
 
-// slotVar names the source identifier (if any) whose inferred type currently
-// resolves to slot — used to turn a bare "string vs slice" into a diagnostic
-// that names the offending variable. The bool return is true when the name is a
-// function-local or parameter (as opposed to a package global): a local can
-// collide because `:=` is function-scoped, not block-scoped (issue #507), so
-// callers append that explanation. Returns "" for anonymous/expression slots.
-// Iteration is in stable declaration order so the chosen name is deterministic
-// when several identifiers share a resolved type.
-func (c *Checker) slotVar(slot int) (string, bool) {
+// slotVar names the source identifier (if any) behind slot, for a constraint
+// generated in source function fn ("" = unknown) — used to turn a bare "string
+// vs slice" into a diagnostic that names the offending variable. The second
+// result is true for a function-local or parameter (as opposed to a package
+// global): a local can collide because `:=` is function-scoped (issue #507).
+//
+// A variable whose own slot is in the constraint is named first, in whatever
+// function it lives: that is a direct link. Otherwise a
+// variable that was unified with slot is named, but only one visible to fn, and
+// never through a shared basic-type slot: every string in the program joins
+// cString's class, so membership there says nothing about this constraint and
+// used to blame an unrelated variable in another function (#755).
+// Iteration is in declaration order, so the chosen name is deterministic.
+func (c *Checker) slotVar(slot int, fn string) (string, bool) {
+	if who, local := c.findVar("", func(s int) bool { return s == slot }); who != "" {
+		return who, local
+	}
 	root := c.find(slot)
+	for _, shared := range []int{c.cBool, c.cString, c.cVoid, c.cInt, c.cFloat, c.cBytes} {
+		if c.find(shared) == root {
+			return "", false
+		}
+	}
+	return c.findVar(fn, func(s int) bool { return c.find(s) == root })
+}
+
+// findVar returns the first global, or variable of fn's instances, whose slot matches.
+func (c *Checker) findVar(fn string, match func(int) bool) (string, bool) {
 	for _, name := range c.globalOrder {
-		if c.find(c.globalSlot[name]) == root {
+		if match(c.globalSlot[name]) {
 			return fmt.Sprintf("'%s'", name), false
 		}
 	}
 	for _, inst := range c.instOrder {
 		env := c.vars[inst]
 		src := inst
-		if fn := c.instFn[inst]; fn != nil {
-			src = fn.Name
-		}
-		// parameters first (declaration order), then locals/named returns
 		var names []string
-		if fn := c.instFn[inst]; fn != nil {
-			names = append(names, fn.Params...)
+		// parameters first (declaration order), then locals/named returns
+		if f := c.instFn[inst]; f != nil {
+			src = f.Name
+			names = append(names, f.Params...)
+		}
+		if fn != "" && src != fn {
+			continue
 		}
 		names = append(names, c.localOrder[inst]...)
 		for _, name := range names {
-			if s, ok := env[name]; ok && c.find(s) == root {
+			if s, ok := env[name]; ok && match(s) {
 				return fmt.Sprintf("'%s' in %q", name, src), true
 			}
 		}
@@ -1406,10 +1425,10 @@ func (c *Checker) annotateMismatch(err error, a, b int, src Expr, fn string) err
 	if !strings.HasPrefix(msg, "type mismatch: ") {
 		return err
 	}
-	who, _ := c.slotVar(a)
+	who, _ := c.slotVar(a, fn)
 	matched := a
 	if who == "" {
-		who, _ = c.slotVar(b)
+		who, _ = c.slotVar(b, fn)
 		matched = b
 	}
 	detail := strings.TrimPrefix(msg, "type mismatch: ")
@@ -1460,7 +1479,7 @@ func (c *Checker) annotateField(err error, structName string, fu fieldUse) error
 		where = fmt.Sprintf(" (in %q)", fu.in)
 	}
 	from := ""
-	if who, _ := c.slotVar(fu.result); who != "" {
+	if who, _ := c.slotVar(fu.result, fu.in); who != "" {
 		from = " — from " + who
 	}
 	return fmt.Errorf("type mismatch for field '%s' of %s: %s%s%s",
