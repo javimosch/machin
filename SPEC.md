@@ -98,7 +98,8 @@ The decoded text of a declaration is tokenized as follows.
   literal carrying an exponent is a float even without a `.` (`1e3`). Underscores
   are likewise allowed as separators between digits in either the mantissa or the
   exponent (`3_000.5`, `1_000e1_0`).
-- **String literals.** `"..."` with escapes `\n \t \r \" \\`. No `\uXXXX`
+- **String literals.** `"..."` with escapes `\n \t \r \" \\`. Any other escape
+  (`\x41`, `\0`, ...) is a lex error. No `\uXXXX`
   escape form — embed non-ASCII as raw UTF-8 bytes in the source file instead
   (a tool generating `.src`/`.mfl` text should emit real UTF-8, not escape it —
   e.g. Python's `json.dumps(..., ensure_ascii=False)`).
