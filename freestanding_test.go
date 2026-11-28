@@ -124,7 +124,7 @@ func TestFreestandingAllowListMatchesPrelude(t *testing.T) {
 			n++
 		}
 	}
-	if got := strings.Count(prelude, "static inline "); got != n+3 { // + the two f64 bit casts and ushr
+	if got := strings.Count(prelude, "static inline "); got != n+5 { // + the two f64 bit casts, ushr, << and >>
 		t.Errorf("prelude has %d helpers, want %d", got, n+3)
 	}
 	if freestandingBuiltin("peek_bogus") {

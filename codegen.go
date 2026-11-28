@@ -1689,6 +1689,10 @@ static double mfl_f64_from_bits(int64_t i) { double d; memcpy(&d, &i, 8); return
 /* logical right shift. Defined for every count: outside 0..63 (negative included,
    by the unsigned compare) all bits are shifted out. */
 static inline int64_t mfl_ushr(int64_t x, int64_t n) { return (uint64_t)n < 64 ? (int64_t)((uint64_t)x >> n) : 0; }
+/* the << and >> operators, defined for every count like ushr (#754): the bare C
+   operators are undefined for counts outside 0..63. << yields 0, >> sign-fills. */
+static inline int64_t mfl_shl(int64_t x, int64_t n) { return (uint64_t)n < 64 ? (int64_t)((uint64_t)x << n) : 0; }
+static inline int64_t mfl_shr(int64_t x, int64_t n) { return x >> ((uint64_t)n < 64 ? n : 63); }
 static char* mfl_str_b(int64_t v) { return v ? "true" : "false"; }
 static char* mfl_dup(const char* s) { size_t n = strlen(s); char* r = mfl_alloc(n+1); memcpy(r, s, n+1); return r; }
 /* raw heap memory: a pointer is an int (intptr_t round-trip), as with the ptr
@@ -10004,6 +10008,12 @@ func (g *cgen) binaryCombine(ex *Binary, l, r string) string {
 		case "==", "!=", "<", "<=", ">", ">=":
 			return fmt.Sprintf("(mfl_strcmp(%s, %s) %s 0)", l, r, ex.Op)
 		}
+	}
+	switch ex.Op {
+	case "<<":
+		return fmt.Sprintf("mfl_shl(%s, %s)", l, r)
+	case ">>":
+		return fmt.Sprintf("mfl_shr(%s, %s)", l, r)
 	}
 	// --safe: checked integer arithmetic (overflow) and division (by zero)
 	if g.safe && g.c.NodeKind(g.curFn, ex) == KInt {
