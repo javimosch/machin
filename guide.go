@@ -28,7 +28,7 @@ var skillDeploy string
 
 // machinVersion is the single version string for the toolchain. Bump it when
 // cutting a release (alongside README badge / SPEC / CHANGELOG).
-const machinVersion = "0.146.3"
+const machinVersion = "0.147.0"
 
 // ---- the source-of-truth feature catalog ----
 //
@@ -279,6 +279,10 @@ func machinGuide() guideCatalog {
 			{"float", "(number) -> float", "int -> float (identity on float). MFL has no implicit int->float, so a concrete int (fn return, byte_at, len, ...) needs this to enter float math", "convert"},
 			{"parse_int", "(string) -> int", "parse an integer (0 if non-numeric)", "convert"},
 			{"parse_float", "(string) -> float", "parse a floating-point number (strtod; 0.0 if non-numeric)", "convert"},
+			{"ult", "(int, int) -> bool", "a < b with both read as unsigned 64-bit", "convert"},
+			{"udiv", "(int, int) -> int", "unsigned 64-bit a / b. b == 0 behaves as / does (--safe panics)", "convert"},
+			{"urem", "(int, int) -> int", "unsigned 64-bit a % b. b == 0 behaves as % does (--safe panics)", "convert"},
+			{"umulh", "(int, int) -> int", "high 64 bits of the unsigned 128-bit product a * b (the low 64 are a * b)", "convert"},
 			{"ushr", "(int, int) -> int", "logical (zero-filling) right shift; >> is arithmetic and copies the sign bit. A count outside 0..63 (negative included) gives 0 (for << also 0; for >> the sign fill, 0 or -1). For hashes, binary formats, emulators", "convert"},
 			{"f64_bits", "(float) -> int", "reinterpret a double's IEEE-754 bits as an int64 (for byte-level (de)serialization, e.g. BSON doubles); inverse f64_from_bits", "convert"},
 			{"f64_from_bits", "(int) -> float", "reinterpret an int64 bit pattern as a double (inverse of f64_bits)", "convert"},
@@ -342,6 +346,7 @@ func machinGuide() guideCatalog {
 		{"silu_f32", "(int, int) -> void", "SiLU in-place: x[k] = x[k]/(1+exp(-x[k])) for k<n. Auto-vectorized C — replaces scalar MFL silu_buf", "memory"},
 		{"ocl_init", "() -> int", "Initialize OpenCL GPU backend (loads OpenCL.dll, creates context+queue, compiles kernels). Returns 1 on success, 0 on failure. After init, conv2d_f32/matmul_f32/group_norm_f32 dispatch to GPU automatically. Windows only — no-op on other platforms", "memory"},
 		{"prof_print", "() -> void", "Print OpenCL per-kernel GPU time summary to stderr (sorted by total time desc). Enable by setting MFL_PROF=1 in env before ocl_init — creates the queue with CL_QUEUE_PROFILING_ENABLE and each kernel dispatch records CL_PROFILING_COMMAND_START/END. No-op if profiling not enabled. Call after inference completes", "memory"},
+			{"ptr_bytes", "(ptr, n int) -> bytes", "copy n bytes of raw memory (alloc, FFI) into bytes, NULs included (bytes(s) and ptr_str stop at the first NUL). A null pointer or n <= 0 gives empty; the caller must ensure n bytes are readable. To write them: flush() first if print output must come before, since write_bytes(fd, b) bypasses print's buffer", "ffi"},
 			{"ptr_str", "(int) -> string", "read a NUL-terminated string from a raw pointer into an MFL string — the host->wasm string direction (host writes UTF-8+NUL into wasm memory at an alloc'd ptr, passes it to an export). Pairs with alloc/free.", "memory"},
 			// collections
 			{"len", "(string|slice|map) -> int", "length", "collection"},

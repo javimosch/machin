@@ -497,6 +497,8 @@ static mfl_slice mfl_subslice(mfl_slice s, int64_t lo, int64_t hi, int64_t es) {
 }
 static int64_t mfl_idiv(int64_t a, int64_t b) { if (b == 0) mfl_panic("integer divide by zero"); return a / b; }
 static int64_t mfl_imod(int64_t a, int64_t b) { if (b == 0) mfl_panic("integer modulo by zero"); return a % b; }
+static int64_t mfl_udiv_chk(int64_t a, int64_t b) { if (b == 0) mfl_panic("integer divide by zero"); return (int64_t)((uint64_t)a / (uint64_t)b); }
+static int64_t mfl_urem_chk(int64_t a, int64_t b) { if (b == 0) mfl_panic("integer modulo by zero"); return (int64_t)((uint64_t)a % (uint64_t)b); }
 static int64_t mfl_iadd(int64_t a, int64_t b) { int64_t r; if (__builtin_add_overflow(a, b, &r)) mfl_panic("integer overflow (+)"); return r; }
 static int64_t mfl_isub(int64_t a, int64_t b) { int64_t r; if (__builtin_sub_overflow(a, b, &r)) mfl_panic("integer overflow (-)"); return r; }
 static int64_t mfl_imul(int64_t a, int64_t b) { int64_t r; if (__builtin_mul_overflow(a, b, &r)) mfl_panic("integer overflow (*)"); return r; }
@@ -1693,6 +1695,13 @@ static inline int64_t mfl_ushr(int64_t x, int64_t n) { return (uint64_t)n < 64 ?
    operators are undefined for counts outside 0..63. << yields 0, >> sign-fills. */
 static inline int64_t mfl_shl(int64_t x, int64_t n) { return (uint64_t)n < 64 ? (int64_t)((uint64_t)x << n) : 0; }
 static inline int64_t mfl_shr(int64_t x, int64_t n) { return x >> ((uint64_t)n < 64 ? n : 63); }
+/* unsigned views of int (#758). udiv/urem by zero behave as / and % do; --safe
+   uses the checked forms. umulh is built from 32-bit halves: no __int128, which
+   32-bit targets lack. */
+static inline int64_t mfl_ult(int64_t a, int64_t b) { return (uint64_t)a < (uint64_t)b; }
+static inline int64_t mfl_udiv(int64_t a, int64_t b) { return (int64_t)((uint64_t)a / (uint64_t)b); }
+static inline int64_t mfl_urem(int64_t a, int64_t b) { return (int64_t)((uint64_t)a % (uint64_t)b); }
+static inline int64_t mfl_umulh(int64_t a, int64_t b) { uint64_t al = (uint32_t)a, ah = (uint64_t)a >> 32, bl = (uint32_t)b, bh = (uint64_t)b >> 32, mid = ah * bl + ((al * bl) >> 32), low = al * bh + (uint32_t)mid; return (int64_t)(ah * bh + (mid >> 32) + (low >> 32)); }
 static char* mfl_str_b(int64_t v) { return v ? "true" : "false"; }
 static char* mfl_dup(const char* s) { size_t n = strlen(s); char* r = mfl_alloc(n+1); memcpy(r, s, n+1); return r; }
 /* raw heap memory: a pointer is an int (intptr_t round-trip), as with the ptr
@@ -4124,6 +4133,13 @@ static mfl_bytes mfl_bytes_unhex(const char* s) {   /* skips non-hex chars (spac
     return b;
 }
 static int64_t mfl_byte_at(mfl_bytes b, int64_t i) { return (i < 0 || i >= b.len) ? -1 : (int64_t)b.data[i]; }
+/* copy n bytes of raw memory, NULs included (#759). A null pointer or n <= 0 is empty. */
+static mfl_bytes mfl_ptr_bytes(int64_t p, int64_t n) {
+    if (!p || n < 0) n = 0;
+    mfl_bytes r; r.len = n; r.data = (uint8_t*)mfl_alloc(n ? n : 1);
+    if (n) memcpy(r.data, (const void*)(intptr_t)p, (size_t)n);
+    return r;
+}
 static mfl_bytes mfl_bytes_sub(mfl_bytes b, int64_t start, int64_t end) {
     if (start < 0) start = 0;
     if (end > b.len) end = b.len;
@@ -5153,6 +5169,8 @@ const resolverRuntime = `/* name resolution wrappers (#764): mfl_getaddrinfo/mfl
 #include <arpa/inet.h>
 #include <poll.h>
 #include <strings.h>
+#include <sys/auxv.h>
+#include <sys/random.h>
 #endif
 
 #ifdef MFL_OWN_RESOLVER
@@ -5176,13 +5194,17 @@ static int mfl_name_eq(const char* a, const char* b) {
 }
 
 /* MFL_HOSTS_FILE / MFL_RESOLV_CONF relocate the two config files — for images
-   that keep them somewhere else, and for tests. */
+   that keep them somewhere else, and for tests. Ignored in a setuid/setgid
+   process, where the caller must not be able to redirect name resolution. */
+static const char* mfl_resolver_env(const char* name) {
+    return getauxval(AT_SECURE) ? NULL : getenv(name);
+}
 static const char* mfl_hosts_path(void) {
-    const char* p = getenv("MFL_HOSTS_FILE");
+    const char* p = mfl_resolver_env("MFL_HOSTS_FILE");
     return (p && *p) ? p : "/etc/hosts";
 }
 static const char* mfl_resolv_path(void) {
-    const char* p = getenv("MFL_RESOLV_CONF");
+    const char* p = mfl_resolver_env("MFL_RESOLV_CONF");
     return (p && *p) ? p : "/etc/resolv.conf";
 }
 
@@ -5230,8 +5252,8 @@ static int mfl_hosts_lookup(const char* node, int want4, int want6,
    expansion list (glibc's defaults are 3 servers, 6 search domains). */
 static void mfl_resolv_load(mfl_rns* nss, int maxns,
                             char search[][256], int maxcand,
-                            int* nns, int* nsearch) {
-    *nns = 0; *nsearch = 0;
+                            int* nns, int* nsearch, int* ndots) {
+    *nns = 0; *nsearch = 0; *ndots = 1;
     FILE* f = fopen(mfl_resolv_path(), "r");
     if (!f) return;
     char line[512];
@@ -5243,7 +5265,7 @@ static void mfl_resolv_load(mfl_rns* nss, int maxns,
         while (*e && *e != ' ' && *e != '\t' && *e != '\n' && *e != '#') e++;
         size_t kw = (size_t)(e - p);
         char kc = *e; *e = 0;
-        char* val = e + 1;
+        char* val = kc ? e + 1 : e; /* never step past the terminator */
         while (*val == ' ' || *val == '\t') val++;
         if (kw == 10 && strncmp(p, "nameserver", 10) == 0) {
             char vb[256]; size_t vl = 0;
@@ -5272,6 +5294,12 @@ static void mfl_resolv_load(mfl_rns* nss, int maxns,
                 (*nsearch)++;
                 *ve = vc;
                 val = ve;
+            }
+        } else if (kw == 7 && strncmp(p, "options", 7) == 0) {
+            const char* nd = strstr(val, "ndots:");
+            if (nd) {
+                long v = strtol(nd + 6, NULL, 10);
+                *ndots = v < 0 ? 0 : v > 15 ? 15 : (int)v;
             }
         } else if (kw == 6 && strncmp(p, "domain", 6) == 0 && *nsearch == 0) {
             char vb[256]; size_t vl = 0;
@@ -5415,14 +5443,57 @@ static int mfl_dns_parse(const uint8_t* m, size_t len, uint16_t id,
     return 0;
 }
 
-/* one UDP query/response exchange; returns the parse result: 0 ok (answers may
+/* does the reply repeat our question? Names compare case-insensitively (label
+   length bytes are below 'A', so folding leaves them alone). */
+static int mfl_dns_same_question(const uint8_t* r, size_t rlen,
+                                 const uint8_t* q, size_t qlen) {
+    if (rlen < qlen || mfl_ru16(r + 4) != 1) return 0;
+    for (size_t i = 12; i < qlen; i++) {
+        uint8_t a = r[i], b = q[i];
+        if (i < qlen - 4) {
+            if (a >= 'A' && a <= 'Z') a += 32;
+            if (b >= 'A' && b <= 'Z') b += 32;
+        }
+        if (a != b) return 0;
+    }
+    return 1;
+}
+
+/* one UDP query/response exchange on a socket connected to the nameserver, so
+   the kernel drops datagrams from any other address; returns the parse result: 0 ok (answers may
    be empty), -1 timeout/server error, -2 NXDOMAIN. */
-static int mfl_dns_ask(int fd, const mfl_rns* ns, const char* name,
-                       uint16_t qtype, uint16_t id,
+static int mfl_dns_ask(int fd, const char* name, uint16_t qtype,
                        mfl_raddr* addrs, int max, int* naddr, int64_t deadline) {
     uint8_t q[512];
+    /* an unpredictable query id: with the random source port, what an off-path
+       attacker has to guess to forge an answer */
+    uint16_t id;
+    if (getrandom(&id, sizeof(id), 0) != (ssize_t)sizeof(id)) return -1;
     size_t qlen = mfl_dns_query_build(q, name, qtype, id);
     if (!qlen) return -1;
+    if (send(fd, (const char*)q, qlen, 0) != (ssize_t)qlen) return -1;
+    uint8_t r[MFL_DNS_RCV_BUFSZ];
+    int tries = 0;
+    for (;;) {
+        int64_t left = deadline - mfl_dns_now_ms();
+        if (left <= 0 || ++tries > 8) return -1;
+        struct pollfd pfd;
+        pfd.fd = fd; pfd.events = POLLIN; pfd.revents = 0;
+        int pr = poll(&pfd, 1, left > MFL_DNS_QUERY_MS ? MFL_DNS_QUERY_MS : (int)left);
+        if (pr <= 0) return -1;
+        if (!(pfd.revents & POLLIN)) return -1;
+        ssize_t n = recv(fd, (char*)r, sizeof(r), 0);
+        if (n < 0) { if (errno == EINTR) { tries--; continue; } return -1; }
+        if (n < 12) continue;
+        /* ignore stray datagrams (late answers to an earlier query) */
+        if (mfl_ru16(r) != id || !(mfl_ru16(r + 2) & 0x8000)) continue;
+        if (!mfl_dns_same_question(r, (size_t)n, q, qlen)) continue;
+        return mfl_dns_parse(r, (size_t)n, id, addrs, max, naddr);
+    }
+}
+
+/* a UDP socket connected to port 53 of one nameserver, or -1. */
+static int mfl_dns_open(const mfl_rns* ns) {
     struct sockaddr_storage sa;
     memset(&sa, 0, sizeof(sa));
     socklen_t sl;
@@ -5439,43 +5510,28 @@ static int mfl_dns_ask(int fd, const mfl_rns* ns, const char* name,
         memcpy(&s->sin6_addr, &ns->a6, 16);
         sl = sizeof(*s);
     }
-    if (sendto(fd, (const char*)q, qlen, 0,
-               (struct sockaddr*)&sa, sl) != (ssize_t)qlen) return -1;
-    uint8_t r[MFL_DNS_RCV_BUFSZ];
-    int tries = 0;
-    for (;;) {
-        int64_t left = deadline - mfl_dns_now_ms();
-        if (left <= 0 || ++tries > 8) return -1;
-        struct pollfd pfd;
-        pfd.fd = fd; pfd.events = POLLIN; pfd.revents = 0;
-        int pr = poll(&pfd, 1, left > MFL_DNS_QUERY_MS ? MFL_DNS_QUERY_MS : (int)left);
-        if (pr <= 0) return -1;
-        if (!(pfd.revents & POLLIN)) return -1;
-        ssize_t n = recvfrom(fd, (char*)r, sizeof(r), 0, NULL, NULL);
-        if (n < 0) { if (errno == EINTR) { tries--; continue; } return -1; }
-        if (n < 12) continue;
-        /* ignore stray datagrams (late answers to an earlier query) */
-        if (mfl_ru16(r) != id || !(mfl_ru16(r + 2) & 0x8000)) continue;
-        return mfl_dns_parse(r, (size_t)n, id, addrs, max, naddr);
-    }
+    int fd = socket(ns->family, SOCK_DGRAM, 0);
+    if (fd < 0) return -1;
+    if (connect(fd, (struct sockaddr*)&sa, sl) != 0) { close(fd); return -1; }
+    return fd;
 }
 
 /* resolve one candidate name on one nameserver: A then AAAA. Returns 0 (the
    name was processed; addrs may have grown), -1 the server did not answer
    usefully, -2 the name does not exist. */
-static int mfl_dns_name(int fd, const mfl_rns* ns, const char* name,
+static int mfl_dns_name(int fd, const char* name,
                         int want4, int want6,
                         mfl_raddr* addrs, int max, int* naddr,
-                        uint16_t* qid, int64_t deadline) {
+                        int64_t deadline) {
     int before = *naddr;
     if (want4) {
-        int r = mfl_dns_ask(fd, ns, name, 1, (*qid)++,
+        int r = mfl_dns_ask(fd, name, 1,
                             addrs, max, naddr, deadline);
         if (r == -2) return -2;
         if (r == -1) return -1;
     }
     if (want6) {
-        int r = mfl_dns_ask(fd, ns, name, 28, (*qid)++,
+        int r = mfl_dns_ask(fd, name, 28,
                             addrs, max, naddr, deadline);
         /* NXDOMAIN or silence on AAAA keeps whatever A already gave */
         if (r == -1) return *naddr > before ? 0 : -1;
@@ -5571,39 +5627,46 @@ static int mfl_resolve(const char* node, const char* service,
                 /* DNS: nameservers + search domains from /etc/resolv.conf */
                 mfl_rns nss[MFL_DNS_MAXNS];
                 char search[MFL_DNS_MAXCAND][256];
-                int nn = 0, nsrch = 0;
+                int nn = 0, nsrch = 0, ndots = 1;
                 mfl_resolv_load(nss, MFL_DNS_MAXNS, search,
-                                MFL_DNS_MAXCAND, &nn, &nsrch);
+                                MFL_DNS_MAXCAND, &nn, &nsrch, &ndots);
+                if (nn == 0) { /* as glibc does: ask the local host */
+                    nss[0].family = AF_INET;
+                    nss[0].a4.s_addr = htonl(INADDR_LOOPBACK);
+                    nn = 1;
+                }
                 if (nn > 0) {
-                    char cands[MFL_DNS_MAXCAND][256];
-                    int nc = 0;
-                    strncpy(cands[nc], node, 255); cands[nc][255] = 0; nc++;
-                    if (!strchr(node, '.')) {
-                        for (int s = 0; s < nsrch && nc < MFL_DNS_MAXCAND; s++) {
-                            snprintf(cands[nc], 256, "%s.%s", node, search[s]);
-                            nc++;
-                        }
-                    }
-                    uint16_t qid = (uint16_t)(mfl_dns_now_ms() & 0xffff);
+                    /* resolv.conf's order: a name with at least ndots dots is
+                       tried as written first, otherwise after the search
+                       domains; a trailing dot means as written only */
+                    char cands[MFL_DNS_MAXCAND + 1][256];
+                    int nc = 0, dots = 0;
+                    for (const char* d = node; *d; d++) if (*d == '.') dots++;
+                    int rooted = node[strlen(node) - 1] == '.';
+                    int bare_first = rooted || dots >= ndots;
+                    if (bare_first) snprintf(cands[nc++], 256, "%s", node);
+                    for (int k = 0; !rooted && k < nsrch && nc < MFL_DNS_MAXCAND; k++)
+                        snprintf(cands[nc++], 256, "%s.%s", node, search[k]);
+                    if (!bare_first) snprintf(cands[nc++], 256, "%s", node);
                     int64_t deadline = mfl_dns_now_ms() + MFL_DNS_TOTAL_MS;
                     int resolved = 0;
                     for (int si = 0; si < nn && !resolved; si++) {
-                        /* the datagram socket's family must match the
-                           nameserver's — an AF_INET socket cannot sendto an
-                           IPv6 server */
-                        int fd = socket(nss[si].family == AF_INET ? AF_INET : AF_INET6,
-                                        SOCK_DGRAM, 0);
+                        int fd = mfl_dns_open(&nss[si]);
                         if (fd < 0) continue;
+                        int answered = 1;
                         for (int ci = 0; ci < nc && !resolved; ci++) {
                             int before = naddr;
-                            int r = mfl_dns_name(fd, &nss[si], cands[ci],
+                            int r = mfl_dns_name(fd, cands[ci],
                                                  want4, want6, addrs,
                                                  MFL_DNS_MAXADDR, &naddr,
-                                                 &qid, deadline);
-                            if (r == -1) { dns_timeout = 1; break; }
+                                                 deadline);
+                            if (r == -1) { dns_timeout = 1; answered = 0; break; }
                             if (r == -2) continue;
                             if (naddr > before) resolved = 1;
                         }
+                        /* a server that answered for every candidate is
+                           final: another one is only for a failed one */
+                        if (answered) resolved = 1;
                         close(fd);
                     }
                 }
@@ -11707,6 +11770,14 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("((double)(%s))", args[0]), nil
 	case "f64_bits":
 		return fmt.Sprintf("mfl_f64_bits((double)(%s))", args[0]), nil
+	case "ult", "umulh":
+		return fmt.Sprintf("mfl_%s(%s, %s)", ex.Callee, args[0], args[1]), nil
+	case "udiv", "urem":
+		suffix := ""
+		if g.safe {
+			suffix = "_chk"
+		}
+		return fmt.Sprintf("mfl_%s%s(%s, %s)", ex.Callee, suffix, args[0], args[1]), nil
 	case "ushr":
 		return fmt.Sprintf("mfl_ushr(%s, %s)", args[0], args[1]), nil
 	case "f64_from_bits":
@@ -11812,6 +11883,8 @@ func (g *cgen) callBody(ex *Call, args []string) (string, error) {
 		return fmt.Sprintf("mfl_silu_f32(%s, %s)", args[0], args[1]), nil
 	case "ocl_init":
 		return "mfl_ocl_init_wrapper()", nil
+	case "ptr_bytes":
+		return fmt.Sprintf("mfl_ptr_bytes(%s, %s)", args[0], args[1]), nil
 	case "ptr_str":
 		return fmt.Sprintf("mfl_ptr_str(%s)", args[0]), nil
 	case "dial":

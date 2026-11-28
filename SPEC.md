@@ -1,6 +1,6 @@
 # The MFL Language Specification
 
-Version 0.146.3
+Version 0.147.0
 
 MFL (Machine-First Language) is a statically-typed, Go-flavored backend language
 **shaped for machine authoring**: minimal syntax, no type annotations, one
@@ -98,7 +98,8 @@ The decoded text of a declaration is tokenized as follows.
   literal carrying an exponent is a float even without a `.` (`1e3`). Underscores
   are likewise allowed as separators between digits in either the mantissa or the
   exponent (`3_000.5`, `1_000e1_0`).
-- **String literals.** `"..."` with escapes `\n \t \r \" \\`. No `\uXXXX`
+- **String literals.** `"..."` with escapes `\n \t \r \" \\`. Any other escape
+  (`\x41`, `\0`, ...) is a lex error. No `\uXXXX`
   escape form — embed non-ASCII as raw UTF-8 bytes in the source file instead
   (a tool generating `.src`/`.mfl` text should emit real UTF-8, not escape it —
   e.g. Python's `json.dumps(..., ensure_ascii=False)`).
@@ -309,6 +310,9 @@ startup (before `main`; at `_initialize` for a wasm reactor).
 | `parse_float` | `(string) -> float` | parse a float (0 if not numeric) |
 | `f64_bits` | `(float) -> int` | reinterpret a `float`'s IEEE-754 bits as an `int` (for byte serialization) |
 | `f64_from_bits` | `(int) -> float` | the inverse: an `int` bit pattern → `float` |
+| `ult` | `(int, int) -> bool` | unsigned `a < b` |
+| `udiv`, `urem` | `(int, int) -> int` | unsigned `/` and `%`; a zero divisor behaves as for `/` and `%` (`--safe` panics) |
+| `umulh` | `(int, int) -> int` | high 64 bits of the unsigned 128-bit product |
 | `ushr` | `(int, int) -> int` | logical (zero-filling) right shift (`>>` is arithmetic); a count outside 0..63 gives 0 |
 | `exit` | `(int) -> ` | terminate the process with a status code |
 | `flush` | `() -> ` | flush buffered stdout (for prompt output through a pipe) |
@@ -742,6 +746,11 @@ extern "m" { header "math.h" link "m" fn sqrt(float) float fn pow(float, float) 
   Machine-specific paths belong on the command line instead, so the source stays
   portable: `machin build --cflags "-I<dir>" --ldflags "-L<dir>"` (repeatable;
   values split on spaces; `CFLAGS`/`LDFLAGS` environment variables are not read).
+  A glibc `--static` binary resolves hostnames itself, without NSS (`/etc/hosts`,
+  then A/AAAA over UDP to the `resolv.conf` servers, honouring `search` and
+  `ndots`), since glibc's static `getaddrinfo` loads the host's libraries and can
+  crash on another glibc version. It has no mDNS, `nsswitch.conf` or TCP fallback
+  for truncated answers. Extern code that calls NSS functions is still affected.
   `--static-link <name>` links `lib<name>.a` in place of `-l<name>` for a library
   the program links, searching the `-L` directories and then the compiler's own
   path, and fails if no archive is found. These apply to native builds only.
@@ -784,7 +793,7 @@ structs to hand to a foreign function: `alloc(n) -> int` (n **zeroed** bytes),
 `free(p)`, `poke_f32`/`poke_f64`/`poke_i8`/`poke_i16`/`poke_i32`/`poke_i64`/
 `poke_u8`/`poke_u16`/`poke_u32`/`poke_u64`/`poke_ptr(p, byteOffset, v)`,
 `peek_f32`/`peek_f64`/`peek_i8`/`peek_i16`/`peek_i32`/`peek_i64`/
-`peek_u8`/`peek_u16`/`peek_u32`/`peek_u64`/`peek_ptr(p, byteOffset)`, and `ptr_str(p) -> string` (read a
+`peek_u8`/`peek_u16`/`peek_u32`/`peek_u64`/`peek_ptr(p, byteOffset)`, and `ptr_bytes(p, n) -> bytes` (copy `n` bytes, NULs included), `ptr_str(p) -> string` (read a
 NUL-terminated C string at `p`). The pattern for a GPU mesh: `poke` the
 vertex/colour arrays and a `Mesh` struct into `alloc`'d memory, `UploadMesh(p, ...)`
 (a `ptr` param — `void*` converts to `Mesh*`, and the call writes the VAO/VBO ids

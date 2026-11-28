@@ -213,6 +213,14 @@ func TestStaticBuildResolvesNamesWithoutNSS(t *testing.T) {
 					return
 				}
 				if resp := fakeDNSReply(buf[:n]); resp != nil {
+					// first a forgery: right id, another question, claiming the
+					// name does not exist. Accepting it would fail dns.test.
+					forged := append([]byte(nil), resp...)
+					if len(forged) > 13 {
+						forged[13] ^= 1
+						forged[3] = 0x83
+						dns.WriteToUDP(forged, peer)
+					}
 					dns.WriteToUDP(resp, peer)
 				}
 			}

@@ -312,12 +312,12 @@ func arena_compute_prov() {
 var g_af_decl = []string{}
 var g_af_code = []string{}
 var g_af_detail = []string{}
-var g_af_seen = []string{}   // dedup keys: decl \x00 code \x00 detail
+var g_af_seen = []string{}   // dedup keys: decl, code, detail (tab-joined)
 var g_inner = []string{}     // names declared inside the current arena block
 var g_taint = []string{}     // currently-tainted PLACE paths in the current block ("p", "p.f", "p#")
 
 func arena_flag(decl, code, detail) {
-    key := decl + "\x00" + code + "\x00" + detail
+    key := decl + "\t" + code + "\t" + detail
     if arena_sidx(g_af_seen, key) >= 0 { return }
     g_af_seen = append(g_af_seen, key)
     g_af_decl = append(g_af_decl, decl)
@@ -569,7 +569,7 @@ func arena_dump() (out) {
     lines := []string{}
     k := 0
     for k < len(g_af_decl) {
-        keys = append(keys, g_af_decl[k] + "\x00" + g_af_detail[k])
+        keys = append(keys, g_af_decl[k] + "\t" + g_af_detail[k])
         lines = append(lines, to_hex(bytes(g_af_decl[k])) + "|" + to_hex(bytes(g_af_code[k])) + "|" + to_hex(bytes(g_af_detail[k])) + "\n")
         k = k + 1
     }

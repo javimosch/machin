@@ -477,10 +477,30 @@ func BuildBinaryLinked(prog *Program, outPath string, safe, static bool, link Li
 	args = append(args, link.LDFlags...)
 
 	cmd := exec.Command(ccPath(), args...)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	out, err := cmd.CombinedOutput()
+	if err != nil {
 		return fmt.Errorf("%s failed: %v\n%s", ccPath(), err, out)
 	}
+	if note := staticGlibcNote(static && len(prog.Externs) > 0, string(out)); note != "" {
+		fmt.Fprintln(os.Stderr, note)
+	}
 	return nil
+}
+
+// staticGlibcNote turns the glibc linker's own warning about a static link into
+// one the user sees (#764): cc's output is otherwise dropped on success. machin's
+// runtime resolves names itself, so the caller asks only for programs with
+// foreign code (extern blocks), which may call the NSS functions; the same
+// warnings from static OpenSSL's unused lookup helpers are noise.
+func staticGlibcNote(static bool, ccOutput string) string {
+	if !static || !strings.Contains(ccOutput, "in statically linked applications requires at runtime") {
+		return ""
+	}
+	return "machin: warning: this --static binary may not be portable. It links glibc " +
+		"functions that load shared libraries from the host at run time. machin's own " +
+		"name resolution does not, but if your extern code calls them (getaddrinfo, " +
+		"getpwnam, dlopen, ...) it can crash on a different glibc version (#764). A " +
+		"musl compiler (CC=musl-gcc) avoids this."
 }
 
 // zigPath is the C->wasm cross compiler. zig ships clang + a wasi-libc, so it is

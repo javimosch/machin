@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 type TokKind int
@@ -154,7 +155,8 @@ func (l *Lexer) lexString() error {
 			case '\\':
 				sb.WriteByte('\\')
 			default:
-				sb.WriteByte(l.src[l.pos])
+				r, _ := utf8.DecodeRuneInString(l.src[l.pos:])
+				return fmt.Errorf("unknown escape \\%c in string at %d (supported: \\n \\t \\r \\\" \\\\)", r, l.pos-1)
 			}
 		} else {
 			sb.WriteByte(c)

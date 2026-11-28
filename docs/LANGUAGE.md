@@ -489,6 +489,8 @@ first := users[0]                                // value copy
 | `int(n)`                    | convert a numeric value to `int` (truncates) |
 | `parse_int(s)` / `parse_float(s)` | parse a `string` to `int` / `float`      |
 | `f64_bits(f)` / `f64_from_bits(i)` | reinterpret a `float`'s IEEE-754 bits as an `int` and back (for byte serialization) |
+| `ult(a, b)`, `udiv(a, b)`, `urem(a, b)` | unsigned `<`, `/`, `%`; a zero divisor behaves as for `/` (`--safe` panics) |
+| `umulh(a, b)`               | high 64 bits of the unsigned 128-bit product |
 | `ushr(x, n)`                | logical (zero-filling) right shift; `>>` is arithmetic. A count outside 0..63 gives 0. For `<<` and `>>` such a count (negative included) gives 0 and the sign fill |
 | `url_encode(s)`             | percent-encode a string for URLs (RFC 3986: keeps `A-Za-z0-9-._~`, encodes everything else, space → `%20`) |
 | `url_decode(s)`             | percent-decode a URL component (lenient: `+` → space, malformed `%XX` passes through unchanged) |
@@ -550,6 +552,7 @@ first := users[0]                                // value copy
 | `poke_i8`/`poke_i16`/`poke_i32`/`poke_i64`/`poke_u8`/`poke_u16`/`poke_u32`/`poke_u64` and `peek_i8`/`peek_i16`/`peek_i32`/`peek_i64`/`peek_u8`/`peek_u16`/`peek_u32`/`peek_u64` `(p, off[, v])` | write/read a signed or unsigned int of the named width at byte offset `off` (`i` sign-extends on read, `u` zero-extends) |
 | `poke_ptr(p, off, v)` / `peek_ptr(p, off)` | write/read a pointer-sized value at byte offset `off` from pointer `p` |
 | `ptr_str(p)`                | read a NUL-terminated C string at pointer `p` → `string` |
+| `ptr_bytes(p, n)`           | copy `n` bytes of raw memory at `p` → `bytes`, NULs included (`flush()` before `write_bytes` if earlier `print` output must come first) |
 | `raw_mode(on)`              | toggle terminal raw mode (`1` enable, `2` also signal keys off, `0` restore) for uncooked keyboard input; restored on exit and on SIGINT/SIGTERM/SIGHUP/SIGQUIT |
 | `read_key()`                | read one keypress from stdin (requires `raw_mode(1)`) |
 | `noise2(x, y)` / `noise3(x, y, z)` | 2D/3D Perlin noise, returns `float` in `[-1, 1]` |

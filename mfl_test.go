@@ -1971,7 +1971,7 @@ func TestBase64(t *testing.T) {
 // POSIX regex builtins: match, find, capture groups, and replace-all.
 func TestRegex(t *testing.T) {
 	main := `func main() {
-	ok := "false"  if regex_match("a@b.co", "^[a-z]+@[a-z]+\.[a-z]+$") { ok = "true" }
+	ok := "false"  if regex_match("a@b.co", "^[a-z]+@[a-z]+\\.[a-z]+$") { ok = "true" }
 	g := regex_groups("2026-06-22", "([0-9]+)-([0-9]+)-([0-9]+)")
 	gs := ""  if len(g) == 4 { gs = g[1] + "/" + g[2] + "/" + g[3] }
 	println(ok + "|" + regex_find("id 4821 x", "[0-9]+") + "|" + gs + "|" + regex_replace("5-9", "[0-9]+", "#"))

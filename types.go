@@ -2715,6 +2715,16 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 		}
 		c.addPair(argSlots[0], newSlot(c, KNum))
 		return c.cInt, nil
+	case "ult", "udiv", "urem", "umulh":
+		if len(argSlots) != 2 {
+			return 0, fmt.Errorf("%s: 2 args (int, int)", ex.Callee)
+		}
+		c.addPair(argSlots[0], c.cInt)
+		c.addPair(argSlots[1], c.cInt)
+		if ex.Callee == "ult" {
+			return c.cBool, nil
+		}
+		return c.cInt, nil
 	case "ushr":
 		// logical (zero-filling) right shift; >> is arithmetic
 		if len(argSlots) != 2 {
@@ -3044,6 +3054,13 @@ func (c *Checker) genCall(fn *FuncDecl, ex *Call) (int, error) {
 			return 0, fmt.Errorf("ocl_init: 0 args")
 		}
 		return c.cInt, nil
+	case "ptr_bytes":
+		if len(argSlots) != 2 {
+			return 0, fmt.Errorf("ptr_bytes: 2 args (pointer, byte count)")
+		}
+		c.addPair(argSlots[0], c.cInt)
+		c.addPair(argSlots[1], c.cInt)
+		return c.cBytes, nil
 	case "ptr_str":
 		if len(argSlots) != 1 {
 			return 0, fmt.Errorf("ptr_str: 1 arg (pointer to NUL-terminated bytes)")

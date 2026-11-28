@@ -24,7 +24,7 @@ func freestandingPrelude() string {
 	var b strings.Builder
 	b.WriteString("#include <stdint.h> /* a compiler header: needs no libc */\n")
 	for _, line := range strings.Split(cRuntime, "\n") {
-		for _, p := range []string{" mfl_peek_", " mfl_poke_", " mfl_f64_bits(", " mfl_f64_from_bits(", " mfl_ushr(", " mfl_shl(", " mfl_shr("} {
+		for _, p := range []string{" mfl_peek_", " mfl_poke_", " mfl_f64_bits(", " mfl_f64_from_bits(", " mfl_ushr(", " mfl_ult(", " mfl_udiv(", " mfl_urem(", " mfl_umulh(", " mfl_shl(", " mfl_shr("} {
 			if strings.HasPrefix(line, "static ") && strings.Contains(line, p) {
 				if !strings.HasPrefix(line, "static inline ") {
 					line = strings.Replace(line, "static ", "static inline ", 1)
@@ -40,7 +40,7 @@ func freestandingPrelude() string {
 
 func freestandingBuiltin(name string) bool {
 	switch name {
-	case "int", "float", "f64_bits", "f64_from_bits", "ushr":
+	case "int", "float", "f64_bits", "f64_from_bits", "ushr", "ult", "udiv", "urem", "umulh":
 		return true
 	}
 	// Exactly the memory builtins the prelude defines.

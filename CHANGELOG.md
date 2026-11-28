@@ -1,5 +1,40 @@
 # Changelog
 
+## v0.147.0
+
+**Unsigned and raw-memory builtins, defined shifts, and terminal, lexer and
+diagnostic fixes.**
+
+Check before upgrading:
+
+- An unknown string escape (`\x41`, `\q`, `\0`) is now a lex error (#757).
+  Before, the backslash was silently dropped, so `"a\.b"` in a regex meant
+  `a.b`. Write `\\.` for a literal backslash.
+- `ult`, `udiv`, `urem`, `umulh` and `ptr_bytes` are now builtin names; rename
+  any function of your own that uses one.
+
+Added:
+
+- `ult`, `udiv`, `urem`, `umulh`: unsigned compare, divide, remainder and
+  multiply-high, also in `wasm-freestanding` (#758).
+- `ptr_bytes(p, n)`: copy raw memory into `bytes`, NULs included (#759).
+- `raw_mode(2)`: raw mode with signal keys off, so Ctrl-C arrives as a byte.
+
+Fixed:
+
+- `<<` and `>>` are defined for every count: outside 0..63, `<<` gives 0 and
+  `>>` the sign fill. Before, the result was undefined in the emitted C (#754).
+- A raw-mode program that exits or dies on SIGINT, SIGTERM, SIGHUP or SIGQUIT
+  restores the terminal (#756).
+- A type mismatch is no longer blamed on an unrelated variable, function and
+  line (#755).
+
+Build and CI:
+
+- `--static` now warns when a glibc binary still needs the host's glibc at run
+  time. The crash itself (#764) is still open.
+- The CI gate's `go test` timeout is 15m (#760).
+
 ## v0.146.3
 
 **Web security fix and two WebSocket fixes. Upgrade if your program uses
