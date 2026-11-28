@@ -485,6 +485,8 @@ func binary_combine(iid, idx, l, r) (out) {
     op := n.s
     if op == "+" && node_kind(iid, idx) == 5 { out = "mfl_cat(" + l + ", " + r + ")"  return out }
     if is_cmp(op) && node_kind(iid, n.a) == 5 { out = "(mfl_strcmp(" + l + ", " + r + ") " + op + " 0)"  return out }
+    if op == "<<" { out = "mfl_shl(" + l + ", " + r + ")"  return out }
+    if op == ">>" { out = "mfl_shr(" + l + ", " + r + ")"  return out }
     out = "(" + l + " " + op + " " + r + ")"
 }
 

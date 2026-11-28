@@ -240,6 +240,8 @@ startup (before `main`; at `_initialize` for a wasm reactor).
   `||` · `&&` · `== != < <= > >=` · `+ - | ^` · `* / % << >> &` · unary `- ! ^ <-`.
 - **Bitwise** `& | ^ << >>` (and unary `^`, complement) are **`int`-only** —
   Go semantics and precedence (`<< >> &` bind like `* / %`; `| ^` like `+ -`).
+  A shift count outside 0..63 is defined: `<<` gives 0 and `>>` gives the sign
+  fill (0 or -1). A negative count counts as out of range (Go panics instead).
 - **Arithmetic** `+ - * / %`: numeric operands. `/` of two `int` is integer
   division; `%` is `int`-only. A flexible numeric **literal** promotes to `float`
   on contact (`3.0 + 2`), but a **concrete** `int` — a function return, `byte_at`,
